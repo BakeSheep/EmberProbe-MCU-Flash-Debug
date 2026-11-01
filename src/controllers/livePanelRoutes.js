@@ -47,11 +47,11 @@ async function ready({ host, entry, post, watchKey }) {
 }
 
 async function importVariables({ host, post }, message) {
-    const wasLoading = !!host._elfService.resolveSymbols || !host._elfVersion(host._elfService.cache);
+    const wasLoading = !!host._elfService.resolveSymbols || !host._elfView.version(host._elfService.cache);
     const result = await host._elfService.load();
-    if (wasLoading || message.version === host._elfVersion(result))
-        post({ type: "variablesListDone", version: host._elfVersion(result), warnings: displayWarnings(result) });
-    else host._sendElfSnapshot(post, "variablesList");
+    if (wasLoading || message.version === host._elfView.version(result))
+        post({ type: "variablesListDone", version: host._elfView.version(result), warnings: displayWarnings(result) });
+    else host._elfView.sendSnapshot(post, "variablesList");
 }
 
 async function importSidebarWatch({ host, post, watchKey }, message) {

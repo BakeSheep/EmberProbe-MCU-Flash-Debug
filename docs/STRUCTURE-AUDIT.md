@@ -37,6 +37,7 @@
     - [x] Agent 计划纯函数：`_agentVariablePlan`、`_agentWritePlan`、`_decodeAgentSample` 移到 `src/services/agentPlans.js`（`readPlan`、`writePlan`、`decodeSample`），ELF 符号通过 `readElf` 回调传入，参数校验仍先于读取 ELF。删除只在测试中走到的 `refreshSymbols` 选项（生产调用方都传 `false`）和 `_agentSymbolResolver` 包装（直接用 `elfSymbols.createSymbolResolver`）。12 个测试文件改为直接调用；原先给 Provider 打桩计划的 4 处改为提供 ELF 符号，让调用方跑真实计划。Provider 6043 → 5681 行。
     - [x] 采样控制器 a（读取计划）：新建 `src/services/liveWatchController.js`，Provider 通过原型上的 `_sampling`（首次使用时创建）访问。移入合并读取计划、运行时 RAM 过滤与预算、消费者解码类型、把计划下发给采样会话或调试服务器、`refreshSamplingPlan`；运行时 RAM 缓存和拒绝/超预算提示键归控制器所有，Provider 只调用 `invalidateRuntimeRam()`、`resetRuntimeNotices()`。`debugReadPlanKey` 移到 `liveWatchService`。24 个测试文件改为通过 `_sampling` 访问或打桩。Provider 5681 → 5392 行。
     - [x] 采样控制器 b（会话生命周期）：启动/停止、启动代际与 lease、退出未确认、采样频率与无上限开关、指针只采展开部分、样本批量下发、背压和 gap、指针外设刷新移入控制器，`_live*` 字段改为控制器自己的 `session`、`intent`、`consumers`、`intervalMs` 等。Provider 构造时把配置的频率和两个工作区开关作为参数传给控制器，`vscode` 和 `LiveWatchSession` 由 Provider 模块注入（测试仍可经 `loadProvider` 替换）。两个状态键和 `latestByName` 随之移走。31 个测试文件（含 e2e、HIL 各 1 个）改为经 `_sampling` 访问。Provider 5392 → 4691 行。
+    - [x] ELF 变化（与计划的偏差：单独成 `src/services/elfViewController.js`，经 `_elfView` 访问，没有并入采样控制器。它管的是 ELF 怎样到达视图和监视列表，与采样无关，并入后采样控制器会逼近 1500 行上限）：ELF 加载进度推送、所选复合变量的布局预取、监视列表按新符号重绑定、布局展开请求、`invalidate`/`refreshBindings`、ELF 版本标识。`rebindPromise`、`watchNameChanges` 归该控制器所有。视图同步（`_syncSidebarTarget`/`_syncGraphTarget`）属于视图生命周期，留在 Provider。20 个测试文件改为经 `_elfView` 访问。Provider 4691 → 4354 行。
 - [ ] P2 ManagedOpenOcdSession
 - [ ] P2 测试结构
 

@@ -340,7 +340,6 @@ function fixture() {
         let reads = 0;
         const stops = [];
         Object.assign(host, {
-            _prepareRequestedLayouts: async () => {},
             readElfSymbols: () => ({
                 elf: {},
                 symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
@@ -355,6 +354,7 @@ function fixture() {
                 }),
             stopAgentReadIfRunning: () => (stops.push("agent"), null)
         });
+        Object.assign(host._elfView, { prepareLayouts: async () => {} });
         Object.assign(host._sampling, {
             stop: async () => stops.push("live"),
             status: () => ({ running: false }),

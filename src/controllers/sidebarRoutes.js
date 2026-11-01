@@ -235,7 +235,7 @@ const SIDEBAR_ROUTES = {
     },
     refreshVariables: async ({ host }) => {
         try {
-            await host._refreshElfBindings();
+            await host._elfView.refreshBindings();
         } catch (error) {
             host._postLive({ type: "liveError", ...toUiError(error) });
         }

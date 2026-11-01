@@ -853,7 +853,7 @@ class LiveWatchController {
             throw Object.assign(new Error(this.host._t("live.needConfig")), { i18nKey: "live.needConfig" });
         if (this.host._elfService?.workerPath && this.host._context.workspaceState.get(CACHE_KEYS.elfPath)) {
             await this.host._elfService.ready();
-            await this.host._elfRebindPromise;
+            await this.host._elfView.rebindPromise;
         }
         if (generation !== this._startGeneration) return;
         {

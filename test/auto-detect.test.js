@@ -397,7 +397,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     provider._sampling.session = { active: true };
     provider._assertProbeDriverIdle = () => {};
     provider._cubemxConfiguration = { detectIoc: async () => "/w/app/app.ioc" };
-    provider._refreshElfBindings = async () => refreshed++;
+    provider._elfView.refreshBindings = async () => refreshed++;
     provider._refreshConnectedProbes = async () => null;
     provider.updateView = async () => {};
     provider._t = (key) => key;

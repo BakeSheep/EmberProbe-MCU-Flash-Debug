@@ -156,7 +156,7 @@ for (const names of [
             }
         ]);
         // Without a collector (watch/write paths) the layout error still aborts the request.
-        await assert.rejects(provider._prepareRequestedLayouts(["app::object"]), { code: "DWARF_BUDGET_EXCEEDED" });
+        await assert.rejects(provider._elfView.prepareLayouts(["app::object"]), { code: "DWARF_BUDGET_EXCEEDED" });
         service.layout = layout;
         object.compositeLayout = savedLayout;
 

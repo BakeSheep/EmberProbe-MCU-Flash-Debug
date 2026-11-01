@@ -56,13 +56,13 @@ function fixture() {
         commandHandlers: {},
         _assertConnectionEditable() {},
         _resolveOpenOcdPath: async () => null,
-        _refreshElfBindings: async () => {},
         _refreshConnectedProbes: async () => {},
         updateView: async () => {},
         _renderWebview: async () => {},
         getModernWebviewContent: () => "",
         _t: (key, params) => i18n.t("en", key, params)
     });
+    Object.assign(provider._elfView, { refreshBindings: async () => {} });
     provider.registerCommandHandlers();
     let dispatch;
     provider.resolveWebviewView({
@@ -161,7 +161,7 @@ async function commands() {
         i18nKey: "live.elfTooLarge",
         i18nParams: params
     });
-    f.provider._refreshElfBindings = async () => {
+    f.provider._elfView.refreshBindings = async () => {
         throw error;
     };
     await f.dispatch({ type: "refreshVariables" });

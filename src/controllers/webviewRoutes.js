@@ -10,12 +10,12 @@ const SHARED_ROUTES = {
         host._setLang(message.lang);
         host._postLive({ type: "setLang", lang: host._lang });
     },
-    expandLayout: ({ host, post }, message) => host._handleLayoutExpansion(message, post),
+    expandLayout: ({ host, post }, message) => host._elfView.handleLayoutExpansion(message, post),
     resolveCompositeLayout: async ({ host, post }, message) => {
         const reply = { type: "compositeLayoutResult", name: message.name, version: message.version };
         try {
-            const layout = await host._resolveElfLayout(message.name, message.version);
-            post({ ...reply, layout, ...host._layoutExpansionSnapshot(message.name) });
+            const layout = await host._elfView.resolveLayout(message.name, message.version);
+            post({ ...reply, layout, ...host._elfView.layoutExpansionSnapshot(message.name) });
         } catch (error) {
             post({ ...reply, error: error.message });
         }

@@ -20,7 +20,6 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
         probeSerial: "1234"
     };
     Object.assign(provider, {
-        _prepareRequestedLayouts: async () => {},
         _prepareWriteConnection: async () => connection,
         _debugBridge: { agentStatus: () => ({ state: "none" }) },
         _writeAuthorization: new WriteAuthorization({
@@ -38,6 +37,7 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             return { results: [{ verified: true }] };
         }
     });
+    Object.assign(provider._elfView, { prepareLayouts: async () => {} });
     const values = [{ name: "word", value: 32 }];
     const plan = await provider._writeAgentVariables({ values });
     assert(plan.confirmationRequired);

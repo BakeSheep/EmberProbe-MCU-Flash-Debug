@@ -94,7 +94,7 @@ function limitedMember(layout) {
 
         const provider = Object.create(loadProvider().prototype);
         provider.readElfSymbols = () => service.read();
-        provider._prepareRequestedLayouts = async () => {};
+        provider._elfView.prepareLayouts = async () => {};
         const sym = service.symbolByName.get("root");
         const truncatedPath = "root.deep" + ".next".repeat(32);
         assert.deepStrictEqual(elf.expandCompositeLeaves(sym, layout, elf.parseMemberPath(truncatedPath)), []);

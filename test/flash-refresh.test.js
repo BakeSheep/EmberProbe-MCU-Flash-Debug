@@ -55,11 +55,6 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
                 events.push("memory-ready");
             }
         },
-        _hydrateSelectedLayouts: async () => {},
-        _rebindWatchLists: async (symbols) => {
-            events.push("rebind");
-            assert.strictEqual(symbols[0].address, 0x20000004);
-        },
         _watchListWithDisplayNames: () => [symbol],
         _syncSidebarTarget: (post) => {
             events.push("sidebar-refresh");
@@ -78,6 +73,13 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
                 await options.prepare();
                 if (failFlash) throw new Error("Flash failed");
             }
+        }
+    });
+    Object.assign(provider._elfView, {
+        hydrateSelectedLayouts: async () => {},
+        rebindWatchLists: async (symbols) => {
+            events.push("rebind");
+            assert.strictEqual(symbols[0].address, 0x20000004);
         }
     });
     Object.assign(provider._sampling, {

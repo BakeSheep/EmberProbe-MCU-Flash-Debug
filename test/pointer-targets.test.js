@@ -653,7 +653,7 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
             "lab::g_spanHi",
             "lab::g_gridCell"
         ];
-        provider._onElfChange("types", { elf: { sha256: "progressive" } }, scalars.map(symbol));
+        provider._elfView.onElfChange("types", { elf: { sha256: "progressive" } }, scalars.map(symbol));
         const typeUpdate = updates.find((message) => message.type === "availableVariableTypes");
         assert.ok(typeUpdate.symbols.every((entry) => entry.isPointer && entry.pointerTarget === "data"));
         assert.ok(

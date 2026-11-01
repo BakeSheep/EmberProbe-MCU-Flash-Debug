@@ -215,16 +215,16 @@ const { writePlan } = require("../src/services/agentPlans");
     const changed = { symbols, elf: { sha256: "new-identity" }, warnings: [] };
     cached._livePanels = new Map();
     symbols[0].displayName = "enriched::value";
-    cached._onElfChange("types", changed, [symbols[0]]);
+    cached._elfView.onElfChange("types", changed, [symbols[0]]);
     const enriched = cached._symbolNameIndex(symbols);
     assert.notStrictEqual(enriched, larger, "in-place DWARF display-name enrichment invalidates the cache");
     assert.strictEqual(enriched.get("enriched::value"), symbols[0]);
-    cached._hydrateSelectedLayouts = async () => {};
-    cached._rebindWatchLists = async () => {};
+    cached._elfView.hydrateSelectedLayouts = async () => {};
+    cached._elfView.rebindWatchLists = async () => {};
     cached._syncSidebarTarget = () => {};
     cached._sampling.refreshSamplingPlan = async () => {};
-    cached._onElfChange("dwarfReady", changed);
-    await cached._elfRebindPromise;
+    cached._elfView.onElfChange("dwarfReady", changed);
+    await cached._elfView.rebindPromise;
     assert.notStrictEqual(cached._symbolNameIndex(symbols), enriched, "DWARF completion also invalidates the index");
 
     await scenario("Reject bitfield write plans", async () => {
@@ -309,7 +309,7 @@ const { writePlan } = require("../src/services/agentPlans");
         const variable = providerFixture().p;
         let identity = "before",
             attemptedWrites = 0;
-        variable._prepareRequestedLayouts = async () => {};
+        variable._elfView.prepareLayouts = async () => {};
         variable.readElfSymbols = () => ({
             elf: { path: "firmware.elf", sha256: identity },
             symbols: [{ name: "x", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true }],

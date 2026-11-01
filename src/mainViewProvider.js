@@ -30,7 +30,7 @@ const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
-const { variableDisplayName, variableScope, writeUnavailableKey } = require("./webview/runtime");
+const { variableDisplayName, writeUnavailableKey } = require("./webview/runtime");
 const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
@@ -53,6 +53,12 @@ const { createAgentRoutes } = require("./services/agentRoutes");
 const agentPlans = require("./services/agentPlans");
 const { createSidebarHandler } = require("./controllers/sidebarRoutes");
 const { createLivePanelHandler } = require("./controllers/livePanelRoutes");
+const {
+    LiveWatchController,
+    POINTER_EXPANDED_ONLY_STATE_KEY,
+    UNLIMITED_SAMPLING_STATE_KEY
+} = require("./services/liveWatchController");
+const { ElfViewController } = require("./services/elfViewController");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
@@ -164,19 +170,17 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
     });
 }
 
-const {
-    LiveWatchController,
-    POINTER_EXPANDED_ONLY_STATE_KEY,
-    UNLIMITED_SAMPLING_STATE_KEY
-} = require("./services/liveWatchController");
 // The sampling controller uses this module's vscode and LiveWatchSession, which tests replace through loadProvider.
 function createSamplingController(host, settings = {}) {
     return new LiveWatchController(host, { vscode, LiveWatchSession: liveWatch.LiveWatchSession, ...settings });
 }
 class MainViewProvider {
-    // Created on first use, so the provider's construction order does not matter.
+    // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
         return (this._samplingController ??= createSamplingController(this));
+    }
+    get _elfView() {
+        return (this._elfViewController ??= new ElfViewController(this));
     }
     constructor(context) {
         this.commandHandlers = {};
@@ -243,7 +247,7 @@ class MainViewProvider {
             normalize: (items, symbols, key) => {
                 // Current name -> persisted name, for items whose CU-qualified identity changed.
                 const renamed = new Map();
-                const changes = this._watchNameChanges;
+                const changes = this._elfView.watchNameChanges;
                 const normalized = validation.normalizeWatchList(items, symbols, {
                     onRename: (from, to) => {
                         renamed.set(to, from);
@@ -358,7 +362,7 @@ class MainViewProvider {
             isSafeCfg: openocdRunner.isSafeCfg,
             beforeChange: (values) => this._assertConnectionEditable(values),
             onChanged: async () => {
-                await this._refreshElfBindings();
+                await this._elfView.refreshBindings();
                 this.updateView();
                 for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
             }
@@ -438,7 +442,7 @@ class MainViewProvider {
             workerPath: path.join(__dirname, "elfWorker.js"),
             onChange: (phase, result, entries) => {
                 this._liveWatchService.setElfResult(result, true);
-                return this._onElfChange(phase, result, entries);
+                return this._elfView.onElfChange(phase, result, entries);
             },
             cleanPath: cleanWindowsPath,
             t: (key, params) => this._t(key, params)
@@ -689,7 +693,7 @@ class MainViewProvider {
                 const finalPath = cleanWindowsPath(selected.description);
                 await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
                 this.scheduleGdbWarmup(0);
-                await this._refreshElfBindings();
+                await this._elfView.refreshBindings();
                 await this.updateView();
                 return true;
             } catch (err) {
@@ -1078,7 +1082,7 @@ class MainViewProvider {
                 let refreshed = false;
                 try {
                     if (downloaded) {
-                        await this._refreshElfBindings();
+                        await this._elfView.refreshBindings();
                         refreshed = true;
                     }
                 } catch (error) {
@@ -1332,7 +1336,7 @@ class MainViewProvider {
             throw Object.assign(new Error("destination must be sidebar, chart, or both"), {
                 code: "INVALID_DESTINATION"
             });
-        await this._prepareRequestedLayouts(names);
+        await this._elfView.prepareLayouts(names);
         const resolveSymbol = elfSymbols.createSymbolResolver(this.readElfSymbols().symbols);
         const resolved = [];
         const resolvedNames = new Set();
@@ -1473,7 +1477,7 @@ class MainViewProvider {
     }
     async _runAgentSamples(params, count, intervalMs, syncStatus) {
         const layoutErrors = new Map();
-        await this._prepareRequestedLayouts(params.variables, { layoutErrors });
+        await this._elfView.prepareLayouts(params.variables, { layoutErrors });
         const { elfResult, plan, compositePlan, variableErrors } = agentPlans.readPlan(
             params,
             () => this.readElfSymbols(),
@@ -2415,7 +2419,7 @@ class MainViewProvider {
         // "false" or 0 must never be read as a request to remember write permission.
         if (params.remember !== undefined && typeof params.remember !== "boolean")
             throw Object.assign(new Error("remember must be a boolean"), { code: "INVALID_PARAMS" });
-        await this._prepareRequestedLayouts(params.values);
+        await this._elfView.prepareLayouts(params.values);
         const plan = agentPlans.writePlan(params.values, () => this.readElfSymbols());
         plan.connection = await this._prepareWriteConnection();
         const consistency = this._firmwareConsistency(plan.elfResult);
@@ -2516,7 +2520,7 @@ class MainViewProvider {
             const key = writeUnavailableKey(status) || "sb.writeUnavailable";
             throw Object.assign(new Error(this._t(key)), { i18nKey: key });
         }
-        await this._prepareRequestedLayouts([{ name }]);
+        await this._elfView.prepareLayouts([{ name }]);
         const plan = agentPlans.writePlan([{ name, value }], () => this.readElfSymbols());
         // The ELF may have been replaced while the mismatch prompt was open.
         if (
@@ -2931,39 +2935,6 @@ class MainViewProvider {
         panel.webview.onDidReceiveMessage(createLivePanelHandler(this, entry, vscode));
         return entry;
     }
-    // Reads the global variable symbols of the current ELF, attaching DWARF type information where possible
-    _invalidateElfState() {
-        this._elfService.invalidate();
-        this._watchLists.invalidate();
-        this._sampling.invalidateRuntimeRam();
-        this._runtimeSampleHold?.reset();
-        this._latestSidebarSamples.clear();
-        for (const entry of this._livePanels.values()) entry.latestSamples.clear();
-    }
-    async _refreshElfBindings() {
-        this._invalidateElfState();
-        const memoryRefresh = this._memoryAnalysisController?.refresh();
-        try {
-            if (this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
-                const result = await this._elfService.ready();
-                await this._hydrateSelectedLayouts(result);
-                await this._rebindWatchLists(result.symbols);
-            }
-        } finally {
-            await this._sampling.refreshSamplingPlan();
-        }
-        await memoryRefresh;
-        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
-        for (const entry of this._livePanels.values()) {
-            this._syncGraphTarget(entry);
-            entry.post({ type: "watchList", items: this._scalarWatchList(entry.watchKey), resetValues: true });
-        }
-        this._webviewView?.webview.postMessage({
-            type: "sidebarWatchList",
-            items: this._watchListWithDisplayNames(CACHE_KEYS.sidebarWatchList),
-            resetValues: true
-        });
-    }
     _watchIdentities(items) {
         return items.map((item) => ({
             name: item.name,
@@ -3013,7 +2984,7 @@ class MainViewProvider {
     // Return structured choices to the combobox; never select a default for an ambiguous name.
     async _resolveLiveVariable(message, post) {
         const result = await this._elfService.ready();
-        const version = this._elfVersion(result);
+        const version = this._elfView.version(result);
         if (message.version && message.version !== version) return;
         const generation = this._elfService.generation;
         const reply = { version, requestId: message.requestId, requestedName: message.name };
@@ -3045,233 +3016,9 @@ class MainViewProvider {
                 return;
             }
         }
-        if (generation !== this._elfService.generation || version !== this._elfVersion(this._elfService.cache)) return;
-        post({ type: "addResolved", ...reply, symbol: found });
-    }
-    // Prefetches DWARF layouts of the composites in a request. With options.layoutErrors, layout errors are collected
-    // per item (keyed by original symbol name) without aborting the batch; without it the first layout error throws.
-    // Name resolution failures are left to the later planning step.
-    async _prepareRequestedLayouts(requests, options = {}) {
-        const result = await this._elfService.ready();
-        const resolveSymbol = elfSymbols.createSymbolResolver(result.symbols);
-        for (const request of Array.isArray(requests) ? requests : []) {
-            const name = typeof request === "string" ? request : request?.name;
-            const parsed = elfSymbols.parseMemberPath(name);
-            const base = parsed ? parsed.base : name;
-            let symbol;
-            try {
-                symbol = resolveSymbol(base);
-            } catch {
-                continue;
-            }
-            if ((!symbol.isComposite && !symbol.hasRuntimeLayout) || symbol.compositeLayout) continue;
-            try {
-                await this._elfService.layout(symbol.name);
-            } catch (error) {
-                if (!options.layoutErrors) throw error;
-                options.layoutErrors.set(symbol.name, error);
-            }
-        }
-        return result;
-    }
-    _elfVersion(result) {
-        const sha256 = result?.elf?.sha256 || "";
-        return result?.companions?.length
-            ? sha256 + ":" + result.companions.map((entry) => entry.sha256 || "missing").join(":")
-            : sha256;
-    }
-    _sendElfSnapshot(post, listType) {
-        const result = this._elfService?.cache;
-        if (!result?.elf) return;
-        const version = this._elfVersion(result);
-        post({
-            type: `${listType}Reset`,
-            version,
-            generation: this._elfService.generation,
-            warnings: displayWarnings(result)
-        });
-        for (let i = 0; i < result.symbols.length; i += 1000)
-            post({ type: `${listType}Chunk`, version, symbols: result.symbols.slice(i, i + 1000) });
-        post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: displayWarnings(result) });
-        if (result.dwarfReady)
-            post({
-                type: listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone",
-                version,
-                warnings: displayWarnings(result)
-            });
-    }
-    _onElfChange(phase, result, entries) {
-        // Worker chunks and DWARF display-name enrichment mutate the same symbols array.
-        this._symbolNameIndexes?.delete(result.symbols);
-        const version = this._elfVersion(result);
-        const sidebarPost = (message) => this._webviewView?.webview.postMessage(message);
-        const graphPosts = Array.from(this._livePanels.values())
-            .filter((entry) => entry.ready)
-            .map((entry) => entry.post);
-        if (phase === "metadata") {
-            this._watchLists.invalidate();
-            sidebarPost({
-                type: "availableVariablesReset",
-                version,
-                generation: this._elfService.generation,
-                warnings: displayWarnings(result)
-            });
-            for (const post of graphPosts)
-                post({
-                    type: "variablesListReset",
-                    version,
-                    generation: this._elfService.generation,
-                    warnings: displayWarnings(result)
-                });
-        } else if (phase === "symbols") {
-            sidebarPost({ type: "availableVariablesChunk", version, symbols: entries });
-            for (const post of graphPosts) post({ type: "variablesListChunk", version, symbols: entries });
-        } else if (phase === "symbolsDone") {
-            sidebarPost({
-                type: "availableVariablesDone",
-                version,
-                total: result.symbols.length,
-                warnings: displayWarnings(result)
-            });
-            for (const post of graphPosts)
-                post({
-                    type: "variablesListDone",
-                    version,
-                    total: result.symbols.length,
-                    warnings: displayWarnings(result)
-                });
-        } else if (phase === "identities") {
-            // DWARF refined the CU identities of same-named statics: resend the renamed symbol list.
-            this._watchLists.invalidate();
-            this._sendElfSnapshot(sidebarPost, "availableVariables");
-            for (const post of graphPosts) this._sendElfSnapshot(post, "variablesList");
-        } else if (phase === "types") {
-            const symbols = entries.map((symbol) => ({
-                name: symbol.name,
-                displayName: symbol.displayName || symbol.name,
-                typeName: symbol.typeName,
-                watchType: symbol.watchType,
-                isComposite: symbol.isComposite,
-                hasRuntimeLayout: symbol.hasRuntimeLayout,
-                unsupportedReason: symbol.unsupportedReason || "",
-                hasDwarfWriteType: symbol.hasDwarfWriteType,
-                sourceFile: symbol.sourceFile || "",
-                origin: symbol.origin || "user",
-                ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
-                ...(symbol.isEnum ? { isEnum: true } : {}),
-                ...(symbol.isBoolean ? { isBoolean: true } : {}),
-                ...(symbol.isConst ? { isConst: true } : {}),
-                ...(symbol.isReference ? { isReference: true } : {}),
-                ...(symbol.isMemberPointer ? { isMemberPointer: true } : {}),
-                ...(symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {})
-            }));
-            sidebarPost({ type: "availableVariableTypes", version, symbols });
-            for (const post of graphPosts) post({ type: "variableTypes", version, symbols });
-        } else if (phase === "dwarfReady") {
-            sidebarPost({ type: "availableTypesDone", version, warnings: displayWarnings(result) });
-            for (const post of graphPosts)
-                post({ type: "variableTypesDone", version, warnings: displayWarnings(result) });
-            this._elfRebindPromise = this._hydrateSelectedLayouts(result)
-                .then(() => this._rebindWatchLists(result.symbols))
-                .then(() => {
-                    this._syncSidebarTarget(sidebarPost, true);
-                    for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
-                })
-                .catch((error) => console.error("ELF watch list rebind failed:", error));
-            this._elfRebindPromise.then(() => this._sampling.refreshSamplingPlan()).catch(() => {});
-        } else if (phase === "failed") {
-            sidebarPost({
-                type: "availableVariablesDone",
-                version,
-                warnings: displayWarnings(result),
-                error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
-            });
-            for (const post of graphPosts)
-                post({
-                    type: "variablesListDone",
-                    version,
-                    warnings: displayWarnings(result),
-                    error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
-                });
-        }
-    }
-    async _hydrateSelectedLayouts(result) {
-        const names = new Set();
-        const keys = [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList, CACHE_KEYS.watchList];
-        for (const entry of this._livePanels.values()) keys.push(entry.watchKey);
-        for (const key of keys) {
-            for (const item of this._context.workspaceState.get(key) || []) {
-                const parsed = elfSymbols.parseMemberPath(item?.name);
-                if (parsed) names.add(parsed.base);
-                else if (item?.name) names.add(item.name);
-            }
-        }
-        const byName = new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
-        for (const name of names) {
-            const symbol = byName.get(name);
-            if (!symbol?.isComposite && !symbol?.hasRuntimeLayout) continue;
-            try {
-                await this._elfService.layout(name);
-            } catch (error) {
-                result.warnings.push(`${symbol.displayName || name}: ${error.message}`);
-            }
-        }
-    }
-    async _resolveElfLayout(name, version) {
-        const result = await this._elfService.ready();
-        if (version !== this._elfVersion(result))
-            throw Object.assign(new Error("ELF changed while resolving layout"), { code: "ELF_CHANGED" });
-        return this._elfService.layout(name);
-    }
-    _layoutExpansionSnapshot(name) {
-        const symbol = this._elfService.symbolByName.get(name);
-        return symbol?.layoutExpansions
-            ? {
-                  layoutExpansions: symbol.layoutExpansions,
-                  layoutExpansionGeneration: symbol.layoutExpansionGeneration
-              }
-            : {};
-    }
-    async _expandElfLayout(message) {
-        validation.validateLayoutExpansionRequest(message.handle, message.generation);
-        validation.validateLayoutExpansionTarget(message.name, message.path);
-        const result = await this._elfService.ready();
-        if (message.generation !== this._elfService.generation || message.version !== this._elfVersion(result))
-            throw Object.assign(new Error("ELF changed while expanding layout"), { code: "STALE_LAYOUT_HANDLE" });
-        const layout = await this._elfService.expandSymbolLayout(
-            message.name,
-            message.path,
-            message.handle,
-            message.generation
-        );
-        if (message.generation !== this._elfService.generation)
-            throw Object.assign(new Error("ELF changed while expanding layout"), { code: "STALE_LAYOUT_HANDLE" });
-        return layout;
-    }
-    async _handleLayoutExpansion(message, post) {
-        const identity = {
-            type: "layoutExpansionResult",
-            name: message.name,
-            path: message.path,
-            handle: message.handle,
-            generation: message.generation,
-            version: message.version
-        };
-        let layout;
-        try {
-            layout = await this._expandElfLayout(message);
-        } catch (error) {
-            post({ ...identity, code: error.code || "LAYOUT_EXPANSION_FAILED" });
+        if (generation !== this._elfService.generation || version !== this._elfView.version(this._elfService.cache))
             return;
-        }
-        const reply = { ...identity, layout };
-        post(reply);
-        this._webviewView?.webview.postMessage(reply);
-        for (const entry of this._livePanels.values()) entry.post(reply);
-        this._watchLists.invalidate();
-        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message), true);
-        for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
-        await this._sampling.refreshSamplingPlan();
+        post({ type: "addResolved", ...reply, symbol: found });
     }
     // Chart and sidebar keep separate selections; one probe connection samples the union of both enabled lists.
     _postLive(message) {
@@ -3363,82 +3110,11 @@ class MainViewProvider {
             return displayName !== item.name && displayName !== item.displayName ? { ...item, displayName } : item;
         });
     }
-    async _rebindWatchLists(symbols) {
-        const entries = Array.from(this._livePanels.values());
-        const keys = [
-            CACHE_KEYS.sidebarWatchList,
-            CACHE_KEYS.sidebarWriteList,
-            CACHE_KEYS.watchList,
-            ...entries.map((entry) => entry.watchKey)
-        ];
-        const expanded = keys.flatMap((key) =>
-            (this._context.workspaceState.get(key) || []).filter((item) => item.layoutExpanded)
-        );
-        const expandedByName = new Map(expanded.map((item) => [item.name, item]));
-        const changes = { renamed: new Map(), ambiguous: new Map() };
-        this._watchNameChanges = changes;
-        let rebound;
-        try {
-            rebound = await this._watchLists.rebind(
-                [
-                    CACHE_KEYS.sidebarWatchList,
-                    CACHE_KEYS.sidebarWriteList,
-                    CACHE_KEYS.watchList,
-                    ...entries.map((entry) => entry.watchKey)
-                ],
-                symbols
-            );
-        } finally {
-            this._watchNameChanges = null;
-        }
-        const valid = new Set([...rebound.values()].flat().map((item) => item.name));
-        const invalid = [
-            ...new Set(
-                expanded
-                    .filter((item) => !valid.has(changes.renamed.get(item.name) || item.name))
-                    .map((item) => item.name)
-            )
-        ].filter((name) => !changes.ambiguous.has(name));
-        if (invalid.length)
-            this._postLive({
-                type: "liveError",
-                key: "lw.layoutWatchInvalid",
-                params: {
-                    names: invalid
-                        .map((name) => this._variableDisplayName(expandedByName.get(name) || { name }, symbols))
-                        .join(", ")
-                }
-            });
-        // A saved name that now matches same-named variables of several CUs is removed, never bound to one of them.
-        if (changes.ambiguous.size)
-            this._postLive({
-                type: "liveError",
-                key: "lw.watchAmbiguous",
-                params: {
-                    names: [...changes.ambiguous]
-                        .map(([name, candidates]) => {
-                            const displayName = symbols.find((symbol) => symbol.name === candidates[0])?.displayName;
-                            return this._variableDisplayName(
-                                { name, displayName: displayName && (variableScope(displayName)?.name || displayName) },
-                                symbols
-                            );
-                        })
-                        .join(", "),
-                    candidates: [...new Set([...changes.ambiguous.values()].flat())]
-                        .slice(0, 8)
-                        .map((name) => symbols.find((symbol) => symbol.name === name)?.displayName || name)
-                        .join(", ")
-                }
-            });
-        this._latestSidebarSamples.clear();
-        for (const entry of entries) entry.latestSamples.clear();
-        return { entries, rebound };
-    }
     _syncGraphTarget(entry, skipElf = false) {
         if (!entry || !entry.ready) return;
         const post = entry.post;
         if (!skipElf && this._elfService) {
-            this._sendElfSnapshot(post, "variablesList");
+            this._elfView.sendSnapshot(post, "variablesList");
             this._elfService
                 .load()
                 .catch((error) => post({ type: "variablesListDone", warnings: [error.message], error: error.message }));
@@ -3474,7 +3150,7 @@ class MainViewProvider {
         post({ type: "sidebarWatchList", items: this._watchListWithDisplayNames(CACHE_KEYS.sidebarWatchList) });
         post({ type: "sidebarWriteList", items: this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [] });
         if (!skipElf) {
-            this._sendElfSnapshot(post, "availableVariables");
+            this._elfView.sendSnapshot(post, "availableVariables");
             this._elfService?.load().catch((error) =>
                 post({
                     type: "availableVariablesDone",
@@ -4443,7 +4119,7 @@ class MainViewProvider {
         if (writeElf) await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
         if (writeDebugger) await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
         if (writeMcu) await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
-        if (writeElf) await this._refreshElfBindings();
+        if (writeElf) await this._elfView.refreshBindings();
         await this.updateView();
         if (writeDebugger) await this._refreshConnectedProbes();
         if (pickProbe && force) this._revealConnectedProbes();

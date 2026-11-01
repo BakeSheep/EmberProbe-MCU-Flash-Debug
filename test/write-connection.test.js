@@ -199,12 +199,12 @@ const { writePlan } = require("../src/services/agentPlans");
         _livePanels: new Map(),
         _elfService: { invalidate() {} },
         readElfSymbols: () => runtimeElf,
-        _prepareRequestedLayouts: async () => {},
         _sessionWriteConnection: () => verifyConnection,
         _prepareWriteConnection: async () => verifyConnection,
         _t: (key) => key,
         _withAgentProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
     });
+    Object.assign(runtimeProvider._elfView, { prepareLayouts: async () => {} });
     Object.assign(runtimeProvider._sampling, { intent: true, unlimitedEnabled: () => false });
     const uiWord = await runtimeProvider._writeUiVariable("word", 42);
     assert.strictEqual(uiWord.source, "debug-running-openocd");

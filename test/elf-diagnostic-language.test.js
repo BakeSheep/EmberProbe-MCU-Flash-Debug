@@ -109,7 +109,7 @@ const Provider = loadProvider();
 const provider = Object.create(Provider.prototype);
 provider._elfService = { cache: { ...result, elf: { sha256: "elf1" }, dwarfReady: true } };
 const sent = [];
-provider._sendElfSnapshot((message) => sent.push(message), "availableVariables");
+provider._elfView.sendSnapshot((message) => sent.push(message), "availableVariables");
 const hostWarning = sent.find((message) => message.type === "availableTypesDone").warnings[0];
 assert.strictEqual(hostWarning.i18nKey, "diag.cppSymbolAmbiguous");
 

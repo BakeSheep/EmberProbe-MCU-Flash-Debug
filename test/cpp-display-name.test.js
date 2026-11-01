@@ -86,7 +86,7 @@ const { loadProvider } = require("./helpers/load-provider");
         const updates = [];
         provider._webviewView = { webview: { postMessage: (message) => updates.push(message) } };
         provider._livePanels = new Map();
-        provider._onElfChange("types", { elf: { sha256: "x" } }, [
+        provider._elfView.onElfChange("types", { elf: { sha256: "x" } }, [
             { name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", watchType: "i32", isComposite: false }
         ]);
         assert.strictEqual(
@@ -102,7 +102,7 @@ const { loadProvider } = require("./helpers/load-provider");
             throw new Error("DWARF root layout cannot fit its expansion budget");
         };
         const selected = { symbols: [{ ...symbols[0], isComposite: true }], warnings: [] };
-        await provider._hydrateSelectedLayouts(selected);
+        await provider._elfView.hydrateSelectedLayouts(selected);
         assert.deepStrictEqual(selected.warnings, ["ns::nsVar: DWARF root layout cannot fit its expansion budget"]);
         provider.readElfSymbols = () => ({ symbols });
         assert.strictEqual(provider._variableDisplayName({ name: "_ZN2ns5nsVarE.member" }), "ns::nsVar.member");

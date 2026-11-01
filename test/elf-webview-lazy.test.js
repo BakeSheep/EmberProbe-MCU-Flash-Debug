@@ -22,7 +22,7 @@ provider._elfService = {
 };
 for (const listType of ["availableVariables", "variablesList"]) {
     const messages = [];
-    provider._sendElfSnapshot((message) => messages.push(message), listType);
+    provider._elfView.sendSnapshot((message) => messages.push(message), listType);
     assert.strictEqual(
         messages.at(-1).type,
         listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone",

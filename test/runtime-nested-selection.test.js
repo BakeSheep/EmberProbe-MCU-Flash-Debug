@@ -57,7 +57,7 @@ function segments(name) {
         );
         const provider = Object.create(loadProvider().prototype);
         provider.readElfSymbols = () => ({ symbols: [packet] });
-        provider._prepareRequestedLayouts = async () => {};
+        provider._elfView.prepareLayouts = async () => {};
         provider._scalarWatchList = () => [];
         provider._focusedLivePanel = () => null;
         let saved;

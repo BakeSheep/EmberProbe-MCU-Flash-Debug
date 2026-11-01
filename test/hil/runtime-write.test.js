@@ -50,7 +50,7 @@ async function run() {
     if (env.RUNTIME_BOARD_PROBE_SERIAL) await config.update("probeSerial", env.RUNTIME_BOARD_PROBE_SERIAL, target);
     if (env.RUNTIME_BOARD_ADAPTER_SPEED_KHZ)
         await config.update("adapterSpeedKhz", Number(env.RUNTIME_BOARD_ADAPTER_SPEED_KHZ), target);
-    await provider._refreshElfBindings();
+    await provider._elfView.refreshBindings();
 
     const label = env.RUNTIME_BOARD_LABEL || "board";
     const report = { label, extension: extension.extensionPath, elf: env.RUNTIME_BOARD_ELF, phases: {}, output: "" };
@@ -128,7 +128,7 @@ async function run() {
         });
     const resultsDir = env.RUNTIME_BOARD_RESULTS || path.join(extension.extensionPath, "test-results");
     try {
-        await provider._prepareRequestedLayouts([...LOAD, TOGGLED, WRITE_TARGET].map((name) => ({ name })));
+        await provider._elfView.prepareLayouts([...LOAD, TOGGLED, WRITE_TARGET].map((name) => ({ name })));
         await provider._saveWatchList(WATCH_KEY, identities([...LOAD, TOGGLED]));
         await provider._saveWatchList(WRITE_KEY, identities([WRITE_TARGET]), { syncSidebar: false });
         report.readPlan = provider._sampling.activeReadPlan().map((item) => ({ name: item.name, size: item.size }));

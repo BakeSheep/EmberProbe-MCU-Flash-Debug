@@ -104,7 +104,7 @@ const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlan
     assert(!runtimeRoot.layoutExpansions && !runtimeRoot.compositeLayout, "static metadata stays out of runtime reads");
     const rawProvider = Object.create(loadProvider().prototype);
     rawProvider.readElfSymbols = () => f.service.cache;
-    rawProvider._prepareRequestedLayouts = async () => {};
+    rawProvider._elfView.prepareLayouts = async () => {};
     rawProvider._scalarWatchList = () => [];
     rawProvider._focusedLivePanel = () => null;
     let addedStatic;
@@ -297,7 +297,7 @@ const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlan
             []
         );
         f.symbol.displayName = "lab::axes";
-        await provider._rebindWatchLists([f.symbol]);
+        await provider._elfView.rebindWatchLists([f.symbol]);
         assert.strictEqual(notices.at(-1).key, "lw.layoutWatchInvalid");
         assert(notices.at(-1).params.names.startsWith("lab::axes[0].a.b.gain"), notices.at(-1).params.names);
         assert.match(notices.at(-1).params.names, /axes\[0\]\.a\.b\.gain/);
@@ -317,7 +317,7 @@ const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlan
             compositeLayout: { kind: "class", byteSize: 32, members: [scalar("gain", 4)] }
         };
         saved.set("mcu.sidebarWatchList", persisted);
-        const rebound = await provider._rebindWatchLists([fresh]);
+        const rebound = await provider._elfView.rebindWatchLists([fresh]);
         const freshLeaf = rebound.rebound.get("mcu.sidebarWatchList").find((item) => item.name === gain);
         assert.strictEqual(
             freshLeaf.address,

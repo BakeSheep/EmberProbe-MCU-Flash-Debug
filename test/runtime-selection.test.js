@@ -39,7 +39,7 @@ function openVariables(view, sidebar, symbols, version = "selection") {
         assert.strictEqual(symbols.length, 22, `DWARF ${version}: all STL fixture objects are audited`);
         const provider = Object.create(loadProvider().prototype);
         provider.readElfSymbols = () => result;
-        provider._prepareRequestedLayouts = async () => {};
+        provider._elfView.prepareLayouts = async () => {};
         for (const symbol of symbols) {
             assert.ok(normalizeWatchList([{ name: symbol.name }], result.symbols)[0].runtimeLayout);
             const selection = runtime.runtimeSelection(symbol);

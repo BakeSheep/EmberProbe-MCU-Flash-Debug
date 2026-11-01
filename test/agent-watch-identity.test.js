@@ -48,7 +48,7 @@ function provider(symbols) {
     const host = Object.create(loadProvider().prototype);
     const stored = new Map();
     host.readElfSymbols = () => ({ symbols });
-    host._prepareRequestedLayouts = async () => {};
+    host._elfView.prepareLayouts = async () => {};
     host._focusedLivePanel = () => null;
     host._scalarWatchList = (key) => normalizeWatchList(stored.get(key) || [], symbols);
     host._saveWatchList = async (key, items) => {

@@ -69,18 +69,22 @@ function deepElf(count = 100) {
         { path: "axes[0].a.b" + ".x".repeat(300) },
         { handle: handle("Mg") }
     ]) {
-        await provider._handleLayoutExpansion({ ...request, ...invalid }, (reply) => messages.push(reply));
+        await provider._elfView.handleLayoutExpansion({ ...request, ...invalid }, (reply) => messages.push(reply));
         assert(!messages.at(-1).layout);
         assert(["INVALID_LAYOUT_HANDLE", "INVALID_VARIABLE_PATH"].includes(messages.at(-1).code));
     }
-    await provider._handleLayoutExpansion(request, (reply) => messages.push(reply));
+    await provider._elfView.handleLayoutExpansion(request, (reply) => messages.push(reply));
     assert.strictEqual(messages.at(-1).layout, f.sublayout);
     assert.strictEqual(sidebar.at(-1).layout, f.sublayout);
     assert.strictEqual(graph.at(-1).layout, f.sublayout);
-    await assert.rejects(provider._expandElfLayout({ ...request, generation: 6 }), { code: "STALE_LAYOUT_HANDLE" });
-    await assert.rejects(provider._expandElfLayout({ ...request, version: "old" }), { code: "STALE_LAYOUT_HANDLE" });
+    await assert.rejects(provider._elfView.expandLayout({ ...request, generation: 6 }), {
+        code: "STALE_LAYOUT_HANDLE"
+    });
+    await assert.rejects(provider._elfView.expandLayout({ ...request, version: "old" }), {
+        code: "STALE_LAYOUT_HANDLE"
+    });
     f.service.invalidate();
-    await provider._handleLayoutExpansion(request, (reply) => messages.push(reply));
+    await provider._elfView.handleLayoutExpansion(request, (reply) => messages.push(reply));
     assert.strictEqual(messages.at(-1).code, "STALE_LAYOUT_HANDLE");
 
     const malformed = fixture();
@@ -127,12 +131,12 @@ function deepElf(count = 100) {
                 branchPath += "." + member.name;
                 node = member.compositeLayout || member;
             }
-            await provider._expandElfLayout({
+            await provider._elfView.expandLayout({
                 name: "root",
                 path: branchPath,
                 handle: node.expansionHandle,
                 generation: service.generation,
-                version: provider._elfVersion(service.cache)
+                version: provider._elfView.version(service.cache)
             });
             assert(++count <= 4);
         }
@@ -147,13 +151,13 @@ function deepElf(count = 100) {
             path: original,
             handle: oldNode.expansionHandle,
             generation: service.generation,
-            version: provider._elfVersion(service.cache)
+            version: provider._elfView.version(service.cache)
         };
         service.invalidate();
         await service.ready();
         await service.layout("root");
-        await assert.rejects(provider._expandElfLayout(oldRequest), { code: "STALE_LAYOUT_HANDLE" });
-        await assert.rejects(provider._expandElfLayout({ ...oldRequest, generation: service.generation }), {
+        await assert.rejects(provider._elfView.expandLayout(oldRequest), { code: "STALE_LAYOUT_HANDLE" });
+        await assert.rejects(provider._elfView.expandLayout({ ...oldRequest, generation: service.generation }), {
             code: "INVALID_LAYOUT_HANDLE"
         });
     } finally {

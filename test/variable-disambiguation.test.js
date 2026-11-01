@@ -210,7 +210,7 @@ for (const lang of ["en", "zh"]) {
     provider._latestSidebarSamples = new Map();
     provider._watchLists = {
         rebind: async () => {
-            provider._watchNameChanges.ambiguous.set(
+            provider._elfView.watchNameChanges.ambiguous.set(
                 raw,
                 symbols.map((symbol) => symbol.name)
             );
@@ -218,7 +218,7 @@ for (const lang of ["en", "zh"]) {
         }
     };
     provider._postLive = post;
-    await provider._rebindWatchLists(symbols);
+    await provider._elfView.rebindWatchLists(symbols);
     const warning = messages.at(-1);
     assert.strictEqual(warning.key, "lw.watchAmbiguous");
     assert.strictEqual(warning.params.names, "g_sameNameCounter");
