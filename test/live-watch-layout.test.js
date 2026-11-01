@@ -33,7 +33,7 @@ try {
         splitter.dispatchEvent(event);
     };
     const key = (value) => splitter.dispatchEvent(new window.KeyboardEvent("keydown", { key: value }));
-    window.applySideLayout();
+    window.eval("panelLayout").apply();
     assert.strictEqual(document.getElementById("addBtn"), null);
     assert.strictEqual(layout.style.getPropertyValue("--side-height"), "220px");
     assert.strictEqual(splitter.getAttribute("aria-orientation"), "horizontal");
@@ -66,7 +66,7 @@ try {
     document.getElementById("sideToggle").click();
     assert.strictEqual(splitter.tabIndex, 0);
     window.innerWidth = 1200;
-    window.applySideLayout();
+    window.eval("panelLayout").apply();
     assert.strictEqual(splitter.getAttribute("aria-orientation"), "vertical");
     pointer("pointerdown", 260, 0);
     pointer("pointermove", 350, 0);
@@ -158,7 +158,7 @@ try {
         bounds = { width, height };
         window.dispatchEvent(new window.Event("resize"));
     };
-    window.applySideLayout();
+    window.eval("panelLayout").apply();
     const mode = document.getElementById("panelMode");
     assert(layout.classList.contains("panel-floating"));
     assert.strictEqual(document.getElementById("sideSplitter").tabIndex, -1, "the splitter is idle while floating");
@@ -294,7 +294,7 @@ try {
     const { document } = restoredView;
     const pane = document.getElementById("valuePane");
     document.getElementById("layout").getBoundingClientRect = () => ({ width: 800, height: 500 });
-    restoredView.window.applySideLayout();
+    restoredView.window.eval("panelLayout").apply();
     assert.deepStrictEqual(
         ["left", "top", "width", "height"].map((name) => parseFloat(pane.style[name])),
         [40, 292, 320, 200],

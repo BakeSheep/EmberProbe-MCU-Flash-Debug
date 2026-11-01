@@ -153,7 +153,7 @@ try {
     graph.document.querySelector(".imp-arrow").click();
     assert.strictEqual(graph.document.querySelector(".imp-leaf-name").title, readablePath);
     graph.document.getElementById("addName").value = "app::g_plant";
-    graph.window.renderAutocomplete();
+    graph.window.eval("variableEntry").render();
     assert.strictEqual(graph.document.querySelector(".ac-name").title, "app::g_plant");
     graph.window.showArraySelectDialog({ ...plant, compositeLayout: { kind: "array", totalElements: 2 } }, () => {});
     assert(graph.document.querySelector(".array-panel h4").textContent.includes("app::g_plant[2]"));

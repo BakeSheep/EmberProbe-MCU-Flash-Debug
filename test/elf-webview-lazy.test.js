@@ -105,6 +105,27 @@ try {
     });
     sidebar.send({ type: "compositeLayoutResult", name: "alias", version: "typedef", layout });
     assert.ok(sidebar.messages.some((message) => message.type === "saveSidebarWatch"));
+    // Adding a composite whose expanded row already asked for its layout waits for that same reply.
+    sidebar.send({ type: "availableVariablesReset", version: "pending" });
+    sidebar.send({
+        type: "availableVariablesChunk",
+        version: "pending",
+        symbols: [{ name: "late", address: 0x20000100, size: 12, isComposite: true, typeName: "struct S" }]
+    });
+    sidebar.send({ type: "availableTypesDone", version: "pending" });
+    const lateRequests = () =>
+        sidebar.messages.filter((message) => message.type === "resolveCompositeLayout" && message.name === "late");
+    sidebar.document.querySelector("#availableVars .av-arrow").click();
+    assert.strictEqual(lateRequests().length, 1);
+    sidebar.document.querySelector("#availableVars .av-watch").click();
+    assert.strictEqual(lateRequests().length, 1, "the add reuses the pending layout request");
+    sidebar.send({ type: "compositeLayoutResult", name: "late", version: "pending", layout });
+    assert.ok(
+        sidebar.messages
+            .findLast((message) => message.type === "saveSidebarWatch")
+            .items.some((item) => item.name === "late"),
+        "the layout reply completes the add"
+    );
     sidebar.send({ type: "availableVariablesReset", version: "boolean" });
     sidebar.send({
         type: "availableVariablesChunk",

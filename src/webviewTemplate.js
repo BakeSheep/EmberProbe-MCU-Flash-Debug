@@ -26,6 +26,7 @@ function loadRendererPrelude(area) {
             loadWebviewAsset("", "elfDiagnostics.js"),
             loadWebviewAsset("", "runtime.js"),
             loadWebviewAsset("", "valueTree.js"),
+            loadWebviewAsset("", "symbolPicker.js"),
             loadWebviewAsset("", "messages.js"),
             loadWebviewAsset("", "cardReorder.js"),
             ...(area === "sidebar"
@@ -46,7 +47,9 @@ function loadRendererPrelude(area) {
                       "backgroundIconController.js",
                       "chart.js",
                       "samplingRateMotion.js",
-                      "exportDialog.js"
+                      "panelLayout.js",
+                      "exportDialog.js",
+                      "variableEntry.js"
                   ].map((name) => loadWebviewAsset("liveWatch", name)))
         ].join("\n") + "\n"
     );

@@ -29,7 +29,8 @@
     - [x] 新增共享 prelude 模块 `src/webview/valueTree.js`，承载值显示、指针记忆、指针展开、叶子/嵌套/布局/运行时树渲染、复合值刷新和刷新节流；两页各传一个适配器。同名平行实现从 37 组降到 7 组（约 120 行，剩余为页面接线：`t`、`applyI18n`、`setLang`、`noticeArea`、`togglePointee`、`updateValues`、`isUserVariable`）。
     - 两页统一后的行为：侧栏指针目标行补上 `aria-label`，嵌套类型补上 `title`，非指针的 collapsed 节点按波形页规则提示。
     - [x] 每页的观察列表、ELF 符号、读数和展开状态收拢为一个 `state` 对象，`valueTree` 直接读取它，不再经过逐项存取函数；测试通过 `window.eval("state")` 访问。webview 改为 `sourceType: "script"` 的标准 lint（`vars: "all"`），未引用的顶层函数会直接报错，只供测试使用的名字须写进 `/* exported */`。
-    - [ ] 行数目标：侧栏写入列表移入 `sidebar/writeList.js`，侧栏 renderer 降到 1907 行（已达标）；波形页导出对话框移入 `liveWatch/exportDialog.js`，波形页 renderer 降到 3491 行（目标 < 3000，下一步拆面板布局与导入选择器）。
+    - [x] 新增共享 prelude 模块 `src/webview/symbolPicker.js`：侧栏变量面板和波形页导入对话框共用用户变量过滤、名称与成员搜索（每次最多补 4 个布局）、复合变量展开与成员提示、行数预算；两页只各自构造行。同名平行实现再降到 6 组（113 行，均为页面接线）。统一后的行为：侧栏已展开但缺布局的复合变量在重绘时也会请求布局（与波形页一致）；修复侧栏在展开行已请求布局时点击 “+” 不生效的问题。
+    - [x] 行数目标：按功能拆出页面模块——侧栏 `sidebar/writeList.js`（写入列表）；波形页 `liveWatch/exportDialog.js`（CSV 导出）、`liveWatch/panelLayout.js`（值面板停靠/浮动布局）、`liveWatch/variableEntry.js`（添加变量输入与自动补全）。侧栏 renderer 3118 → 1758 行，波形页 renderer 4483 → 2910 行（ESLint 计数）。
 - [ ] P1 MainViewProvider
 - [ ] P2 ManagedOpenOcdSession
 - [ ] P2 测试结构
