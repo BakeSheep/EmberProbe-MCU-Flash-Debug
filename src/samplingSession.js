@@ -5,6 +5,7 @@ const { clampInteger } = require("./validation");
 const { deserializeError } = require("./services/errorEnvelope");
 const { reportTargetIdentity, reportTargetMismatch } = require("./chip/targetIdentity");
 const { validateManagedReadPlan } = require("./liveWatchReadPlan");
+const { validateManagedWritePlan } = require("./memoryWrite");
 class SamplingSession {
     constructor(options, handlers = {}, workerPath = path.join(__dirname, "samplingWorker.js")) {
         this.options = options;
@@ -175,8 +176,7 @@ class SamplingSession {
         return (await this.request("readOnce", args)).result;
     }
     async writeAndVerify(...args) {
-        if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length)
-            require("./liveWatch").validateManagedWritePlan(args[0]);
+        if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length) validateManagedWritePlan(args[0]);
         return (await this.request("writeAndVerify", args)).result;
     }
     async waitForIdle(...args) {

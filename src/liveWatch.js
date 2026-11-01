@@ -15,13 +15,12 @@ const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = requir
 const { MultiRatePlan } = require("./services/multiRatePlan");
 const { targetCheckMonitor } = require("./chip/targetIdentity");
 const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog } = require("./openocdProcess");
-const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
+const { MemoryWriter, validateManagedWritePlan } = require("./memoryWrite");
+const { isNonHaltingWordWrite } = require("./writeAccess");
 const {
-    MAX_DEBUG_READ_COMMANDS,
     normalizeRamSectionRanges,
     parseMemoryElements,
     transferShape,
-    bytesToElements,
     elementsToBytes,
     sameConsumerItems,
     validateManagedReadPlan,
@@ -48,43 +47,6 @@ function findFreePort() {
     });
 }
 
-// Split a byte range into naturally aligned 8/16/32-bit accesses, merging equal widths.
-function naturalWriteChunks(address, bytes) {
-    const chunks = [];
-    for (let offset = 0; offset < bytes.length;) {
-        const at = address + offset;
-        const remaining = bytes.length - offset;
-        const width = at % 4 === 0 && remaining >= 4 ? 4 : at % 2 === 0 && remaining >= 2 ? 2 : 1;
-        const last = chunks[chunks.length - 1];
-        const part = bytes.slice(offset, offset + width);
-        if (last && last.width === width && last.address + last.bytes.length === at) last.bytes.push(...part);
-        else chunks.push({ address: at, width, bytes: part });
-        offset += width;
-    }
-    return chunks;
-}
-
-function validateManagedWritePlan(items) {
-    if (!items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
-    for (const item of items) {
-        if (!Number.isInteger(item.address) || item.address < 0 || item.address + 4 > 0x100000000)
-            throw Object.assign(new Error("Runtime write range overflows the 32-bit target address space"), {
-                code: "LIVE_ADDRESS_NOT_RAM"
-            });
-        if (Array.from(item.bytes).some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255))
-            throw Object.assign(new Error("Runtime writes require integer bytes in the range 0..255"), {
-                code: "INVALID_WRITE_VALUE"
-            });
-    }
-    validateManagedReadPlan(items.map((item) => ({ address: item.address, size: item.bytes.length })));
-    // Reads may merge adjacent ranges; each word write still requires its own Tcl command.
-    if (items.length > MAX_DEBUG_READ_COMMANDS)
-        throw Object.assign(new Error("Runtime write plan exceeds the per-cycle command budget"), {
-            code: "LIVE_WRITE_BUDGET_EXCEEDED",
-            details: { commandCount: items.length, maxCommands: MAX_DEBUG_READ_COMMANDS }
-        });
-}
-
 class ManagedOpenOcdSession {
     // options: { executable, probe, target, cwd, port, gdbPort, intervalMs, mode }
     // handlers: { onSample(samples,t), onStatus(msg), onError(msg), onDegraded(error), onDisconnect(error) }
@@ -109,8 +71,6 @@ class ManagedOpenOcdSession {
         this.watch = []; // [{name,address,size,type}]
         this.readCmd = "ocd_read_memory"; // preferred read command, falling back to read_memory
         this.altTried = false;
-        this.writeCmd = "ocd_write_memory"; // preferred write command, falling back to write_memory
-        this.writeAltTried = false;
         this._lastReadError = "";
         this._notifiedError = "";
         this._sampleErrorActive = false;
@@ -133,6 +93,11 @@ class ManagedOpenOcdSession {
             rpcTimeoutMs: this.options.backendKind === "tcp" ? 5000 : 2000,
             isClosed: () => this.connectionFailed || this.stopped,
             onFailure: (error) => this._abortConnection(error)
+        });
+        this.writer = new MemoryWriter({
+            tcl: this.tcl,
+            mode: this.mode,
+            readBytes: (address, count) => this._readMemoryBytes(address, count)
         });
         this.samplingEnabled = this.mode === "standalone";
         this._samplingRequested = this.samplingEnabled;
@@ -1402,66 +1367,6 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // Aligned single words are written directly. Other variables first write only their own bytes at their natural
-    // width, so neighbouring bytes just updated by DMA or peripherals during the halt are not overwritten with stale
-    // values; if read-back shows the narrow write was dropped (byte lanes on some Cortex-M7/AHB-AP), fall back to an
-    // aligned 32-bit read-modify-write.
-    async _writeMemoryBytes(addr, bytes) {
-        if (this.mode === "debug") validateManagedWritePlan([{ address: addr, bytes }]);
-        const address = addr >>> 0;
-        const input = Array.from(bytes || [], (value) => value & 0xff);
-        if (!input.length) return true;
-        const alignedStart = (address & 0xfffffffc) >>> 0;
-        const alignedEnd = Math.ceil((address + input.length) / 4) * 4;
-        if (alignedStart === address && alignedEnd - alignedStart === input.length) {
-            await this._writeMemoryElements(alignedStart, 4, input);
-            return true;
-        }
-        let narrowError = null;
-        try {
-            for (const chunk of naturalWriteChunks(address, input))
-                await this._writeMemoryElements(chunk.address, chunk.width, chunk.bytes);
-        } catch (error) {
-            narrowError = error;
-        }
-        const words = await this._readMemoryBytes(alignedStart, alignedEnd - alignedStart);
-        if (!words) {
-            if (narrowError) throw narrowError;
-            throw new Error("Memory write failed: cannot read back the written bytes");
-        }
-        const offset = address - alignedStart;
-        if (!narrowError && input.every((value, index) => words[offset + index] === value)) return true;
-        const writeBytes = words.slice();
-        writeBytes.splice(offset, input.length, ...input);
-        await this._writeMemoryElements(alignedStart, 4, writeBytes);
-        return true;
-    }
-
-    async _writeMemoryElements(address, width, bytes) {
-        const hex = "0x" + (address >>> 0).toString(16);
-        const data = bytesToElements(bytes, width)
-            .map((value) => "0x" + value.toString(16))
-            .join(" ");
-        const build = (cmd) => `${cmd} ${hex} ${width * 8} {${data}}`;
-        try {
-            await this.tcl.sendChecked(build(this.writeCmd));
-        } catch (error) {
-            if (!this.writeAltTried && /invalid command name|unknown command/i.test(error.message)) {
-                this.writeAltTried = true;
-                this.writeCmd = this.writeCmd === "ocd_write_memory" ? "write_memory" : "ocd_write_memory";
-                try {
-                    await this.tcl.sendChecked(build(this.writeCmd));
-                } catch (fallbackError) {
-                    throw Object.assign(new Error("Memory write failed: " + fallbackError.message), {
-                        cause: fallbackError
-                    });
-                }
-            } else {
-                throw Object.assign(new Error("Memory write failed: " + error.message), { cause: error });
-            }
-        }
-    }
-
     async _waitUntilIdle(timeoutMs) {
         await this._acquireExclusive(this.clock.now() + timeoutMs);
         this._releaseExclusive();
@@ -1486,62 +1391,45 @@ class ManagedOpenOcdSession {
         const requestEpoch = this.targetEpoch;
         const deadline = this.clock.now() + timeoutMs;
         await this._acquireExclusive(deadline);
-        let haltedByUs = false;
-        let primaryError = null;
-        let result = null;
-        let writtenItems = 0;
         try {
             // Ownership is reserved synchronously by the arbiter before connection checks.
             if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
-            if (!nonHalting) {
-                const state = (await this.tcl.sendChecked("[target current] curstate")).trim();
-                if (state !== "halted") {
-                    await this.tcl.sendChecked("halt");
-                    haltedByUs = true;
-                }
-            }
-            const guard =
-                this.mode === "debug"
-                    ? {
-                          targetEpoch: requestEpoch,
-                          requireSampling: false,
-                          deadline: Math.min(deadline, this.clock.now() + MAX_DEBUG_CYCLE_MS)
-                      }
-                    : null;
-            const readItems = items.map((item) => ({
-                name: item.name,
-                address: item.address,
-                size: item.bytes.length
-            }));
-            const before = (await this._readItems(readItems, this.clock.now(), guard)).samples;
-            for (const item of items) {
-                this._assertReadGuard(guard);
-                await this._writeMemoryBytes(item.address, item.bytes);
-                writtenItems++;
-            }
-            this._assertReadGuard(guard);
-            const after = (await this._readItems(readItems, this.clock.now(), guard)).samples;
-            this._assertReadGuard(guard);
-            result = { before, after, halted: !nonHalting };
-        } catch (error) {
-            // Callers must know whether a cancelled transaction already changed target memory.
-            if (error?.code === "LIVE_READ_CANCELLED")
-                error.details = { ...error.details, writtenItems, totalItems: items.length };
-            primaryError = error;
-        }
-        try {
-            if (haltedByUs) {
+            return await this.writer.withHalt(nonHalting, async () => {
+                const guard =
+                    this.mode === "debug"
+                        ? {
+                              targetEpoch: requestEpoch,
+                              requireSampling: false,
+                              deadline: Math.min(deadline, this.clock.now() + MAX_DEBUG_CYCLE_MS)
+                          }
+                        : null;
+                const readItems = items.map((item) => ({
+                    name: item.name,
+                    address: item.address,
+                    size: item.bytes.length
+                }));
+                let writtenItems = 0;
                 try {
-                    await this.tcl.sendChecked("resume");
-                } catch (resumeError) {
-                    if (!primaryError) primaryError = resumeError;
+                    const before = (await this._readItems(readItems, this.clock.now(), guard)).samples;
+                    for (const item of items) {
+                        this._assertReadGuard(guard);
+                        await this.writer.writeBytes(item.address, item.bytes);
+                        writtenItems++;
+                    }
+                    this._assertReadGuard(guard);
+                    const after = (await this._readItems(readItems, this.clock.now(), guard)).samples;
+                    this._assertReadGuard(guard);
+                    return { before, after, halted: !nonHalting };
+                } catch (error) {
+                    // Callers must know whether a cancelled transaction already changed target memory.
+                    if (error?.code === "LIVE_READ_CANCELLED")
+                        error.details = { ...error.details, writtenItems, totalItems: items.length };
+                    throw error;
                 }
-            }
+            });
         } finally {
             this._releaseExclusive();
         }
-        if (primaryError) throw primaryError;
-        return result;
     }
 
     async _sampleTick(fromScheduler = false) {
@@ -1662,4 +1550,4 @@ class ManagedOpenOcdSession {
     }
 }
 
-module.exports = { ManagedOpenOcdSession, validateManagedWritePlan, findFreePort };
+module.exports = { ManagedOpenOcdSession, findFreePort };

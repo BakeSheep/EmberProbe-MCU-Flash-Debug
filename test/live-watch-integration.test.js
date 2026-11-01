@@ -130,7 +130,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         "managed writes keep Tcl responses out of GDB output"
     );
     debugFake.commands.length = 0;
-    await managed._writeMemoryBytes(0x20000000, [5, 6, 7, 8]);
+    await managed.writer.writeBytes(0x20000000, [5, 6, 7, 8]);
     assert.deepStrictEqual(debugFake.commands, ["ocd_write_memory 0x20000000 32 {0x8070605}"]);
     debugFake.commands.length = 0;
     for (const [address, size] of [
@@ -145,7 +145,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             managed.writeAndVerify([{ name: "counter", address, bytes }]),
             (error) => error.code === "RUNTIME_WRITE_DISABLED" && /Only aligned 32-bit writes/.test(error.message)
         );
-        await assert.rejects(managed._writeMemoryBytes(address, bytes), { code: "RUNTIME_WRITE_DISABLED" });
+        await assert.rejects(managed.writer.writeBytes(address, bytes), { code: "RUNTIME_WRITE_DISABLED" });
     }
     await assert.rejects(
         managed.writeAndVerify(
@@ -241,7 +241,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
                         if ((phase === "before" && reads === 1) || (phase === "after" && reads === 2)) reconfigure();
                         return memory.slice();
                     };
-                    writing._writeMemoryBytes = async (_address, bytes) => {
+                    writing.writer.writeBytes = async (_address, bytes) => {
                         memory = Array.from(bytes);
                         if (phase === "between") reconfigure();
                     };
@@ -295,7 +295,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
                         if ((phase === "before" && reads === 1) || (phase === "after" && reads === 2)) invalidate();
                         return [0, 0, 0, 0];
                     };
-                    writing._writeMemoryBytes = async () => {
+                    writing.writer.writeBytes = async () => {
                         writes++;
                         if (phase === "between") invalidate();
                     };
@@ -325,7 +325,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         const writing = new ManagedOpenOcdSession({ mode: "debug" }, {});
         writing.tcl.socket = { destroyed: false };
         let writeCalls = 0;
-        writing._writeMemoryBytes = async () => {
+        writing.writer.writeBytes = async () => {
             writeCalls++;
             writing.invalidateTarget();
         };

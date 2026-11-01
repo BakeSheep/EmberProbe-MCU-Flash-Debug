@@ -174,14 +174,14 @@ async function testSessionAndFairness() {
         await waitFor(() => session.busy, "a variable tick owns the socket");
         const order = [];
         const readItems = session._readItems.bind(session);
-        const writeBytes = session._writeMemoryBytes.bind(session);
+        const writeBytes = session.writer.writeBytes.bind(session.writer);
         const checked = session.tcl.sendChecked.bind(session.tcl);
         session._readItems = async (...args) => {
             if (args[0][0]?.name === "once") order.push("read");
             if (args[0][0]?.name === "verify") order.push("verify-read");
             return readItems(...args);
         };
-        session._writeMemoryBytes = async (address, bytes) => {
+        session.writer.writeBytes = async (address, bytes) => {
             order.push("write:" + bytes[0]);
             return writeBytes(address, bytes);
         };
@@ -300,7 +300,7 @@ async function testArbiterFailures() {
     };
     await assert.rejects(session.readOnce([graph]), /read exception/);
     assert.strictEqual(session.busy, false);
-    session._writeMemoryBytes = async () => {
+    session.writer.writeBytes = async () => {
         throw new Error("write exception");
     };
     session._readItems = async (items) => ({ samples: items.map((item) => ({ name: item.name, bytes: [0] })), ok: 1 });
@@ -460,7 +460,7 @@ async function testDeferredForegroundTick() {
         ok: items.length
     });
     session.tcl.sendChecked = async () => "running";
-    session._writeMemoryBytes = async () => {
+    session.writer.writeBytes = async () => {
         enteredWrite = true;
         await writeGate;
     };
@@ -602,7 +602,7 @@ async function testWaitersSurvivePlans() {
             ok: items.length
         });
         session.tcl.sendChecked = async () => "running";
-        session._writeMemoryBytes = async (_address, bytes) => {
+        session.writer.writeBytes = async (_address, bytes) => {
             value = bytes[0];
         };
         assert(session._tryAcquireExclusive());
