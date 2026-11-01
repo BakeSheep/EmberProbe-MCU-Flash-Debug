@@ -20,9 +20,12 @@ const itemsFor = (count) =>
 const samplesFor = (items, t) => items.map(({ name }, i) => ({ name, t, value: (i + t) & 255 }));
 const points = (store, scope, name, snapshotId) => [...store.points(store._source(scope, snapshotId).series.get(name))];
 
-for (const count of [7800, 20000]) {
+// A full block per series would not fit the budget: just over it (like 7800 series against the default 512 MB),
+// and far over it. Blocks start small and grow, so the first sample and the first growth both fit.
+for (const count of [1000, 2600]) {
     const items = itemsFor(count);
-    const store = new ChartHistoryStore(512 * 1024 * 1024);
+    const store = new ChartHistoryStore(64 * 1024 * 1024);
+    assert.ok(count * BLOCK_BYTES > store.maxBytes, "eager full blocks would exhaust the budget");
     store.configure("large", items);
     store.append("large", samplesFor(items, 0), 0);
     assert.strictEqual(store.bytes, count * blockBytes(INITIAL_BLOCK_POINTS));
@@ -123,13 +126,13 @@ for (const count of [7800, 20000]) {
     assert.strictEqual(store.status("p").limited, false);
 }
 
-// The full three-minute, 100 Hz workload can be run with --stress (360 million leaf points, 512 MB).
-// Normal runs drive the same 20k-series path with a 24 MB budget, which reaches steady eviction
-// pressure after 64 frames instead of 1024.
+// The full three-minute, 100 Hz workload over 20,000 series can be run with --stress (360 million leaf points,
+// 512 MB). Normal runs drive 5,000 series with a 6 MB budget, the same bytes per series as 20,000 with 24 MB, which
+// reaches steady eviction pressure after 64 frames instead of 1024.
 {
     const stress = process.argv.includes("--stress");
-    const store = new ChartHistoryStore((stress ? 512 : 24) * 1024 * 1024);
-    const items = itemsFor(20000);
+    const store = new ChartHistoryStore((stress ? 512 : 6) * 1024 * 1024);
+    const items = itemsFor(stress ? 20000 : 5000);
     const viewed = items.slice(0, 3).map((item) => item.name);
     const samples = samplesFor(items, 0);
     store.configure("steady", items);
@@ -140,7 +143,7 @@ for (const count of [7800, 20000]) {
     const frames = stress ? 18000 : 160;
     let pressureFrames = 0;
     for (let frame = 0; frame < frames; frame++) {
-        const tick = frame * 10; // Virtual 100 Hz, with all 20,000 leaves in every frame.
+        const tick = frame * 10; // Virtual 100 Hz, with every leaf in every frame.
         for (const sample of samples) sample.t = tick;
         const work = store.evictionWork;
         const evictions = store.evictedBlocks;
