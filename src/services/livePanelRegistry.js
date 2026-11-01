@@ -1,9 +1,10 @@
 "use strict";
 const { randomUUID } = require("crypto");
 const { nextLivePanelId } = require("./liveWatchService");
+const { CACHE_KEYS } = require("../cacheKeys");
 
 const BINDINGS_KEY = "liveWatch.panelBindings";
-const WATCH_KEY = "mcu.watchList";
+const WATCH_KEY = CACHE_KEYS.watchList;
 const VIEW_STATE_KEYS = ["liveWatch.curveVisibility", "liveWatch.runtimeExpansions"];
 function panelNumber(value) {
     if (typeof value !== "number" && !(typeof value === "string" && /^[1-9]\d*$/.test(value))) return null;

@@ -33,6 +33,7 @@
     - [x] 行数目标：按功能拆出页面模块——侧栏 `sidebar/writeList.js`（写入列表）；波形页 `liveWatch/exportDialog.js`（CSV 导出）、`liveWatch/panelLayout.js`（值面板停靠/浮动布局）、`liveWatch/variableEntry.js`（添加变量输入与自动补全）。侧栏 renderer 3118 → 1756 行，波形页 renderer 4483 → 2902 行（ESLint 计数）。两页内联的脚本总量各减少约 40 KB（侧栏 446 → 406 KB，波形页 561 → 520 KB）。
     - [x] 页面代码计入覆盖率：`render-webview` 把已知的页面脚本块拆回源文件，在页面上下文里按真实文件名逐个执行，c8 因此能把覆盖率映射回每个模块。两个 renderer 和 `viewport.js` 不再从 `.c8rc.json` 排除，renderer 显式声明 `"use strict"`（此前靠拼接在 `notice.js` 之后才处于严格模式）。此前一直显示 0% 的 `memoryView`、`peripherals` 现为 97%、90%；全局行覆盖率 87.85% → 90.68%（多计入约 4,600 行 renderer 代码）。
 - [ ] P1 MainViewProvider
+    - [x] 消息路由表：侧栏和波形页的消息 `switch` 移到 `src/controllers/sidebarRoutes.js`、`livePanelRoutes.js`，按消息类型查表（`Object.hasOwn`）。两页都有的 5 种消息（copyText、setLang、expandLayout、resolveCompositeLayout、saveRuntimeExpansions）共用 `webviewRoutes.js` 里的一份实现；`_handlePeripheralViewRequest` 的 if 链并入路由表。侧栏消息失败时记录日志，不再变成无人处理的 rejection。`CACHE_KEYS` 移到 `src/cacheKeys.js`，`connectedProbeId` 移到 `validation.js`。Provider 6718 → 6043 行。
 - [ ] P2 ManagedOpenOcdSession
 - [ ] P2 测试结构
 
