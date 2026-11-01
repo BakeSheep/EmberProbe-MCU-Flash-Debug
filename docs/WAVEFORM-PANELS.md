@@ -14,7 +14,7 @@ The renderer saves `panelId` and `watchKey` through `setState()` at startup and 
 - A legacy tab with neither a usable saved identity nor a recognizable title opens with an empty independent list. Its old workspace lists are preserved.
 - Closing a tab releases its display number. Late messages from the disposed Webview cannot modify a replacement tab.
 
-The regression cases are in `test/chart-panel-identity.test.js`. The Extension Host smoke test also uses a real hidden, unregistered Webview tab to verify allocation against VS Code's tab inventory.
+The regression cases are in the panel identity section of `test/chart-host.test.js`. The Extension Host smoke test also uses a real hidden, unregistered Webview tab to verify allocation against VS Code's tab inventory.
 
 ## Variable context menu
 

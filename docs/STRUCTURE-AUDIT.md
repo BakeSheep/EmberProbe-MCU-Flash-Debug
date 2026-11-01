@@ -69,6 +69,29 @@
             - 安装、替换、校验失败和损坏包改用测试中生成的小 tar.gz，它不依赖预置包，因此 macOS 上也会跑。
             - 目标配置加载改用默认运行时的可执行文件。
             - “缓存损坏”场景改为把可执行文件移开再还原，不再删除。
+    - [x] 按模块合并：
+        - 合并方式：
+            - 每个原文件成为合并文件里的一个具名 async 段，经 `helpers/scenario` 依次运行，失败信息带段名。
+            - 顶层 `require` 按模块合并后提到文件头。同名但指向不同模块（如 `fs` 与 `fs/promises`），或同一模块用了不同别名的，留在各自段内。
+            - 原文件末尾的 `(async () => {…})().catch(…)` 去掉外壳，内容并入所在段。
+            - 段内断言逐字保留。
+        - `chart-*` 18 → 4：
+            - `chart-history-store`：容量、摘要、Worker。
+            - `chart-host`：面板迁移与多面板、面板身份、重开恢复、记录、视口传输。
+            - `chart-webview`：控件、交互、抖动带、进制、呈现、平滑渲染、视口运算、视口请求、远程历史。
+            - 偏差：
+                - `chart-remote-history` 只驱动页面、不经过 Provider，归入 `chart-webview` 而不是宿主。
+                - `chart-background-icon` 保持独立。它覆盖图标提取、宿主存储与路由、页面绘制三段，共用同一组图像夹具，拆到宿主和页面两个文件会复制夹具；它本身对应一个功能模块，不是修复命名。
+        - `dwarf-*` 9 → 3：
+            - `dwarf-parse`：DWARF 4/5 形式与伴随文件、跳过局部变量。
+            - `dwarf-layout`：复合布局、类型矩阵、深层 C++ 布局、展开句柄。
+            - `dwarf-budget`：各类预算、全局预算、部分解析。
+            - 偏差：`dwarf-partial` 测的是全局预算耗尽后的部分解析结果，归入预算而不是解析。
+        - 分组：
+            - 合并文件都在 `integration`。原来属于 `fast` 的 `chart-transport`、`chart-viewport` 和 6 个 `dwarf-*`，并进了同一文件里更慢的测试。
+            - `docs/WAVEFORM-PANELS.md`、`docs/LAYERED-SAMPLING.md` 和 `test/perf/parse-bench.js` 中的旧文件名已更新。
+        - 覆盖率：合并前后各跑一次 c8，逐个源文件对比，没有任何文件的未覆盖行、分支、函数或语句数增加。V8 合并更少进程时重复的块区间变少，部分文件的分支总数和已覆盖数同步减少 1–9 个，未覆盖数不变。
+        - 效果：测试文件减少 20 个。`npm run check` 43 s（合并前 45 s），各测试文件耗时之和 193 s → 170 s。
 
 ## P1：MainViewProvider 是上帝对象
 
