@@ -52,7 +52,7 @@
     - [x] OpenOCD 进程：`src/openocdProcess.js`（`OpenOcdProcess`，会话经 `this.server` 持有）承担命令行构造、spawn 与找不到可执行文件的报错、逐行日志、诊断用的日志尾和 Tcl 就绪检测、退出等待，以及停止升级（关闭请求未发出时 kill，每次等待超时后再 kill、SIGKILL）。日志行的含义（探针丢失、轮询失败、错误上报）和退出的唯一上报仍在会话里。第二次 kill 之后的等待原来漏用注入时钟，现在也走 `options.clock`。修正 `samplingWorker` 上报给宿主的 `childPid`（宿主在 Worker 崩溃时据此结束 OpenOCD；没有测试覆盖，是 tsc 发现的），并在 `sampling-isolation` 补上断言。新增 `test/helpers/load-module.js`，两个测试改用它加载被替换了 `child_process` 的模块。`liveWatch.js` 1647 → 1522 行。
     - [x] 写事务：`src/memoryWrite.js`（`MemoryWriter`，会话经 `this.writer` 持有）承担托管调试的写预算校验、按自然宽度只写变量自身字节并回读、32 位读改写回退、`write_memory` 命令回退，以及事务期间暂停运行中的目标并恢复（事务本身的错误优先于恢复失败）。独占仲裁、读取保护和取消时的已写项计数仍在会话的 `writeAndVerify`。`samplingSession` 改为顶层引用 `validateManagedWritePlan`。`liveWatch.js` 1522 → 1420 行。
     - 偏差：计划的完成标准是 `liveWatch.js` 少于 1200 行，实际 1420 行。剩下的主要是读取执行（批量与 scatter 读取、运行时对象读取、读取批次缓存，约 370 行）。它和采样节拍共用每周期的读取保护、目标代际、RAM 段、scatter 能力状态和连接确认，拆出去只能通过回指会话的引用访问这些状态，等于把耦合搬个位置，所以留在会话里。
-- [ ] P2 测试结构
+- [x] P2 测试结构
     - [x] 模块加载器：测试里手写的 4 份“替换部分 `require` 后执行生产模块”的加载器（含 `loadProvider`）统一为 `test/helpers/load-module.js` 的 `loadModule`，按文件 URL 编译，覆盖率能映射回源文件。`test-helper-reuse` 新增按内容检查的场景，防止再出现副本（`flash-skills` 的加载器还要替换 `process` 并取出未导出的 `main`，保留）。
     - [x] 剩余真实等待：
         - `render-webview` 的 `clock` 选项同时接管页面的 `Date.now`。`write-stepping` 用 `FakeClock` 推进滑块的 300 ms 稳定计时，并补上“稳定前不写”的断言。
