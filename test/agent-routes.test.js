@@ -40,8 +40,8 @@ const { AgentService } = require("../src/services/agentService");
         "sampling.status": "_controlAgentSampling",
         "sampling.start": "_controlAgentSampling",
         "sampling.stop": "_controlAgentSampling",
-        "variables.write": "_writeAgentVariables",
-        "variables.write.permission": "_agentWritePermission",
+        "variables.write": "_writes.writeAgentVariables",
+        "variables.write.permission": "_writes.agentPermission",
         "fault.read": "_readAgentFault",
         "elf.analyze": "_analyzeElf",
         "peripherals.list": "_svdPeripheralService.list",
@@ -64,7 +64,7 @@ const { AgentService } = require("../src/services/agentService");
         if (method === "flash.execute") assert.strictEqual(calls.at(-1).args.length, 1);
         if (method === "config.set") assert.deepStrictEqual(calls.at(-1).args[0], { elf: "test.elf" });
         if (method.startsWith("sampling.")) assert.strictEqual(calls.at(-1).args[0], method.split(".")[1]);
-        if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_assertWriteSessionCurrent");
+        if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_writes.assertSessionCurrent");
         await bridge.call(method);
         if (method !== "config.set") await routes[method](null);
     }
@@ -99,8 +99,10 @@ const { AgentService } = require("../src/services/agentService");
     );
     const failure = new Error("stale session");
     const guarded = createAgentRoutes({
-        _assertWriteSessionCurrent() {
-            throw failure;
+        _writes: {
+            assertSessionCurrent() {
+                throw failure;
+            }
         }
     });
     assert.throws(

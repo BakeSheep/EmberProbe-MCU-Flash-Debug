@@ -446,8 +446,7 @@ async function queuedWrites() {
     const f = fixture(),
         first = deferred(),
         calls = [];
-    Object.assign(f.provider, { _uiWritePromise: Promise.resolve(), _uiWriteTicket: 0, _uiWriteLatest: new Map() });
-    f.provider._writeUiVariable = async (name, value) => {
+    f.provider._writes.writeUiVariable = async (name, value) => {
         calls.push([name, value]);
         if (calls.length === 1) await first.promise;
         return { results: [{ readBack: value, readBackText: String(value) }] };
@@ -472,8 +471,8 @@ async function queuedWrites() {
         f.messages.filter((message) => message.type === "writeResult").map((message) => message.seq),
         [1, 3, 4]
     );
-    assert.strictEqual(f.provider._uiWriteLatest.size, 0, "completed writes release their coalescing slot");
-    f.provider._writeUiVariable = async () => {
+    assert.strictEqual(f.provider._writes._uiLatest.size, 0, "completed writes release their coalescing slot");
+    f.provider._writes.writeUiVariable = async () => {
         throw Object.assign(new Error("Writing pointer storage is not supported: _ZN3lab7pointerE"), {
             code: "WRITE_NOT_ALLOWED"
         });

@@ -13,7 +13,7 @@ const skillInstaller = require("./skillInstaller");
 const openocdRunner = require("./openocdRunner");
 const openocdChecker = require("./openocdChecker");
 const liveWatch = require("./liveWatch");
-const { isNonHaltingWordWrite, runtimeWriteDisabledError, withWriteAccessStatus } = require("./writeAccess");
+const { withWriteAccessStatus } = require("./writeAccess");
 const liveWatchView = require("./liveWatchView");
 const { configuredFrequencyHz, intervalMsFromHz } = require("./samplingFrequency");
 const elfSymbols = require("./elfSymbols");
@@ -21,11 +21,11 @@ const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
-const { variableDisplayName, writeUnavailableKey } = require("./webview/runtime");
+const { variableDisplayName } = require("./webview/runtime");
 const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
-const { WriteAuthorization, writeConnectionIdentity } = require("./writeAuthorization");
+const { WriteAuthorization } = require("./writeAuthorization");
 const { CubeMxService } = require("./services/cubemxService");
 const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
 const { CubeMxFirmware } = require("./services/cubemxFirmware");
@@ -52,6 +52,7 @@ const {
 } = require("./services/liveWatchController");
 const { ElfViewController } = require("./services/elfViewController");
 const { DebugLaunch } = require("./services/debugLaunch");
+const { WriteExecution } = require("./services/writeExecution");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
@@ -67,7 +68,7 @@ const { ProbeSelectionStore } = require("./services/probeSelectionStore");
 const { ProbeInventoryService } = require("./services/probeInventoryService");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
-const { assertWriteIdentity, probeFamily } = require("../skills/_emberprobe/probe-connection");
+const { probeFamily } = require("../skills/_emberprobe/probe-connection");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
 const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesModel } = require("./chip/targetIdentity");
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
@@ -129,34 +130,6 @@ function buildSymbolNameIndex(symbols) {
     }
     return byName;
 }
-const TARGET_CHANGED_WRITE_MESSAGES = {
-    notWritten:
-        "The debug target changed state (pause, step or breakpoint) before the write; nothing was written. Retry once it is running again",
-    unverified:
-        "The debug target changed state (pause, step or breakpoint) during the write; {written}/{total} value(s) were written but not verified. Check the current value before retrying",
-    verified:
-        "The value was written and read back, but the debug target changed state (pause, step or breakpoint) right after; the result may be stale"
-};
-
-// A cancelled runtime write must say whether target memory already changed.
-/** @param {"notWritten" | "unverified" | "verified"} state @param {{ writtenItems: number, totalItems: number, results?: object[] }} progress */
-function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
-    const params = { written: writtenItems, total: totalItems };
-    const message = TARGET_CHANGED_WRITE_MESSAGES[state].replace(/\{(\w+)\}/g, (_, key) => String(params[key]));
-    return Object.assign(new Error(message), {
-        code: "DEBUG_STATE_CHANGED",
-        retryable: state === "notWritten",
-        i18nKey: `sb.writeTargetChanged.${state}`,
-        i18nParams: params,
-        details: {
-            written: writtenItems > 0,
-            writtenItems,
-            totalItems,
-            verified: state === "verified",
-            ...(results && { results })
-        }
-    });
-}
 
 // The sampling controller uses this module's vscode and LiveWatchSession, which tests replace through loadProvider.
 function createSamplingController(host, settings = {}) {
@@ -185,14 +158,18 @@ class MainViewProvider {
     get debugLaunch() {
         return (this._debugLaunchController ??= createDebugLaunch(this));
     }
+    get _writes() {
+        return (this._writeExecution ??= new WriteExecution(this, { vscode }));
+    }
     constructor(context) {
         this.commandHandlers = {};
         this._context = context;
         // Created by the `_notices` getter.
         this._noticeService = null;
-        // Created by the `_elfView` and `debugLaunch` getters.
+        // Created by the `_elfView`, `debugLaunch` and `_writes` getters.
         this._elfViewController = null;
         this._debugLaunchController = null;
+        this._writeExecution = null;
         // The connected probe list's automatic chip read (_identifyConnectedTargets).
         this._probeTargetsReading = false;
         this._probeTargetsReadFor = "";
@@ -266,9 +243,6 @@ class MainViewProvider {
         // Running variables.sample loops, so cancellation can stop them during an interval wait.
         this._agentSampleRuns = new Set();
         this._agentSamplingStatus = null;
-        this._uiWritePromise = Promise.resolve();
-        this._uiWriteTicket = 0;
-        this._uiWriteLatest = new Map();
         this._debugBridge = new DebugSessionBridge({
             getReadPlan: () => this._sampling.activeReadPlan(),
             getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
@@ -286,7 +260,7 @@ class MainViewProvider {
                     ...toUiError(error)
                 }),
             onTargetState: (event) => this.debugLaunch.handleTargetState(event),
-            beforePausedRead: () => this._quiesceManagedRuntimeRead()
+            beforePausedRead: () => this._writes.quiesceRuntimeRead()
         });
         this._rtosViewService = new RtosViewService(this._debugBridge);
         const archiveLimitMiB = validation.clampInteger(
@@ -819,61 +793,6 @@ class MainViewProvider {
         if (samplingSpeedChanged && this._sampling.session)
             void this._sampling.restart().catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
     }
-    _assertWriteSessionCurrent(session) {
-        if (session === this._debugBridge && this._debugBridge.replBusy)
-            throw Object.assign(new Error("Wait for the GDB console command before writing"), {
-                code: "DEBUG_CONTROL_BUSY"
-            });
-        const physical =
-            session === this._debugBridge ? this.debugLaunch.managedServer || this._debugBridge.activeSession : session;
-        if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
-        this._probeConnectionService.assertCurrent(physical);
-        assertWriteIdentity(physical.options);
-    }
-    _sessionWriteConnection(session) {
-        this._assertWriteSessionCurrent(session);
-        if (session === this._debugBridge) {
-            if (
-                this.debugLaunch.managedServer?.options &&
-                !this.debugLaunch.managedGroup &&
-                !this._externalDebug?.active
-            )
-                return writeConnectionIdentity(this.debugLaunch.managedServer.options);
-            const active = this._debugBridge.activeSession;
-            if (!active) this._debugBridge.assertUniqueSession();
-            return writeConnectionIdentity({
-                kind: "dap",
-                selectionIdentity: this.debugLaunch.managedServer?.options?.selectionIdentity,
-                sessionId: active.id,
-                workspace: active.workspaceFolder?.uri?.fsPath || "",
-                ...(active.configuration?.servertype === "external" ? { stopEpoch: this._debugBridge.stopEpoch } : {})
-            });
-        }
-        return writeConnectionIdentity(session.options);
-    }
-    async _prepareWriteConnection() {
-        this._assertGroupedReadElf();
-        if (this._sampling.running && this._sampling.session)
-            return this._sessionWriteConnection(this._sampling.session);
-        if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
-            return this._sessionWriteConnection(this._debugBridge);
-        // A managed debug server remains the connection that will execute an
-        // Agent write even while the DAP bridge is between stop events and reports
-        // canWrite=false. Bind the confirmation to that server instead of preparing
-        // a second standalone OpenOCD identity, which would be rejected at execution.
-        if (this.debugLaunch.managedServer) return this._sessionWriteConnection(this._debugBridge);
-        if (this._debugBridge.canWrite) return this._sessionWriteConnection(this._debugBridge);
-        const config = this._configurationStore.snapshot();
-        const executable = await this._resolveOpenOcdPath(config.openocdPath);
-        return writeConnectionIdentity(
-            await this._probeConnectionService.prepare({
-                executable,
-                probe: config.debugger,
-                target: config.mcu,
-                sampling: true
-            })
-        );
-    }
     _executeAgentCubeMx(params) {
         return vscode.window.withProgress(
             {
@@ -1179,7 +1098,7 @@ class MainViewProvider {
                 return {
                     source,
                     elf: elfResult.elf,
-                    ...this._firmwareConsistency(elfResult),
+                    ...this._writes.firmwareConsistency(elfResult),
                     samples: result,
                     ...(variableErrors.length ? { partial: true, variableErrors } : {})
                 };
@@ -1245,38 +1164,6 @@ class MainViewProvider {
             this._configureChartHistory(entry);
         }
     }
-    _assertGroupedReadElf() {
-        if (!this.debugLaunch.managedGroup && this._debugBridge.activeSession?.configuration?.servertype !== "external")
-            return;
-        const session = this._debugBridge.assertUniqueSession();
-        const selectedElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-        const sessionElf = session.configuration?.executable;
-        const normalize = (file) => {
-            if (typeof file !== "string" || !file) return "";
-            const resolved = path.resolve(
-                session.configuration?.cwd || session.workspaceFolder?.uri?.fsPath || ".",
-                file
-            );
-            return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-        };
-        if (!selectedElf || !sessionElf || normalize(selectedElf) !== normalize(sessionElf))
-            throw Object.assign(new Error("Select the active core's ELF before reading or writing sidebar variables"), {
-                code: "DEBUG_ELF_SESSION_MISMATCH"
-            });
-    }
-    async _quiesceManagedRuntimeRead() {
-        this._assertGroupedReadElf();
-        const server = this.debugLaunch.managedServer;
-        if (!server || server.capabilities?.runtimeRead === false) return;
-        server.setSamplingEnabled(false);
-        const idle = await server.waitForIdle(2000);
-        if (!idle) {
-            throw Object.assign(new Error("Timed out waiting for the managed OpenOCD runtime read to finish"), {
-                code: "LIVE_READ_QUIESCE_TIMEOUT",
-                retryable: true
-            });
-        }
-    }
     async _withAgentProbe(handler, options = {}) {
         if (this._debugBridge.replBusy)
             throw Object.assign(new Error("Wait for the GDB console command before inspecting memory"), {
@@ -1301,7 +1188,7 @@ class MainViewProvider {
         if (!session && options.allowPausedDebugRead) {
             session = selectPausedDebugReadSession(this._debugBridge);
             if (session) {
-                this._assertGroupedReadElf();
+                this._writes.assertGroupedReadElf();
                 source = "debug-session";
             } else if (
                 this.debugLaunch.managedServer &&
@@ -1492,266 +1379,6 @@ class MainViewProvider {
         const count = validation.clampInteger(params.count, 10, 2, 1000);
         const intervalMs = validation.clampInteger(params.intervalMs, 200, 5, 60000);
         return this._runAgentSamples(params, count, intervalMs, true);
-    }
-    // Parses a write request: only scalar symbols and single scalar leaf paths of composites are allowed, and the
-    // target address must lie in a writable ELF section (SHF_ALLOC|SHF_WRITE, i.e. .data/.bss), so flash and peripheral
-    // registers are never written by mistake.
-    // Core of a write inside a session: read before, write, read back and verify. Shared by agent and sidebar UI
-    // writes.
-    async _executeWritePlan(session, source, plan) {
-        const connection = this._sessionWriteConnection(session);
-        if (!plan.connection || JSON.stringify(connection) !== JSON.stringify(writeConnectionIdentity(plan.connection)))
-            throw Object.assign(new Error("The active connection changed after write confirmation"), {
-                code: "WRITE_CONNECTION_CHANGED",
-                details: { expected: plan.connection, actual: connection }
-            });
-        const { elfResult, items } = plan;
-        const runtimeWrite = session === this.debugLaunch.managedServer;
-        const debugSession = runtimeWrite ? this._debugBridge.activeSession : null;
-        const stopEpoch = runtimeWrite ? this._debugBridge.stopEpoch : null;
-        if (runtimeWrite) {
-            if (!items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
-            const status = this._sampling.status();
-            if (status.mode !== "debug-running-sampling" || !status.canWrite)
-                throw Object.assign(new Error("Runtime writes require an active managed OpenOCD sampling session"), {
-                    code: "RUNTIME_WRITE_DISABLED"
-                });
-            this._assertGroupedReadElf();
-            this._sampling.runtimeRamPlan(
-                items.map((item) => ({ ...item, size: item.bytes.length })),
-                true
-            );
-        }
-        let transaction;
-        try {
-            transaction = await session.writeAndVerify(
-                items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes }))
-            );
-        } catch (error) {
-            if (error?.code !== "LIVE_READ_CANCELLED") throw error;
-            const writtenItems = Number(error.details?.writtenItems) || 0;
-            throw targetChangedWriteError(writtenItems ? "unverified" : "notWritten", {
-                writtenItems,
-                totalItems: items.length
-            });
-        }
-        const targetChanged =
-            runtimeWrite &&
-            (session !== this.debugLaunch.managedServer ||
-                debugSession !== this._debugBridge.activeSession ||
-                stopEpoch !== this._debugBridge.stopEpoch ||
-                this._debugBridge.agentStatus().state !== "running");
-        const halted = transaction.halted === true;
-        const before = new Map(transaction.before.map((s) => [s.name, s]));
-        const after = new Map(transaction.after.map((s) => [s.name, s]));
-        const results = items.map((i) => {
-            const prev = before.get(i.name);
-            const post = after.get(i.name);
-            const verified =
-                !!post?.bytes && post.bytes.length >= i.bytes.length && i.bytes.every((b, k) => post.bytes[k] === b);
-            return {
-                name: i.requestedName,
-                resolvedName: i.name,
-                address: `0x${i.address.toString(16).toUpperCase()}`,
-                type: i.type,
-                previous: prev?.bytes ? elfSymbols.decodeValue(prev.bytes, i.type) : null,
-                previousText: prev?.bytes ? elfSymbols.decodeValueText(prev.bytes, i.type) : null,
-                written: i.value,
-                writtenText: i.valueText,
-                readBack: post?.bytes ? elfSymbols.decodeValue(post.bytes, i.type) : null,
-                readBackText: post?.bytes ? elfSymbols.decodeValueText(post.bytes, i.type) : null,
-                verified,
-                ...(!post?.bytes && { readBackError: post?.diagnostic?.message || "no read-back data" })
-            };
-        });
-        // The transaction finished, but its results belong to a target state that no longer exists.
-        if (targetChanged)
-            throw targetChangedWriteError(results.every((r) => r.verified) ? "verified" : "unverified", {
-                writtenItems: items.length,
-                totalItems: items.length,
-                results
-            });
-        const unreadable = results.filter((r) => r.readBackError);
-        if (unreadable.length) {
-            const msg = unreadable
-                .map(
-                    (r) =>
-                        `${this._variableDisplayName({ name: r.resolvedName || r.name }, elfResult.symbols)}: ${r.readBackError}`
-                )
-                .join("; ");
-            throw Object.assign(new Error(`The value was written, but reading it back failed: ${msg}`), {
-                code: "WRITE_READBACK_FAILED",
-                retryable: false,
-                i18nKey: "sb.writeReadBackFailed",
-                i18nParams: { msg },
-                details: { results, targetHaltedDuringWrite: halted }
-            });
-        }
-        if (results.some((r) => !r.verified)) {
-            throw Object.assign(
-                new Error(
-                    halted
-                        ? "Write verification failed while the target was halted: the value read back does not match (check RAM accessibility, MPU/cache configuration, and debug transport)"
-                        : "Write verification failed: the value read back differs; the running firmware may have modified it right after the write"
-                ),
-                {
-                    code: "WRITE_VERIFY_FAILED",
-                    retryable: true,
-                    i18nKey: halted ? "sb.writeVerifyFailedHalted" : "sb.writeVerifyFailedRunning",
-                    details: { results, targetHaltedDuringWrite: halted, alignedWordWrites: true }
-                }
-            );
-        }
-        return { source, elf: elfResult.elf, results, halted };
-    }
-    // High-risk operation: the first call returns a chat confirmation request whose one-time ID binds the ELF, address,
-    // type and value. The user may authorize just this write or remember the authorization for this workspace after the
-    // first successful write.
-    async _writeAgentVariables(params) {
-        // "false" or 0 must never be read as a request to remember write permission.
-        if (params.remember !== undefined && typeof params.remember !== "boolean")
-            throw Object.assign(new Error("remember must be a boolean"), { code: "INVALID_PARAMS" });
-        await this._elfView.prepareLayouts(params.values);
-        const plan = agentPlans.writePlan(params.values, () => this.readElfSymbols());
-        plan.connection = await this._prepareWriteConnection();
-        const consistency = this._firmwareConsistency(plan.elfResult);
-        // A remembered write permission never applies while the ELF differs from the last
-        // EmberProbe-programmed image: the addresses may target different data on the device.
-        const authorization = this._writeAuthorization.authorize(plan, {
-            confirmationId: params.confirmationId,
-            remember: params.remember,
-            allowTrusted: consistency.firmwareConsistency.status !== "mismatch"
-        });
-        if (!authorization.authorized) return { ...authorization.response, ...consistency };
-        // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
-        // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
-        // the write path loses the DAP connection identity between confirmation and execution.
-        // Sampling may be off, so no snapshot exists yet and canWrite is false: prime one from
-        // the write plan itself instead of falling back to a second standalone OpenOCD identity.
-        if (this._debugBridge.agentStatus().state === "paused") {
-            if (!this._debugBridge.canWritePaused) await this._debugBridge.prepareWriteSnapshot(plan.items);
-            const result = await this._executeWritePlan(this._debugBridge, "debug-dap", plan);
-            return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
-        }
-        if (this.debugLaunch.managedServer && this._debugBridge.agentStatus().state === "running") {
-            const result = await this._executeWritePlan(this.debugLaunch.managedServer, "debug-running-openocd", plan);
-            return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
-        }
-        const result = await this._withAgentProbe(
-            ({ session, source }) => this._executeWritePlan(session, source, plan),
-            {
-                allowPausedDebugRead: true
-            }
-        );
-        return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
-    }
-    _firmwareConsistency(elfResult) {
-        const record = this._firmwareRecord || new FirmwareRecord(null);
-        const firmwareConsistency = record.check(elfResult?.elf);
-        const warning = record.warning(elfResult?.elf);
-        return { firmwareConsistency, ...(warning ? { warnings: [warning] } : {}) };
-    }
-    async _writePermissionGrant(authorization, plan) {
-        if (!authorization.remember)
-            return { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
-        try {
-            return { mode: "workspace", ...(await this._writeAuthorization.trustWorkspace(plan)), remembered: true };
-        } catch (error) {
-            return { mode: "once", trusted: false, remembered: false, warning: error.message };
-        }
-    }
-    // Sidebar write list: the user acts directly in the UI, without WriteAuthorization confirmation, but every safety
-    // check of agentPlans.writePlan still applies (known DWARF type, target address inside writable .data/.bss). Writes are
-    // only allowed while live sampling runs and reuse its Tcl session. A rebuilt but unflashed ELF moves RAM addresses,
-    // and read-back verification reads the same wrong address, so one explicit choice per ELF digest is required before
-    // UI writes proceed.
-    async _confirmUiWriteFirmware(requestedAt) {
-        let elf;
-        try {
-            elf = this.readElfSymbols().elf;
-        } catch {
-            return; // The write plan reports the ELF error itself.
-        }
-        const { firmwareConsistency } = this._firmwareConsistency({ elf });
-        if (firmwareConsistency.status !== "mismatch" || this._uiFirmwareMismatchAck === elf.sha256) return;
-        const declined = () =>
-            Object.assign(new Error(this._t("sb.writeFirmwareMismatchDeclined")), {
-                code: "ELF_TARGET_MISMATCH",
-                i18nKey: "sb.writeFirmwareMismatchDeclined",
-                details: firmwareConsistency
-            });
-        // Writes queued (e.g. by a slider drag) while the user was declining are not re-prompted.
-        const last = this._uiFirmwareMismatchDeclined;
-        if (last?.sha256 === elf.sha256 && requestedAt <= last.at) throw declined();
-        const anyway = this._t("sb.writeFirmwareMismatchAnyway");
-        const choice = await vscode.window.showWarningMessage(
-            this._t("sb.writeFirmwareMismatch"),
-            { modal: true },
-            anyway
-        );
-        if (choice === anyway) {
-            this._uiFirmwareMismatchAck = elf.sha256;
-            return;
-        }
-        this._uiFirmwareMismatchDeclined = { sha256: elf.sha256, at: Date.now() };
-        throw declined();
-    }
-    async _writeUiVariable(name, value, options = {}) {
-        if (this._sampling.closing || this._sampling.exitUnconfirmed)
-            throw Object.assign(new Error("The previous probe connection has not closed"), {
-                code: "PROBE_EXIT_UNCONFIRMED"
-            });
-        await this._confirmUiWriteFirmware(options.requestedAt ?? Date.now());
-        const status = this._sampling.status();
-        const dapSession = status.canWrite && this._debugBridge.canWrite ? this._debugBridge : null;
-        const runtimeSession =
-            status.canWrite && status.mode === "debug-running-sampling" ? this.debugLaunch.managedServer : null;
-        const session =
-            dapSession || runtimeSession || (status.canWrite && this._sampling.running ? this._sampling.session : null);
-        if (!session) {
-            const key = writeUnavailableKey(status) || "sb.writeUnavailable";
-            throw Object.assign(new Error(this._t(key)), { i18nKey: key });
-        }
-        await this._elfView.prepareLayouts([{ name }]);
-        const plan = agentPlans.writePlan([{ name, value }], () => this.readElfSymbols());
-        // The ELF may have been replaced while the mismatch prompt was open.
-        if (
-            this._firmwareConsistency(plan.elfResult).firmwareConsistency.status === "mismatch" &&
-            this._uiFirmwareMismatchAck !== plan.elfResult.elf.sha256
-        )
-            throw Object.assign(new Error(this._t("sb.writeFirmwareMismatchDeclined")), {
-                code: "ELF_TARGET_MISMATCH",
-                i18nKey: "sb.writeFirmwareMismatchDeclined"
-            });
-        if (!status.haltWrite && !plan.items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
-        plan.connection = this._sessionWriteConnection(session);
-        // UI writes are already serialized and the bridge rejects concurrent DAP operations itself;
-        // posting a "writing" status here would disable the write controls mid-drag.
-        return await this._executeWritePlan(
-            session,
-            dapSession ? "debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
-            plan
-        );
-    }
-    async _agentWritePermission(params) {
-        const action = String(params?.action || "status");
-        if (action === "status") {
-            try {
-                await this._elfService.ready();
-                return this._writeAuthorization.status({
-                    elfResult: this.readElfSymbols(),
-                    connection: await this._prepareWriteConnection()
-                });
-            } catch {
-                return this._writeAuthorization.status();
-            }
-        }
-        if (action === "reset") {
-            return this._writeAuthorization.reset();
-        }
-        throw Object.assign(new Error(`Unsupported write permission action: ${action}`), {
-            code: "INVALID_PERMISSION_ACTION"
-        });
     }
     // Reads and decodes the Cortex-M fault registers; shares the _chipInfoRunning lock with chip.read (only one
     // one-shot OpenOCD process at a time)

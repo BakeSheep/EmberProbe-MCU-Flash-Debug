@@ -104,7 +104,7 @@ async function run() {
         const requested = (value = Math.round(value * 7 + 3) % 100000) / 4;
         const entry = { trigger, value: requested, stoppedBefore: stopped };
         try {
-            const result = await provider._writeUiVariable(WRITE_TARGET, requested);
+            const result = await provider._writes.writeUiVariable(WRITE_TARGET, requested);
             entry.ok = true;
             entry.source = result.source;
             entry.verified = result.results?.[0]?.verified;

@@ -126,16 +126,16 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     await host._sampling.start([], undefined, "sidebar");
     assert(host._debugBridge.intentEnabled, "paused sampling uses DAP without requiring a probe configuration");
     values.set("mcu.elfPath", path.join(__dirname, "wrong.elf"));
-    assert.throws(() => host._assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
+    assert.throws(() => host._writes.assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
     values.set("mcu.elfPath", __filename);
-    host._assertGroupedReadElf();
-    const identity = host._sessionWriteConnection(host._debugBridge);
+    host._writes.assertGroupedReadElf();
+    const identity = host._writes.sessionConnection(host._debugBridge);
     assert.strictEqual(identity.kind, "dap");
     assert.strictEqual(identity.sessionId, session.id);
     const old = fingerprintWritePlan({ connection: identity });
     host._debugBridge.stopEpoch++;
     assert.notStrictEqual(
-        fingerprintWritePlan({ connection: host._sessionWriteConnection(host._debugBridge) }),
+        fingerprintWritePlan({ connection: host._writes.sessionConnection(host._debugBridge) }),
         old,
         "old write confirmation cannot cross stop generations"
     );

@@ -113,7 +113,7 @@ fs.mkdirSync(workspace, { recursive: true });
 let confirmations = 0;
 
 // variables.write: the plan and the confirmation response come from the real WriteAuthorization, composed
-// the way MainViewProvider._writeAgentVariables answers ({ ...authorization.response, ...consistency }).
+// the way WriteExecution.writeAgentVariables answers ({ ...authorization.response, ...consistency }).
 const firmware = { path: path.join(workspace, "app.elf"), sha256: "cd".repeat(32) };
 const writeAuthorization = new WriteAuthorization(memoryStorage(), { createId: () => `write-${++confirmations}` });
 function writePlan(values) {

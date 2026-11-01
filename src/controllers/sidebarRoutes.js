@@ -79,7 +79,7 @@ const PERIPHERAL_REQUESTS = {
             throw new Error("Invalid peripheral target");
         if (typeof message.value !== "string" || !message.value.trim() || message.value.length > 128)
             throw new Error("Invalid peripheral value");
-        host._assertWriteSessionCurrent(host._debugBridge);
+        host._writes.assertSessionCurrent(host._debugBridge);
         const result = await host._svdPeripheralService.writeFromUi({
             writes: [{ target: message.target, value: message.value.trim() }]
         });
@@ -149,37 +149,26 @@ async function probeAction({ host, post }, message) {
     }
 }
 
-// Serialized: one write in flight at a time with later requests queued; a failure only posts writeResult, never a
-// global error. While a slider is dragged, queued old values superseded by a newer request for the same variable are
-// skipped, so releasing it does not replay the backlog.
+// Writes are serialized by the write controller; a failure only posts writeResult, never a global error, and a value
+// superseded while queued posts nothing.
 async function writeVariable({ host, post }, message) {
     const name = String(message.name || "").trim();
     const seq = message.seq;
-    const requestedAt = Date.now();
-    const ticket = ++host._uiWriteTicket;
-    host._uiWriteLatest.set(name, ticket);
-    host._uiWritePromise = host._uiWritePromise
-        .catch(() => {})
-        .then(async () => {
-            if (host._uiWriteLatest.get(name) !== ticket) return;
-            try {
-                const result = await host._writeUiVariable(name, message.value, { requestedAt });
-                const r = result.results && result.results[0];
-                post({
-                    type: "writeResult",
-                    ok: true,
-                    name,
-                    value: r ? r.readBack : message.value,
-                    valueText: r ? r.readBackText : null,
-                    seq
-                });
-            } catch (error) {
-                post({ type: "writeResult", ok: false, name, seq, ...toUiError(error) });
-            } finally {
-                if (host._uiWriteLatest.get(name) === ticket) host._uiWriteLatest.delete(name);
-            }
+    try {
+        const result = await host._writes.queueUiWrite(name, message.value, { requestedAt: Date.now() });
+        if (!result) return;
+        const r = result.results && result.results[0];
+        post({
+            type: "writeResult",
+            ok: true,
+            name,
+            value: r ? r.readBack : message.value,
+            valueText: r ? r.readBackText : null,
+            seq
         });
-    await host._uiWritePromise;
+    } catch (error) {
+        post({ type: "writeResult", ok: false, name, seq, ...toUiError(error) });
+    }
 }
 
 const SIDEBAR_ROUTES = {

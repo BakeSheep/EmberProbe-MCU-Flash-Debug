@@ -165,11 +165,11 @@ const { loadProvider } = require("./helpers/load-provider");
         _debugBridge: { assertUniqueSession: () => a }
     });
     Object.assign(host.debugLaunch, { managedGroup: {} });
-    host._assertGroupedReadElf();
+    host._writes.assertGroupedReadElf();
     selected = path.resolve("core1.elf");
-    assert.throws(() => host._assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
+    assert.throws(() => host._writes.assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
     selected = null;
-    assert.throws(() => host._assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
+    assert.throws(() => host._writes.assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
     const notices = [];
     const entry = {
         latestSamples: new Map([["value", 1]]),

@@ -22,7 +22,7 @@ const { writePlan } = require("../src/services/agentPlans");
         planned = true;
         throw new Error("planned");
     };
-    await assert.rejects(provider._writeAgentVariables({ values: [{ name: "value", value: 1 }] }), {
+    await assert.rejects(provider._writes.writeAgentVariables({ values: [{ name: "value", value: 1 }] }), {
         code: "DWARF_PARSE_FAILED"
     });
     assert.strictEqual(planned, false, "writes must stop before planning when DWARF is unavailable");
@@ -194,9 +194,12 @@ const { writePlan } = require("../src/services/agentPlans");
         "four encoded bytes at the section end exceed the writable range"
     );
     for (const remember of ["false", 0, "true"])
-        await assert.rejects(hardened._writeAgentVariables({ values: [{ name: "speed", value: 1 }], remember }), {
-            code: "INVALID_PARAMS"
-        });
+        await assert.rejects(
+            hardened._writes.writeAgentVariables({ values: [{ name: "speed", value: 1 }], remember }),
+            {
+                code: "INVALID_PARAMS"
+            }
+        );
 
     const symbols = [
         { name: "raw", displayName: "app::value" },
@@ -315,7 +318,7 @@ const { writePlan } = require("../src/services/agentPlans");
             symbols: [{ name: "x", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true }],
             memory: { sections: [{ addr: 0x20000000, size: 0x1000, flags: 3 }] }
         });
-        variable._prepareWriteConnection = async () => ({
+        variable._writes.prepareConnection = async () => ({
             kind: "dap",
             sessionId: "debug",
             workspace: "workspace",
@@ -325,14 +328,14 @@ const { writePlan } = require("../src/services/agentPlans");
             get: () => undefined,
             update: async () => {}
         });
-        variable._executeWritePlan = async () => {
+        variable._writes.execute = async () => {
             attemptedWrites++;
         };
         const values = [{ name: "x", value: 1 }];
-        const request = await variable._writeAgentVariables({ values });
+        const request = await variable._writes.writeAgentVariables({ values });
         assert(request.confirmationRequired);
         identity = "after";
-        await assert.rejects(variable._writeAgentVariables({ values, confirmationId: request.confirmationId }), {
+        await assert.rejects(variable._writes.writeAgentVariables({ values, confirmationId: request.confirmationId }), {
             code: "ELF_CHANGED_DURING_WRITE_CONFIRMATION"
         });
         assert.strictEqual(attemptedWrites, 0);

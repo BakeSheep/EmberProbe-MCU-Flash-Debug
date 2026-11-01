@@ -228,7 +228,7 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
     const host = {
         _svdManager: { currentPath: async () => "/device.svd" },
         _debugBridge: {},
-        _assertWriteSessionCurrent: () => {},
+        _writes: { assertSessionCurrent: () => {} },
         _svdPeripheralService: {
             write: () => {
                 throw new Error("UI write must not use the Agent Skill authorization path");

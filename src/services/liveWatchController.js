@@ -724,7 +724,7 @@ class LiveWatchController {
                 this.host._probeConnectionService.assertCurrent(session);
                 status.connection = this.host.debugLaunch.managedGroup
                     ? this.host._debugBridge.activeSession
-                        ? this.host._sessionWriteConnection(this.host._debugBridge)
+                        ? this.host._writes.sessionConnection(this.host._debugBridge)
                         : undefined
                     : writeConnectionIdentity(session.options);
             } catch (error) {

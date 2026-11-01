@@ -344,7 +344,6 @@ function fixture() {
                 elf: {},
                 symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
             }),
-            _firmwareConsistency: () => ({}),
             // A live-sampling (or debug server) connection is reused, not a temporary probe session.
             _withAgentProbe: (handler) =>
                 handler({
@@ -354,6 +353,7 @@ function fixture() {
                 }),
             stopAgentReadIfRunning: () => (stops.push("agent"), null)
         });
+        Object.assign(host._writes, { firmwareConsistency: () => ({}) });
         Object.assign(host._elfView, { prepareLayouts: async () => {} });
         Object.assign(host._sampling, {
             stop: async () => stops.push("live"),

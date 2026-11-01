@@ -54,15 +54,15 @@ function createAgentRoutes(host, probes = listProbes) {
         "sampling.status": (params) => host._controlAgentSampling("status", params),
         "sampling.start": (params) => host._controlAgentSampling("start", params),
         "sampling.stop": (params) => host._controlAgentSampling("stop", params),
-        "variables.write": (params) => host._writeAgentVariables(params),
-        "variables.write.permission": (params) => host._agentWritePermission(params),
+        "variables.write": (params) => host._writes.writeAgentVariables(params),
+        "variables.write.permission": (params) => host._writes.agentPermission(params),
         "chip.read": () => host.readChipInfoAction(true),
         "fault.read": () => host._readAgentFault(),
         "elf.analyze": (params) => host._analyzeElf(params || {}),
         "peripherals.list": (params) => host._svdPeripheralService.list(params || {}),
         "peripherals.read": (params) => host._svdPeripheralService.read(params || {}),
         "peripherals.write": (params) => {
-            host._assertWriteSessionCurrent(host._debugBridge);
+            host._writes.assertSessionCurrent(host._debugBridge);
             return host._svdPeripheralService.write(params || {});
         },
         "debug.status": () => host._debugControlService.status(),
