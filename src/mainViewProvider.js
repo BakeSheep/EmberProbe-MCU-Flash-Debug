@@ -1443,4 +1443,3 @@ class MainViewProvider {
     }
 }
 exports.MainViewProvider = MainViewProvider;
-//# sourceMappingURL=extension.js.map

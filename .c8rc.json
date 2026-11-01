@@ -4,7 +4,6 @@
   "exclude": [
     "test/**",
     "src/extension.js",
-    "src/mainViewProvider.js",
     "src/modernView.js",
     "src/liveWatchView.js",
     "src/autoDetect.js",
