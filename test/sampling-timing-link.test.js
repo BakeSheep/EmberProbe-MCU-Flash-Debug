@@ -185,9 +185,9 @@ async function networkAndIdentity() {
             }
         },
         _debugBridge: { activeSession: { id: "debug" } },
-        _refreshConnectedProbes: async () => {},
         _postConsumerStatuses: () => {}
     });
+    Object.assign(provider._connectedProbes, { refresh: async () => {} });
     Object.assign(provider._sampling, {
         session: { options: connection },
         intent: true,

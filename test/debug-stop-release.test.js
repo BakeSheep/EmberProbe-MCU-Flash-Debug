@@ -145,7 +145,7 @@ function track(promise) {
         "the next debug start retries an unconfirmed OpenOCD stop instead of reporting the probe busy",
         async () => {
             const { p, coordinator, server, service, vscodeDebug, finishStop } = setup();
-            p._assertProbeDriverIdle = () => {};
+            p._connectedProbes.assertDriverIdle = () => {};
             p._agentOps.stopReadIfRunning = () => null;
             const stopping = service.control({ action: "stop" });
             await ticks();
@@ -175,7 +175,7 @@ function track(promise) {
 
     await scenario("a running managed debug server still blocks another debug start", async () => {
         const { p, server } = setup();
-        p._assertProbeDriverIdle = () => {};
+        p._connectedProbes.assertDriverIdle = () => {};
         server.state = "ready";
         await assert.rejects(p.debugLaunch.prepareProbe({ uri: {} }), (error) => error.code === "PROBE_BUSY");
         assert.strictEqual(server.stops, 0);

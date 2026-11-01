@@ -15,7 +15,7 @@ function createAgentRoutes(host, probes = listProbes) {
                 // Resolved against every connected probe, so a filtered list cannot make a device look unique.
                 // The marker is informational; failing to resolve it never fails the listing.
                 Promise.resolve()
-                    .then(() => host._selectedProbeDeviceId?.())
+                    .then(() => host._connectedProbes.selectedDeviceId?.())
                     .catch(() => "")
             ]);
             if (typeof selectedId !== "string" || !selectedId || !Array.isArray(inventory?.devices)) return inventory;

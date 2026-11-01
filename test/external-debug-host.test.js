@@ -67,7 +67,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     for (const [owner, name] of [
         [host, "_resolveOpenOcdPath"],
         [host.debugLaunch, "startManagedServer"],
-        [host, "_assertProbeDriverIdle"]
+        [host._connectedProbes, "assertDriverIdle"]
     ])
         owner[name] = () => {
             throw new Error(`external must not call ${name}`);

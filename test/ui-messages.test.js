@@ -56,12 +56,12 @@ function fixture() {
         commandHandlers: {},
         _assertConnectionEditable() {},
         _resolveOpenOcdPath: async () => null,
-        _refreshConnectedProbes: async () => {},
         updateView: async () => {},
         _renderWebview: async () => {},
         getModernWebviewContent: () => "",
         _t: (key, params) => i18n.t("en", key, params)
     });
+    Object.assign(provider._connectedProbes, { refresh: async () => {} });
     Object.assign(provider._elfView, { refreshBindings: async () => {} });
     provider.registerCommandHandlers();
     let dispatch;

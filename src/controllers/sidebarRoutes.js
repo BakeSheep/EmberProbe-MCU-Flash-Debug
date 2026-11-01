@@ -46,9 +46,9 @@ function initCheck({ host, post }) {
     host._sidebarReady = true;
     // Acknowledge the webview's init check directly
     post({ type: "initSuccess" });
-    if (host._probeDriverSwitching) post({ type: "probeDriverSwitch", busy: true });
-    host._lastConnectedProbesMessage = "";
-    host._startProbeInventoryMonitor();
+    if (host._connectedProbes.driverSwitching) post({ type: "probeDriverSwitch", busy: true });
+    host._connectedProbes.lastMessage = "";
+    host._connectedProbes.startMonitor();
     // A rebuilt sidebar gets back the notices that are still current.
     host._notices.replay(post);
     host._syncSidebarTarget(post);
@@ -108,18 +108,18 @@ const PROBE_ACTIONS = {
     acceptTargetChip: async (host) => {
         host._assertConnectionEditable({ probeSerial: true });
         await host._probeConnectionService.acceptTargetMismatch();
-        await host._refreshConnectedProbes();
+        await host._connectedProbes.refresh();
     },
     selectProbeDriver: (host, message) =>
-        host._changeJlinkDriver(
+        host._connectedProbes.changeDriver(
             message.driver,
             connectedProbeId(message.deviceId) ? { deviceId: message.deviceId } : null
         ),
-    selectConnectedProbe: (host, message) => host._selectConnectedProbe(message.deviceId),
+    selectConnectedProbe: (host, message) => host._connectedProbes.select(message.deviceId),
     refreshConnectedProbes: async (host) => {
-        host._probeInventoryService().resetBackoff();
-        await host._refreshConnectedProbes();
-        if (await host._readConnectedProbeTargets()) await host._refreshConnectedProbes();
+        host._connectedProbes.inventory().resetBackoff();
+        await host._connectedProbes.refresh();
+        if (await host._connectedProbes.readTargets()) await host._connectedProbes.refresh();
     }
 };
 
@@ -143,9 +143,9 @@ async function probeAction({ host, post }, message) {
                 error: error.i18nKey ? host._t(error.i18nKey, error.i18nParams) : error.message || String(error)
             });
         }
-        host._refreshConnectedProbes().catch((refreshError) =>
-            console.error("Probe inventory check failed:", refreshError.message)
-        );
+        host._connectedProbes
+            .refresh()
+            .catch((refreshError) => console.error("Probe inventory check failed:", refreshError.message));
     }
 }
 

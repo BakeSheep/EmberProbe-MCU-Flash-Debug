@@ -395,10 +395,10 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     };
     provider._debugBridge = { hasAnySession: false };
     provider._sampling.session = { active: true };
-    provider._assertProbeDriverIdle = () => {};
+    provider._connectedProbes.assertDriverIdle = () => {};
     provider._cubemxConfiguration = { detectIoc: async () => "/w/app/app.ioc" };
     provider._elfView.refreshBindings = async () => refreshed++;
-    provider._refreshConnectedProbes = async () => null;
+    provider._connectedProbes.refresh = async () => null;
     provider.updateView = async () => {};
     provider._t = (key) => key;
     await provider.runAutoDetect(false);
@@ -417,7 +417,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     // Several probe types: nothing prompts for one; a forced detection opens the connected probe list, where
     // picking a device also sets its interface script.
     let reveals = 0;
-    provider._revealConnectedProbes = () => reveals++;
+    provider._connectedProbes.reveal = () => reveals++;
     detectedProbe = { debugger: "", probeCandidates: ["stlink.cfg", "jlink.cfg"] };
     workspace.delete("mcu.debugger");
     const picksBefore = picks.length;

@@ -727,7 +727,7 @@ class DebugLaunch {
             throw Object.assign(new Error("Stop the active debug session before external attach"), {
                 code: "PROBE_BUSY"
             });
-        if (this.host._probeDriverSwitching)
+        if (this.host._connectedProbes.driverSwitching)
             throw Object.assign(new Error("Wait for the driver operation before external attach"), {
                 code: "PROBE_DRIVER_BUSY"
             });
@@ -795,7 +795,7 @@ class DebugLaunch {
         }
     }
     async prepareProbe(folder) {
-        this.host._assertProbeDriverIdle();
+        this.host._connectedProbes.assertDriverIdle();
         this.host._debugBridge.setWorkspace(folder || this.host._commandContext().folder);
         // A session that ended with an unconfirmed OpenOCD exit leaves its server reachable; retry
         // the stop here so that one slow exit does not block every later debug start.

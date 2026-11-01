@@ -149,7 +149,7 @@ async function run() {
     const preludeModules = [...sidebarHtml.matchAll(/root\.(Ember\w+) = /g)].map((match) => match[1]);
     assert.ok(preludeModules.length >= 5);
     assert.strictEqual(new Set(preludeModules).size, preludeModules.length, "prelude modules are not repeated");
-    const probes = await provider._refreshConnectedProbes();
+    const probes = await provider._connectedProbes.refresh();
     assert.ok(probes && typeof probes.state === "string" && Array.isArray(probes.devices));
     assert.strictEqual(probes.debugger, "");
     console.log(`✓ connected-probe list scanned read-only (${probes.state}, ${probes.devices.length} device(s))`);

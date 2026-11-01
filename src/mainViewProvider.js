@@ -31,9 +31,7 @@ const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
 const { CubeMxFirmware } = require("./services/cubemxFirmware");
 const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization");
 const { FlashAuthorization } = require("./flashAuthorization");
-const { ProbeCoordinator, PROBE_OPERATIONS } = require("./probeCoordinator");
-// Operations that hold the workspace's probe; the refresh's own chip reads do not.
-const PROBE_OPERATIONS_IN_USE = PROBE_OPERATIONS.filter((name) => name !== "targetScan");
+const { ProbeCoordinator } = require("./probeCoordinator");
 const { ConfigurationStore } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
 const { runDownload } = require("./services/flashCommand");
@@ -53,6 +51,7 @@ const { ElfViewController } = require("./services/elfViewController");
 const { DebugLaunch } = require("./services/debugLaunch");
 const { WriteExecution } = require("./services/writeExecution");
 const { AgentOperations } = require("./services/agentOperations");
+const { ConnectedProbes } = require("./services/connectedProbes");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
@@ -63,14 +62,9 @@ const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
-const { resolveJlinkDriverTarget } = require("./services/jlinkDriverChoice");
-const { ProbeSelectionStore } = require("./services/probeSelectionStore");
-const { ProbeInventoryService } = require("./services/probeInventoryService");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
-const { probeFamily } = require("../skills/_emberprobe/probe-connection");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
-const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesModel } = require("./chip/targetIdentity");
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
 const {
     LiveWatchService,
@@ -99,7 +93,6 @@ const crypto = require("crypto");
 const i18n = require("./i18n");
 const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const { CACHE_KEYS } = require("./cacheKeys");
-const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
 // Opened runtime paths per chart watch list, so a restarted chart samples the same parts.
 const RUNTIME_EXPANSIONS_STATE_KEY = "liveWatch.runtimeExpansions";
 const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
@@ -147,6 +140,13 @@ function createDebugLaunch(host) {
     });
 }
 class MainViewProvider {
+    // Created by the `_notices`, `_elfView`, `debugLaunch`, `_writes`, `_agentOps` and `_connectedProbes` getters.
+    _noticeService = null;
+    _elfViewController = null;
+    _debugLaunchController = null;
+    _writeExecution = null;
+    _agentOperations = null;
+    _connectedProbesController = null;
     // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
         return (this._samplingController ??= createSamplingController(this));
@@ -166,19 +166,12 @@ class MainViewProvider {
             LiveWatchSession: liveWatch.LiveWatchSession
         }));
     }
+    get _connectedProbes() {
+        return (this._connectedProbesController ??= new ConnectedProbes(this, { vscode, listProbes }));
+    }
     constructor(context) {
         this.commandHandlers = {};
         this._context = context;
-        // Created by the `_notices` getter.
-        this._noticeService = null;
-        // Created by the `_elfView`, `debugLaunch`, `_writes` and `_agentOps` getters.
-        this._elfViewController = null;
-        this._debugLaunchController = null;
-        this._writeExecution = null;
-        this._agentOperations = null;
-        // The connected probe list's automatic chip read (_identifyConnectedTargets).
-        this._probeTargetsReading = false;
-        this._probeTargetsReadFor = "";
         /** @type {readonly number[]} */
         this._chartHistoryRecoveryDelaysMs = CHART_HISTORY_RECOVERY_DELAYS_MS;
         this._webviewAssetRootUri = vscode.Uri.joinPath(context.globalStorageUri, "webview-assets");
@@ -351,7 +344,7 @@ class MainViewProvider {
             },
             onStatus: (status) => {
                 this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status });
-                this._notifyProbeDriverStatus(status);
+                this._connectedProbes.notifyDriverStatus(status);
             },
             log: (message) => {
                 console.log(message);
@@ -360,9 +353,11 @@ class MainViewProvider {
         });
         this._probeConnectionService = new ProbeConnectionService({
             getConfig: () => this._configurationStore.snapshot(),
-            getSuccessfulConnection: () => this._probeSelectionStore().get(),
+            getSuccessfulConnection: () => this._connectedProbes.selection().get(),
             saveSuccessfulConnection: (value) =>
-                value === undefined ? this._probeSelectionStore().clear() : this._probeSelectionStore().set(value),
+                value === undefined
+                    ? this._connectedProbes.selection().clear()
+                    : this._connectedProbes.selection().set(value),
             onResolved: (connection) => {
                 this._resolvedProbeConnection = connection;
                 this.updateView();
@@ -370,12 +365,12 @@ class MainViewProvider {
             driverService: this._probeDriverService,
             identifyTarget: (request) => this._probeConnectionService.readTargetIdentity(request),
             onTargetStateChanged: () =>
-                this._refreshConnectedProbes().catch((error) =>
-                    console.error("Probe list refresh failed:", error.message)
-                ),
-            onDriverUnsupported: (error) => this._showJlinkDriverWarning(error.details || {}),
-            beforePrepare: () => this._assertProbeDriverIdle(),
-            onSelectionRequired: () => this._revealConnectedProbes()
+                this._connectedProbes
+                    .refresh()
+                    .catch((error) => console.error("Probe list refresh failed:", error.message)),
+            onDriverUnsupported: (error) => this._connectedProbes.showDriverWarning(error.details || {}),
+            beforePrepare: () => this._connectedProbes.assertDriverIdle(),
+            onSelectionRequired: () => this._connectedProbes.reveal()
         });
         this._cubemxFirmware = new CubeMxFirmware({
             vscode,
@@ -691,7 +686,7 @@ class MainViewProvider {
             this._assertConnectionEditable({ debugger: debuggerCfg });
             await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
             await this._showDebuggerConfig();
-            await this._refreshConnectedProbes();
+            await this._connectedProbes.refresh();
             return true;
         };
         // Select MCU target
@@ -727,32 +722,18 @@ class MainViewProvider {
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();
         snapshot.svd = (await this._svdManager.peekBound())?.path || "";
-        const selectedProbe = this._context ? this._probeSelectionStore().get() : null;
+        const selectedProbe = this._context ? this._connectedProbes.selection().get() : null;
         if (selectedProbe) {
             snapshot.selectedProbe = selectedProbe;
             // Previously installed skills read only the v1/v2 record.
-            snapshot.successfulConnection = this._probeSelectionStore().legacy();
+            snapshot.successfulConnection = this._connectedProbes.selection().legacy();
         }
         return snapshot;
-    }
-    _probeInventoryService() {
-        // Created on first use; recently switched J-Link drivers are reconciled into every scan.
-        if (!this._probeInventory)
-            this._probeInventory = new ProbeInventoryService({
-                listProbes,
-                reconcile: (inventory) => this._probeDriverService.reconcileInventory(inventory)
-            });
-        return this._probeInventory;
-    }
-    _probeSelectionStore() {
-        if (this._selectionStore?.state !== this._context.workspaceState)
-            this._selectionStore = new ProbeSelectionStore(this._context.workspaceState);
-        return this._selectionStore;
     }
     _assertConnectionEditable(values) {
         const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
         if (keys.some((key) => Object.hasOwn(values, key))) {
-            this._assertProbeDriverIdle();
+            this._connectedProbes.assertDriverIdle();
         }
         if (
             keys.some((key) => Object.hasOwn(values, key)) &&
@@ -763,13 +744,6 @@ class MainViewProvider {
         )
             throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
                 code: "PROBE_CONFIGURATION_BUSY"
-            });
-    }
-    _assertProbeDriverIdle() {
-        this._externalDebug?.assertPhysicalAvailable();
-        if (this._probeDriverSwitching)
-            throw Object.assign(new Error("J-Link USB driver change is still in progress"), {
-                code: "PROBE_DRIVER_BUSY"
             });
     }
     connectionConfigurationChanged(samplingSpeedChanged = false, samplingSpeedOnly = false) {
@@ -785,10 +759,10 @@ class MainViewProvider {
         );
         if (this._sampling.session || this.debugLaunch.managedServer) this._postConsumerStatuses({});
         // Only a visible sidebar shows the list; a hidden one rescans when it is shown again.
-        if (this._probeInventoryMonitor)
-            this._refreshConnectedProbes().catch((error) =>
-                console.error("Probe inventory check failed:", error.message)
-            );
+        if (this._connectedProbes.monitor)
+            this._connectedProbes
+                .refresh()
+                .catch((error) => console.error("Probe inventory check failed:", error.message));
         if (samplingSpeedChanged && this._sampling.session)
             void this._sampling.restart().catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
     }
@@ -1756,7 +1730,7 @@ class MainViewProvider {
         if (this.debugLaunch.gdbWarmupTimer) clearTimeout(this.debugLaunch.gdbWarmupTimer);
         this.debugLaunch.gdbWarmupTimer = null;
         this.debugLaunch.gdbWarmup?.dispose();
-        this._stopProbeInventoryMonitor();
+        this._connectedProbes.stopMonitor();
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
         this._elfService.invalidate();
@@ -1874,7 +1848,7 @@ class MainViewProvider {
         if (!info || !info.deviceId || (chipInfo.uidBaseForTarget(diag.target) && !info.uid)) ch.show(true);
     }
     resolveWebviewView(webviewView) {
-        this._stopProbeInventoryMonitor();
+        this._connectedProbes.stopMonitor();
         this._sidebarReady = false;
         this._webviewView = webviewView;
         webviewView.webview.options = {
@@ -1892,10 +1866,10 @@ class MainViewProvider {
         const visibilityListener = webviewView.onDidChangeVisibility?.(() => {
             if (this._webviewView !== webviewView) return;
             if (!webviewView.visible) {
-                this._stopProbeInventoryMonitor();
+                this._connectedProbes.stopMonitor();
                 return;
             }
-            this._startProbeInventoryMonitor();
+            this._connectedProbes.startMonitor();
             // Retained documents do not initialize again. Replay environment changes missed while hidden.
             sidebarWebview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
             if (this._skillStatusService.lastStatus)
@@ -1914,7 +1888,7 @@ class MainViewProvider {
             visibilityListener?.dispose();
             this._webviewRenders?.delete(sidebarWebview);
             if (this._webviewView === webviewView) {
-                this._stopProbeInventoryMonitor();
+                this._connectedProbes.stopMonitor();
                 this._webviewView = null;
                 this._sidebarReady = false;
             }
@@ -1982,8 +1956,8 @@ class MainViewProvider {
         if (writeMcu) await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
         if (writeElf) await this._elfView.refreshBindings();
         await this.updateView();
-        if (writeDebugger) await this._refreshConnectedProbes();
-        if (pickProbe && force) this._revealConnectedProbes();
+        if (writeDebugger) await this._connectedProbes.refresh();
+        if (pickProbe && force) this._connectedProbes.reveal();
         const found = [
             detectedIoc && ".ioc: " + path.basename(detectedIoc),
             result.elf && this._t("msg.foundElf", { name: path.basename(result.elf) }),
@@ -2023,394 +1997,6 @@ class MainViewProvider {
             };
         } catch {
             return { targets: [], interfaces: [] };
-        }
-    }
-    _stopProbeInventoryMonitor() {
-        if (this._probeInventoryMonitor) clearTimeout(this._probeInventoryMonitor.timer);
-        this._probeInventoryMonitor = null;
-        this._connectedProbesRevision = (this._connectedProbesRevision || 0) + 1;
-    }
-    // Lists every connected probe while the sidebar is visible, whatever interface script is selected.
-    _startProbeInventoryMonitor() {
-        if (
-            !this._sidebarReady ||
-            !this._webviewView ||
-            this._webviewView.visible === false ||
-            this._shutdownPromise ||
-            this._probeInventoryMonitor
-        )
-            return;
-        const monitor = { timer: null };
-        this._probeInventoryMonitor = monitor;
-        this._probeInventoryService().resetBackoff();
-        const poll = async () => {
-            if (this._probeInventoryMonitor !== monitor) return;
-            try {
-                await this._refreshConnectedProbes();
-            } catch (error) {
-                console.error("Probe inventory check failed:", error.message);
-            } finally {
-                // Wait after each completed read-only scan; slow enumeration must not pile up requests.
-                if (this._probeInventoryMonitor === monitor) {
-                    monitor.timer = setTimeout(poll, this._probeInventoryService().pollDelay());
-                    monitor.timer.unref();
-                }
-            }
-        };
-        void poll();
-    }
-    _connectedProbesView(inventory) {
-        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger) || "";
-        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore) || "";
-        const probeSerial = vscode.workspace.getConfiguration("emberprobe").get("probeSerial", "");
-        const successfulConnection = this._probeSelectionStore().get();
-        const service = this._probeConnectionService;
-        const view = {
-            debugger: debuggerCfg,
-            override: !!probeSerial,
-            ...this._probeInventoryService().describe(
-                { probe: debuggerCfg, probeSerial, successfulConnection },
-                inventory
-            )
-        };
-        // Target chips come from operations; without the connection service there are none to show.
-        if (!service) return view;
-        Object.assign(view, service.describeTargetState(mcuCore));
-        const automatic = service.isAutomatic({ probeSerial, debugger: debuggerCfg }, successfulConnection);
-        const expected = automatic ? service.expectedTarget(mcuCore, successfulConnection) : null;
-        const readings = new Map(
-            (inventory?.devices || []).map((device) => [device.id, service.targetReading(device)])
-        );
-        view.devices = view.devices.map((device) =>
-            readings.get(device.id)
-                ? {
-                      ...device,
-                      targetLabel: describeTargetIdentity(readings.get(device.id)),
-                      targetCore: describeTargetCore(readings.get(device.id))
-                  }
-                : device
-        );
-        // Several probes of one family: show the one the next operation would pick, as pickByTarget does: the probe
-        // automatic mode last found the recorded chip on, or without a record the only one with the configured model.
-        if (automatic && view.state === "ambiguous") {
-            const candidates = view.devices.filter((device) => device.matchesDebugger && device.selectable);
-            const matches = candidates.filter((device) => {
-                const reading = readings.get(device.id);
-                if (!reading) return false;
-                return expected ? sameTarget(reading, expected) : targetMatchesModel(reading, mcuCore) === true;
-            });
-            // Chip readings live only in memory: after a restart the list reads them itself (see
-            // _identifyConnectedTargets) rather than asking the user to pick a probe automatic mode can find.
-            const readKey = this._probeTargetReadKey(view, mcuCore);
-            if (
-                matches.length !== 1 &&
-                service.identifyTarget &&
-                mcuCore &&
-                candidates.length > 1 &&
-                candidates.some((device) => !readings.get(device.id)) &&
-                this._probeTargetsReadFor !== readKey
-            )
-                Object.assign(view, { state: "identifying", error: null });
-            if (matches.length === 1)
-                Object.assign(view, {
-                    state: "selected",
-                    source: "target-chip",
-                    deviceId: matches[0].id,
-                    probeSerial: matches[0].trustedSerial,
-                    error: null,
-                    devices: view.devices.map((device) => ({ ...device, selected: device.id === matches[0].id }))
-                });
-        }
-        // The probe an operation holds is in use; its chip is shown again once the operation ends.
-        if (view.state === "selected" && this._probeCoordinator?.anyActive(PROBE_OPERATIONS_IN_USE))
-            view.devices = view.devices.map((device) =>
-                device.id === view.deviceId && device.targetLabel
-                    ? { ...device, targetLabel: "", targetCore: "" }
-                    : device
-            );
-        return view;
-    }
-    _probeTargetReadKey(view, target) {
-        return JSON.stringify([view.debugger, target, ...view.devices.map((device) => device.id)]);
-    }
-    // Reads the chips once for this set of probes, so automatic mode's choice shows without a manual refresh. A
-    // probe that cannot be read leaves the list asking the user to pick, as before.
-    _identifyConnectedTargets(view) {
-        if (this._probeTargetsReading) return;
-        const key = this._probeTargetReadKey(view, this._context.workspaceState.get(CACHE_KEYS.mcuCore) || "");
-        this._probeTargetsReading = true;
-        void this._readConnectedProbeTargets()
-            .catch((error) => console.error("Probe chip read failed:", error.message))
-            .finally(() => {
-                this._probeTargetsReading = false;
-                this._probeTargetsReadFor = key;
-                return this._refreshConnectedProbes();
-            })
-            .catch((error) => console.error("Probe list refresh failed:", error.message));
-    }
-    // Refresh reads the chip on each listed probe the extension can open on its own. Nothing is read while a probe
-    // operation runs; a probe another program holds cannot be opened and keeps no reading, so neither shows a chip.
-    async _readConnectedProbeTargets() {
-        const service = this._probeConnectionService;
-        const target = this._context.workspaceState.get(CACHE_KEYS.mcuCore) || "";
-        if (!service?.identifyTarget || !target || this._probeDriverSwitching) return false;
-        const { inventory } = await this._probeInventoryService().scan();
-        const view = this._connectedProbesView(inventory);
-        // A custom interface script opens its own device; a setting or that script shows only the selected one.
-        const scriptChooses = view.state === "script";
-        const listed = view.override || scriptChooses ? view.devices.filter((device) => device.selected) : view.devices;
-        const devices = new Map((inventory?.devices || []).map((device) => [device.id, device]));
-        const probes = listed.flatMap((device) => {
-            const probe = scriptChooses || device.matchesDebugger ? view.debugger : device.defaultConfig;
-            if (!probe || !devices.has(device.id) || !(scriptChooses || device.selectable)) return [];
-            const probeSerial = scriptChooses ? "" : device.trustedSerial || "";
-            return [{ device: devices.get(device.id), probe, probeSerial }];
-        });
-        if (!probes.length || this._probeCoordinator.anyActive()) return false;
-        const executable = await this._resolveOpenOcdPath(
-            vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd")
-        );
-        if (!executable) return false;
-        let lease;
-        try {
-            lease = this._probeCoordinator.acquire("targetScan");
-        } catch {
-            return false;
-        }
-        try {
-            await service.readListedTargets(probes, { executable, target, cwd: this._commandContext().cwd });
-        } finally {
-            lease.release();
-        }
-        return true;
-    }
-    // The connected device the workspace's next operation would use, or "" when none is selected.
-    async _selectedProbeDeviceId() {
-        const view = this._connectedProbesView((await this._probeInventoryService().scan()).inventory);
-        return view.state === "selected" ? view.deviceId : "";
-    }
-    // The list's card shows each J-Link's driver and switches it; only an operation the driver blocks notifies.
-    async _refreshConnectedProbes() {
-        if (this._probeDriverSwitching) return null;
-        const revision = (this._connectedProbesRevision = (this._connectedProbesRevision || 0) + 1);
-        const { inventory } = await this._probeInventoryService().scan();
-        if (this._probeDriverSwitching || revision !== this._connectedProbesRevision) return null;
-        const view = this._connectedProbesView(inventory);
-        const message = JSON.stringify({ type: "connectedProbes", ...view });
-        // Rebuilding the list would close a dropdown the user has open; only post changes.
-        if (message !== this._lastConnectedProbesMessage) {
-            this._lastConnectedProbesMessage = message;
-            this._webviewView?.webview.postMessage(JSON.parse(message));
-        }
-        if (view.state === "identifying") this._identifyConnectedTargets(view);
-        return view;
-    }
-    // Opens the sidebar's connected probe list where the user picks the probe an operation could not choose.
-    _revealConnectedProbes() {
-        this._webviewView?.show?.(true);
-        this._webviewView?.webview.postMessage({ type: "revealConnectedProbes" });
-        this._refreshConnectedProbes().catch((error) => console.error("Probe list refresh failed:", error.message));
-    }
-    // Makes a connected device the workspace's probe. A device of another family also switches the interface
-    // script to that family's default, so the list and the next operation never disagree.
-    async _selectConnectedProbe(deviceId) {
-        if (deviceId !== "" && !validation.connectedProbeId(deviceId))
-            throw Object.assign(new Error("Invalid connected probe"), { code: "PROBE_SELECTION_INVALID" });
-        this._assertConnectionEditable({ probeSerial: true });
-        if (vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""))
-            throw Object.assign(new Error("emberprobe.probeSerial selects the probe; clear it to choose another"), {
-                code: "PROBE_SELECTION_LOCKED",
-                i18nKey: "probe.selectionLocked"
-            });
-        const store = this._probeSelectionStore();
-        this._probeInventoryService().resetBackoff();
-        if (!deviceId) {
-            await store.clear();
-            this._probeConnectionService.clearTargetMismatch();
-            this._resolvedProbeConnection = null;
-            return this._refreshConnectedProbes();
-        }
-        const view = this._connectedProbesView((await this._probeInventoryService().scan()).inventory);
-        const device = view.devices.find((item) => item.id === deviceId);
-        if (!device)
-            throw Object.assign(new Error("The selected probe is no longer connected"), {
-                code: "PROBE_SELECTED_NOT_FOUND",
-                i18nKey: "probe.selectionGone"
-            });
-        if (view.state === "script")
-            throw Object.assign(new Error("The interface script selects its own device"), {
-                code: "PROBE_SELECTION_LOCKED",
-                i18nKey: "probe.scriptDecides"
-            });
-        if (!device.selectable || !device.defaultConfig)
-            throw Object.assign(new Error("This probe cannot be selected"), {
-                code: "PROBE_SELECTION_REQUIRED",
-                i18nKey: device.reasonKey || "probe.noDefaultConfig"
-            });
-        const current = view.debugger;
-        const probe = probeFamily({ probe: current }) === device.family ? current : device.defaultConfig;
-        if (probe !== current) this._assertConnectionEditable({ debugger: probe });
-        if (probe !== current) await this._context.workspaceState.update(CACHE_KEYS.debugger, probe);
-        try {
-            // Without a trusted serial the device is the only one of its family and is chosen as the unique device,
-            // so only an earlier pick is forgotten; a chip recorded in automatic mode stays for that script.
-            if (device.trustedSerial)
-                await store.set({
-                    probe,
-                    probeSerial: device.trustedSerial,
-                    family: device.family,
-                    deviceId: device.id,
-                    source: "user"
-                });
-            else if (store.get()?.source === "user") await store.clear();
-        } catch (error) {
-            if (probe !== current) await this._context.workspaceState.update(CACHE_KEYS.debugger, current || undefined);
-            throw error;
-        }
-        this._resolvedProbeConnection = null;
-        // The card's tooltip announced the script it switches to; the configuration row shows it.
-        if (probe !== current) await this._showDebuggerConfig();
-        return this._refreshConnectedProbes();
-    }
-    _logJlinkDriverDiagnostics(target) {
-        if (!target.interfaces?.length) return;
-        if (!this._chipOutput) {
-            this._chipOutput = vscode.window.createOutputChannel(this._t("diag.channelName"));
-            this._context.subscriptions?.push(this._chipOutput);
-        }
-        this._chipOutput.appendLine(
-            `[EmberProbe] J-Link USB driver not switchable (${target.driverReason || target.driverKind}): ` +
-                `device=${target.deviceId || ""}, serial=${target.probeSerial || ""}`
-        );
-        for (const item of target.interfaces)
-            this._chipOutput.appendLine(
-                `  ${item.instanceId} | ${item.name} | service=${item.service} | ` +
-                    `provider=${item.driverProvider} | inf=${item.driverInf}`
-            );
-    }
-    // `target` identifies the exact J-Link the warning is about: instanceId, deviceId, probeSerial and driverKind.
-    _showJlinkDriverWarning(target = {}) {
-        if (
-            process.platform !== "win32" ||
-            this._context.workspaceState.get(JLINK_DRIVER_WARNING_IGNORED_KEY) === true ||
-            this._jlinkDriverWarningPending
-        )
-            return;
-        // Only a verified SEGGER binding of a uniquely identified interface can be switched by the helper.
-        const switchable = !target.driverKind || target.driverKind === "repair";
-        const switchDriver = this._t("probe.switchToWinUsb");
-        const ignore = this._t("probe.ignoreDriverWarning");
-        const probe = target.probeSerial ? `J-Link ${target.probeSerial}` : "J-Link";
-        if (!switchable) this._logJlinkDriverDiagnostics(target);
-        const message = switchable
-            ? this._t("probe.winusbRequired", { probe })
-            : this._t("probe.driverNotSwitchableWarning", {
-                  probe,
-                  reason: this._t(target.driverReasonKey || "probe.driverReasonInterface")
-              });
-        // Do not hold the failed operation's probe lease while waiting for a notification response.
-        this._jlinkDriverWarningPending = Promise.resolve(
-            switchable
-                ? vscode.window.showWarningMessage(message, switchDriver, ignore)
-                : vscode.window.showWarningMessage(message, ignore)
-        )
-            .then(async (selected) => {
-                if (selected === ignore)
-                    await this._context.workspaceState.update(JLINK_DRIVER_WARNING_IGNORED_KEY, true);
-                else if (switchable && selected === switchDriver) {
-                    await new Promise((resolve) => setImmediate(resolve));
-                    await this._changeJlinkDriver("winusb", target);
-                }
-            })
-            .catch((error) => {
-                if (this._notices.get("config", "probe-driver")?.level !== "error")
-                    this._notices.notify("config", "probe-driver", {
-                        level: "error",
-                        titleKey: "notice.driverSwitchFailed",
-                        error
-                    });
-            })
-            .finally(() => {
-                this._jlinkDriverWarningPending = null;
-            });
-        return this._jlinkDriverWarningPending;
-    }
-    // Driver install/restore progress shows next to the J-Link driver choice instead of the footer.
-    _notifyProbeDriverStatus(status) {
-        const busy = status.state === "installing" || status.state === "restoring";
-        const done = status.state === "ready" || status.state === "restored";
-        if (!busy && !done && status.state !== "error") return;
-        const keys = {
-            installing: "probe.driverInstalling",
-            ready: "probe.driverReady",
-            restoring: "probe.driverRestoring",
-            restored: "probe.driverRestored"
-        };
-        this._notices.notify(
-            "config",
-            "probe-driver",
-            status.state === "error"
-                ? { level: "error", titleKey: "notice.driverSwitchFailed", message: status.message || "" }
-                : { level: done ? "success" : "info", busy, key: keys[status.state] }
-        );
-    }
-    // `target.deviceId` pins the J-Link: the sidebar passes the device its driver control belongs to and a
-    // notification the device its blocked operation resolved, so a newly attached probe is never switched instead.
-    // Without a target the J-Link is resolved from the workspace selection.
-    async _changeJlinkDriver(driver, target = null) {
-        if (driver !== "winusb" && driver !== "segger")
-            throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
-        // Each attempt reports its own outcome in the driver notice.
-        this._notices.clear("config", "probe-driver");
-        this._assertProbeDriverIdle();
-        this._assertConnectionEditable({ probeSerial: true });
-        if (this._probeCoordinator?.anyActive())
-            throw Object.assign(new Error("Wait for the current probe operation to finish before changing drivers"), {
-                code: "PROBE_BUSY"
-            });
-        this._probeDriverSwitching = true;
-        this._connectedProbesRevision = (this._connectedProbesRevision || 0) + 1;
-        this._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: true });
-        const resolveTarget = (inventory) => {
-            const resolved = resolveJlinkDriverTarget(
-                inventory,
-                vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
-                this._probeSelectionStore().get(),
-                target?.deviceId ? target : null
-            );
-            if (resolved.error) throw resolved.error;
-            return resolved.choice;
-        };
-        try {
-            const choice = resolveTarget((await this._probeInventoryService().scan()).inventory);
-            if (target?.instanceId && choice.instanceId !== target.instanceId)
-                throw Object.assign(new Error("The selected J-Link changed; select its USB driver in the sidebar"), {
-                    code: "PROBE_DRIVER_SELECTION_CHANGED",
-                    i18nKey: "probe.driverSelectionChanged"
-                });
-            if (choice.driver === driver) return;
-            const result =
-                driver === "winusb"
-                    ? await this._probeDriverService.ensure(choice.connection)
-                    : await this._probeDriverService.restore(choice.connection);
-            let verified;
-            try {
-                verified = resolveTarget(driver === "winusb" ? result.inventory : result);
-            } catch {
-                verified = null;
-            }
-            if (verified?.driver !== driver || verified.instanceId !== choice.instanceId)
-                throw Object.assign(new Error("The selected J-Link driver could not be verified after switching"), {
-                    code: "PROBE_DRIVER_VERIFY_FAILED"
-                });
-            // The user chose SEGGER in the card, which shows it; an operation it blocks still notifies.
-            this._resolvedProbeConnection = null;
-        } finally {
-            this._probeDriverSwitching = false;
-            this._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: false });
-            this._refreshConnectedProbes().catch((error) =>
-                console.error("Probe inventory check failed:", error.message)
-            );
         }
     }
     getModernWebviewContent() {
