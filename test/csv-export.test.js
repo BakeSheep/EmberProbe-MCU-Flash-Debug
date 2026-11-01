@@ -25,14 +25,14 @@ const { scenario } = require("./helpers/scenario");
                 [2, { ...entry, watchKey: "graph2", post: () => {} }]
             ]);
             let chartType = "f32";
-            p._getCachedConsumerTypes = () => ({
+            p._sampling.cachedConsumerTypes = () => ({
                 sidebar: new Map([["value", "u32"]]),
                 graphs: new Map([
                     ["graph", new Map([["value", chartType]])],
                     ["graph2", new Map([["value", "i32"]])]
                 ])
             });
-            p._compositeMap = () => new Map();
+            p._sampling.compositeMap = () => new Map();
             p._latestSidebarSamples = new Map();
             p._liveWatchService = service;
             p._samplingArchive = archive;

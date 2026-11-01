@@ -114,7 +114,7 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
     p._webviewAssetRootUri = {
         fsPath: require("path").join(require("os").tmpdir(), "chart-host-" + require("crypto").randomUUID())
     };
-    p._refreshSamplingPlan = async () => {};
+    p._sampling.refreshSamplingPlan = async () => {};
     p.openLiveWatchPanel();
     const closing = p._livePanels.get(3);
     values.set(closing.watchKey, [{ name: "shared" }]);
@@ -300,7 +300,7 @@ async function testShutdownFence(Provider) {
     p._livePanelFocusOrder = 0;
     p._lang = "en";
     p._t = (key) => key;
-    p._invalidateConsumerTypes = () => {};
+    p._sampling.invalidateConsumerTypes = () => {};
     p._renderWebview = () => {};
     p._syncGraphTarget = () => {};
     p._scalarWatchList = (key) => values.get(key) || [];

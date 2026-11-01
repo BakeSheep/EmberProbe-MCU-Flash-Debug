@@ -271,11 +271,11 @@ const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlan
         Object.assign(provider, {
             _latestSidebarSamples: new Map(),
             _livePanels: new Map(),
-            _refreshSamplingPlan: async () => {},
             _syncSidebarTarget() {},
             _syncGraphTarget() {},
             _pruneSampleMap() {}
         });
+        Object.assign(provider._sampling, { refreshSamplingPlan: async () => {} });
         await provider._saveWatchList("mcu.sidebarWatchList", watches);
         const persisted = saved.get("mcu.sidebarWatchList");
         assert.deepStrictEqual(persisted, [

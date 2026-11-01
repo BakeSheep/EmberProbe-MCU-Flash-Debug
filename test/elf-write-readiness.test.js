@@ -222,7 +222,7 @@ const { writePlan } = require("../src/services/agentPlans");
     cached._hydrateSelectedLayouts = async () => {};
     cached._rebindWatchLists = async () => {};
     cached._syncSidebarTarget = () => {};
-    cached._refreshSamplingPlan = async () => {};
+    cached._sampling.refreshSamplingPlan = async () => {};
     cached._onElfChange("dwarfReady", changed);
     await cached._elfRebindPromise;
     assert.notStrictEqual(cached._symbolNameIndex(symbols), enriched, "DWARF completion also invalidates the index");
@@ -289,7 +289,6 @@ const { writePlan } = require("../src/services/agentPlans");
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
                 _liveConsumers: new Set(),
-                _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
                 _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
@@ -302,6 +301,7 @@ const { writePlan } = require("../src/services/agentPlans");
                     throw Error("Late sample accepted");
                 }
             });
+            Object.assign(p._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
             return { p, sessions, statuses };
         }
         const variable = providerFixture().p;

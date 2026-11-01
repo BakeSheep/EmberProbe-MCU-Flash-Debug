@@ -53,7 +53,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     host._samplingCoordinator = { setDebugIntent: (bridge, intent) => bridge.setIntent(intent) };
     host._postConsumerStatuses = () => {};
     host._t = (key) => key;
-    host._activeReadPlan = () => [];
+    host._sampling.activeReadPlan = () => [];
     host._syncDebugSampleSession = () => {};
     host._probeConnectionService = {
         recordSuccess: () => {

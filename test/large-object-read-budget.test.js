@@ -319,19 +319,18 @@ function pausedBridge(ram, onRead = () => {}) {
         let plan = [big, word];
         Object.assign(host, {
             _managedDebugServer: { capabilities: {} },
-            _runtimeDeniedKey: "",
-            _runtimeOverBudgetKey: "",
-            _runtimeRamCache: null,
             readElfSymbols: () => ({
                 elf: { sha256: "elf" },
                 memory: { sections: [{ name: ".bss", addr: BASE, size: 0x20000, flags: 3 }] }
             }),
-            _activeReadPlan: () => plan,
-            _applySamplingPlan: (server, items) => applied.push(items),
             _handleRawSamples: (samples) => raw.push(...samples),
             _postLive: (message) => posts.push(message)
         });
-        assert.deepStrictEqual(host._configureManagedRuntimeWatch(), [word]);
+        Object.assign(host._sampling, {
+            activeReadPlan: () => plan,
+            applySamplingPlan: (server, items) => applied.push(items)
+        });
+        assert.deepStrictEqual(host._sampling.configureManagedRuntimeWatch(), [word]);
         assert.deepStrictEqual(applied, [[word]]);
         assert.deepStrictEqual(
             raw.map((sample) => [sample.name, sample.bytes, sample.diagnostic.code]),
@@ -341,21 +340,21 @@ function pausedBridge(ram, onRead = () => {}) {
             { type: "liveError", key: "live.runtimeBudgetExceededNames", params: { names: "big" } }
         ]);
 
-        host._configureManagedRuntimeWatch();
+        host._sampling.configureManagedRuntimeWatch();
         assert.strictEqual(raw.length, 2, "rejected items are marked again after a paused snapshot");
         assert.strictEqual(posts.length, 1, "the notice is not repeated for the same rejected set");
 
         plan = [big];
-        assert.throws(() => host._configureManagedRuntimeWatch(), { code: "LIVE_READ_BUDGET_EXCEEDED" });
+        assert.throws(() => host._sampling.configureManagedRuntimeWatch(), { code: "LIVE_READ_BUDGET_EXCEEDED" });
         assert.strictEqual(raw.at(-1).name, "big", "the item is marked even when nothing can be sampled");
         assert.strictEqual(applied.length, 2, "an empty plan is not applied when every item was rejected");
 
         plan = [word];
-        host._configureManagedRuntimeWatch();
-        assert.strictEqual(host._runtimeOverBudgetKey, "");
+        host._sampling.configureManagedRuntimeWatch();
+        assert.strictEqual(host._sampling._runtimeOverBudgetKey, "");
 
         // Explicit Agent reads and writes still require the whole request to fit.
-        assert.throws(() => host._runtimeRamPlan([big, word], true), { code: "LIVE_READ_BUDGET_EXCEEDED" });
+        assert.throws(() => host._sampling.runtimeRamPlan([big, word], true), { code: "LIVE_READ_BUDGET_EXCEEDED" });
 
         const namedBig = { ...big, name: "_ZN3lab5largeE" };
         const denied = { name: "_ZN3lab6deviceE.value", address: BASE - 4, size: 4 };
@@ -368,7 +367,7 @@ function pausedBridge(ram, onRead = () => {}) {
             ]
         });
         plan = [namedBig, denied, word];
-        host._configureManagedRuntimeWatch();
+        host._sampling.configureManagedRuntimeWatch();
         assert.deepStrictEqual(posts.slice(-2), [
             { type: "liveError", key: "live.runtimeAddressRejectedNames", params: { names: "lab::device.value" } },
             { type: "liveError", key: "live.runtimeBudgetExceededNames", params: { names: "lab::large" } }

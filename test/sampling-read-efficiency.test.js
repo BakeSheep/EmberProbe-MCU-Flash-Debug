@@ -266,14 +266,14 @@ function startupFixture(mode, branch) {
     );
     const provider = Object.create(loadProvider({}).prototype);
     provider.readElfSymbols = () => ({ memory: { sections } });
-    provider._consumerTypes = () => ({
+    provider._sampling.consumerTypes = () => ({
         graphs: new Map([["g", new Map([["a", "u32"]])]]),
         sidebar: new Map([["b", "u32"]])
     });
     provider._liveIntervalMs = 10;
     for (const mode of ["standalone", "debug"]) {
         const session = new ManagedOpenOcdSession(null, { mode }, {});
-        provider._applySamplingPlan(session, pair);
+        provider._sampling.applySamplingPlan(session, pair);
         assert.deepStrictEqual(session.ramSectionRanges, ranges);
     }
     let forwarded;
@@ -288,7 +288,7 @@ function startupFixture(mode, branch) {
         ranges
     );
     assert.deepStrictEqual(forwarded, [pair, ranges]);
-    provider._applySamplingPlan(
+    provider._sampling.applySamplingPlan(
         {
             setWatch: (items, deliveredRanges) => {
                 forwarded = deliveredRanges;

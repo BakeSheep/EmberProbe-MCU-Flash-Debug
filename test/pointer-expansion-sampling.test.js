@@ -286,7 +286,7 @@ const member = (tree, name) => tree.members.find((entry) => entry.name === name)
     const posted = [];
     entry.post = (message) => posted.push(message);
     let refreshes = 0;
-    p._refreshSamplingPlan = async () => refreshes++;
+    p._sampling.refreshSamplingPlan = async () => refreshes++;
     await p._setPointerExpandedOnly(true);
     assert.strictEqual(state.get("liveWatch.pointerExpandedOnly"), true);
     assert.deepStrictEqual(posted.at(-1), { type: "pointerSampling", expandedOnly: true });

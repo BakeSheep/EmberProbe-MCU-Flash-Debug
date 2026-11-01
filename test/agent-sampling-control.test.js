@@ -55,7 +55,6 @@ function fixture() {
         _liveConsumers: new Set(),
         _livePanels: new Map([["chart", { post: (message) => chart.push(message) }]]),
         _webviewView: { webview: { postMessage: (message) => sidebar.push(message) } },
-        _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
         _resolveOpenOcdPath: async () => "fake-openocd",
         _probeConnectionService: {
             prepare: async (_options, interactive) => {
@@ -67,6 +66,7 @@ function fixture() {
         _commandContext: () => ({}),
         _t: (key) => key
     });
+    Object.assign(provider._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
     return { provider, sidebar, chart };
 }
 
@@ -154,7 +154,7 @@ function fixture() {
     assert.strictEqual(p._liveWatchRunning, false);
 
     const { provider: q } = fixture();
-    q._activeReadPlan = () => [];
+    q._sampling.activeReadPlan = () => [];
     const empty = await q._controlAgentSampling("start");
     assert.strictEqual(empty.intentEnabled, true);
     assert.strictEqual(empty.canRead, false, "empty watch lists do not claim acquisition");
@@ -225,7 +225,6 @@ function fixture() {
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
                 _liveConsumers: new Set(),
-                _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
                 _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
@@ -238,6 +237,7 @@ function fixture() {
                     throw Error("Late sample accepted");
                 }
             });
+            Object.assign(p._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
             return { p, sessions, statuses };
         }
         for (const phase of ["prepare", "port"]) {
@@ -345,7 +345,6 @@ function fixture() {
                 elf: {},
                 symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
             }),
-            _runtimeReadRanges: () => [],
             _firmwareConsistency: () => ({}),
             // A live-sampling (or debug server) connection is reused, not a temporary probe session.
             _withAgentProbe: (handler) =>
@@ -359,6 +358,7 @@ function fixture() {
             _samplingStatus: () => ({ running: false }),
             _liveIntervalMs: 100
         });
+        Object.assign(host._sampling, { runtimeReadRanges: () => [] });
         const sampling = host._sampleAgentVariables({ variables: [{ name: "tick" }], count: 1000, intervalMs: 60000 });
         const outcome = sampling.then(
             () => "completed",

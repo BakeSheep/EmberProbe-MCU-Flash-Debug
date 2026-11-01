@@ -48,7 +48,7 @@ function deferred() {
     p._chipInfoService = { running: false };
     p._debugBridge = { setIntent: () => {} };
     p._context = { workspaceState: { get: () => "configured" } };
-    p._activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
+    p._sampling.activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
     p._liveConsumers = new Set();
     p._setLiveInterval = () => {};
     p._commandContext = () => ({});
@@ -94,7 +94,7 @@ function deferred() {
     p._latestSidebarSamples = new Map();
     p._livePanels = new Map([["panel", { watchKey: "chart", latestSamples: new Map() }]]);
     p._pruneSampleMap = () => calls.push("prune");
-    p._refreshSamplingPlan = async () => calls.push("refresh");
+    p._sampling.refreshSamplingPlan = async () => calls.push("refresh");
     p._syncSidebarTarget = (_post, skipElf) => {
         assert.strictEqual(skipElf, true, "list edits must not resend the ELF snapshot");
         calls.push("sidebar");
@@ -150,7 +150,6 @@ function deferred() {
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
                 _liveConsumers: new Set(),
-                _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
                 _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
@@ -163,6 +162,7 @@ function deferred() {
                     throw Error("Late sample accepted");
                 }
             });
+            Object.assign(p._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
             return { p, sessions, statuses };
         }
         const { p, sessions, statuses } = providerFixture();

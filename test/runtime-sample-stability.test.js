@@ -183,14 +183,14 @@ const sample = (item, read) =>
     };
     p._livePanels = new Map();
     p._scalarWatchList = (key) => (key === "mcu.sidebarWatchList" ? [symbol] : []);
-    p._runtimeReadRanges = (plan) => plan;
+    p._sampling.runtimeReadRanges = (plan) => plan;
     p.readElfSymbols = () => {
         throw new Error("no ELF");
     };
     p._pointerExpandedOnly = true;
-    assert.deepStrictEqual(p._activeReadPlan()[0].runtimeExpanded, ["", ".focus"]);
+    assert.deepStrictEqual(p._sampling.activeReadPlan()[0].runtimeExpanded, ["", ".focus"]);
     p._pointerExpandedOnly = false;
-    assert.strictEqual(p._activeReadPlan()[0].runtimeExpanded, undefined, "off reads the whole object");
+    assert.strictEqual(p._sampling.activeReadPlan()[0].runtimeExpanded, undefined, "off reads the whole object");
 
     const view = render(getModernWebviewContent({}, "en"));
     try {

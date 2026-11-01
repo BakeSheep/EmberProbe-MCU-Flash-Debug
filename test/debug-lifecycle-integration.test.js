@@ -221,8 +221,8 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         p._managedDebugToken = "token";
         p._managedDebugSessionId = "";
         p._terminatedDebugSessionIds = new Set();
-        p._activeReadPlan = () => [];
-        p._configureManagedRuntimeWatch = () => [{ name: "tick", address: 0x20000000, size: 4 }];
+        p._sampling.activeReadPlan = () => [];
+        p._sampling.configureManagedRuntimeWatch = () => [{ name: "tick", address: 0x20000000, size: 4 }];
         p._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
         const server = {
             samplingEnabled: true,
@@ -258,7 +258,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             p._livePanels = new Map();
             p._postConsumerStatuses = () => {};
             p._setSamplingArchiveBackpressure(true);
-            await p._refreshSamplingPlan();
+            await p._sampling.refreshSamplingPlan();
             // Runtime sampling runs in the Worker: it keeps acquiring and only holds delivery.
             assert.strictEqual(server.samplingEnabled, true);
             assert.strictEqual(server.deliveryHold, true);
@@ -307,7 +307,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._debugStartupErrorReported = false;
             prov._debugStartupFailureCleanedUp = false;
             prov._t = (key) => key;
-            prov._activeReadPlan = () => [];
+            prov._sampling.activeReadPlan = () => [];
             prov._commandContext = () => ({ folder: null });
             prov._managedDebugServer = { setSamplingEnabled: () => {} };
 
@@ -493,7 +493,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._t = (key) => key;
             prov._postConsumerStatuses = () => {};
             prov._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
-            prov._activeReadPlan = () => [];
+            prov._sampling.activeReadPlan = () => [];
 
             // P2 setup: Acquire debugServer lease
             prov._debugServerLease = coordinator.acquire("debugServer");
@@ -605,7 +605,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._t = (key) => key;
             prov._postConsumerStatuses = () => {};
             prov._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
-            prov._activeReadPlan = () => [];
+            prov._sampling.activeReadPlan = () => [];
 
             prov._debugServerLease = coordinator.acquire("debugServer");
             let serverStopped = false;

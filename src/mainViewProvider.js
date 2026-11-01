@@ -80,14 +80,12 @@ const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesMod
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
 const {
     LiveWatchService,
-    buildActiveReadPlan,
     buildChartHistoryItems,
     collectRuntimeHistoryLeaves,
     selectFocusedPanel,
     selectPausedDebugReadSession,
-    filterRuntimeRamPlan,
-    runtimePointerRanges,
-    writableRamSectionRanges
+    writableRamSectionRanges,
+    debugReadPlanKey
 } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
 const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
@@ -132,15 +130,6 @@ const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
 // older and a newer state of the same variable.
 function latestByName(pending, next) {
     return [...new Map([...(pending || []), ...(next || [])].map((sample) => [sample.name, sample])).values()];
-}
-// Reordering watch cards keeps the same reads; only a changed set refreshes the paused snapshot.
-// Session start and plan refreshes must build the key the same way, or the first refresh of a
-// session (e.g. saving a write-list value) looks like a plan change and aborts an in-flight write.
-function debugReadPlanKey(items) {
-    return items
-        .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
-        .sort()
-        .join("|");
 }
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
@@ -191,7 +180,12 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
     });
 }
 
+const { LiveWatchController } = require("./services/liveWatchController");
 class MainViewProvider {
+    // Created on first use, so the provider's construction order does not matter.
+    get _sampling() {
+        return (this._samplingController ??= new LiveWatchController(this));
+    }
     constructor(context) {
         this.commandHandlers = {};
         this._context = context;
@@ -220,9 +214,6 @@ class MainViewProvider {
         this._managedDebugToken = "";
         this._managedDebugSessionId = "";
         this._runtimeResumeTimer = null;
-        this._runtimeDeniedKey = "";
-        this._runtimeOverBudgetKey = "";
-        this._runtimeRamCache = null;
         this._runtimeSampleHold = new RuntimeSampleHold();
         this._livePanels = new Map();
         this._livePanelRegistry = null;
@@ -256,7 +247,6 @@ class MainViewProvider {
         /** @type {{ t: number, bytes: number }[]} Recent archive sizes for the remaining-time estimate. */
         this._archiveRateSamples = [];
         this._liveConsumers = new Set();
-        this._consumerTypesCache = null;
         this._watchLists = new WatchListStore({
             state: context.workspaceState,
             serialize: (items) => this._watchIdentities(items),
@@ -279,7 +269,7 @@ class MainViewProvider {
                 });
             },
             symbols: () => this.readElfSymbols().symbols,
-            onChanged: () => this._invalidateConsumerTypes(),
+            onChanged: () => this._sampling.invalidateConsumerTypes(),
             onError: (error) => console.error("Watch list unavailable:", error.message)
         });
         this._agentReadSession = null;
@@ -291,7 +281,7 @@ class MainViewProvider {
         this._uiWriteTicket = 0;
         this._uiWriteLatest = new Map();
         this._debugBridge = new DebugSessionBridge({
-            getReadPlan: () => this._activeReadPlan(),
+            getReadPlan: () => this._sampling.activeReadPlan(),
             getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
             getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
@@ -1542,7 +1532,7 @@ class MainViewProvider {
                         result.push(
                             agentPlans.decodeSample(
                                 plan,
-                                await session.readOnce(this._runtimeReadRanges(readItems, elfResult)),
+                                await session.readOnce(this._sampling.runtimeReadRanges(readItems, elfResult)),
                                 compositePlan
                             )
                         );
@@ -1580,79 +1570,6 @@ class MainViewProvider {
                 code: "TCL_PORT_UNAVAILABLE"
             });
         return port;
-    }
-    _runtimeRamPlan(items, strict = false) {
-        const cache = this._runtimeRamSections(this.readElfSymbols());
-        const result = filterRuntimeRamPlan(items, cache.sections, cache.regions);
-        if (strict && result.denied.length) {
-            throw Object.assign(new Error("Runtime reads are restricted to writable allocated ELF RAM sections"), {
-                code: "LIVE_ADDRESS_NOT_RAM",
-                details: {
-                    variables: result.denied.map((item) => ({
-                        name: item.name,
-                        address: `0x${(Number(item.address) >>> 0).toString(16).toUpperCase()}`,
-                        size: item.size
-                    }))
-                }
-            });
-        }
-        // Explicit reads and writes must fit as a whole; continuous sampling drops only the items
-        // that exceed the per-cycle budget so the rest keep running.
-        if (strict) {
-            liveWatch.validateManagedReadPlan(result.allowed);
-            return { ...result, overBudget: [] };
-        }
-        const { allowed, overBudget } = liveWatch.partitionManagedReadPlan(result.allowed);
-        return { ...result, allowed, overBudget };
-    }
-    _configureManagedRuntimeWatch() {
-        const server = this._managedDebugServer;
-        if (!server || server.capabilities?.runtimeRead === false) return [];
-        const plan = this._runtimeRamPlan(this._activeReadPlan());
-        const itemKey = (items) => items.map((item) => `${item.name}:${item.address}:${item.size}`).join("|");
-        const deniedKey = itemKey(plan.denied);
-        if (deniedKey && deniedKey !== this._runtimeDeniedKey) {
-            this._runtimeDeniedKey = deniedKey;
-            const t = Date.now();
-            this._handleRawSamples(
-                plan.denied.map((item) => ({ name: item.name, bytes: null, t })),
-                t
-            );
-            this._postLive({
-                type: "liveError",
-                key: "live.runtimeAddressRejectedNames",
-                params: { names: plan.denied.map((item) => this._variableDisplayName(item)).join(", ") }
-            });
-        } else if (!deniedKey) this._runtimeDeniedKey = "";
-        // Re-mark rejected items on every configuration: a paused snapshot may have filled them meanwhile.
-        if (plan.overBudget.length) {
-            const t = Date.now();
-            const message = `Runtime read exceeds the per-cycle budget (${liveWatch.MAX_DEBUG_READ_BYTES} bytes / ${liveWatch.MAX_DEBUG_READ_COMMANDS} commands)`;
-            this._handleRawSamples(
-                plan.overBudget.map((item) => ({
-                    name: item.name,
-                    bytes: null,
-                    diagnostic: { code: "LIVE_READ_BUDGET_EXCEEDED", message },
-                    t
-                })),
-                t
-            );
-        }
-        const overBudgetKey = itemKey(plan.overBudget);
-        if (overBudgetKey && overBudgetKey !== this._runtimeOverBudgetKey) {
-            this._runtimeOverBudgetKey = overBudgetKey;
-            this._postLive({
-                type: "liveError",
-                key: "live.runtimeBudgetExceededNames",
-                params: { names: plan.overBudget.map((item) => this._variableDisplayName(item)).join(", ") }
-            });
-        } else if (!overBudgetKey) this._runtimeOverBudgetKey = "";
-        if (!plan.allowed.length && plan.overBudget.length)
-            throw Object.assign(new Error("Every watched item exceeds the runtime read budget"), {
-                code: "LIVE_READ_BUDGET_EXCEEDED"
-            });
-        this._applySamplingPlan(server, plan.allowed);
-        return plan.allowed;
     }
     async _startManagedDebugServer(
         executable,
@@ -1800,8 +1717,7 @@ class MainViewProvider {
             this._debugServerLease = null;
             this._managedDebugToken = "";
             this._managedDebugSessionId = "";
-            this._runtimeDeniedKey = "";
-            this._runtimeOverBudgetKey = "";
+            this._sampling.resetRuntimeNotices();
         }
         if (!group) lease?.release();
     }
@@ -2141,7 +2057,7 @@ class MainViewProvider {
             )
                 return;
             try {
-                const allowed = this._configureManagedRuntimeWatch();
+                const allowed = this._sampling.configureManagedRuntimeWatch();
                 if (!allowed.length) {
                     this._postConsumerStatuses({
                         mode: "debug-running-waiting",
@@ -2226,7 +2142,7 @@ class MainViewProvider {
                     });
                 session = {
                     readOnce: async (items) => {
-                        const plan = this._runtimeRamPlan(items, true);
+                        const plan = this._sampling.runtimeRamPlan(items, true);
                         const epoch = this._debugBridge.stopEpoch;
                         const samples = await managed.readOnce(plan.allowed);
                         if (
@@ -2422,7 +2338,7 @@ class MainViewProvider {
                     code: "RUNTIME_WRITE_DISABLED"
                 });
             this._assertGroupedReadElf();
-            this._runtimeRamPlan(
+            this._sampling.runtimeRamPlan(
                 items.map((item) => ({ ...item, size: item.bytes.length })),
                 true
             );
@@ -2925,7 +2841,7 @@ class MainViewProvider {
             ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
             [watchKey]: normalized
         });
-        if (this._pointerExpandedOnly) await this._refreshSamplingPlan();
+        if (this._pointerExpandedOnly) await this._sampling.refreshSamplingPlan();
     }
     _pointerSamplingState() {
         return { type: "pointerSampling", expandedOnly: this._pointerExpandedOnly === true };
@@ -2938,7 +2854,7 @@ class MainViewProvider {
         await this._context.workspaceState.update(POINTER_EXPANDED_ONLY_STATE_KEY, enabled);
         const state = this._pointerSamplingState();
         for (const entry of this._livePanels.values()) entry.post(state);
-        await this._refreshSamplingPlan();
+        await this._sampling.refreshSamplingPlan();
     }
     // Opened runtime paths of a chart's watch list while only expanded parts are sampled, else null.
     _panelRuntimeExpansions(watchKey) {
@@ -3010,7 +2926,7 @@ class MainViewProvider {
                 console.error("Chart identity persistence failed:", error);
             });
         entry.initializing = true;
-        this._invalidateConsumerTypes();
+        this._sampling.invalidateConsumerTypes();
         this._renderWebview(
             panel.webview,
             liveWatchView.getLiveWatchContent(
@@ -3043,8 +2959,8 @@ class MainViewProvider {
             this._livePanels.delete(panelId);
             this._livePanelRegistry.release(panelId).catch(console.error);
             pruneWebviewAssets(this._webviewAssetRootUri.fsPath, `live-watch-${panelId}`, new Set());
-            this._invalidateConsumerTypes();
-            this._refreshSamplingPlan().catch(() => {});
+            this._sampling.invalidateConsumerTypes();
+            this._sampling.refreshSamplingPlan().catch(() => {});
         });
         panel.webview.onDidReceiveMessage(createLivePanelHandler(this, entry, vscode));
         return entry;
@@ -3053,7 +2969,7 @@ class MainViewProvider {
     _invalidateElfState() {
         this._elfService.invalidate();
         this._watchLists.invalidate();
-        this._runtimeRamCache = null;
+        this._sampling.invalidateRuntimeRam();
         this._runtimeSampleHold?.reset();
         this._latestSidebarSamples.clear();
         for (const entry of this._livePanels.values()) entry.latestSamples.clear();
@@ -3068,7 +2984,7 @@ class MainViewProvider {
                 await this._rebindWatchLists(result.symbols);
             }
         } finally {
-            await this._refreshSamplingPlan();
+            await this._sampling.refreshSamplingPlan();
         }
         await memoryRefresh;
         this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
@@ -3104,7 +3020,7 @@ class MainViewProvider {
         await this._watchLists.save(key, persisted);
         this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
         for (const entry of this._livePanels.values()) this._pruneSampleMap(entry.latestSamples, entry.watchKey);
-        await this._refreshSamplingPlan();
+        await this._sampling.refreshSamplingPlan();
         // Selection/value changes do not change ELF metadata. Echoing a local sidebar edit
         // also replaces the active write input and interrupts wheel/slider gestures.
         if (syncSidebar) this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message), true);
@@ -3292,7 +3208,7 @@ class MainViewProvider {
                     for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
                 })
                 .catch((error) => console.error("ELF watch list rebind failed:", error));
-            this._elfRebindPromise.then(() => this._refreshSamplingPlan()).catch(() => {});
+            this._elfRebindPromise.then(() => this._sampling.refreshSamplingPlan()).catch(() => {});
         } else if (phase === "failed") {
             sidebarPost({
                 type: "availableVariablesDone",
@@ -3385,7 +3301,7 @@ class MainViewProvider {
         this._watchLists.invalidate();
         this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message), true);
         for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
-        await this._refreshSamplingPlan();
+        await this._sampling.refreshSamplingPlan();
     }
     // Chart and sidebar keep separate selections; one probe connection samples the union of both enabled lists.
     _postLive(message) {
@@ -3614,72 +3530,6 @@ class MainViewProvider {
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });
         }
     }
-    // Chart and sidebar keep separate watch lists, and a variable may use a different watch type on each side. The read
-    // plan deduplicates by variable name using the wider width, so one read serves every consumer. Composites
-    // (structs/arrays) expand into leaf reads merged over the variable's whole address range.
-    _activeReadPlan() {
-        const lists = [];
-        const expansions = [];
-        for (const entry of this._livePanels.values()) {
-            lists.push(this._scalarWatchList(entry.watchKey));
-            expansions.push(this._panelRuntimeExpansions(entry.watchKey));
-        }
-        // Sidebar cards read the parts they opened, like chart cards; write cards read runtime objects whole.
-        lists.push(this._scalarWatchList(CACHE_KEYS.sidebarWatchList));
-        expansions.push(this._panelRuntimeExpansions(CACHE_KEYS.sidebarWatchList));
-        // Write list variables are sampled too so write cards show current values; the stored list is not rewritten,
-        // which would lose UI fields such as min/max
-        try {
-            const writeItems = this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [];
-            lists.push(validation.normalizeWatchList(writeItems, this.readElfSymbols().symbols));
-        } catch (e) {
-            /* Ignore the write list when the ELF is unavailable */
-        }
-        const plan = buildActiveReadPlan(lists, elfSymbols, expansions);
-        return this._runtimeReadRanges(plan);
-    }
-    _runtimeReadRanges(plan, result) {
-        if (!plan.some((item) => item.runtimeLayout)) return plan;
-        const cache = this._runtimeRamSections(result ?? this.readElfSymbols());
-        const ranges = runtimePointerRanges(cache.sections, cache.regions);
-        return plan.map((item) => (item.runtimeLayout ? { ...item, runtimeRanges: ranges } : item));
-    }
-    _runtimeRamSections(elfResult) {
-        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
-            const memory = elfResult.memory || {};
-            this._runtimeRamCache = {
-                sha256: elfResult.elf.sha256,
-                sections: Array.isArray(memory.sections) ? memory.sections : [],
-                regions: Array.isArray(memory.runtimeRegions) ? memory.runtimeRegions : []
-            };
-        }
-        return this._runtimeRamCache;
-    }
-    _applySamplingPlan(session, active) {
-        let ramSectionRanges = [];
-        try {
-            ramSectionRanges = writableRamSectionRanges(this.readElfSymbols().memory?.sections);
-        } catch {
-            /* Without an ELF only overlapping or adjacent reads are merged. */
-        }
-        if (typeof session.setSamplingPlan !== "function") {
-            session.setWatch(active, ramSectionRanges);
-            return;
-        }
-        const { graphs, sidebar } = this._consumerTypes();
-        const graphNames = new Set([...graphs.values()].flatMap((map) => [...map.keys()]));
-        const graphItems = active.filter((item) => graphNames.has(item.name) || graphNames.has(item.parentName));
-        const sidebarItems = active.filter((item) => sidebar.has(item.name) || sidebar.has(item.parentName));
-        if (typeof session.setSamplingPlan === "function")
-            session.setSamplingPlan({
-                graphItems,
-                sidebarItems,
-                ramSectionRanges,
-                graphIntervalMs: this._liveIntervalMs,
-                unlimited: this._unlimitedSamplingEnabled()
-            });
-        else session.setWatch(active, ramSectionRanges);
-    }
     _unlimitedSamplingEnabled() {
         return this._unlimitedSamplingRequested === true;
     }
@@ -3697,8 +3547,8 @@ class MainViewProvider {
     _unlimitedSamplingChanged() {
         // Only the standalone OpenOCD session honours the flag; debug sessions keep their adaptive budget.
         if (this._liveSession && !this._debugBridge.hasSession) {
-            const active = this._activeReadPlan();
-            if (active.length) this._applySamplingPlan(this._liveSession, active);
+            const active = this._sampling.activeReadPlan();
+            if (active.length) this._sampling.applySamplingPlan(this._liveSession, active);
         }
         const state = this._unlimitedSamplingState();
         for (const entry of this._livePanels.values()) entry.post(state);
@@ -3992,68 +3842,6 @@ class MainViewProvider {
         this._chartHistoryRecovery = task;
         return task;
     }
-    // Each consumer's watch type per variable, so the same raw bytes are decoded and pushed per type.
-    _consumerTypes() {
-        const build = (key) => {
-            const m = new Map();
-            for (const item of this._scalarWatchList(key)) {
-                if (item?.name)
-                    m.set(
-                        item.name,
-                        Number.isInteger(item.bitSize) || item.enumInfo || item.isPointer ? item : item.type
-                    );
-            }
-            return m;
-        };
-        const sidebar = build(CACHE_KEYS.sidebarWatchList);
-        // Write list variables are decoded with their own watch type and pushed to the sidebar; for the same name the
-        // watch list type wins
-        for (const item of this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
-            if (item?.name && item.type && !sidebar.has(item.name)) {
-                const symbols = this.readElfSymbols().symbols;
-                const symbol =
-                    symbols.find((entry) => entry.name === item.name) ||
-                    validation.normalizeWatchList([item], symbols)[0];
-                const enumInfo = symbol?.watchType === item.type ? symbol.enumInfo : null;
-                sidebar.set(
-                    item.name,
-                    Number.isInteger(item.bitSize) || enumInfo || symbol?.isPointer
-                        ? {
-                              ...item,
-                              ...(enumInfo ? { enumInfo } : {}),
-                              ...(symbol?.isPointer
-                                  ? {
-                                        isPointer: true,
-                                        pointerTarget: symbol.pointerTarget,
-                                        ...(symbol.memberRole ? { memberRole: symbol.memberRole } : {})
-                                    }
-                                  : {})
-                          }
-                        : item.type
-                );
-            }
-        }
-        const graphs = new Map();
-        for (const entry of this._livePanels.values()) graphs.set(entry.watchKey, build(entry.watchKey));
-        return { graphs, sidebar };
-    }
-    _getCachedConsumerTypes() {
-        if (!this._consumerTypesCache) this._consumerTypesCache = this._consumerTypes();
-        return this._consumerTypesCache;
-    }
-    _invalidateConsumerTypes() {
-        this._consumerTypesCache = null;
-    }
-    // Runtime-only composites (an expanded pointee has a type graph, not a static layout) belong here
-    // too, so a failed read reaches their tree as an error rather than becoming a scalar sample.
-    _compositeMap(key) {
-        const map = new Map();
-        for (const item of this._scalarWatchList(key)) {
-            if (item.isComposite && (item.compositeLayout || item.runtimeLayout))
-                map.set(item.name, { ...item, layout: item.compositeLayout || null });
-        }
-        return map;
-    }
     _setLiveInterval(intervalMs, frequencyHz) {
         const value = validation.clampInteger(intervalMs, intervalMsFromHz(this._liveFrequencyHz), 5, 10000);
         this._liveFrequencyHz =
@@ -4282,7 +4070,7 @@ class MainViewProvider {
         // Every source (managed sampling, worker, paused DAP reads) passes the same hold, so a runtime
         // object keeps its last consistent tree through transient misses (see runtimeSampleHold.js).
         samples = (this._runtimeSampleHold ||= new RuntimeSampleHold()).apply(samples, t);
-        const types = this._getCachedConsumerTypes();
+        const types = this._sampling.cachedConsumerTypes();
         const graphNames = consumers && new Set(consumers.graphNames);
         const sidebarNames = consumers && new Set(consumers.sidebarNames);
         const graphSamples = graphNames ? samples.filter((sample) => graphNames.has(sample.name)) : samples;
@@ -4296,7 +4084,7 @@ class MainViewProvider {
                 currentSamples,
                 t,
                 types.graphs.get(entry.watchKey),
-                this._compositeMap(entry.watchKey),
+                this._sampling.compositeMap(entry.watchKey),
                 entry.latestSamples
             );
             if (entry.ready && (decoded.scalarSamples.length || decoded.compositeSamples.length)) {
@@ -4346,7 +4134,7 @@ class MainViewProvider {
             sidebarNames ? samples.filter((sample) => sidebarNames.has(sample.name)) : samples,
             t,
             types.sidebar,
-            this._compositeMap(CACHE_KEYS.sidebarWatchList),
+            this._sampling.compositeMap(CACHE_KEYS.sidebarWatchList),
             this._latestSidebarSamples
         );
         if (sidebar.scalarSamples.length || sidebar.compositeSamples.length) {
@@ -4381,7 +4169,7 @@ class MainViewProvider {
         // Only host-driven DAP sampling loses samples while paused; mark that hole with an empty row. Worker
         // sessions deliver their held backlog afterwards, which an empty row stamped now would precede.
         if (!paused && !session && this._liveWatchService && this._samplingArchive) {
-            const active = this._activeReadPlan ? this._activeReadPlan() : [];
+            const active = this._sampling.activeReadPlan ? this._sampling.activeReadPlan() : [];
             if (active.length) {
                 const t = Date.now();
                 this._handleRawSamples(
@@ -4505,102 +4293,6 @@ class MainViewProvider {
             .then(apply, () => apply(null));
     }
 
-    async _refreshSamplingPlan() {
-        this._refreshPointerPeripherals();
-        const active = this._activeReadPlan();
-        // A changed plan (watch list, opened paths) gives runtime trees a new shape; keep no old ones.
-        const holdKey = active
-            .filter((item) => item.runtimeLayout)
-            .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
-            .sort()
-            .join("|");
-        if (holdKey !== this._runtimeHoldKey) {
-            this._runtimeHoldKey = holdKey;
-            this._runtimeSampleHold?.reset();
-        }
-        for (const entry of this._livePanels.values()) this._configureChartHistory(entry);
-        if (this._debugBridge.hasSession) {
-            const planKey = debugReadPlanKey(active);
-            this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
-            if (
-                this._managedDebugServer &&
-                this._managedDebugServer.capabilities?.runtimeRead !== false &&
-                this._managedDebugSessionId &&
-                !this._debugBridge.paused
-            ) {
-                try {
-                    const allowed = this._configureManagedRuntimeWatch();
-                    const enabled = this._samplingCoordinator.setRuntimeEnabled(
-                        this._managedDebugServer,
-                        this._samplingIntent && allowed.length > 0,
-                        this._debugBridge
-                    );
-                    this._postConsumerStatuses({
-                        mode: enabled
-                            ? "debug-running-sampling"
-                            : allowed.length
-                              ? "debug-running-degraded"
-                              : "debug-running-waiting",
-                        key: enabled
-                            ? "live.debugRuntimeSampling"
-                            : allowed.length
-                              ? "live.debugTclDegraded"
-                              : "live.needVar",
-                        source: "openocd",
-                        canRead: enabled,
-                        canWrite: enabled,
-                        snapshotReady: enabled,
-                        intentEnabled: this._samplingIntent,
-                        running: this._samplingIntent
-                    });
-                } catch (error) {
-                    this._managedDebugServer.setSamplingEnabled(false);
-                    this._postConsumerStatuses(
-                        {
-                            mode: "debug-running-degraded",
-                            key:
-                                error.code === "LIVE_READ_BUDGET_EXCEEDED"
-                                    ? "live.runtimeBudgetExceeded"
-                                    : "live.runtimeAddressRejected",
-                            source: "openocd",
-                            canRead: false,
-                            canWrite: false,
-                            snapshotReady: false,
-                            message: error.message
-                        },
-                        true
-                    );
-                }
-                this._debugReadPlanKey = planKey;
-                return;
-            }
-            if (planKey !== this._debugReadPlanKey) {
-                this._debugReadPlanKey = planKey;
-                this._debugBridge.refreshSnapshot();
-            }
-            if (!active.length && this._samplingIntent)
-                this._postConsumerStatuses(this._debugBridge.status({ key: "live.needVar" }));
-            return;
-        }
-        if (this._liveSession) {
-            if (active.length) this._applySamplingPlan(this._liveSession, active);
-            else {
-                this.stopLiveWatch({ preserveIntent: true });
-                this._postConsumerStatuses({ key: "live.needVar" });
-            }
-            return;
-        }
-        if (this._externalDebug?.held) return;
-        if (
-            this._samplingIntent &&
-            active.length &&
-            !this._downloadRunning &&
-            !this._debugStarting &&
-            !this._debugCommandPending
-        )
-            await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
-        else if (this._samplingIntent && !active.length) this._postConsumerStatuses({ key: "live.needVar" });
-    }
     _pruneSampleMap(map, keys) {
         const names = new Set();
         for (const key of Array.isArray(keys) ? keys : [keys]) {
@@ -4685,7 +4377,7 @@ class MainViewProvider {
             this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
         }
         if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
-        const activeItems = this._activeReadPlan();
+        const activeItems = this._sampling.activeReadPlan();
         if (
             this._debugBridge.hasSession ||
             isSupportedDebugSession(this._liveDebugSession()) ||
@@ -4743,7 +4435,7 @@ class MainViewProvider {
             this._liveConsumers.add("sidebar");
         }
         if (this._liveWatchRunning && this._liveSession) {
-            this._applySamplingPlan(this._liveSession, this._activeReadPlan());
+            this._sampling.applySamplingPlan(this._liveSession, this._sampling.activeReadPlan());
             if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
             this._postConsumerStatuses({ key: "sb.sampling" });
             return;
@@ -4837,7 +4529,7 @@ class MainViewProvider {
             );
             this._liveSession = session;
             if (generation !== this._liveStartGeneration) return;
-            this._applySamplingPlan(session, this._activeReadPlan());
+            this._sampling.applySamplingPlan(session, this._sampling.activeReadPlan());
             this._liveSession = session;
             await session.start();
             if (this._liveSession !== session || startingLease.released || generation !== this._liveStartGeneration)
@@ -5072,7 +4764,7 @@ class MainViewProvider {
         const grouped = this._managedDebugGroup?.bind(session);
         if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
             this._debugLifecycle.session = session;
-        this._debugReadPlanKey = debugReadPlanKey(this._activeReadPlan());
+        this._debugReadPlanKey = debugReadPlanKey(this._sampling.activeReadPlan());
         // In multi-root workspaces the session belongs to VS Code's actual debug folder, not the folder of the cached
         // ELF.
         this._debugBridge.setWorkspace(session.workspaceFolder || this._commandContext().folder);

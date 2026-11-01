@@ -201,14 +201,14 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         messages = [],
         sidebar = [];
     p._livePanels = new Map([[1, { watchKey: "graph", latestSamples: new Map(), ready: true }]]);
-    p._getCachedConsumerTypes = () => ({
+    p._sampling.cachedConsumerTypes = () => ({
         graphs: new Map([["graph", new Map([["g", "u32"]])]]),
         sidebar: new Map([
             ["g", "u32"],
             ["s", "u32"]
         ])
     });
-    p._compositeMap = () => new Map();
+    p._sampling.compositeMap = () => new Map();
     p._configureChartHistory = () => {};
     p._liveWatchService = new LiveWatchService({ decodeValue: () => 42, decodeValueText: () => "42" });
     p._debugSamplingScope = (key) => key;

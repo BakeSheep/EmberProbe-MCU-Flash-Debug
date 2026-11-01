@@ -35,6 +35,7 @@
 - [ ] P1 MainViewProvider
     - [x] 消息路由表：侧栏和波形页的消息 `switch` 移到 `src/controllers/sidebarRoutes.js`、`livePanelRoutes.js`，按消息类型查表（`Object.hasOwn`）。两页都有的 5 种消息（copyText、setLang、expandLayout、resolveCompositeLayout、saveRuntimeExpansions）共用 `webviewRoutes.js` 里的一份实现；`_handlePeripheralViewRequest` 的 if 链并入路由表。侧栏消息失败时记录日志，不再变成无人处理的 rejection。`CACHE_KEYS` 移到 `src/cacheKeys.js`，`connectedProbeId` 移到 `validation.js`。Provider 6718 → 6043 行。
     - [x] Agent 计划纯函数：`_agentVariablePlan`、`_agentWritePlan`、`_decodeAgentSample` 移到 `src/services/agentPlans.js`（`readPlan`、`writePlan`、`decodeSample`），ELF 符号通过 `readElf` 回调传入，参数校验仍先于读取 ELF。删除只在测试中走到的 `refreshSymbols` 选项（生产调用方都传 `false`）和 `_agentSymbolResolver` 包装（直接用 `elfSymbols.createSymbolResolver`）。12 个测试文件改为直接调用；原先给 Provider 打桩计划的 4 处改为提供 ELF 符号，让调用方跑真实计划。Provider 6043 → 5681 行。
+    - [x] 采样控制器 a（读取计划）：新建 `src/services/liveWatchController.js`，Provider 通过原型上的 `_sampling`（首次使用时创建）访问。移入合并读取计划、运行时 RAM 过滤与预算、消费者解码类型、把计划下发给采样会话或调试服务器、`refreshSamplingPlan`；运行时 RAM 缓存和拒绝/超预算提示键归控制器所有，Provider 只调用 `invalidateRuntimeRam()`、`resetRuntimeNotices()`。`debugReadPlanKey` 移到 `liveWatchService`。24 个测试文件改为通过 `_sampling` 访问或打桩。Provider 5681 → 5392 行。
 - [ ] P2 ManagedOpenOcdSession
 - [ ] P2 测试结构
 

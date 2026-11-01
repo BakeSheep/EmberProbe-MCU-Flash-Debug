@@ -48,9 +48,9 @@ function deepElf(count = 100) {
         _livePanels: new Map([[1, { post: (reply) => graph.push(reply) }]]),
         _watchLists: { invalidate() {} },
         _syncSidebarTarget() {},
-        _syncGraphTarget() {},
-        _refreshSamplingPlan: async () => {}
+        _syncGraphTarget() {}
     });
+    Object.assign(provider._sampling, { refreshSamplingPlan: async () => {} });
     const request = { name: "axes", path: "axes[0].a.b", handle: handle(), generation: 7, version: "v1" };
     for (const invalid of [
         { handle: {} },

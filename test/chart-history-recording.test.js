@@ -254,12 +254,12 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             }
         },
         _chartHistory: { request: async () => ({}) },
-        _invalidateConsumerTypes() {},
         _renderWebview() {},
         _postProbeOperationStatus() {},
         _startLiveWatch: async () => {},
         _t: (key) => t("en", key)
     });
+    Object.assign(resetProvider._sampling, { invalidateConsumerTypes() {} });
     resetProvider.openLiveWatchPanel();
     resetProvider._warnChartHistoryLimited();
     resetProvider._warnChartHistoryLimited();

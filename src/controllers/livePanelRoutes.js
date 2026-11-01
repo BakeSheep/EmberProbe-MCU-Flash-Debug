@@ -33,8 +33,8 @@ async function ready({ host, entry, post, watchKey }) {
     post({ type: "curveVisibility", hidden: host._curveVisibility(watchKey) });
     host._syncGraphTarget(entry);
     if (host._liveSession) {
-        const active = host._activeReadPlan();
-        if (active.length) host._applySamplingPlan(host._liveSession, active);
+        const active = host._sampling.activeReadPlan();
+        if (active.length) host._sampling.applySamplingPlan(host._liveSession, active);
     }
     if (host._chartHistory) {
         const scope = host._debugSamplingScope(watchKey);

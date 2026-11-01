@@ -22,8 +22,11 @@ function createProvider() {
     provider._liveIntervalMs = 33;
     provider._unlimitedSamplingRequested = false;
     provider._debugBridge = { hasSession: false };
-    provider._consumerTypes = () => ({ graphs: new Map([["graph", new Map([["tick", "u32"]])]]), sidebar: new Map() });
-    provider._activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
+    provider._sampling.consumerTypes = () => ({
+        graphs: new Map([["graph", new Map([["tick", "u32"]])]]),
+        sidebar: new Map()
+    });
+    provider._sampling.activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
     provider._liveSession = { setSamplingPlan: (plan) => plans.push(plan) };
     provider._livePanels = new Map([[1, { post: (message) => panelMessages.push(message) }]]);
     return { provider, state, plans, panelMessages };

@@ -323,11 +323,11 @@ async function testProviderWiring() {
             _debugBridge: { setIntent() {} },
             _liveWatchService: {},
             _samplingArchive: {},
-            _activeReadPlan: () => [{ name: "v" }],
             _handleRawSamples: (samples) => rows.push(samples),
             _postConsumerStatuses() {},
             _samplingStatus: () => ({})
         });
+        Object.assign(p._sampling, { activeReadPlan: () => [{ name: "v" }] });
         return { p, rows };
     };
     const live = {

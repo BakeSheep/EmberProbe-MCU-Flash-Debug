@@ -390,7 +390,7 @@ for (const version of [4, 5]) {
     provider._livePanels = new Map([[1, { watchKey: "graph" }]]);
     provider._elfService = { read: () => filtered };
     provider._liveWatchService = service;
-    const consumers = provider._consumerTypes();
+    const consumers = provider._sampling.consumerTypes();
     assert.strictEqual(consumers.graphs.get("graph").get("counterPtr").isPointer, true);
     assert.strictEqual(consumers.sidebar.get("counterPtr").pointerTarget, "data");
     assert.strictEqual(

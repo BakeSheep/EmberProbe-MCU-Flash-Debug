@@ -44,7 +44,6 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
         _resolveOpenOcdPath: async () => "fake-openocd",
         _commandContext: () => ({}),
         _t: (key) => key,
-        _activeReadPlan: () => [symbol],
         _watchLists: { invalidate: () => events.push("invalidate-watch") },
         _elfService: {
             invalidate: () => events.push("invalidate-elf"),
@@ -96,6 +95,7 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
             provider._samplingIntent = true;
         }
     });
+    Object.assign(provider._sampling, { activeReadPlan: () => [symbol] });
     if (sampling) {
         provider._liveWatchLease = provider._probeCoordinator.acquire("liveWatch");
         provider._liveSession = {
@@ -168,7 +168,7 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
     const busy = fixture({ sampling: false });
     busy.provider._samplingIntent = true;
     const lease = busy.provider._probeCoordinator.acquire("download");
-    await busy.provider._refreshSamplingPlan();
+    await busy.provider._sampling.refreshSamplingPlan();
     assert.ok(!busy.events.includes("resume"), "ELF updates cannot start sampling during a flash");
     assert.strictEqual(await busy.provider.commandHandlers["mcu-vscode.download"](), false);
     lease.release();

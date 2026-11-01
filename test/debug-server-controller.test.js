@@ -341,7 +341,7 @@ function fixture(options = {}, overrides = {}) {
     retryHost._managedDebugServer = currentServer;
     assert.strictEqual(stopped.length, 1, "The failed server is stopped before retrying");
     assert.strictEqual(retryHost._probeCoordinator.isActive("debugStart"), true);
-    assert.deepStrictEqual(retryHost._configureManagedRuntimeWatch(), []);
+    assert.deepStrictEqual(retryHost._sampling.configureManagedRuntimeWatch(), []);
     retryHost._managedDebugSessionId = "core1";
     retryHost._handleManagedTargetState({ session: { id: "core1" }, state: "continued", epoch: 1 });
     assert.strictEqual(retryHost._runtimeResumeTimer, null, "Unsupported runtime reads never schedule Tcl sampling");

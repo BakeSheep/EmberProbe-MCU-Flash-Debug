@@ -341,13 +341,13 @@ async function storageAndHost() {
         _livePanelFocusOrder: 0,
         _lang: "en",
         _t: (key) => key,
-        _invalidateConsumerTypes() {},
         _renderWebview() {},
         _syncGraphTarget() {},
         _unlimitedSamplingState: () => ({}),
         _pointerSamplingState: () => ({}),
         _curveVisibility: () => ({})
     });
+    Object.assign(provider._sampling, { invalidateConsumerTypes() {} });
     provider.openLiveWatchPanel();
     provider.openLiveWatchPanel();
     await provider.chartBackground().store.update(sample);

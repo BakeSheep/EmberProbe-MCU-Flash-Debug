@@ -131,7 +131,7 @@ async function run() {
         await provider._prepareRequestedLayouts([...LOAD, TOGGLED, WRITE_TARGET].map((name) => ({ name })));
         await provider._saveWatchList(WATCH_KEY, identities([...LOAD, TOGGLED]));
         await provider._saveWatchList(WRITE_KEY, identities([WRITE_TARGET]), { syncSidebar: false });
-        report.readPlan = provider._activeReadPlan().map((item) => ({ name: item.name, size: item.size }));
+        report.readPlan = provider._sampling.activeReadPlan().map((item) => ({ name: item.name, size: item.size }));
         assert(
             await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
                 type: "emberprobe",
