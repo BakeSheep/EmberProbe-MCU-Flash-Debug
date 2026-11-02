@@ -213,6 +213,127 @@ async function controls() {
     }
 }
 
+async function activeStyles() {
+    const record = Object.create(null);
+    assert.equal(Styles.palette.length, 48);
+    for (let i = 0; i < 180; i++) {
+        const style = Styles.ensure(record, "curve" + i);
+        assert.ok(Styles.valid(style));
+        if (i < 144) assert.equal(style.line, Styles.lines[Math.floor(i / 48)]);
+    }
+    assert.equal(new Set(Object.values(record).map((s) => s.color + s.line)).size, 180);
+    const hiddenStyles = Styles.active({}, [], record, Object.keys(record));
+    assert.equal(hiddenStyles.curve48, record.curve48, "hiding retains dashed styles");
+    assert.equal(hiddenStyles.curve96, record.curve96, "hiding retains dotted styles");
+    assert.equal(
+        new Set(
+            Object.values(record)
+                .slice(0, 48)
+                .map((s) => s.color)
+        ).size,
+        48
+    );
+    const overrides = { hidden: { color: Styles.palette[0], line: "dotted" } };
+    let active = Styles.active(overrides, ["a", "b"]);
+    assert.equal(active.a.color, Styles.palette[0], "inactive overrides do not consume colors");
+    const b = active.b;
+    const a = active.a;
+    active = Styles.active(overrides, ["b", "c"], active, ["a", "b", "c"]);
+    assert.equal(active.b, b, "curves that remain enabled keep their appearance");
+    assert.equal(active.a, a, "a previously enabled hidden curve retains its slot");
+    assert.equal(active.c.color, Styles.palette[2], "new curves skip hidden reservations");
+    active = Styles.active(overrides, ["b", "c"], active);
+    assert.ok(!Object.hasOwn(active, "a"), "removing a variable releases its reservation");
+    overrides.c = b;
+    active = Styles.active(overrides, ["b", "c"], active);
+    assert.equal(active.c, b, "explicit styles take priority");
+    assert.notEqual(active.b.color + active.b.line, b.color + b.line);
+
+    const hidden = Object.fromEntries(Array.from({ length: 100 }, (_, i) => ["hidden" + i, true]));
+    const page = render(getLiveWatchContent({}, "en"), { hidden });
+    const other = render(getLiveWatchContent({}, "en"));
+    try {
+        const w = page.window;
+        const current = () => w.eval("state.curveStyles");
+        w.addSymbol({
+            name: "large",
+            address: 0x20000000,
+            size: 400,
+            isComposite: true,
+            compositeLayout: {
+                kind: "struct",
+                byteSize: 400,
+                members: Array.from({ length: 100 }, (_, i) => ({
+                    name: "m" + i,
+                    offset: i * 4,
+                    watchType: "u32",
+                    byteSize: 4
+                }))
+            }
+        });
+        assert.equal(Object.keys(current()).length, 0, "structure members are inspection-only until enabled");
+        page.document
+            .querySelector(".var-card.composite")
+            .dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true }));
+        assert.equal(Object.keys(current()).length, 0, "composite menus do not allocate styles");
+        page.send({
+            type: "watchList",
+            items: Array.from({ length: 100 }, (_, i) => ({
+                name: "hidden" + i,
+                address: 0x20001000 + i * 4,
+                type: "u32",
+                size: 4
+            }))
+        });
+        assert.equal(Object.keys(current()).length, 0, "hidden watches do not allocate styles");
+        page.document.querySelector(".var-card").dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true }));
+        assert.equal(Object.keys(current()).length, 0, "hidden scalar menus only preview a style");
+        w.toggleCurve("hidden99");
+        const first = { ...w.styleFor("hidden99") };
+        assert.deepEqual(first, { color: Styles.palette[0], line: "solid" });
+        w.toggleCurve("hidden98");
+        const second = w.styleFor("hidden98");
+        w.toggleCurve("hidden99");
+        w.toggleCurve("hidden97");
+        assert.equal(w.styleFor("hidden98"), second);
+        assert.deepEqual({ ...w.styleFor("hidden99") }, first, "hidden curves retain their styles");
+        const third = { ...w.styleFor("hidden97") };
+        assert.notEqual(third.color, first.color, "new curves do not reuse a hidden curve's color");
+        w.toggleCurve("hidden99");
+        assert.deepEqual({ ...w.styleFor("hidden99") }, first, "reenabling restores the original style");
+        w.toggleCurve("hidden99");
+        w.removeVar("hidden97");
+        w.toggleCurve("hidden96");
+        assert.deepEqual({ ...w.styleFor("hidden96") }, third, "removal releases the automatic slot");
+        assert.equal(page.messages.filter((m) => m.type === "setSeriesStyle").length, 0);
+        other.send({ type: "watchList", items: [{ name: "other", address: 0x20000000, type: "u32", size: 4 }] });
+        assert.deepEqual({ ...other.window.styleFor("other") }, first, "panels allocate independently");
+        const custom = { color: "#123456", line: "dotted" };
+        w.chartAction("style", { name: "hidden98", style: custom });
+        assert.equal(page.messages.at(-1).type, "setSeriesStyle");
+        page.send({ type: "seriesStyles", styles: { hidden98: custom, unused: custom } });
+        w.toggleCurve("hidden98");
+        w.toggleCurve("hidden98");
+        assert.deepEqual({ ...w.styleFor("hidden98") }, custom, "saved manual styles survive hide and restore");
+        w.chartAction("focus", "hidden95");
+        assert.equal(Object.keys(current()).length, 4, "focus retains the other curves' style reservations");
+        assert.deepEqual({ ...w.styleFor("hidden99") }, first);
+        w.chartAction("restore");
+        assert.ok(current().hidden98 && current().hidden96);
+        const reserved = JSON.stringify(current());
+        w.chartAction("hideAll");
+        assert.equal(JSON.stringify(current()), reserved, "hide all keeps every allocated style");
+        w.chartAction("showAll");
+        assert.equal(Object.keys(current()).length, 99);
+        assert.equal(new Set(Object.values(current()).map((s) => s.color + s.line)).size, 99);
+        page.assertHealthy();
+        other.assertHealthy();
+    } finally {
+        page.close();
+        other.close();
+    }
+}
+
 // Curve identity, inspection, snapshots and interaction
 async function experience() {
     const record = Object.create(null);
@@ -235,19 +356,16 @@ async function experience() {
         }
     };
     const store = new SeriesStyleStore(state);
-    await store.initialize([
-        [{ name: "a" }, { name: "b" }],
-        [{ name: "b" }, { name: "c" }]
-    ]);
-    assert.equal(store.styles.b.color, Styles.legacyColor(1));
+    assert.equal(Object.keys(store.styles).length, 0, "watch lists do not reserve styles");
     await store.update("b", { color: "#abcdef", line: "dashed" });
-    await Promise.all([store.update("new"), store.update("new2")]);
+    await Promise.all([
+        store.update("new", { color: "#123456", line: "solid" }),
+        store.update("new2", { color: "#654321", line: "dotted" })
+    ]);
     assert.equal(new SeriesStyleStore(state).styles.b.color, "#abcdef");
-    await store.initialize([[{ name: "ignored" }]]);
-    assert.ok(!store.styles.ignored);
+    await assert.rejects(store.update("ignored"));
     await assert.rejects(store.update("", {}));
     await assert.rejects(store.update("bad", { color: "#000000", line: "bad" }));
-    assert.ok(/^#/.test(Styles.legacyColor(20)));
 
     const series = [
         {
@@ -2519,6 +2637,7 @@ async function remoteHistory() {
 
 (async () => {
     await scenario("Toolbar controls, accessibility and overlap", controls);
+    await scenario("Active curve allocation, expanded styles, visibility and overrides", activeStyles);
     await scenario("Curve identity, inspection, snapshots and interaction", experience);
     await scenario("Jitter bands and envelopes", jitter);
     await scenario("Per-variable number bases, exact values and persistence", numberBases);

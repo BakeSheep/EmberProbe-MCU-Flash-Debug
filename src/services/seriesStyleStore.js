@@ -5,28 +5,13 @@ class SeriesStyleStore {
     constructor(state) {
         this.state = state;
         this.styles = Styles.clean(state.get(KEY)?.styles);
-        this.migrated = state.get(KEY)?.version === 1;
         this.pending = Promise.resolve();
     }
-    async initialize(lists) {
-        if (!this.migrated) {
-            for (const list of lists)
-                for (const [i, item] of list.entries()) {
-                    if (Styles.validName(item.name) && !Object.hasOwn(this.styles, item.name))
-                        this.styles[item.name] = { color: Styles.legacyColor(i), line: "solid" };
-                }
-            this.migrated = true;
-            await this.save();
-        }
-        return this.styles;
-    }
     async update(name, style) {
-        if (!Styles.validName(name) || (style !== undefined && !Styles.valid(style)))
-            throw new Error("Invalid series style");
+        if (!Styles.validName(name) || !Styles.valid(style)) throw new Error("Invalid series style");
         if (!Object.hasOwn(this.styles, name) && Object.keys(this.styles).length >= 4096)
             throw new Error("Series style limit reached");
-        if (style) this.styles[name] = { color: style.color, line: style.line };
-        else Styles.ensure(this.styles, name);
+        this.styles[name] = { color: style.color, line: style.line };
         await this.save();
         return this.styles;
     }

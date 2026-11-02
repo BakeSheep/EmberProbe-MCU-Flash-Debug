@@ -6,7 +6,7 @@
 const MAX_FILE_LINES = 1500;
 const MAX_FUNCTION_LINES = 300;
 const FILE_LINE_CEILINGS = {
-    "src/webview/liveWatch/renderer.js": 2902,
+    "src/webview/liveWatch/renderer.js": 2899,
     "src/webview/sidebar/renderer.js": 1756,
     "src/webview/runtime.js": 1543
 };

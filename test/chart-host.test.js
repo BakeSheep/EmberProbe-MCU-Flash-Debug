@@ -346,11 +346,7 @@ async function panels() {
     p.openLiveWatchPanel();
     await panels[1].receive({ type: "ready", panelId: 2 });
     await panels[0].receive({ type: "ready", panelId: 1 });
-    assert.equal(
-        panels[1].messages[0].styles.shared.color,
-        "#F14C4C",
-        "migration priority is panel ID, not ready order"
-    );
+    assert.deepEqual(panels[1].messages[0].styles, {}, "ready does not allocate styles for saved watches");
     await panels[1].receive({ type: "setSeriesStyle", name: "shared", style: { color: "#123456", line: "dotted" } });
     assert.equal(panels[0].messages.at(-1).styles.shared.color, "#123456");
     assert.equal(panels[1].messages.at(-1).styles.shared.line, "dotted");

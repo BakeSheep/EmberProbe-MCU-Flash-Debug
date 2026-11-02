@@ -10,20 +10,8 @@ const { SHARED_ROUTES, isWebviewMessage, routeFor } = require("./webviewRoutes")
 // Requests the chart answers from its history worker, each with a "<type>Result" reply.
 const CHART_HISTORY_REQUESTS = new Set(["chartViewport", "chartFreeze", "chartResume"]);
 
-// Chart watch lists in panel order: mcu.watchList, then mcu.watchList.2, mcu.watchList.3, ...
-function chartWatchLists(workspaceState) {
-    const prefix = CACHE_KEYS.watchList + ".";
-    const order = (key) => Number(key.slice(prefix.length)) || 1;
-    return workspaceState
-        .keys()
-        .filter((key) => key === CACHE_KEYS.watchList || key.startsWith(prefix))
-        .sort((a, b) => order(a) - order(b))
-        .map((key) => workspaceState.get(key) || []);
-}
-
 async function ready({ host, entry, post, watchKey }) {
     entry.ready = true;
-    await host._seriesStyleStore.initialize(chartWatchLists(host._context.workspaceState));
     post({ type: "seriesStyles", styles: host._seriesStyleStore.styles });
     post(host._chartBackgroundState());
     host.chartBackground().ready(entry);

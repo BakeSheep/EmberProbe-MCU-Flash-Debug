@@ -442,8 +442,6 @@ var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
     Styles = window.EmberProbeSeriesStyles,
     Analysis = window.EmberProbeAnalysisState,
     Inspection = window.EmberProbeChartInspection,
-    seriesStyles = Object.create(null),
-    styleRequests = new Set(),
     analysis = Analysis.create(),
     axisModes = {},
     controls;
@@ -491,6 +489,8 @@ const state = {
     latestEnum: Object.create(null),
     latestPointer: Object.create(null),
     hidden: Object.create(null),
+    seriesStyles: Object.create(null),
+    curveStyles: Object.create(null),
     expanded: Object.create(null),
     rawMembers: Object.create(null),
     numberBases: Object.create(null),
@@ -608,14 +608,7 @@ function colorFor(i) {
     return styleFor(typeof i === "string" ? i : state.watch[i]?.name || String(i)).color;
 }
 function styleFor(name) {
-    if (!Object.prototype.hasOwnProperty.call(seriesStyles, name)) {
-        Styles.ensure(seriesStyles, name);
-        if (!styleRequests.has(name)) {
-            styleRequests.add(name);
-            post({ type: "setSeriesStyle", name: name });
-        }
-    }
-    return seriesStyles[name];
+    return state.curveStyles[name] || state.seriesStyles[name] || Styles.preview;
 }
 function toggleCurve(name) {
     analysis.previousHidden = null;
@@ -623,7 +616,6 @@ function toggleCurve(name) {
     state.hidden[name] = !state.hidden[name];
     saveUi();
     renderVars();
-    state.dirty = true;
 }
 function fmtAddr(a) {
     return "0x" + (Number(a) >>> 0).toString(16).toUpperCase();
@@ -948,6 +940,12 @@ function renderVars() {
         state.watch.forEach(function (w) {
             state.hidden[w.name] = w.name !== analysis.focused;
         });
+    state.curveStyles = Styles.active(
+        state.seriesStyles,
+        state.watch.filter((item) => !state.hidden[item.name] && !isComposite(item)).map((item) => item.name),
+        state.curveStyles,
+        state.watch.filter((item) => !isComposite(item)).map((item) => item.name)
+    );
     var box = $("vars");
     box.textContent = "";
     variableCards = [];
@@ -1760,7 +1758,7 @@ function chartAction(action, value) {
         chartState.hits = [];
     }
     if (action === "style") {
-        seriesStyles[value.name] = value.style;
+        state.seriesStyles[value.name] = value.style;
         post({ type: "setSeriesStyle", ...value });
         renderVars();
     }
@@ -2374,8 +2372,7 @@ window.EmberProbeMessages.connect(window, {
         );
     },
     seriesStyles: function (m) {
-        seriesStyles = Styles.clean(m.styles);
-        styleRequests.clear();
+        state.seriesStyles = Styles.clean(m.styles);
         renderVars();
         state.dirty = true;
     },
