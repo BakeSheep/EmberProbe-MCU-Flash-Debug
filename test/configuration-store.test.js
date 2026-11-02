@@ -38,6 +38,15 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.throws(() => assertAgentSettable({ cubemxPath: "other.exe" }), { code: "CONFIG_KEY_FORBIDDEN" });
         await assert.rejects(store.update({ iocPath: "", cubemxPath: "other.exe" }), { code: "CONFIG_KEY_FORBIDDEN" });
         assert.strictEqual(store.snapshot().iocPath, selected.iocPath);
+        await scenario("Expose the machine CubeMX2 path without allowing Agent changes", async () => {
+            settings.set("cubemx2Path", "D:/tools/stm32cubemx2-1.1.2.exe");
+            assert.strictEqual(store.snapshot().cubemx2Path, "D:/tools/stm32cubemx2-1.1.2.exe");
+            assert.throws(() => assertAgentSettable({ cubemx2Path: "other.exe" }), { code: "CONFIG_KEY_FORBIDDEN" });
+            await assert.rejects(store.update({ iocPath: "", cubemx2Path: "other.exe" }), {
+                code: "CONFIG_KEY_FORBIDDEN"
+            });
+            assert.strictEqual(store.snapshot().iocPath, selected.iocPath);
+        });
         for (const key of ["firmwarePackage", "firmwareVersion", "repository"])
             await assert.rejects(store.update({ [key]: "value" }), { code: "UNSUPPORTED_CONFIG" });
         // The deprecated maxSamples setting no longer takes effect, so the Agent Bridge cannot write it either.

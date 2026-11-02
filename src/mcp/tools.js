@@ -112,7 +112,7 @@ const TOOLS = [
         toolset: "core",
         title: "Update EmberProbe configuration",
         description:
-            "Set workspace configuration values. openocdPath and cubemxPath are user-only and are rejected. Set only values the user confirmed; never guess a target or probe.",
+            "Set workspace configuration values. openocdPath, cubemxPath and cubemx2Path are user-only and are rejected. Set only values the user confirmed; never guess a target or probe.",
         methods: ["config.set"],
         inputSchema: object(
             {

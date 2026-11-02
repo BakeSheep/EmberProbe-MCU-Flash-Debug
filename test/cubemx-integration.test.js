@@ -16,16 +16,14 @@ const exec = promisify(execFile);
 
 (async () => {
     for (const lang of ["zh", "en"]) {
-        const value = "C:\\工具 <test>\\STM32CubeMX.exe";
-        const view = render(getModernWebviewContent({ cubemxPath: value, iocPath: "C:\\工程\\demo.ioc" }, lang));
+        const value = "C:\\工程 <test>\\demo.ioc";
+        const view = render(getModernWebviewContent({ iocPath: value }, lang));
         try {
             view.assertHealthy();
-            const button = view.document.querySelector('#otherConfig [data-command="mcu-vscode.selectCubeMx"]');
+            const button = view.document.querySelector('#otherConfig [data-command="mcu-vscode.selectIoc"]');
             assert(button);
             assert.strictEqual(button.querySelector("small").title, value);
             button.click();
-            assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.selectCubeMx");
-            view.document.querySelector('#otherConfig [data-command="mcu-vscode.selectIoc"]').click();
             assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.selectIoc");
             const toggle = view.document.getElementById("skillStatus");
             assert.strictEqual(toggle.getAttribute("role"), "switch");
@@ -43,12 +41,8 @@ const exec = promisify(execFile);
             assert.strictEqual(toggle.disabled, false);
             view.send({ type: "skillStatus", scopes: { workspace: null } });
             assert.strictEqual(toggle.disabled, true);
-            const icons = [
-                view.document.querySelector("#svdSelect svg"),
-                button.querySelector("svg"),
-                view.document.querySelector('[data-command="mcu-vscode.selectIoc"] svg')
-            ];
-            assert.strictEqual(new Set(icons.map((icon) => icon.innerHTML)).size, 3);
+            const icons = [view.document.querySelector("#svdSelect svg"), button.querySelector("svg")];
+            assert.strictEqual(new Set(icons.map((icon) => icon.innerHTML)).size, 2);
         } finally {
             view.window.close();
         }

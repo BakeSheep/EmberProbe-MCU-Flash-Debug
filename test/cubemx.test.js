@@ -4,6 +4,7 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const { waitFor } = require("./helpers/wait");
+const { loadModule } = require("./helpers/load-module");
 const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
@@ -311,10 +312,10 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         assert.strictEqual(await ui.detectIoc(), "");
         assert.strictEqual(state.get("mcu.iocPath"), ioc);
         picked = { value: "" };
-        await ui.select("ioc");
+        await ui.selectIoc();
         assert.strictEqual(state.get("mcu.iocPath"), "");
         picked = { value: ioc };
-        await ui.select("ioc");
+        await ui.selectIoc();
         assert.strictEqual(state.get("mcu.iocPath"), ioc);
         settings.set("cubemxPath", tool.executable);
         if (process.platform === "win32") {
@@ -323,6 +324,96 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
             assert.strictEqual(await ui.detect(), null);
             assert.strictEqual(ui.status, "cubemx.invalid");
         }
+
+        await scenario("Save discovered CubeMX paths in User settings and preserve manual setting edits", async () => {
+            const cube2Path = path.join(install, "stm32cubemx2-1.1.2.exe");
+            await fs.writeFile(cube2Path, "fixture");
+            const cube2 = require("../src/services/cubemx2Environment");
+            const cube2Tool = await cube2.installation(cube2Path, { platform: "win32" });
+            let discovered = cube2Tool;
+            let onDiscover = () => {};
+            const { CubeMxConfiguration: Configuration } = loadModule("src/services/cubemxConfiguration.js", {
+                "./cubemxEnvironment": { ...require("../src/services/cubemxEnvironment"), discover: async () => tool },
+                "./cubemx2Environment": {
+                    ...cube2,
+                    discover: async (options) => {
+                        assert.strictEqual(
+                            options.cubeCli,
+                            path.join(
+                                root,
+                                "st-extension/resources/binaries/win32",
+                                process.arch.replace("x64", "x86_64").replace("arm64", "aarch64"),
+                                "cube.exe"
+                            )
+                        );
+                        onDiscover();
+                        return discovered;
+                    }
+                }
+            });
+            const values = new Map();
+            const writes = [];
+            const configuration = new Configuration({
+                platform: "win32",
+                context: {},
+                t: (key) => key,
+                changed: () => {},
+                vscode: {
+                    ConfigurationTarget: { Global: 1 },
+                    extensions: { getExtension: () => ({ extensionPath: path.join(root, "st-extension") }) },
+                    workspace: {
+                        getConfiguration: () => {
+                            // VS Code configurations are snapshots; discovery must re-read before saving.
+                            const snapshot = new Map(values);
+                            return {
+                                get: (key, fallback) => snapshot.get(key) || fallback,
+                                update: async (key, value, target) => {
+                                    writes.push({ key, value, target });
+                                    values.set(key, value);
+                                }
+                            };
+                        }
+                    }
+                }
+            });
+            assert.strictEqual((await configuration.refresh()).executable, tool.executable);
+            assert.strictEqual(values.get("cubemxPath"), tool.executable);
+            assert.strictEqual(values.get("cubemx2Path"), cube2Path);
+            assert.strictEqual(configuration.status, "cubemx.ready");
+            assert.strictEqual(configuration.status2, "cubemx2.ready");
+            assert(
+                writes.every((write) => write.target === 1),
+                "both paths use machine-wide user settings"
+            );
+            writes.length = 0;
+            await configuration.detect("cubemx2");
+            assert.strictEqual(writes.length, 0, "keep an explicitly selected installation");
+            const otherWorkspace = new Configuration({
+                platform: "win32",
+                context: {},
+                vscode: configuration.vscode,
+                t: (key) => key,
+                changed: () => {}
+            });
+            assert.strictEqual((await otherWorkspace.detect("cubemx2")).executable, cube2Path);
+            assert.strictEqual(writes.length, 0, "another workspace reuses the same User setting");
+            values.set("cubemx2Path", tool.executable);
+            assert.strictEqual(await configuration.detect("cubemx2"), null);
+            assert.strictEqual(configuration.status2, "cubemx2.invalid");
+            assert.strictEqual(values.get("cubemx2Path"), tool.executable, "do not replace an invalid saved path");
+            values.delete("cubemx2Path");
+            onDiscover = () => values.set("cubemx2Path", "user selection while detecting");
+            await configuration.detect("cubemx2");
+            assert.strictEqual(values.get("cubemx2Path"), "user selection while detecting");
+            values.delete("cubemx2Path");
+            onDiscover = () => {};
+            discovered = null;
+            assert.strictEqual(await configuration.detect("cubemx2"), null);
+            assert.strictEqual(configuration.status2, "cubemx2.missing");
+            configuration.platform = "darwin";
+            assert.strictEqual(await configuration.detect("cubemx2"), null);
+            assert.strictEqual(configuration.status2, "cubemx2.platformUnsupported");
+        });
 
         const runnerDir = path.join(root, "runner");
         await fs.mkdir(runnerDir);

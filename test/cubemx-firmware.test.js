@@ -172,7 +172,7 @@ const { getModernWebviewContent } = require("../src/modernView");
                 view.assertHealthy();
                 assert.strictEqual(
                     view.document.querySelectorAll('#otherConfig [data-i18n="common.optional"]').length,
-                    3
+                    2
                 );
                 view.document.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]').click();
                 assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.installCubeMxFirmware");

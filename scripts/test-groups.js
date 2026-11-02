@@ -161,6 +161,7 @@ const TEST_GROUPS = Object.freeze({
         "cubemx-integration.test.js",
         "cubemx-linux.test.js",
         "cubemx.test.js",
+        "cubemx2-environment.test.js",
         "daplink-flash.test.js",
         "debug-lifecycle-integration.test.js",
         "debug-lifecycle-races.test.js",

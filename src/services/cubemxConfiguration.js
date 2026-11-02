@@ -1,6 +1,33 @@
 "use strict";
 const path = require("path");
 const { discover, installation, workspaceIoc, supportedPlatform } = require("./cubemxEnvironment");
+const cubeMx2 = require("./cubemx2Environment");
+
+const PRODUCTS = {
+    cubemx: {
+        key: "cubemxPath",
+        status: "status",
+        messages: {
+            unsupported: "cubemx.platformUnsupported",
+            invalid: "cubemx.invalid",
+            ready: "cubemx.ready",
+            missing: "cubemx.missing"
+        },
+        discover,
+        installation
+    },
+    cubemx2: {
+        key: "cubemx2Path",
+        status: "status2",
+        messages: {
+            unsupported: "cubemx2.platformUnsupported",
+            invalid: "cubemx2.invalid",
+            ready: "cubemx2.ready",
+            missing: "cubemx2.missing"
+        },
+        ...cubeMx2
+    }
+};
 
 class CubeMxConfiguration {
     constructor(options) {
@@ -11,71 +38,74 @@ class CubeMxConfiguration {
         this.changed = options.changed;
         this.t = options.t;
         this.status = "";
+        this.status2 = "";
     }
-    async detect() {
+    async refresh() {
+        const [tool] = await Promise.all([this.detect(), this.detect("cubemx2")]);
+        return tool;
+    }
+    async detect(kind = "cubemx") {
+        const product = PRODUCTS[kind];
         if (!supportedPlatform(this.platform || process.platform)) {
-            this.status = this.t("cubemx.platformUnsupported");
+            this[product.status] = this.t(product.messages.unsupported);
             return null;
         }
         const cfg = this.vscode.workspace.getConfiguration("emberprobe");
-        const configured = cfg.get("cubemxPath", "");
+        const configured = cfg.get(product.key, "");
         let tool;
         try {
-            const official = this.vscode.workspace.getConfiguration(
-                "stm32cube-ide-core.configuration.productSTM32CubeMX"
-            );
-            const hint = official.inspect?.("executablePath")?.globalValue;
+            const hint =
+                kind === "cubemx"
+                    ? this.vscode.workspace
+                          .getConfiguration("stm32cube-ide-core.configuration.productSTM32CubeMX")
+                          .inspect?.("executablePath")?.globalValue
+                    : "";
             tool = configured
-                ? await installation(configured, { platform: this.platform || process.platform })
-                : await discover({ hints: [hint], platform: this.platform || process.platform });
+                ? await product.installation(configured, { platform: this.platform || process.platform })
+                : await product.discover({
+                      hints: [hint],
+                      platform: this.platform || process.platform,
+                      ...(kind === "cubemx2" ? { cubeCli: this.officialCubeCli() } : {})
+                  });
         } catch {
-            this.status = this.t("cubemx.invalid");
+            this[product.status] = this.t(product.messages.invalid);
             this.changed();
             return null;
         }
         // Do not overwrite a user selection made while discovery was running.
-        if (!configured && tool && !cfg.get("cubemxPath", ""))
-            await cfg.update("cubemxPath", tool.executable, this.vscode.ConfigurationTarget.Global);
-        this.status = this.t(tool ? "cubemx.ready" : "cubemx.missing");
+        if (!configured && tool && !this.vscode.workspace.getConfiguration("emberprobe").get(product.key, ""))
+            await cfg.update(product.key, tool.executable, this.vscode.ConfigurationTarget.Global);
+        this[product.status] = this.t(tool ? product.messages.ready : product.messages.missing);
         this.changed();
         return tool;
     }
-    async select(kind) {
+    officialCubeCli() {
+        const core = this.vscode.extensions?.getExtension?.("STMicroelectronics.stm32cube-ide-core");
+        if (!core?.extensionPath) return undefined;
+        return path.join(
+            core.extensionPath,
+            "resources",
+            "binaries",
+            this.platform,
+            process.arch.replace("x64", "x86_64").replace("arm64", "aarch64"),
+            this.platform === "win32" ? "cube.exe" : "cube"
+        );
+    }
+    async selectIoc() {
         const v = this.vscode;
-        if (kind === "ioc") {
-            const files = await this.iocCandidates();
-            const selected = await v.window.showQuickPick(
-                [
-                    ...files.map((value) => ({ label: path.basename(value), description: path.dirname(value), value })),
-                    { label: this.t("cubemx.clear"), value: "" }
-                ],
-                { placeHolder: this.t("cubemx.chooseIoc"), matchOnDescription: true }
-            );
-            if (selected) {
-                await this.context.workspaceState.update("mcu.iocPath", selected.value);
-                this.changed();
-            }
-            return selected ? true : null;
+        const files = await this.iocCandidates();
+        const selected = await v.window.showQuickPick(
+            [
+                ...files.map((value) => ({ label: path.basename(value), description: path.dirname(value), value })),
+                { label: this.t("cubemx.clear"), value: "" }
+            ],
+            { placeHolder: this.t("cubemx.chooseIoc"), matchOnDescription: true }
+        );
+        if (selected) {
+            await this.context.workspaceState.update("mcu.iocPath", selected.value);
+            this.changed();
         }
-        const action = await v.window.showQuickPick([
-            { label: this.t("cubemx.select"), action: "select" },
-            { label: this.t("cubemx.clear"), action: "clear" }
-        ]);
-        if (!action) return null;
-        let value = "";
-        if (action.action === "select") {
-            const files = await v.window.showOpenDialog({
-                canSelectMany: false,
-                ...((this.platform || process.platform) === "win32"
-                    ? { filters: { "CubeMX executable": ["exe"] } }
-                    : {})
-            });
-            if (!files?.[0]) return null;
-            value = (await installation(files[0].fsPath, { platform: this.platform || process.platform })).executable;
-        }
-        await v.workspace.getConfiguration("emberprobe").update("cubemxPath", value, v.ConfigurationTarget.Global);
-        this.changed();
-        return true;
+        return selected ? true : null;
     }
     async iocCandidates() {
         const files = await this.vscode.workspace.findFiles(

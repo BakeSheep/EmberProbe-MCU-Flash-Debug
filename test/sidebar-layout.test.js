@@ -1,10 +1,29 @@
 "use strict";
 
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 
 const configured = { elf: "app.elf", debugger: "interface/stlink.cfg", mcu: "stm32f4x.cfg" };
+
+scenario("Keep CubeMX executable paths in machine-wide User settings rather than the sidebar", () => {
+    const properties = require("../package.json").contributes.configuration.properties;
+    for (const key of ["emberprobe.cubemxPath", "emberprobe.cubemx2Path"]) {
+        assert.strictEqual(properties[key].scope, "machine");
+        assert.strictEqual(properties[key].type, "string");
+        assert.strictEqual(properties[key].default, "");
+    }
+    const sidebar = render(getModernWebviewContent(configured, "zh"));
+    try {
+        sidebar.assertHealthy();
+        assert.strictEqual(sidebar.document.querySelector('[data-command="mcu-vscode.selectCubeMx"]'), null);
+        assert.strictEqual(sidebar.document.querySelector('[data-command="mcu-vscode.selectCubeMx2"]'), null);
+        assert.ok(sidebar.document.querySelector('#otherConfig [data-command="mcu-vscode.selectIoc"]'));
+    } finally {
+        sidebar.close();
+    }
+});
 
 // MCU configuration is a folded card above flash/debug whose row names the chip family and probe.
 let view = render(getModernWebviewContent(configured, "zh"));

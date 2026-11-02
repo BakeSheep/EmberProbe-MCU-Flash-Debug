@@ -17,6 +17,7 @@ const ALLOWED_KEYS = new Set([
     "svd",
     "iocPath",
     "cubemxPath",
+    "cubemx2Path",
     "openocdPath",
     "transport",
     "rtos",
@@ -36,7 +37,7 @@ const NUMBER_RANGES = Object.freeze({
 // Configuration keys the Agent Bridge may not change: openocdPath could point probe calls at any executable (token ->
 // local execution), so the user must change it in VS Code settings or the sidebar. UI paths do not use store.update and
 // are unaffected by this assertion.
-const AGENT_FORBIDDEN_KEYS = Object.freeze(["openocdPath", "cubemxPath"]);
+const AGENT_FORBIDDEN_KEYS = Object.freeze(["openocdPath", "cubemxPath", "cubemx2Path"]);
 
 function assertAgentSettable(values) {
     for (const key of Object.keys(values || {})) {
@@ -74,6 +75,7 @@ class ConfigurationStore {
             samplingAdapterSpeedKhz: cfg.get("samplingAdapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
+            cubemx2Path: cfg.get("cubemx2Path", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
             sampleIntervalMs: intervalMsFromHz(configuredFrequencyHz(cfg)),
             sampleFrequencyHz: configuredFrequencyHz(cfg),
@@ -142,7 +144,7 @@ class ConfigurationStore {
         for (const [key, value] of Object.entries(values)) {
             if (!ALLOWED_KEYS.has(key))
                 throw Object.assign(new Error("Unsupported configuration key: " + key), { code: "UNSUPPORTED_CONFIG" });
-            if (key === "cubemxPath") assertAgentSettable({ cubemxPath: value });
+            if (key === "cubemxPath" || key === "cubemx2Path") assertAgentSettable({ [key]: value });
             else if (key === "iocPath")
                 addState(key, await require("./cubemxEnvironment").workspaceIoc(this.vscode, value));
             else if (key === "elf") addState(key, this.workspacePath(value, ELF_EXTENSIONS));

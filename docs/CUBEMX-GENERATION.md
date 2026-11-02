@@ -1,5 +1,34 @@
 # CubeMX generation and baseline conflicts
 
+## Installation paths
+
+Configure **EmberProbe: Cubemx Path** (`emberprobe.cubemxPath`) and **EmberProbe: Cubemx2 Path**
+(`emberprobe.cubemx2Path`) in VS Code **User settings**. Both have `machine` scope and are shared by all workspaces
+on this machine; they are no longer sidebar configuration entries. Existing saved values are preserved. Leave a
+setting empty for automatic discovery, which saves the result to User settings and never replaces a saved path.
+Invalid saved paths are reported with instructions to update the relevant setting. The sidebar keeps the workspace's
+`.ioc` selection and firmware status.
+
+`emberprobe.cubemx2Path` points to the CubeMX2 launcher, for example `stm32cubemx2-1.1.2.exe`, rather than the legacy
+`STM32CubeMX.exe` or bundled Java. Discovery first reads ST's official external bundle registration:
+`$CUBE_BUNDLE_PATH/.config/external_bundles.json`, or the default bundle root under
+`%LOCALAPPDATA%/stm32cube/bundles` on Windows and `$XDG_DATA_HOME/stm32cube/bundles` on Linux
+(`~/.local/share/stm32cube/bundles` when unset). It validates the registered `stm32cubemx-application` manifest and
+resolves its matching standalone launcher. Multiple valid registered versions select the newest.
+
+If no registered launcher is valid, it queries `cube --resolve --json mx`, using STM32Cube Core's bundled CLI when
+that extension is installed, otherwise `cube` on PATH. This only resolves the official application bundle; it does
+not execute `cube mx start`, launch CubeMX2 or install bundles. Missing tools and invalid/stale records fall back to
+common installation directories, versioned directories and PATH, plus Windows desktop/Start menu shortcuts and
+uninstall registry locations. Registry/manifest JSON reads are bounded to 2 MiB. Linux accepts
+an executable `stm32cubemx2` or `stm32cubemx2-<version>` launcher; macOS detection is currently unavailable.
+
+CubeMX2 configuration currently records its installation only. Existing `.ioc` inspection, firmware checks and code
+generation continue to use `emberprobe.cubemxPath`. Agent configuration reads include both paths, but Agents cannot
+change either executable path.
+
+## Generation safety
+
 EmberProbe regenerates a baseline and a candidate in separate staging directories before writing any project files. The stages are created under the system temporary directory (`emberprobe-cubemx-stage-*`), never inside the workspace, which also keeps CubeMX's deep `Drivers`/`Middlewares` paths short on Windows. They are removed when the operation ends; removal waits for confirmed CubeMX exit, and stages older than 24 hours left by a crashed extension host are swept when the next stage is created. For `ProjectManager.UnderRoot=false`, it places existing sources in the project-name child directory that CubeMX uses, so native Keep User Code processing can read them. Both stages must produce an expected `main.c`: a staged copy plus a generic `OK` is insufficient. CubeMX may preserve an unchanged file's timestamp, so an explicit generation record for that exact staged file is also accepted as evidence.
 
 The baseline comparison preserves existing text line endings and recognizes equivalent `.mxproject` section/key order and known path separators. It does not ignore source whitespace generally, remove meaningful metadata changes, or weaken byte-exact workspace concurrency checks. C and C++ USER CODE blocks are checked before writeback.

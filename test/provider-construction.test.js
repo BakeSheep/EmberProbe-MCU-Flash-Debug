@@ -83,6 +83,20 @@ const { createServices } = require("../src/composition");
         }
     });
 
+    await scenario("Refresh both CubeMX paths and keep only the workspace IOC selector in the sidebar", async () => {
+        const { provider, dispose } = createProvider();
+        try {
+            provider._cubemxConfiguration.selectIoc = async () => "workspace.ioc";
+            provider._cubemxConfiguration.refresh = async () => "both installations";
+            assert.strictEqual(provider.commandHandlers["mcu-vscode.selectCubeMx"], undefined);
+            assert.strictEqual(provider.commandHandlers["mcu-vscode.selectCubeMx2"], undefined);
+            assert.strictEqual(await provider.commandHandlers["mcu-vscode.selectIoc"](), "workspace.ioc");
+            assert.strictEqual(await provider.refreshCubeMxStatus(), "both installations");
+        } finally {
+            await dispose();
+        }
+    });
+
     console.log("Provider construction tests passed");
 })().catch((error) => {
     console.error(error);

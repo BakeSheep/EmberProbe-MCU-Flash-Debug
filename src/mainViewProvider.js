@@ -281,9 +281,9 @@ class MainViewProvider {
     async refreshOpenOcdStatus(showChecking = true) {
         return this._openOcdStatusService.refresh(showChecking);
     }
-    // Looks for STM32CubeMX again (at startup and when emberprobe.cubemxPath changes).
+    // Refreshes both CubeMX installation paths at startup and when their machine settings change.
     refreshCubeMxStatus() {
-        return this._cubemxConfiguration.detect();
+        return this._cubemxConfiguration.refresh();
     }
     async _handleOpenOcdAction(action) {
         if (action === "select") this._assertConnectionEditable({ openocdPath: true });
@@ -296,8 +296,7 @@ class MainViewProvider {
     }
     registerCommandHandlers() {
         this.commandHandlers["mcu-vscode.autoDetect"] = async () => this.runAutoDetect(true);
-        this.commandHandlers["mcu-vscode.selectCubeMx"] = () => this._cubemxConfiguration.select("cubemx");
-        this.commandHandlers["mcu-vscode.selectIoc"] = () => this._cubemxConfiguration.select("ioc");
+        this.commandHandlers["mcu-vscode.selectIoc"] = () => this._cubemxConfiguration.selectIoc();
         this.commandHandlers["mcu-vscode.installCubeMxFirmware"] = () => this._cubemxFirmware.install();
         this.commandHandlers["mcu-vscode.manageAgentSkills"] = async () => this.manageAgentSkills();
         this.commandHandlers["mcu-vscode.enableAgentAccess"] = async () => this.setAgentAccess("enabled");
@@ -1397,7 +1396,6 @@ class MainViewProvider {
             {
                 versionLabel: versionLabel(this._context.extension?.packageJSON?.version),
                 elf: elf ? path.basename(elf) : "",
-                cubemxPath: vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
                 iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",
                 cubemxStatus: this._cubemxConfiguration.status,
                 cubemxFirmware: this._cubemxFirmware?.result,

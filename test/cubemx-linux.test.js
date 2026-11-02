@@ -93,7 +93,6 @@ async function removeWithRetries(target) {
         await write(versionFile, "<Version>6.12.0</Version>");
 
         let selected = executable;
-        let dialogOptions;
         const configuration = new CubeMxConfiguration({
             platform: "linux",
             t: (key) => key,
@@ -109,21 +108,12 @@ async function removeWithRetries(target) {
                             selected = value;
                         }
                     })
-                },
-                window: {
-                    showQuickPick: async () => ({ action: "select" }),
-                    showOpenDialog: async (opts) => {
-                        dialogOptions = opts;
-                        return [{ fsPath: executable }];
-                    }
                 }
             }
         });
         assert.strictEqual((await configuration.detect()).executable, executable);
         assert.strictEqual(selected, executable);
         assert.strictEqual(configuration.status, "cubemx.ready");
-        await configuration.select("tool");
-        assert.strictEqual(dialogOptions.filters, undefined, "Linux picker must allow extensionless executables");
         selected = wrongName;
         assert.strictEqual(await configuration.detect(), null);
         assert.strictEqual(configuration.status, "cubemx.invalid");

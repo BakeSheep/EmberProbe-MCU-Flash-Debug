@@ -213,7 +213,13 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX), shared by workspaces on this machine. Detected automatically on Windows and Linux."
+          "description": "Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX). Configure in User settings; shared by all workspaces on this machine. Leave empty for automatic detection."
+        },
+        "emberprobe.cubemx2Path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "STM32CubeMX2 launcher path (for example stm32cubemx2-1.1.2.exe). Configure in User settings; shared by all workspaces on this machine. Leave empty to detect through the official Cube bundle registration or Cube CLI, then installation directories, PATH and Windows shortcuts."
         },
         "emberprobe.probeSerial": {
           "type": "string",
