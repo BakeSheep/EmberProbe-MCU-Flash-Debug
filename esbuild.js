@@ -13,6 +13,8 @@ const extensionBuild = esbuild.build({
     platform: "node",
     format: "cjs",
     target: "node18",
+    // jsonc-parser's UMD entry passes require into a factory, hiding relative imports from esbuild.
+    alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
     external: ["vscode", "koffi"],
     minify: false,
     sourcemap: false,

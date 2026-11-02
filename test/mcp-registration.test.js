@@ -17,14 +17,15 @@ const {
     findExecutable,
     installArgs,
     launcherSource,
-    removeArgs,
     runCli,
     serverCommand,
     wrapperSource
 } = require("../src/services/mcpRegistration");
+const { prepareClientInstall, commitClientInstall } = require("../src/services/mcpConfigFiles");
 
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-mcp-registration-")));
 const RUNTIME = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
+let clientNumber = 0;
 
 class EventEmitter {
     constructor() {
@@ -43,6 +44,7 @@ class McpStdioServerDefinition {
 }
 
 function setup(vscodeExtra = {}, state = {}) {
+    const clientHome = path.join(base, `client-${++clientNumber}`);
     const context = {
         extensionPath: path.join(base, "extension"),
         globalStorageUri: { fsPath: path.join(base, "storage") },
@@ -65,6 +67,7 @@ function setup(vscodeExtra = {}, state = {}) {
             showErrorMessage: (...args) => messages.push(["error", ...args]),
             showInformationMessage: async (...args) => {
                 messages.push(["info", ...args]);
+                if (args[1]?.modal) await state.onConfirm?.(...args);
                 return args[1]?.modal ? state.confirm : undefined;
             }
         },
@@ -98,9 +101,17 @@ function setup(vscodeExtra = {}, state = {}) {
         runCli: async (file, args) => {
             cli.push([file, ...args]);
             return (state.cliResults || []).shift() || { ok: true, stdout: "", stderr: "" };
+        },
+        prepareInstall: async (client, snippet, workspace) => {
+            if (state.prepareError) throw new Error(state.prepareError);
+            return prepareClientInstall(client, snippet, { home: clientHome, env: {}, workspace });
+        },
+        commitInstall: async (plan) => {
+            if (state.commitError) throw new Error(state.commitError);
+            return commitClientInstall(plan);
         }
     });
-    return { registration, context, messages, clipboard, opened, cli, events, vscode, state };
+    return { registration, context, messages, clipboard, opened, cli, events, vscode, state, clientHome };
 }
 
 function cursorApi() {
@@ -320,17 +331,6 @@ function cursorApi() {
                 RUNTIME,
                 "C:\\Users\\me\\mcp.js"
             ]);
-            assert.deepStrictEqual(removeArgs("claude"), ["mcp", "remove", "--scope", "user", "emberprobe"]);
-            assert.deepStrictEqual(removeArgs("codex"), ["mcp", "remove", "emberprobe"]);
-            assert.strictEqual(
-                configSnippet("claude", spec, "win32"),
-                `claude mcp add --scope user emberprobe -e ELECTRON_RUN_AS_NODE=1 -- "${RUNTIME}" C:\\Users\\me\\mcp.js`
-            );
-            const posix = { command: "/home/o'neil/mcp", args: [], env: { EMBERPROBE_MCP_TOOLSETS: "core,cubemx" } };
-            assert.strictEqual(
-                configSnippet("codex", posix, "linux"),
-                "codex mcp add emberprobe --env EMBERPROBE_MCP_TOOLSETS=core,cubemx -- '/home/o'\\''neil/mcp'"
-            );
             assert.deepStrictEqual(JSON.parse(configSnippet("json", spec)), {
                 mcpServers: { emberprobe: { command: RUNTIME, args: ["C:\\Users\\me\\mcp.js"], env: spec.env } }
             });
@@ -488,19 +488,24 @@ function cursorApi() {
         });
 
         await scenario("Install into Claude Code through its CLI after confirmation", async () => {
-            const state = { pick: "claude", confirm: "mcp.install", executables: { claude: "C:\\npm\\claude.cmd" } };
+            const state = { pick: "claude", confirm: "mcp.useCli", executables: { claude: "C:\\npm\\claude.cmd" } };
             const { registration, cli, messages, clipboard, events, context } = setup({}, state);
             const result = await registration.installClient();
             assert.deepStrictEqual(
                 state.picks.map((pick) => pick.client),
-                ["claude", "codex", "cursor", "antigravity", "dsh", "json"]
+                ["claude", "codex", "gemini", "opencode", "cursor", "antigravity", "dsh", "json"]
             );
-            assert.ok(state.picks[0].description.startsWith("mcp.method.cli"));
-            assert.ok(state.picks[1].description.startsWith("mcp.method.cliMissing"));
+            assert.strictEqual(state.picks[0].description, "mcp.method.native");
+            assert.strictEqual(state.picks[1].description, "mcp.method.native");
             const launcher = path.join(context.globalStorageUri.fsPath, "mcp", "emberprobe-mcp.js");
             assert.ok(fs.existsSync(launcher), "the launcher is written before installing");
             const confirm = messages.find((message) => message[2]?.modal);
-            assert.strictEqual(confirm[2].detail, result.snippet, "the exact command is shown before it runs");
+            assert.ok(
+                confirm[2].detail.endsWith(
+                    `CLI: claude mcp add --scope user emberprobe -e ELECTRON_RUN_AS_NODE=1 -- "${RUNTIME}" ${launcher}`
+                ),
+                "the exact CLI command is shown before it runs"
+            );
             assert.deepStrictEqual(cli, [
                 [
                     "C:\\npm\\claude.cmd",
@@ -513,80 +518,193 @@ function cursorApi() {
             assert.strictEqual(clipboard.length, 0);
         });
 
-        await scenario("Replace an existing entry only after the first add fails", async () => {
+        await scenario("Preserve an existing entry when adding a server fails", async () => {
             const state = {
                 pick: "codex",
-                confirm: "mcp.install",
+                confirm: "mcp.useCli",
                 executables: { codex: "/usr/bin/codex" },
                 cliResults: [{ ok: false, stdout: "", stderr: "already exists", error: "1" }]
             };
-            const { registration, cli, events } = setup({}, state);
+            const { registration, cli, events, clipboard } = setup({}, state);
             const result = await registration.installClient();
             assert.deepStrictEqual(
                 cli.map((call) => call.slice(1, 3)),
-                [
-                    ["mcp", "add"],
-                    ["mcp", "remove"],
-                    ["mcp", "add"]
-                ]
+                [["mcp", "add"]]
             );
-            assert.strictEqual(result.ok, true);
-            assert.strictEqual(events.configured, 1);
+            assert.strictEqual(result.ok, false);
+            assert.strictEqual(events.configured, 0);
+            assert.deepStrictEqual(clipboard, [result.snippet]);
+            assert.ok(result.snippet.startsWith("[mcp_servers.emberprobe]"));
         });
 
-        await scenario("Copy the command when the CLI fails, is missing or the user cancels", async () => {
-            const failing = setup(
-                {},
-                {
-                    pick: "codex",
-                    confirm: "mcp.install",
-                    executables: { codex: "/usr/bin/codex" },
-                    cliResults: [
-                        { ok: false, stdout: "", stderr: "x".repeat(400), error: "1" },
-                        { ok: true, stdout: "", stderr: "" },
-                        { ok: false, stdout: "", stderr: "config.toml is read-only", error: "1" }
-                    ]
-                }
-            );
-            const failed = await failing.registration.installClient();
-            assert.strictEqual(failed.ok, false);
-            assert.deepStrictEqual(failing.clipboard, [failed.snippet]);
-            assert.ok(failing.messages.at(-1)[1].includes("config.toml is read-only"));
-            assert.strictEqual(failing.events.configured, 0);
-
-            const unsafe = setup(
-                {},
-                {
-                    pick: "claude",
-                    confirm: "mcp.install",
-                    executables: { claude: "C:\\npm\\claude.cmd" },
-                    cliResults: [{ ok: false, stdout: "", stderr: "", error: "UNSAFE_ARGUMENT" }]
-                }
-            );
-            assert.strictEqual((await unsafe.registration.installClient()).ok, false);
-            assert.strictEqual(unsafe.cli.length, 1, "an unsafe command is not retried with remove");
-
-            const missing = setup({}, { pick: "claude" });
-            const copied = await missing.registration.installClient();
-            assert.strictEqual(copied.method, "clipboard");
-            assert.deepStrictEqual(missing.clipboard, [copied.snippet]);
-            assert.ok(copied.snippet.startsWith("claude mcp add --scope user emberprobe"));
-            assert.strictEqual(missing.messages.at(-1)[0], "warn");
-            assert.deepStrictEqual(missing.cli, []);
-
-            const cancelled = setup({}, { pick: "claude", executables: { claude: "/usr/bin/claude" } });
-            assert.strictEqual(await cancelled.registration.installClient(), null);
-            assert.deepStrictEqual(cancelled.cli, []);
-            assert.strictEqual(cancelled.events.configured, 0);
-
-            const dismissed = setup({}, {});
-            assert.strictEqual(
-                await dismissed.registration.installClient(),
-                null,
-                "dismissing the picker does nothing"
-            );
-            assert.deepStrictEqual(dismissed.clipboard, []);
+        await scenario("Offer native configuration even when a CLI is installed", async () => {
+            for (const client of ["claude", "codex", "gemini"]) {
+                const { registration, cli, events, clipboard, messages } = setup(
+                    {},
+                    {
+                        pick: client,
+                        confirm: "mcp.copyConfig",
+                        workspace: path.join(base, "MCU workspace"),
+                        executables: { [client]: `/usr/bin/${client}` }
+                    }
+                );
+                const result = await registration.installClient();
+                assert.strictEqual(result.method, "clipboard");
+                assert.deepStrictEqual(cli, []);
+                assert.deepStrictEqual(clipboard, [result.snippet]);
+                assert.ok(result.snippet.includes("EMBERPROBE_WORKSPACE"));
+                assert.strictEqual(events.configured, 1);
+                assert.strictEqual(messages.at(-1)[1], `mcp.configCopied.${client}`);
+            }
         });
+
+        await scenario("Install every named harness directly after displaying target files", async () => {
+            for (const client of ["claude", "codex", "gemini", "opencode", "antigravity", "dsh"]) {
+                const state = { pick: client, confirm: "mcp.install", workspace: path.join(base, "workspace") };
+                const { registration, clientHome, events, cli, clipboard } = setup({}, state);
+                state.onConfirm = (message, options) => {
+                    assert.ok(message.startsWith("mcp.nativeConfirm"));
+                    assert.ok(options.detail.includes(clientHome), "the exact destination is shown before writing");
+                    assert.ok(!fs.existsSync(clientHome), "previewing has no client-file side effects");
+                };
+                const result = await registration.installClient();
+                assert.strictEqual(result.method, "file");
+                assert.strictEqual(result.ok, true);
+                assert.strictEqual(result.files.length, client === "dsh" ? 2 : 1);
+                assert.ok(result.files.every((file) => fs.existsSync(file)));
+                assert.strictEqual(events.configured, 1);
+                assert.deepStrictEqual(cli, []);
+                assert.deepStrictEqual(clipboard, []);
+            }
+        });
+
+        await scenario("Native planning/write failures export a fallback without claiming installation", async () => {
+            for (const error of ["prepareError", "commitError"]) {
+                const { registration, clientHome, clipboard, events, messages } = setup(
+                    {},
+                    { pick: "dsh", confirm: "mcp.install", [error]: "configuration unavailable" }
+                );
+                const result = await registration.installClient();
+                assert.strictEqual(result.method, "file");
+                assert.strictEqual(result.ok, false);
+                assert.deepStrictEqual(clipboard, [result.snippet]);
+                assert.strictEqual(events.configured, 0);
+                assert.ok(!fs.existsSync(clientHome));
+                assert.ok(messages.at(-1)[1].includes("configuration unavailable"));
+            }
+        });
+
+        await scenario(
+            "Native confirmation cancellation and concurrent file edits preserve user settings",
+            async () => {
+                const cancelled = setup({}, { pick: "dsh" });
+                assert.strictEqual(await cancelled.registration.installClient(), null);
+                assert.ok(!fs.existsSync(cancelled.clientHome));
+                assert.strictEqual(cancelled.events.configured, 0);
+                const state = { pick: "claude", confirm: "mcp.install" };
+                const concurrent = setup({}, state);
+                fs.mkdirSync(concurrent.clientHome);
+                const file = path.join(concurrent.clientHome, ".claude.json");
+                fs.writeFileSync(file, "{}");
+                state.onConfirm = () => fs.writeFileSync(file, '{"newer":"keep"}');
+                assert.strictEqual((await concurrent.registration.installClient()).ok, false);
+                assert.strictEqual(fs.readFileSync(file, "utf8"), '{"newer":"keep"}');
+                assert.strictEqual(concurrent.events.configured, 0);
+            }
+        );
+
+        await scenario(
+            "Install Gemini in user scope with long-call timeout and explicit argument boundaries",
+            async () => {
+                const { registration, cli, clipboard } = setup(
+                    {},
+                    { pick: "gemini", confirm: "mcp.useCli", executables: { gemini: "/usr/bin/gemini" } }
+                );
+                const result = await registration.installClient();
+                assert.strictEqual(result.ok, true);
+                assert.deepStrictEqual(cli, [["/usr/bin/gemini", ...installArgs("gemini", registration.serverSpec())]]);
+                assert.deepStrictEqual(clipboard, []);
+            }
+        );
+
+        await scenario(
+            "Do not remove server entries after permission, timeout, parse or invocation failures",
+            async () => {
+                for (const error of ["EACCES", "ETIMEDOUT", "ENOENT", "UNSAFE_ARGUMENT", "1"]) {
+                    const { registration, cli, events, clipboard, messages } = setup(
+                        {},
+                        {
+                            pick: "claude",
+                            confirm: "mcp.useCli",
+                            executables: { claude: "/usr/bin/claude" },
+                            cliResults: [{ ok: false, stdout: "", stderr: "x".repeat(400), error }]
+                        }
+                    );
+                    const result = await registration.installClient();
+                    assert.strictEqual(result.ok, false);
+                    assert.strictEqual(cli.length, 1);
+                    assert.strictEqual(events.configured, 0);
+                    assert.ok(JSON.parse(clipboard[0]).mcpServers.emberprobe.command);
+                    assert.ok(
+                        messages.at(-1)[1].includes("…" + "x".repeat(300)),
+                        "bound error output in notifications"
+                    );
+                }
+            }
+        );
+
+        await scenario(
+            "Copy native configuration on CLI failure or absence; cancellation has no side effects",
+            async () => {
+                const failing = setup(
+                    {},
+                    {
+                        pick: "codex",
+                        confirm: "mcp.useCli",
+                        executables: { codex: "/usr/bin/codex" },
+                        cliResults: [{ ok: false, stdout: "", stderr: "config.toml is read-only", error: "1" }]
+                    }
+                );
+                const failed = await failing.registration.installClient();
+                assert.strictEqual(failed.ok, false);
+                assert.deepStrictEqual(failing.clipboard, [failed.snippet]);
+                assert.ok(failing.messages.at(-1)[1].includes("config.toml is read-only"));
+                assert.strictEqual(failing.events.configured, 0);
+
+                const unsafe = setup(
+                    {},
+                    {
+                        pick: "claude",
+                        confirm: "mcp.useCli",
+                        executables: { claude: "C:\\npm\\claude.cmd" },
+                        cliResults: [{ ok: false, stdout: "", stderr: "", error: "UNSAFE_ARGUMENT" }]
+                    }
+                );
+                assert.strictEqual((await unsafe.registration.installClient()).ok, false);
+                assert.strictEqual(unsafe.cli.length, 1, "an unsafe command is not retried with remove");
+
+                const missing = setup({}, { pick: "claude", confirm: "mcp.copyConfig" });
+                const copied = await missing.registration.installClient();
+                assert.strictEqual(copied.method, "clipboard");
+                assert.deepStrictEqual(missing.clipboard, [copied.snippet]);
+                assert.ok(JSON.parse(copied.snippet).mcpServers.emberprobe.command);
+                assert.strictEqual(missing.messages.at(-1)[0], "info");
+                assert.deepStrictEqual(missing.cli, []);
+
+                const cancelled = setup({}, { pick: "claude", executables: { claude: "/usr/bin/claude" } });
+                assert.strictEqual(await cancelled.registration.installClient(), null);
+                assert.deepStrictEqual(cancelled.cli, []);
+                assert.strictEqual(cancelled.events.configured, 0);
+
+                const dismissed = setup({}, {});
+                assert.strictEqual(
+                    await dismissed.registration.installClient(),
+                    null,
+                    "dismissing the picker does nothing"
+                );
+                assert.deepStrictEqual(dismissed.clipboard, []);
+            }
+        );
 
         await scenario("Open the Cursor install link and copy other clients' JSON", async () => {
             const cursor = setup({}, { pick: "cursor" });
@@ -614,12 +732,13 @@ function cursorApi() {
         await scenario(
             "Copy named client configurations with setup guidance and no CLI or link side effects",
             async () => {
-                for (const client of ["antigravity", "dsh"]) {
+                for (const client of ["antigravity", "dsh", "gemini", "opencode"]) {
                     const workspace = path.join(base, "MCU workspace");
                     const { registration, clipboard, cli, opened, messages, events, state } = setup(
                         {},
                         {
                             pick: client,
+                            confirm: "mcp.copyConfig",
                             workspace
                         }
                     );
@@ -628,17 +747,20 @@ function cursorApi() {
                     assert.strictEqual(result.method, "clipboard");
                     assert.deepStrictEqual(clipboard, [result.snippet]);
                     const spec =
-                        client === "antigravity"
-                            ? JSON.parse(result.snippet).mcpServers.emberprobe
-                            : YAML.parse(result.snippet)[0].insert[0].config;
-                    assert.strictEqual(spec.env.EMBERPROBE_WORKSPACE, workspace);
-                    assert.ok(fs.existsSync(spec.args[0]), "the exported launcher exists");
+                        client === "dsh"
+                            ? YAML.parse(result.snippet)[0].insert[0].config
+                            : client === "opencode"
+                              ? JSON.parse(result.snippet).mcp.emberprobe
+                              : JSON.parse(result.snippet).mcpServers.emberprobe;
+                    assert.strictEqual((spec.env || spec.environment).EMBERPROBE_WORKSPACE, workspace);
+                    assert.ok(fs.existsSync(spec.args?.[0] || spec.command[1]), "the exported launcher exists");
+                    const method = "native";
                     assert.ok(
                         state.picks
                             .find((pick) => pick.client === client)
-                            .description.startsWith(`mcp.method.${client}`)
+                            .description.startsWith(`mcp.method.${method}`)
                     );
-                    assert.strictEqual(messages.at(-1)[1], `mcp.configCopied.${client}`);
+                    assert.ok(messages.at(-1)[1].includes(`mcp.configCopied.${client}`));
                     assert.strictEqual(events.configured, 1);
                     assert.deepStrictEqual(cli, []);
                     assert.deepStrictEqual(opened, []);

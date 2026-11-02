@@ -1,21 +1,24 @@
 "use strict";
 // MCP registration: VS Code's MCP server definition provider and Cursor's MCP extension API (feature-detected), a
-// stable launcher for external clients, and per-client installation: Claude Code / Codex run their own CLIs, Cursor
-// opens an install link, and Antigravity, DSH and other clients copy configuration in their own format. The extension
-// never writes any client's configuration files directly.
+// stable launcher for external clients, and harness-specific CLI / link / native configuration installation. The extension
+// native configuration edits are planned and committed by mcpConfigFiles.
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 const { execFile } = require("child_process");
+const { prepareClientInstall, commitClientInstall } = require("./mcpConfigFiles");
 
 const PROVIDER_ID = "emberprobe";
-const SERVER_NAME = "emberprobe";
-const CLIENTS = Object.freeze(["claude", "codex", "cursor", "antigravity", "dsh", "json"]);
-const CLI_CLIENTS = Object.freeze({ claude: "claude", codex: "codex" });
+const {
+    CLIENTS,
+    CLI_CLIENTS,
+    SERVER_NAME,
+    configSnippet,
+    cursorInstallLink,
+    installArgs
+} = require("./mcpClientConfig");
 const CLI_TIMEOUT_MS = 30000;
 const ERROR_TAIL = 300;
-// Covers user confirmation (up to 15 minutes) and CubeMX runs (6 minutes) while keeping a bounded client wait budget.
-const LONG_CALL_TIMEOUT_MS = 30 * 60 * 1000;
 
 // The launcher path is stable (globalStorage/mcp); its content is rewritten on every activation to the current
 // extension install path.
@@ -67,90 +70,8 @@ function serverCommand({ platform, runtime, launcher, wrapper, toolsets }) {
     return { command: wrapper, args: [], env };
 }
 
-// claude's -e is variadic, so the server name must come before it or it is swallowed as an environment variable.
-function installArgs(client, spec) {
-    const env = Object.entries(spec.env).map(([key, value]) => `${key}=${value}`);
-    if (client === "claude")
-        return [
-            "mcp",
-            "add",
-            "--scope",
-            "user",
-            SERVER_NAME,
-            ...env.flatMap((item) => ["-e", item]),
-            "--",
-            spec.command,
-            ...spec.args
-        ];
-    return ["mcp", "add", SERVER_NAME, ...env.flatMap((item) => ["--env", item]), "--", spec.command, ...spec.args];
-}
-
-function removeArgs(client) {
-    return client === "claude" ? ["mcp", "remove", "--scope", "user", SERVER_NAME] : ["mcp", "remove", SERVER_NAME];
-}
-
 function displayArg(value, platform) {
     return /^[\w@%+=:,./\\-]+$/.test(value) ? value : shellQuote(value, platform);
-}
-
-function stdioConfig(spec) {
-    return { command: spec.command, args: spec.args, ...(Object.keys(spec.env).length ? { env: spec.env } : {}) };
-}
-
-// Cursor install link: config is the base64 of one server configuration's JSON (the same shape as an mcp.json entry).
-function cursorInstallLink(spec) {
-    const config = Buffer.from(JSON.stringify(stdioConfig(spec))).toString("base64");
-    return `cursor://anysphere.cursor-deeplink/mcp/install?name=${SERVER_NAME}&config=${encodeURIComponent(config)}`;
-}
-
-/**
- * Builds client configuration: a CLI command, a Cursor install link, a DSH YAML patch or mcpServers JSON.
- * @param {"claude" | "codex" | "cursor" | "antigravity" | "dsh" | "json"} client
- * @param {{ command: string, args: string[], env: Record<string, string> }} spec
- * @param {string} [platform]
- * @param {string} [workspace] binds new clients to the main workspace explicitly instead of relying on client roots or
- * the start directory.
- */
-function configSnippet(client, spec, platform = process.platform, workspace) {
-    if (CLI_CLIENTS[client])
-        return [CLI_CLIENTS[client], ...installArgs(client, spec)].map((arg) => displayArg(arg, platform)).join(" ");
-    if (client === "cursor") return cursorInstallLink(spec);
-    if (client === "antigravity" || client === "dsh") {
-        const config = stdioConfig({
-            ...spec,
-            env: { ...spec.env, ...(workspace ? { EMBERPROBE_WORKSPACE: workspace } : {}) }
-        });
-        if (client === "antigravity")
-            return JSON.stringify(
-                { mcpServers: { [SERVER_NAME]: { ...config, timeoutSeconds: LONG_CALL_TIMEOUT_MS / 1000 } } },
-                null,
-                2
-            );
-        // JSON flow values are valid YAML; line break characters YAML would normalize are escaped so paths and
-        // environment values stay literal. The output is an insert patch that dsh web --patch <file> loads directly,
-        // without a runtime YAML dependency.
-        const values = {
-            serverName: SERVER_NAME,
-            transport: "stdio",
-            ...config,
-            toolCallTimeoutMs: LONG_CALL_TIMEOUT_MS
-        };
-        return [
-            "- insert:",
-            "    - id: mcp-emberprobe",
-            '      name: "@deepseek-ai/dsh-mcp-client"',
-            "      config:",
-            ...Object.entries(values).map(([key, value]) => {
-                const scalar = JSON.stringify(value).replace(
-                    /[\u0085\u2028\u2029]/g,
-                    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`
-                );
-                return `        ${key}: ${scalar}`;
-            }),
-            ""
-        ].join("\n");
-    }
-    return JSON.stringify({ mcpServers: { [SERVER_NAME]: stdioConfig(spec) } }, null, 2);
 }
 
 /**
@@ -228,7 +149,9 @@ class McpRegistration {
      *   isAvailable: () => boolean, isEnabled?: () => boolean, instanceId: () => string, toolsets: () => string,
      *   onResolve: () => Promise<void>, onConfigured?: () => void,
      *   platform?: string, runtime?: string, findExecutable?: (name: string) => string,
-     *   runCli?: (file: string, args: string[]) => ReturnType<typeof runCli>
+     *   runCli?: (file: string, args: string[]) => ReturnType<typeof runCli>,
+     *   prepareInstall?: (client: string, snippet: string, workspace?: string) => Promise<any>,
+     *   commitInstall?: (plan: any) => Promise<any>
      * }} options
      */
     constructor(options) {
@@ -245,6 +168,10 @@ class McpRegistration {
         this.runtime = options.runtime || process.execPath;
         this.findExecutable = options.findExecutable || ((name) => findExecutable(name, process.env, this.platform));
         this.runCli = options.runCli || ((file, args) => runCli(file, args, { platform: this.platform }));
+        this.prepareInstall =
+            options.prepareInstall ||
+            ((client, snippet, workspace) => prepareClientInstall(client, snippet, { workspace }));
+        this.commitInstall = options.commitInstall || commitClientInstall;
         this.emitter = null;
         this.registered = false;
         this.host = "";
@@ -372,18 +299,14 @@ class McpRegistration {
         return CLIENTS.filter((client) => client !== "cursor" || (this.host !== "cursor" && !this.isRemote()));
     }
 
-    // "Install MCP server to client" command: CLI clients confirm first and then run the official CLI, Cursor opens an
-    // install link (Cursor confirms itself), and the rest are copied to the clipboard. When a CLI is unavailable or
-    // fails, the command is copied to the clipboard.
+    // Every named external client has a native file adapter, except Cursor which uses its own install API/link.
+    // User configuration is never changed on activation: this command previews the files and requires a user action.
     async installClient() {
         const window = this.vscode.window;
         const picks = this.clients().map((client) => {
             const executable = CLI_CLIENTS[client] ? this.findExecutable(CLI_CLIENTS[client]) : "";
-            const description = CLI_CLIENTS[client]
-                ? executable
-                    ? this.t("mcp.method.cli", { command: `${CLI_CLIENTS[client]} mcp add` })
-                    : this.t("mcp.method.cliMissing", { command: CLI_CLIENTS[client] })
-                : this.t(`mcp.method.${client}`);
+            const description =
+                client === "cursor" || client === "json" ? this.t(`mcp.method.${client}`) : this.t("mcp.method.native");
             return { label: this.t(`mcp.client.${client}`), description, client, executable };
         });
         const choice = await window.showQuickPick(picks, { placeHolder: this.t("mcp.pickClient") });
@@ -404,40 +327,76 @@ class McpRegistration {
             window.showInformationMessage(this.t("mcp.cursorOpened"));
             return { client: choice.client, method: "link", snippet };
         }
-        if (!CLI_CLIENTS[choice.client] || !choice.executable) {
+        if (choice.client === "json") {
             await this.vscode.env.clipboard.writeText(snippet);
             this.onConfigured();
-            if (CLI_CLIENTS[choice.client])
-                window.showWarningMessage(
-                    this.t("mcp.cliMissing", { client: label, command: CLI_CLIENTS[choice.client] })
-                );
-            else if (choice.client === "antigravity" || choice.client === "dsh")
-                window.showInformationMessage(this.t(`mcp.configCopied.${choice.client}`));
-            else window.showInformationMessage(this.t("mcp.configCopied", { client: label }));
+            window.showInformationMessage(this.t("mcp.configCopied", { client: label }));
             return { client: choice.client, method: "clipboard", snippet };
         }
-        const install = this.t("mcp.install");
-        const answer = await window.showInformationMessage(
-            this.t("mcp.installConfirm", { client: label }),
-            { modal: true, detail: snippet },
-            install
-        );
-        if (answer !== install) return null;
-        // Add directly first; only if an existing entry with the same name makes it fail, remove it and add once more,
-        // so unrelated failures never lose the existing configuration.
-        let result = await this.runCli(choice.executable, installArgs(choice.client, spec));
-        if (!result.ok && result.error !== "UNSAFE_ARGUMENT") {
-            await this.runCli(choice.executable, removeArgs(choice.client));
-            result = await this.runCli(choice.executable, installArgs(choice.client, spec));
+        return this.installNative(choice, spec, snippet, workspace);
+    }
+
+    async installNative(choice, spec, snippet, workspace) {
+        const window = this.vscode.window;
+        let plan;
+        try {
+            plan = await this.prepareInstall(choice.client, snippet, workspace);
+        } catch (error) {
+            return this.installFailure(choice, snippet, "file", error.message);
         }
-        if (!result.ok) {
+        const install = this.t("mcp.install");
+        const copy = this.t("mcp.copyConfig");
+        const useCli = this.t("mcp.useCli");
+        const command = choice.executable
+            ? [CLI_CLIENTS[choice.client], ...installArgs(choice.client, spec)]
+                  .map((arg) => displayArg(arg, this.platform))
+                  .join(" ")
+            : "";
+        const detail = `${plan.files.map((entry) => entry.file).join("\n")}\n\n${snippet}${command ? `\n\nCLI: ${command}` : ""}`;
+        const answer = await window.showInformationMessage(
+            this.t("mcp.nativeConfirm", { client: choice.label }),
+            { modal: true, detail },
+            install,
+            ...(choice.executable ? [useCli] : []),
+            copy
+        );
+        if (answer === copy) {
             await this.vscode.env.clipboard.writeText(snippet);
-            window.showErrorMessage(this.t("mcp.installFailed", { client: label, error: errorTail(result) }));
-            return { client: choice.client, method: "cli", ok: false, snippet };
+            this.onConfigured();
+            window.showInformationMessage(this.t(`mcp.configCopied.${choice.client}`));
+            return { client: choice.client, method: "clipboard", snippet };
+        }
+        if (answer === useCli && choice.executable) {
+            const result = await this.runCli(choice.executable, installArgs(choice.client, spec));
+            if (!result.ok) return this.installFailure(choice, snippet, "cli", errorTail(result));
+            this.onConfigured();
+            window.showInformationMessage(this.t("mcp.installed", { client: choice.label }));
+            return { client: choice.client, method: "cli", ok: true, snippet };
+        }
+        if (answer !== install) return null;
+        let result;
+        try {
+            result = await this.commitInstall(plan);
+        } catch (error) {
+            return this.installFailure(choice, snippet, "file", error.message);
         }
         this.onConfigured();
-        window.showInformationMessage(this.t("mcp.installed", { client: label }));
-        return { client: choice.client, method: "cli", ok: true, snippet };
+        window.showInformationMessage(
+            this.t("mcp.nativeInstalled", { client: choice.label, files: result.files.join(", ") })
+        );
+        return { client: choice.client, method: "file", ok: true, files: result.files, snippet };
+    }
+
+    async installFailure(choice, snippet, method, error) {
+        await this.vscode.env.clipboard.writeText(snippet);
+        this.vscode.window.showErrorMessage(
+            this.t("mcp.installFailed", {
+                client: choice.label,
+                error: errorTail({ error }),
+                instructions: this.t(`mcp.configCopied.${choice.client}`)
+            })
+        );
+        return { client: choice.client, method, ok: false, snippet };
     }
 }
 
@@ -448,7 +407,6 @@ module.exports = {
     findExecutable,
     installArgs,
     launcherSource,
-    removeArgs,
     runCli,
     serverCommand,
     wrapperSource,

@@ -23,6 +23,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   64-bit, shared-group and external-server access remains paused-only; see the board-specific acceptance record.
   See docs/PERIPHERAL-ACCESS.md.
 
+### 优化 / Improved
+
+- MCP 安装新增原生配置自动合并：DSH 自动写入 Web/Desktop 和已初始化的 Headless/ACP profile，不再要求另存 patch；Claude、Codex、Gemini CLI、OpenCode 和 Antigravity 均可在预览路径后直接写入，不依赖客户端 CLI。保留其他设置、注释和自定义字段，支持环境路径覆盖、并发变更检测、锁、原子替换及 DSH 多文件失败回滚；Cursor 保持 API/安装链接，复制配置作为可选或失败回退。见 `docs/MCP.md`。
+- MCP installation now merges native configuration automatically: DSH updates Web/Desktop and initialized Headless/ACP profiles without a separate patch file; Claude, Codex, Gemini CLI, OpenCode and Antigravity write directly after a path preview, without requiring a client CLI. Preserves unrelated settings, comments and custom fields, with path overrides, change detection, locks, atomic replacement and DSH multi-file rollback. Cursor keeps its API/install link; configuration export remains available as an option or failure fallback. See `docs/MCP.md`.
+
 ## [0.9.0] - 2026-10-29
 
 ### 新增 / Added

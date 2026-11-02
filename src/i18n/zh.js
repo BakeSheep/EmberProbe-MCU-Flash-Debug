@@ -727,24 +727,34 @@ module.exports = Object.freeze({
     "mcp.pickClient": "选择要安装 EmberProbe MCP 服务器的客户端",
     "mcp.client.claude": "Claude Code",
     "mcp.client.codex": "Codex",
+    "mcp.client.gemini": "Gemini CLI",
+    "mcp.client.opencode": "OpenCode",
     "mcp.client.cursor": "Cursor",
     "mcp.client.antigravity": "Antigravity",
     "mcp.client.dsh": "DeepSeek Harness (DSH)",
     "mcp.client.json": "其他客户端",
-    "mcp.method.cli": "运行 {command}（用户配置）",
-    "mcp.method.cliMissing": "PATH 中未找到 {command}，将复制安装命令",
     "mcp.method.cursor": "打开 Cursor 安装链接",
-    "mcp.method.antigravity": "复制 Antigravity mcp_config.json 配置（当前工作区）",
-    "mcp.method.dsh": "复制 DSH YAML patch（当前工作区）",
     "mcp.method.json": "复制 mcpServers JSON 到剪贴板",
+    "mcp.method.native": "自动更新原生配置文件（当前工作区）",
+    "mcp.nativeConfirm": "将 EmberProbe 接入 {client}？仅更新以下文件中的 emberprobe 条目。",
+    "mcp.nativeInstalled":
+        "已接入 {client}：{files}。请重新加载或重启客户端，并在 EmberProbe 中启用当前工作区的 Agent 访问",
+    "mcp.useCli": "使用客户端 CLI",
     "mcp.install": "安装",
-    "mcp.installConfirm": "将运行以下命令，把 EmberProbe MCP 服务器添加到 {client} 的用户配置",
+    "mcp.copyConfig": "复制配置（当前工作区）",
     "mcp.installed": "已把 EmberProbe MCP 服务器添加到 {client}，在客户端中重新加载 MCP 服务器后即可使用",
-    "mcp.installFailed": "安装到 {client} 失败：{error}。安装命令已复制到剪贴板，可在终端中手动运行",
-    "mcp.cliMissing": "PATH 中未找到 {command}。安装命令已复制到剪贴板，请在装有 {client} 的终端中运行",
+    "mcp.installFailed": "安装到 {client} 失败：{error}。{instructions}",
     "mcp.cursorOpened": "已打开 Cursor 安装链接，请在 Cursor 中确认安装",
     "mcp.cursorLinkCopied": "无法打开 Cursor 安装链接，链接已复制到剪贴板",
     "mcp.configCopied": "{client} 的 EmberProbe MCP 配置已复制到剪贴板，请粘贴到客户端的 MCP 配置中",
+    "mcp.configCopied.claude":
+        "Claude Code JSON 已复制：将 mcpServers.emberprobe 合并到 ~/.claude.json，保留其他条目；此配置绑定当前主工作区。请在 EmberProbe 中启用 Agent 访问",
+    "mcp.configCopied.codex":
+        "Codex TOML 已复制：将 mcp_servers.emberprobe 合并到 $CODEX_HOME/config.toml（默认 ~/.codex/config.toml），保留其他条目；此配置绑定当前主工作区。请在 EmberProbe 中启用 Agent 访问",
+    "mcp.configCopied.gemini":
+        "Gemini CLI JSON 已复制：将 mcpServers.emberprobe 合并到 ~/.gemini/settings.json，保留其他条目；此配置绑定当前主工作区。请在 EmberProbe 中启用 Agent 访问",
+    "mcp.configCopied.opencode":
+        "OpenCode JSON 已复制：将 mcp.emberprobe 合并到当前生效的 opencode.json/jsonc，保留其他条目；此配置绑定当前主工作区。请在 EmberProbe 中启用 Agent 访问",
     "mcp.configCopied.antigravity":
         "Antigravity 配置已复制：在 MCP Servers → Manage MCP Servers → View raw config 中合并 emberprobe 条目，再刷新服务器；请在 EmberProbe 中启用当前工作区的 Agent 访问",
     "mcp.configCopied.dsh":

@@ -768,28 +768,35 @@ module.exports = Object.freeze({
     "mcp.pickClient": "Choose the client to install the EmberProbe MCP server into",
     "mcp.client.claude": "Claude Code",
     "mcp.client.codex": "Codex",
+    "mcp.client.gemini": "Gemini CLI",
+    "mcp.client.opencode": "OpenCode",
     "mcp.client.cursor": "Cursor",
     "mcp.client.antigravity": "Antigravity",
     "mcp.client.dsh": "DeepSeek Harness (DSH)",
     "mcp.client.json": "Other clients",
-    "mcp.method.cli": "Run {command} (user configuration)",
-    "mcp.method.cliMissing": "{command} not found on PATH; the install command will be copied",
     "mcp.method.cursor": "Open the Cursor install link",
-    "mcp.method.antigravity": "Copy Antigravity mcp_config.json configuration (current workspace)",
-    "mcp.method.dsh": "Copy a DSH YAML patch (current workspace)",
     "mcp.method.json": "Copy mcpServers JSON to the clipboard",
+    "mcp.method.native": "Update native configuration files (current workspace)",
+    "mcp.nativeConfirm": "Add EmberProbe to {client}? Only the emberprobe entry in these files will be updated.",
+    "mcp.nativeInstalled":
+        "EmberProbe added to {client}: {files}. Reload or restart the client and enable Agent access in EmberProbe for this workspace",
+    "mcp.useCli": "Use client CLI",
     "mcp.install": "Install",
-    "mcp.installConfirm":
-        "Run the following command to add the EmberProbe MCP server to the {client} user configuration?",
+    "mcp.copyConfig": "Copy configuration (current workspace)",
     "mcp.installed": "EmberProbe MCP server added to {client}; reload MCP servers in the client to use it",
-    "mcp.installFailed":
-        "Installing into {client} failed: {error}. The install command was copied to the clipboard; run it in a terminal",
-    "mcp.cliMissing":
-        "{command} was not found on PATH. The install command was copied to the clipboard; run it in a terminal where {client} is installed",
+    "mcp.installFailed": "Installing into {client} failed: {error}. {instructions}",
     "mcp.cursorOpened": "Cursor install link opened; confirm the installation in Cursor",
     "mcp.cursorLinkCopied": "Could not open the Cursor install link; the link was copied to the clipboard",
     "mcp.configCopied":
         "EmberProbe MCP configuration for {client} copied to the clipboard; paste it into the client's MCP configuration",
+    "mcp.configCopied.claude":
+        "Claude Code JSON copied: merge mcpServers.emberprobe into ~/.claude.json, preserving other entries; this export targets the current main workspace. Enable Agent access in EmberProbe",
+    "mcp.configCopied.codex":
+        "Codex TOML copied: merge mcp_servers.emberprobe into $CODEX_HOME/config.toml (default ~/.codex/config.toml), preserving other entries; this export targets the current main workspace. Enable Agent access in EmberProbe",
+    "mcp.configCopied.gemini":
+        "Gemini CLI JSON copied: merge mcpServers.emberprobe into ~/.gemini/settings.json, preserving other entries; this export targets the current main workspace. Enable Agent access in EmberProbe",
+    "mcp.configCopied.opencode":
+        "OpenCode JSON copied: merge mcp.emberprobe into your active opencode.json/jsonc, preserving other entries; this export targets the current main workspace. Enable Agent access in EmberProbe",
     "mcp.configCopied.antigravity":
         "Antigravity configuration copied: merge the emberprobe entry in MCP Servers → Manage MCP Servers → View raw config, then refresh servers; enable Agent access for this workspace in EmberProbe",
     "mcp.configCopied.dsh":

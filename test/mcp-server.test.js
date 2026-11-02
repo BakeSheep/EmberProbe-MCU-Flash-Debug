@@ -334,7 +334,7 @@ const inspection = new AgentDebugInspection(debugBridge);
             await fallback.client.close();
         });
 
-        await scenario("Launch exported Antigravity and DSH configurations over stdio without roots", async () => {
+        await scenario("Launch harness-native configurations over stdio without roots", async () => {
             const launcher = path.join(base, "external-client-launcher.js");
             fs.writeFileSync(launcher, launcherSource(require.resolve("../src/mcp/server")));
             const spec = {
@@ -346,12 +346,18 @@ const inspection = new AgentDebugInspection(debugBridge);
                     EMBERPROBE_BRIDGE_REGISTRY: process.env.EMBERPROBE_BRIDGE_REGISTRY
                 }
             };
-            for (const name of ["antigravity", "dsh"]) {
+            for (const name of ["claude", "gemini", "opencode", "antigravity", "dsh", "json"]) {
                 const snippet = configSnippet(name, spec, process.platform, workspace);
+                const native =
+                    name === "dsh"
+                        ? YAML.parse(snippet)[0].insert[0].config
+                        : name === "opencode"
+                          ? JSON.parse(snippet).mcp.emberprobe
+                          : JSON.parse(snippet).mcpServers.emberprobe;
                 const config =
-                    name === "antigravity"
-                        ? JSON.parse(snippet).mcpServers.emberprobe
-                        : YAML.parse(snippet)[0].insert[0].config;
+                    name === "opencode"
+                        ? { command: native.command[0], args: native.command.slice(1), env: native.environment }
+                        : native;
                 const client = new Client({ name: `test-${name}`, version: "1.0.0" }, { capabilities: {} });
                 const transport = new StdioClientTransport({
                     command: config.command,

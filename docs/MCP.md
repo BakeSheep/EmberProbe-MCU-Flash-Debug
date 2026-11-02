@@ -31,14 +31,39 @@ EmberProbe 运行在 Cursor 中时，通过 Cursor 的扩展 API `vscode.cursor.
 
 | 客户端 | 方式 |
 |---|---|
-| Claude Code | 显示并确认后运行 `claude mcp add --scope user emberprobe -e … -- <command> <args>` |
-| Codex | 显示并确认后运行 `codex mcp add emberprobe --env … -- <command> <args>` |
-| Cursor | 打开安装链接 `cursor://anysphere.cursor-deeplink/mcp/install?name=emberprobe&config=<base64>`，由 Cursor 弹出确认（EmberProbe 本身运行在 Cursor 中或处于远程窗口时不提供此项） |
-| Antigravity | 复制专用 `mcpServers` JSON，包含当前主工作区和长任务超时；在客户端 raw config 中合并 |
-| DeepSeek Harness (DSH) | 复制 `@deepseek-ai/dsh-mcp-client` 的 YAML `insert` patch，包含当前主工作区和长任务超时 |
-| 其他客户端 | 把 `{ "mcpServers": { "emberprobe": { … } } }` 复制到剪贴板 |
+| Claude Code | 自动更新 `~/.claude.json` 的 `mcpServers.emberprobe`；支持 `CLAUDE_CONFIG_DIR` |
+| Codex | 自动更新 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `[mcp_servers.emberprobe]` |
+| Gemini CLI | 自动更新 `~/.gemini/settings.json` 的 `mcpServers.emberprobe` |
+| OpenCode | 自动更新 `opencode.jsonc` / `opencode.json` 的 `mcp.emberprobe`；支持命令数组、`environment` 和毫秒超时 |
+| Cursor | 自动注册或打开客户端确认的安装链接；运行在 Cursor 内或远程窗口时不显示链接选项 |
+| Antigravity | 自动更新已有工作区 `.agents/mcp_config.json`，否则更新 `~/.gemini/config/mcp_config.json` |
+| DeepSeek Harness (DSH) | 自动合并 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`（默认 `~/.dsh/profiles/…`） |
+| 其他客户端 | 复制通用 `mcpServers` JSON；配置路径未知，需自行合并 |
 
-配置由客户端自己的 CLI 或安装链接写入，扩展不直接修改任何客户端的配置文件。CLI 从 PATH 中查找（Windows 接受 `.exe`、`.cmd`、`.bat`；npm 安装的 `.cmd` 包装经 `cmd.exe` 调用，参数逐个加引号，含 `"`、`%`、`!` 的参数不执行）。添加失败时（例如已存在同名配置）先移除 `emberprobe` 再添加一次；找不到 CLI 或仍然失败时，安装命令复制到剪贴板，可在终端中手动运行。
+选择命名客户端后，安装对话框显示目标文件与将添加的配置；点击“安装”才会写入。默认自动合并原生配置，
+不要求客户端 CLI 存在。Claude/Codex/Gemini 检测到 CLI 时仍可选“使用客户端 CLI”；任何客户端也可选择
+“复制配置（当前工作区）”。配置写入不在扩展激活时执行，也不会自动启用 Agent 访问。
+
+OpenCode 优先使用 `OPENCODE_CONFIG` 指定的绝对路径；未指定时优先更新已有的当前主工作区配置，然后查找
+`$XDG_CONFIG_HOME/opencode`（默认 `~/.config/opencode`），同目录优先 `opencode.jsonc`，没有文件时创建用户配置
+`opencode.json`。环境变量路径覆盖必须为绝对路径。未被当前 VS Code 进程继承的环境设置不会被探测到，请核对安装对话框中的目标路径。
+
+自动合并保留其他服务器、设置、注释以及 EmberProbe 条目中的自定义选项和额外环境变量；更新启动命令、参数、
+工具集、工作区及支持的超时字段。JSONC 和 TOML 使用语法树定位编辑，DSH 只替换匹配的 MCP 条目，不重新序列化
+其他 YAML 插件或执行 `!!js`。损坏/歧义配置、管理条目使用 YAML 标签/锚点、非 UTF-8 或超过 2 MiB 的文件会拒绝写入，
+改为复制配置并说明失败原因。不会删除同名服务器再重试。
+
+写入前复核预览时的原文件，使用锁和同目录临时文件原子替换，保留已有文件权限，新建文件使用 `0o600`。
+DSH 多 profile 先全部校验再写入，中途失败回滚已写文件；若回滚时文件已被其他程序再次修改，会保留较新的内容并报告未完全回滚。
+符号链接/Windows junction 指向同一文件时只写一次，预览后被改指向的路径会拒绝写入。已有 DSH 原生 `.lock` 不会被强制删除。
+
+实现参考 [cc-switch 的 MCP 模块](https://github.com/farion1231/cc-switch/tree/main/src-tauri/src/mcp)：
+`mcpClientConfig.js` 生成各 harness 的原生格式，`mcpConfigEdits.js` 合并配置，`mcpConfigFiles.js` 负责路径、预览与文件事务；
+注册和安装 UI 留在 `mcpRegistration.js`。
+
+All named external clients support automatic configuration updates after a file preview, except Cursor which keeps its
+native registration/install-link flow. CLI installation remains optional for Claude/Codex/Gemini. Only the generic
+“Other clients” entry requires manual merging; rejected or failed writes also export a manual fallback.
 
 启动命令全部是绝对路径，不依赖 PATH 中的 `node`：
 
@@ -49,25 +74,59 @@ EmberProbe 运行在 Cursor 中时，通过 Cursor 的扩展 API `vscode.cursor.
 
 Bridge 的端口和 token 每次启动都会变化，并且只保存在 globalStorage 中，所以只提供 stdio，不提供 HTTP 传输：stdio 服务器在每次调用时重新定位当前的 Bridge，客户端配置中没有 token。
 
+### Claude Code / Codex / Gemini CLI / OpenCode
+
+可选 CLI 安装写入用户范围，继续按客户端 roots / 工作目录选择工程。原生自动写入和复制的配置在有工作区时通过
+`EMBERPROBE_WORKSPACE` 绑定当前主根目录，不依赖客户端提供 roots；切换工程时重新导出或更新该变量。
+未打开文件夹时不添加该变量。Cursor 的全局安装链接和扩展 API 仍按 roots / 工作目录定位。
+
+Codex 的原生配置包含 `tool_timeout_sec = 1800`，目标文件为 `$CODEX_HOME/config.toml`，未设置
+`CODEX_HOME` 时为 `~/.codex/config.toml`。Gemini 的 JSON 和 CLI 包含 1800000 毫秒超时，OpenCode
+的本地配置包含 `timeout: 1800000`。Claude/Codex 的 CLI 添加保持客户端默认超时；较长的人工确认或
+CubeMX 调用应检查客户端超时，Codex 可选原生导出。自动配置不设置 Gemini 的 `trust: true` 或绕过任何硬件确认。
+
+见 [Codex MCP 文档](https://developers.openai.com/codex/mcp/)、
+[Gemini MCP 文档](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md) 与
+[OpenCode MCP 文档](https://opencode.ai/docs/mcp-servers/)。OpenCode 使用当前生效的用户或项目配置；
+自定义 `OPENCODE_CONFIG` / `XDG_CONFIG_HOME` 时以客户端实际加载的文件为准。
+
 ### Antigravity
 
-在 EmberProbe 命令中选择 **Antigravity**，把剪贴板 JSON 中的 `mcpServers.emberprobe` 合并到客户端已有配置，保留其他服务器。Antigravity IDE 中入口为 **MCP Servers → Manage MCP Servers → View raw config**；修改后刷新 MCP 服务器。当前官方配置位置为 `~/.gemini/config/mcp_config.json` 或工作区 `.agents/mcp_config.json`，不同版本以客户端打开的 raw config 为准。见 [Antigravity 官方 MCP 文档](https://antigravity.google/docs/mcp)。
+在命令中选择 **Antigravity** 并点击“安装”，自动合并已有工作区 `.agents/mcp_config.json`，否则写入
+`~/.gemini/config/mcp_config.json`。完成后在客户端刷新 MCP 服务器；也可从 **MCP Servers → Manage MCP Servers → View raw config**
+查看结果。自定义配置位置以客户端实际加载的 raw config 为准，安装前核对显示的文件路径。
+见 [Antigravity 官方 MCP 文档](https://antigravity.google/docs/mcp)。
 
-生成配置使用绝对路径启动器，并在有工作区时设置 `env.EMBERPROBE_WORKSPACE` 为当前主根目录，避免客户端未提供 roots 或从安装目录启动时连错工程。`timeoutSeconds: 1800` 为用户确认、烧录及 CubeMX 等长调用提供有限的等待预算。切换到其他工程时重新导出，或更新 `EMBERPROBE_WORKSPACE`；多根工作区的配置仍以主根为准。
+配置使用绝对启动路径，并在有工作区时设置 `env.EMBERPROBE_WORKSPACE` 为当前主根目录；
+`timeoutSeconds: 1800` 用于人工确认、烧录及 CubeMX 等长调用。切换工程时重新安装或更新该环境变量。
 
 ### DeepSeek Harness (DSH)
 
-在 EmberProbe 命令中选择 **DeepSeek Harness (DSH)**，将剪贴板内容保存为 `emberprobe.cordis.yml`。这是可通过 `--patch` 加载的 YAML patch，不是 `mcpServers` JSON，也不是要覆盖现有 profile 的完整配置：
+在命令中选择 **DeepSeek Harness (DSH)** 并点击“安装”，自动更新 `$DSH_HOME`（默认 `~/.dsh`）下的：
+
+- `profiles/web/cordis.patch.yml` 与 `profiles/desktop/cordis.patch.yml`，缺失时创建；
+- 已存在的 `profiles/headless/cordis.patch.yml` 和 `profiles/acp/cordis.patch.yml`。
+
+SDK 和自定义 profile 保持原状。条目使用 `@deepseek-ai/dsh-mcp-client`、`serverName: emberprobe`、
+`transport: stdio`、稳定绝对启动路径和 `toolCallTimeoutMs: 1800000`。按服务器名称查找并更新已有条目，
+保留原插件 ID、自定义配置和其他插件；没有条目时添加 `mcp-emberprobe`。已有同名但冲突的插件不覆盖。
+
+完成后重新启动相应 DSH profile（例如正常运行 `dsh web`），**不再需要手动保存额外文件或传入 `--patch`**。
+`$DSH_HOME/cordis.patch.yml` 若覆盖 EmberProbe，会拒绝 profile 自动写入，避免显示成功但被全局覆盖；请先处理该覆盖项。
+
+“复制配置”或自动写入失败时才使用手动回退：把复制内容保存为 `emberprobe.cordis.yml`，然后运行：
 
 ```sh
 dsh web --patch "/absolute/path/emberprobe.cordis.yml"
 ```
 
-Windows 同样使用文件的绝对路径，例如 `dsh web --patch "C:\projects\board\emberprobe.cordis.yml"`。patch 通过 `insert` 添加一个 `id: mcp-emberprobe`、`name: "@deepseek-ai/dsh-mcp-client"` 的插件条目；其 `config` 使用 `serverName: emberprobe`、`transport: stdio`、绝对启动路径与环境变量，并设置 `toolCallTimeoutMs: 1800000`。重复配置时更新已有条目，不重复插入同名服务器。有工作区时显式设置 `env.EMBERPROBE_WORKSPACE`，因此不依赖 DSH 的工作目录或 roots。见 [DSH 官方 MCP 客户端说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md) 和 [官方 patch 示例](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/config/examples/mcp-memory/mcp-reference-memory.cordis.yml)。
+Windows 示例为 `dsh web --patch "C:\projects\board\emberprobe.cordis.yml"`。这是 YAML `insert` patch，不能粘贴到
+`mcpServers` JSON 中。见 [DSH 官方 MCP 客户端说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)
+及 [cc-switch DSH profile 写入实现](https://github.com/farion1231/cc-switch/blob/main/src-tauri/src/dsh_config.rs)。
 
 DSH 加载后工具名形如 `mcp__emberprobe__config_get`。当前 DSH 不消费 MCP prompt 模板，因此本页的五个工作流 prompt 不会在 DSH 中出现；直接使用对应工具。未声明 elicitation 能力的客户端沿用下文的聊天确认流程。
 
-两类配置都需要保持运行中的 EmberProbe 窗口，并在该工作区启用 Agent 访问。配置导出本身不会启动 Bridge 或授予硬件操作权限。远程窗口的配置仅供同一远端的客户端使用。30 分钟是客户端单次调用上限，不改变 Bridge 自身的操作预算；主动请求更长的采样时需自行调整客户端上限。
+所有客户端都需要保持运行中的 EmberProbe 窗口，并在该工作区启用 Agent 访问。配置导出本身不会启动 Bridge 或授予硬件操作权限。远程窗口的配置仅供同一远端的客户端使用。配置中的 30 分钟超时不改变 Bridge 自身的操作预算；主动请求更长的采样时需自行调整客户端上限。
 
 ## 工作区定位 / Locating the Bridge
 
@@ -132,11 +191,13 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 | 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
 |---|---|---|---|---|---|
 | VS Code Copilot | provider | — | — | — | 待实测 |
-| Claude Code | `claude mcp add` | — | — | — | 待实测 |
-| Codex | `codex mcp add` | — | — | — | 待实测 |
+| Claude Code | 原生 JSON / 可选 CLI | — | — | — | 待实测 |
+| Codex | 原生 TOML / 可选 CLI | — | — | — | 待实测 |
+| Gemini CLI | 原生 JSON / 可选 CLI | — | 按客户端能力选择 | 原生配置显式工作区 | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测 |
+| OpenCode | 原生 local JSON/JSONC 写入 | — | 按客户端能力选择 | 显式工作区，不依赖 roots | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测 |
 | Cursor | 扩展 API / 安装链接 | — | — | — | 待实测 |
-| Antigravity | 专用 stdio JSON 导出 | — | 按客户端能力选择 | 显式工作区，不依赖 roots | 配置生成、解析及 stdio 回归由自动测试覆盖；客户端交互待实测 |
-| DeepSeek Harness (DSH) | 专用 stdio YAML patch 导出 | — | 未声明时使用聊天确认 | 显式工作区，不依赖 roots | 配置生成、解析及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持 |
+| Antigravity | 原生 JSON 写入 | — | 按客户端能力选择 | 显式工作区，不依赖 roots | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测 |
+| DeepSeek Harness (DSH) | 原生 profile YAML 写入 | — | 未声明时使用聊天确认 | 显式工作区，不依赖 roots | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持 |
 
 ## 排错 / Troubleshooting
 
@@ -144,6 +205,8 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 - `BRIDGE_UNAVAILABLE` 且 `registryEntries` 为 0：没有运行中的 EmberProbe 窗口，或客户端的工作目录 / roots 不在任何打开的文件夹内；设置 `EMBERPROBE_WORKSPACE`。
 - `BRIDGE_AMBIGUOUS`：关闭多余窗口，或设置 `EMBERPROBE_BRIDGE_INSTANCE`。
 - 外部客户端无法启动服务器：打开一次 EmberProbe 窗口以重写启动器与包装脚本；编辑器安装位置变化后重新运行 `EmberProbe: 安装 MCP 服务器到客户端`。
+- CLI 安装失败或已有同名服务器：使用自动复制的原生配置编辑已有 `emberprobe` 条目；Codex 使用 TOML，OpenCode 使用 `mcp`，其他 JSON 客户端通常使用 `mcpServers`。不要覆盖整个配置文件。
+- Codex / Gemini / OpenCode 的长操作超时：检查对应的 `tool_timeout_sec`（秒）或 `timeout`（毫秒）；原生导出默认为 30 分钟。Claude/Codex CLI 安装不会修改客户端超时设置。
 - Cursor 中看不到 EmberProbe 服务器：确认工作区受信任且已启用 Agent 访问。
 - Antigravity / DSH 能列出工具但返回 `BRIDGE_UNAVAILABLE`：确认 EmberProbe 窗口仍在运行、Agent 访问已启用，且生成配置中的 `EMBERPROBE_WORKSPACE` 与该窗口主工作区一致；自定义宿主数据目录未被扫描到时，可设置 `EMBERPROBE_BRIDGE_REGISTRY` 指向实际 globalStorage 下的 `agent-bridges` 目录。
 - DSH 没有出现 `mcp__emberprobe__*`：检查 patch 是否由目标 profile 加载、`@deepseek-ai/dsh-mcp-client` 是否可用，并查看启动日志；不要把 YAML patch 粘贴进 `mcpServers` JSON 配置。
