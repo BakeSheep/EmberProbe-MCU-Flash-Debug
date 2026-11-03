@@ -178,6 +178,9 @@ class SamplingSession {
     async peripheralTransaction(...args) {
         return (await this.request("peripheralTransaction", args)).result;
     }
+    async rttControl(...args) {
+        return (await this.request("rttControl", args)).result;
+    }
     async writeAndVerify(...args) {
         if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length) validateManagedWritePlan(args[0]);
         return (await this.request("writeAndVerify", args)).result;
