@@ -173,7 +173,8 @@ const TOOLS = [
         name: "fault_read",
         toolset: "core",
         title: "Read Cortex-M fault state",
-        description: "Read CFSR/HFSR/MMFAR/BFAR and the faulting PC with symbols.",
+        description:
+            "Read CFSR/HFSR/MMFAR/BFAR and the faulting PC with symbols; for a hung target also the active interrupt handler, masks and PC samples.",
         methods: ["fault.read"],
         hardware: true,
         inputSchema: object(),
@@ -480,11 +481,17 @@ const TOOLS = [
         name: "debug_start",
         toolset: "debug",
         title: "Start the debugger",
-        description: "Start the built-in EmberProbe debug session for the workspace ELF.",
+        description:
+            "Start the built-in EmberProbe debug session for the workspace ELF. attach=true keeps the running firmware: it halts the core without reset or download, for inspecting a hung or misbehaving target.",
         methods: ["debug.start"],
         hardware: true,
-        inputSchema: object(),
-        request: () => ({ method: "debug.start" })
+        inputSchema: object({
+            attach: bool("Halt the running firmware in place instead of resetting and downloading.")
+        }),
+        request: (args) => ({
+            method: "debug.start",
+            params: args?.attach === undefined ? {} : { attach: args.attach }
+        })
     },
     {
         name: "debug_select",

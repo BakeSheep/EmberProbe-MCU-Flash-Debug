@@ -23,7 +23,7 @@ has been verified at a firmware address; report adapter verification when availa
 - **Applies to**: controlling the workspace debugger session (start/stop/pause/continue/step/restart) and managing source-line or function breakpoints.
 - **Requires**: the EmberProbe Agent Bridge and VS Code's debugger APIs; `--start` also needs a complete EmberProbe debug configuration (ELF, probe, target, OpenOCD, SVD).
 - **Preconditions**: one control action in flight (else `DEBUG_CONTROL_BUSY` — read status instead); pause needs a running target, continue/step need a paused target; breakpoints can be created before a session starts.
-- **Side effects**: `--start` launches a session and halts the target; control actions change execution state; `--stop` ends the session and returns once the managed OpenOCD server has released the probe (an unconfirmed server exit fails with `DEBUG_SERVER_STOP_FAILED` and the probe stays owned); breakpoint mutations change VS Code breakpoints.
+- **Side effects**: `--start` launches a session, resets the target and programs the ELF when Flash differs; `--start --attach` halts the running target without reset or download; control actions change execution state; `--stop` ends the session and returns once the managed OpenOCD server has released the probe (an unconfirmed server exit fails with `DEBUG_SERVER_STOP_FAILED` and the probe stays owned); breakpoint mutations change VS Code breakpoints.
 - **Success evidence**: state-changing commands complete from the corresponding DAP state event. A `--status`/`--breakpoints` read does not prove `--start` works. On timeout, read status; never auto-resend.
 
 For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
@@ -33,6 +33,7 @@ node <skill-dir>/scripts/debug.js --workspace <workspace> --status
 node <skill-dir>/scripts/debug.js --workspace <workspace> --select --session <session-id>
 node <skill-dir>/scripts/debug.js --workspace <workspace> --select --group <server-group> --core <zero-based-core>
 node <skill-dir>/scripts/debug.js --workspace <workspace> --start
+node <skill-dir>/scripts/debug.js --workspace <workspace> --start --attach
 node <skill-dir>/scripts/debug.js --workspace <workspace> --pause
 node <skill-dir>/scripts/debug.js --workspace <workspace> --continue
 node <skill-dir>/scripts/debug.js --workspace <workspace> --step-over
@@ -41,6 +42,8 @@ node <skill-dir>/scripts/debug.js --workspace <workspace> --step-out
 node <skill-dir>/scripts/debug.js --workspace <workspace> --restart
 node <skill-dir>/scripts/debug.js --workspace <workspace> --stop
 ```
+
+`--start` resets the target and programs the ELF when Flash differs. `--start --attach` keeps the running firmware instead: it halts the core where it is, without reset or download, so a hung or misbehaving target keeps its state for `--status`, `inspect.js` stacks and `mcu-rtos`. Prefer it when the user wants to know where a running target is stuck, and resume with `--continue` afterwards unless they want it to stay paused. Attach programs nothing, so its result reports `firmwareConsistency`; on `ELF_TARGET_MISMATCH`, warn that source lines and symbols may not match the running firmware.
 
 Use one action per call. `--start` reuses EmberProbe's configured ELF, probe, target, OpenOCD, and SVD. State-changing commands complete from the corresponding DAP state event even if debugger's request promise responds late, and they do not retry after a timeout. Only one control action may be in flight; on `DEBUG_CONTROL_BUSY`, read status instead of issuing concurrent commands. Pause requires a running target; continue and stepping require a paused target. Restart is available only when debugger advertises it.
 

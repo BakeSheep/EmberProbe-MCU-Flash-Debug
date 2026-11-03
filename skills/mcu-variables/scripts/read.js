@@ -23,7 +23,14 @@ function args(argv) {
         const key = argv[i];
         if (!key.startsWith("--")) throw new Error(`Unexpected argument: ${key}`);
         const name = key.slice(2);
-        if (name === "list" || name === "trend" || name === "read" || name === "export-csv" || name === "json-array")
+        if (
+            name === "list" ||
+            name === "trend" ||
+            name === "read" ||
+            name === "export-csv" ||
+            name === "snapshot-csv" ||
+            name === "json-array"
+        )
             out[name] = true;
         else {
             const value = argv[++i];
@@ -542,6 +549,61 @@ function workspaceOutputPath(workspace, requested) {
     return output;
 }
 
+function csvCell(value) {
+    const text = value === null || value === undefined ? "" : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+// Scalar leaves of a read tree with their path below the tree root (".x", "[3].pos.y"); members or elements that cannot
+// be observed have no value and are left out. valueText keeps 64-bit values exact.
+function treeLeaves(node, prefix = "", out = []) {
+    if (!node) return out;
+    if (Array.isArray(node.members))
+        for (const member of node.members) treeLeaves(member, `${prefix}.${member.name}`, out);
+    else if (Array.isArray(node.elements))
+        for (const element of node.elements) treeLeaves(element, `${prefix}[${element.index}]`, out);
+    else if ("value" in node) out.push({ path: prefix, type: node.type || "", value: node.valueText ?? node.value });
+    return out;
+}
+
+// One variables.read result as CSV. A single requested array becomes a table with one row per element: "index" plus
+// one column per scalar leaf (value, or member paths such as pos.x for struct arrays), ready for a spreadsheet.
+// Anything else becomes one row per scalar: variable,path,type,value. BOM and CRLF match the chart history export.
+function snapshotCsv(result, requestedNames) {
+    const csvText = (lines) => "﻿" + lines.join("\r\n") + "\r\n";
+    const values = result?.values || {};
+    const only = requestedNames.length === 1 ? values[requestedNames[0]] : null;
+    if (only?.tree?.kind === "array") {
+        const columns = [];
+        const rows = (only.tree.elements || []).map((element) => {
+            const row = new Map();
+            const leaves =
+                "value" in element
+                    ? [{ path: "value", value: element.valueText ?? element.value }]
+                    : treeLeaves(element).map((leaf) => ({ ...leaf, path: leaf.path.replace(/^\./, "") }));
+            for (const leaf of leaves) {
+                if (!columns.includes(leaf.path)) columns.push(leaf.path);
+                row.set(leaf.path, leaf.value);
+            }
+            return [element.index, row];
+        });
+        const lines = [["index", ...columns].map(csvCell).join(",")];
+        for (const [index, row] of rows)
+            lines.push([index, ...columns.map((column) => row.get(column))].map(csvCell).join(","));
+        return { format: "table", rows: rows.length, csv: csvText(lines) };
+    }
+    const lines = [["variable", "path", "type", "value"].join(",")];
+    for (const name of requestedNames) {
+        const item = values[name];
+        if (!item) continue;
+        const leaves = item.tree
+            ? treeLeaves(item.tree)
+            : [{ path: "", type: item.type, value: item.valueText ?? item.value }];
+        for (const leaf of leaves) lines.push([name, name + leaf.path, leaf.type, leaf.value].map(csvCell).join(","));
+    }
+    return { format: "long", rows: lines.length - 1, csv: csvText(lines) };
+}
+
 async function main() {
     const opt = args(process.argv.slice(2));
     const workspace = path.resolve(opt.workspace || process.cwd());
@@ -579,6 +641,26 @@ async function main() {
         } else {
             process.stdout.write(stringify({ type: "csvExport", ...result, requestedRange: rangeDetails }) + "\n");
         }
+        return;
+    }
+    if (opt["snapshot-csv"]) {
+        if (!opt.output) throw new Error("--snapshot-csv requires --output <relative path>");
+        if (opt.elf || opt.port || opt.list || opt.trend || opt.count !== undefined || opt["add-to"])
+            throw new Error(
+                "--snapshot-csv reads once through EmberProbe; combine it only with --variables and --output"
+            );
+        const variables = variableSpecs(opt.variables);
+        const output = workspaceOutputPath(workspace, opt.output);
+        const result = withVariableErrors(await call(workspace, "variables.read", { variables }), "variables.read");
+        const { csv, ...table } = snapshotCsv(
+            result,
+            variables.map((item) => item.name)
+        );
+        fs.mkdirSync(path.dirname(output), { recursive: true });
+        fs.writeFileSync(output, csv, "utf8");
+        const metadata = { ...result };
+        delete metadata.values;
+        process.stdout.write(stringify({ type: "snapshotCsv", ...metadata, ...table, output }) + "\n");
         return;
     }
     let bridgeVariables = null;
@@ -784,6 +866,7 @@ module.exports = {
     infer,
     listOutput,
     readStableElf,
+    snapshotCsv,
     summarize,
     stringify,
     workspaceOutputPath,

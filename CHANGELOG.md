@@ -33,6 +33,26 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - A state change after every write and readback finished no longer turns a successful write into an error; the
   result adds stateChangedAfterWrite. Peripheral transaction timeouts name their actual 5 s budget, and the
   running/standalone sidebar only reads and writes 8/16/32-bit registers.
+- Agent 可以「不复位调试」：`mcu-debug-control --start --attach`（MCP `debug_start` 的 `attach: true`）只暂停正在运行的
+  固件，不复位、不下载，随后可用现有的调用栈、变量与 RTOS 检查卡死现场；结果附带 `firmwareConsistency`，ELF 与上次
+  烧录的固件不一致时给出 `ELF_TARGET_MISMATCH` 警告。
+- Agents can debug without reset: `mcu-debug-control --start --attach` (MCP `debug_start` with `attach: true`) halts
+  the running firmware in place with no reset or download, so the existing stack, variable and RTOS inspection works
+  on a hung target. The result carries `firmwareConsistency` and warns with `ELF_TARGET_MISMATCH` when the ELF
+  differs from the last programmed firmware.
+- 故障分析可诊断「没有 fault 但卡死」：结果新增 `execution`（线程/中断模式、由 IPSR 和向量表从 ELF 得出的中断处理函数，
+  如 `UART7_IRQHandler` / `Default_Handler`，以及 PRIMASK/BASEPRI/FAULTMASK），目标原本运行时再间隔约 10 ms 采样 4 次
+  PC，给出 `stall.verdict`（`tightLoop`、`sameFunction`、`progressing`、`unknown`）。采样期间短暂多次停核，结束后恢复运行。
+- Fault analysis now diagnoses hangs without a fault: results add `execution` (thread or handler mode, the active
+  handler named from IPSR and the vector table through the ELF, such as `UART7_IRQHandler` or `Default_Handler`, and
+  PRIMASK/BASEPRI/FAULTMASK). When the target was running, PC is sampled four more times about 10 ms apart for a
+  `stall.verdict` (`tightLoop`, `sameFunction`, `progressing`, `unknown`); the core is halted briefly for each sample
+  and left running.
+- `mcu-variables` 新增 `--snapshot-csv --output <文件>`：一次读取数组或结构体的当前值并写成 CSV（单个数组为每元素一行、
+  每个成员一列的表格，其余为 `variable,path,type,value` 行），可直接用表格软件打开。
+- `mcu-variables` adds `--snapshot-csv --output <file>`: one read of an array or structure's current values written as
+  CSV (a single array becomes a table with one row per element and one column per member; anything else becomes
+  `variable,path,type,value` rows), ready for a spreadsheet.
 
 ### 优化 / Improved
 

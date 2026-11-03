@@ -365,6 +365,12 @@ const DIAGNOSTICS = {
         ["先使用 {{debugStatus}} 读取实际状态再选择控制命令。"],
         true
     ],
+    INVALID_DEBUG_START: [
+        "debug_configuration",
+        "调试启动参数无效：attach 必须是布尔值。",
+        ["启动时省略 attach 进行复位调试，或传 true 以不复位方式附加。"],
+        false
+    ],
     INVALID_DEBUG_THREAD: [
         "debug_configuration",
         "调试线程 ID 必须是正整数。",

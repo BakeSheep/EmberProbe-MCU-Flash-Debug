@@ -40,7 +40,8 @@ function args(argv) {
     const out = { actions: [] };
     for (let index = 0; index < argv.length; index += 1) {
         const key = argv[index];
-        if (SIMPLE_ACTIONS.has(key)) out.actions.push({ kind: "simple", key });
+        if (key === "--attach") out.attach = true;
+        else if (SIMPLE_ACTIONS.has(key)) out.actions.push({ kind: "simple", key });
         else if (BREAKPOINT_ACTIONS.has(key)) out.actions.push({ kind: "breakpoint", key });
         else if (VALUE_OPTIONS.has(key)) {
             if (!argv[index + 1]) throw new Error(`Missing value for ${key}`);
@@ -48,6 +49,7 @@ function args(argv) {
         } else throw new Error(`Unknown argument: ${key}`);
     }
     if (out.actions.length !== 1) throw new Error("Choose exactly one debug or breakpoint action");
+    if (out.attach && out.actions[0].key !== "--start") throw new Error("--attach can only be used with --start");
     validateThreadOption(out, out.actions[0]);
     validateSelection(out, out.actions[0]);
     return out;
@@ -89,7 +91,9 @@ function request(opt) {
                       }
                     : action
                       ? { action, threadId: opt.thread === undefined ? undefined : Number(opt.thread) }
-                      : {}
+                      : opt.attach
+                        ? { attach: true }
+                        : {}
         };
     }
     const action = BREAKPOINT_ACTIONS.get(selected.key);

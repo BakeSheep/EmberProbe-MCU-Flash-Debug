@@ -441,6 +441,72 @@ const execFileAsync = promisify(execFile);
         assert.strictEqual(csvReadPayload.requestedRange.resolvedUtc.to.endsWith("Z"), true);
         assert.deepStrictEqual(csvExportParams.at(-1).variables, ["Tick"]);
         assert.strictEqual(csvExportParams.at(-1).panelId, 1);
+
+        // Current-value snapshots: a single array becomes a table, everything else path,type,value rows
+        const structArray = {
+            values: {
+                samples: {
+                    type: "composite",
+                    tree: {
+                        kind: "array",
+                        elements: [
+                            {
+                                index: 0,
+                                kind: "struct",
+                                members: [
+                                    { name: "t", value: 10, type: "u32" },
+                                    { name: "pos", kind: "struct", members: [{ name: "x", value: 1.5, type: "f32" }] },
+                                    { name: "big", value: 1, valueText: "18446744073709551615", type: "u64" }
+                                ]
+                            },
+                            { index: 1, kind: "struct", members: [{ name: "t", value: 11, type: "u32" }] }
+                        ]
+                    }
+                }
+            }
+        };
+        const table = liveSkill.snapshotCsv(structArray, ["samples"]);
+        assert.strictEqual(table.format, "table");
+        assert.strictEqual(table.rows, 2);
+        assert.strictEqual(table.csv, "﻿index,t,pos.x,big\r\n0,10,1.5,18446744073709551615\r\n1,11,,\r\n");
+        const scalarArray = {
+            values: {
+                "buf[4:5]": {
+                    tree: {
+                        kind: "array",
+                        elements: [
+                            { index: 4, value: 7 },
+                            { index: 5, value: -1 }
+                        ]
+                    }
+                }
+            }
+        };
+        assert.strictEqual(liveSkill.snapshotCsv(scalarArray, ["buf[4:5]"]).csv, "﻿index,value\r\n4,7\r\n5,-1\r\n");
+        const mixed = liveSkill.snapshotCsv(
+            {
+                values: {
+                    tick: { value: 5, type: "u32" },
+                    cfg: {
+                        tree: { kind: "struct", members: [{ name: "name", value: 0, valueText: 'a,"b"', type: "u8" }] }
+                    }
+                }
+            },
+            ["tick", "cfg", "missing"]
+        );
+        assert.strictEqual(mixed.format, "long");
+        assert.strictEqual(mixed.csv, '﻿variable,path,type,value\r\ntick,tick,u32,5\r\ncfg,cfg.name,u8,"a,""b"""\r\n');
+        await assert.rejects(
+            execFileAsync(process.execPath, [
+                path.resolve(__dirname, "../skills/mcu-variables/scripts/read.js"),
+                "--workspace",
+                root,
+                "--snapshot-csv",
+                "--variables",
+                "samples"
+            ]),
+            /--snapshot-csv requires --output/
+        );
         assert.strictEqual(csvExportParams.at(-1).to - csvExportParams.at(-1).from, 10000);
         const csvOutput = path.join(root, "exports", "watch.csv");
         const csvWrite = await execFileAsync(process.execPath, [

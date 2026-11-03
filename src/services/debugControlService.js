@@ -54,6 +54,8 @@ class DebugControlService {
         this.debugBridge = options.debugBridge;
         this.workspaceProvider = options.workspaceProvider;
         this.startDebug = options.startDebug;
+        // Optional: compares the configured ELF with the firmware EmberProbe last programmed, for attach results
+        this.firmwareConsistency = options.firmwareConsistency || null;
         this.waitForRelease = options.waitForRelease || (() => undefined);
         this.platform = options.platform || process.platform;
         this.controlInFlight = null;
@@ -63,12 +65,16 @@ class DebugControlService {
         return this.debugBridge.agentStatus();
     }
 
-    async start() {
+    // params.attach: attach to the running firmware (halt only, no reset or download) instead of a launch
+    async start(params = {}) {
+        if (params.attach !== undefined && typeof params.attach !== "boolean")
+            throw error("attach must be boolean", "INVALID_DEBUG_START");
+        const attach = params.attach === true;
         const current = this.status();
         if (current.state === "running" || current.state === "paused") return { alreadyActive: true, status: current };
         if (current.state === "conflict")
             throw error("Multiple debugger sessions match this workspace", "DEBUG_SESSION_CONFLICT");
-        const started = await this.startDebug();
+        const started = await this.startDebug({ attach });
         if (!started) throw error("debugger did not start", "DEBUG_START_FAILED");
         const status = await this.debugBridge.waitForState(
             (next) => next.state === "running" || next.state === "paused" || next.state === "conflict",
@@ -76,7 +82,10 @@ class DebugControlService {
         );
         if (status.state === "conflict")
             throw error("Multiple debugger sessions match this workspace", "DEBUG_SESSION_CONFLICT");
-        return { alreadyActive: false, status };
+        if (!attach) return { alreadyActive: false, status };
+        // Attach programs nothing, so source lines and symbols are only right when the target runs this ELF
+        const consistency = this.firmwareConsistency ? await this.firmwareConsistency() : {};
+        return { alreadyActive: false, mode: "attach", status, ...consistency };
     }
 
     async control(params = {}) {

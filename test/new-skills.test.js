@@ -55,6 +55,12 @@ const root = path.resolve(__dirname, "..");
             params: { action: "pause", threadId: 7 }
         });
         assert.throws(() => debugSkill.args(["--pause", "--thread", "0"]), /--thread must be a positive integer/);
+        assert.deepStrictEqual(debugSkill.request(debugSkill.args(["--start", "--attach"])), {
+            method: "debug.start",
+            params: { attach: true }
+        });
+        assert.deepStrictEqual(debugSkill.request(debugSkill.args(["--start"])), { method: "debug.start", params: {} });
+        assert.throws(() => debugSkill.args(["--pause", "--attach"]), /--attach can only be used with --start/);
 
         const listed = JSON.parse(
             (await execFileAsync(process.execPath, [peripheral, "--workspace", workspace, "--list", "--query", "gpio"]))

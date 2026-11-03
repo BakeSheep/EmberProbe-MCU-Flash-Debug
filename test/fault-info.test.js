@@ -1,6 +1,13 @@
 "use strict";
 const assert = require("assert");
-const { readFaultInfo, decodeFaultRegisters, FAULT_REGS, CFSR_BITS, HFSR_BITS } = require("../src/faultInfo");
+const {
+    readFaultInfo,
+    decodeFaultRegisters,
+    decodeExecutionContext,
+    FAULT_REGS,
+    CFSR_BITS,
+    HFSR_BITS
+} = require("../src/faultInfo");
 
 // Register addresses (SCB, ARMv7-M Architecture Reference Manual)
 assert.strictEqual(FAULT_REGS.icsr, 0xe000ed04);
@@ -61,6 +68,16 @@ assert.strictEqual(decodeFaultRegisters(null).faultDetected, false);
 // Scenario 6: external interrupt number decoding
 assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 16 + 37 }).exception.name, "IRQ37");
 assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 15 }).exception.name, "SysTick");
+// Scenario 7: halted execution context from IPSR and the interrupt masks
+const inIrq = decodeExecutionContext({ xpsr: "0x61000057", primask: "0x00", basepri: "0x50", faultmask: "" });
+assert.strictEqual(inIrq.mode, "handler");
+assert.deepStrictEqual(inIrq.exception, { number: 0x57, name: "IRQ71", irq: 71 });
+assert.deepStrictEqual(inIrq.masks, { primask: 0, basepri: 0x50 });
+const inThread = decodeExecutionContext({ xpsr: "0x01000000" });
+assert.strictEqual(inThread.mode, "thread");
+assert.strictEqual(inThread.exception.name, "Thread");
+assert.strictEqual(decodeExecutionContext({ xpsr: "" }), null);
+assert.strictEqual(decodeExecutionContext(null), null);
 
 // CPU register reads must be issued as echo [reg ...]. OpenOCD's catch swallows command output, so a bare catch {reg
 // pc} never reaches the parser (pc/sp/lr/xPSR all empty). A fake OpenOCD checks the whole chain of Tcl construction and
@@ -88,7 +105,12 @@ assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 15 }).exception.name, "
                 '  echo "pc (/32): 0x080034AC"',
                 '  echo "sp (/32): 0x2000FF00"',
                 '  echo "lr (/32): 0x08003401"',
-                '  echo "xPSR (/32): 0x61000000"',
+                '  echo "xPSR (/32): 0x61000057"',
+                '  echo "primask (/1): 0x00"',
+                '  echo "basepri (/8): 0x50"',
+                '  echo "EP_KV handler 0x08000C41"',
+                '  echo "EP_PC_SAMPLE pc (/32): 0x080034AE"',
+                '  echo "EP_PC_SAMPLE pc (/32): 0x080034AC"',
                 ";; esac",
                 'echo "0xE000ED28: 00000082"',
                 "exit 0",
@@ -106,7 +128,11 @@ assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 15 }).exception.name, "
             assert.strictEqual(info.pc, "0x080034AC");
             assert.strictEqual(info.sp, "0x2000FF00");
             assert.strictEqual(info.lr, "0x08003401");
-            assert.strictEqual(info.xpsr, "0x61000000");
+            assert.strictEqual(info.xpsr, "0x61000057");
+            assert.strictEqual(info.primask, "0x00");
+            assert.strictEqual(info.basepri, "0x50");
+            assert.strictEqual(info.handler, "0x08000C41");
+            assert.deepStrictEqual(info.pcSamples, ["0x080034AE", "0x080034AC"]);
             assert.ok(info.values.cfsr !== undefined, "fault registers must still be captured");
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });

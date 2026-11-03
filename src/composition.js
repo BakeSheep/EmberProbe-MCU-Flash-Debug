@@ -16,6 +16,7 @@ const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization
 const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
 const { CACHE_KEYS } = require("./cacheKeys");
+const { inspectElf } = require("../skills/_emberprobe/elf-file");
 const { ExternalDebugService } = require("./services/externalDebugService");
 const { CubeMxService } = require("./services/cubemxService");
 const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
@@ -453,7 +454,18 @@ function createServices(host, context, { vscode }) {
             vscode,
             debugBridge,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            startDebug: () => host.debugLaunch.start(undefined, undefined, false),
+            startDebug: (startOptions) => host.debugLaunch.start(undefined, undefined, false, startOptions),
+            firmwareConsistency: async () => {
+                const elfPath = host._context.workspaceState.get(CACHE_KEYS.elfPath);
+                if (!elfPath) return {};
+                try {
+                    return host._writes.firmwareConsistency({
+                        elf: await inspectElf(validation.cleanWindowsPath(elfPath))
+                    });
+                } catch {
+                    return {};
+                }
+            },
             waitForRelease: (session) => host.debugLaunch.sessionReleased(session)
         })
     };

@@ -76,7 +76,7 @@ function createAgentRoutes(host, probes = listProbes) {
             return host._rtosViewService.refresh(params?.includeStackUsage !== false);
         },
         "debug.select": (params) => host._selectDebugSession(params || {}),
-        "debug.start": () => host._debugControlService.start(),
+        "debug.start": (params) => host._debugControlService.start(params || {}),
         "debug.control": (params) => host._debugControlService.control(params || {}),
         "debug.breakpoints.list": () => host._debugControlService.listBreakpoints(),
         "debug.breakpoints.update": (params) => host._debugControlService.updateBreakpoints(params || {})

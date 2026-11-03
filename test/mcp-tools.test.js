@@ -77,6 +77,14 @@ const validator = new AjvJsonSchemaValidator();
         assert.strictEqual(schema("variables_read")({ variables: [] }).valid, false);
         assert.strictEqual(schema("variables_read")({ variables: ["tick", { name: "kp", type: "f32" }] }).valid, true);
         assert.strictEqual(schema("debug_control")({ action: "erase" }).valid, false);
+        assert.strictEqual(schema("debug_start")({ attach: "yes" }).valid, false);
+        assert.strictEqual(schema("debug_start")({ attach: true }).valid, true);
+        const debugStart = tools.TOOLS.find((tool) => tool.name === "debug_start");
+        assert.deepStrictEqual(debugStart.request({ attach: true }), {
+            method: "debug.start",
+            params: { attach: true }
+        });
+        assert.deepStrictEqual(debugStart.request({}), { method: "debug.start", params: {} });
         assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: "h", count: 101 }).valid, false);
         // The Bridge issues string handles; DAP integers must be rejected before reaching it.
         assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: 3 }).valid, false);

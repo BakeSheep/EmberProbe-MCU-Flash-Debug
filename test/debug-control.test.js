@@ -209,6 +209,32 @@ class FunctionBreakpoint {
         assert.strictEqual((await startService.start()).alreadyActive, true);
         startBridge.dispose();
 
+        // attach forwards to the launcher and reports whether the ELF matches the programmed firmware
+        const attachBridge = new DebugSessionBridge({ onStatus() {} });
+        const startOptions = [];
+        const attachService = new DebugControlService({
+            vscode,
+            debugBridge: attachBridge,
+            workspaceProvider: () => root,
+            startDebug: async (options) => {
+                startOptions.push(options);
+                attachBridge.attach(session);
+                return true;
+            },
+            firmwareConsistency: async () => ({
+                firmwareConsistency: { status: "mismatch" },
+                warnings: [{ code: "ELF_TARGET_MISMATCH" }]
+            })
+        });
+        await assert.rejects(attachService.start({ attach: "yes" }), { code: "INVALID_DEBUG_START" });
+        assert.strictEqual(startOptions.length, 0);
+        const attached = await attachService.start({ attach: true });
+        assert.deepStrictEqual(startOptions, [{ attach: true }]);
+        assert.strictEqual(attached.mode, "attach");
+        assert.strictEqual(attached.firmwareConsistency.status, "mismatch");
+        assert.strictEqual(attached.warnings[0].code, "ELF_TARGET_MISMATCH");
+        attachBridge.dispose();
+
         const conflict = new DebugSessionBridge({ onStatus() {} });
         conflict.attach(session);
         conflict.attach({ ...session, id: "debug-2" });

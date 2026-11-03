@@ -73,6 +73,12 @@ Agent CSV reads the chart's full sampling archive. Column headers include the de
 node <skill-dir>/scripts/read.js --workspace <workspace> --export-csv --variables counter,temperature --last 30 --output exports/live.csv
 ```
 
+To save the current values of an array or structure (an ADC buffer, a log ring, a parameter table) for a spreadsheet, read once with `--snapshot-csv` and a workspace-relative `--output`; no chart is needed. A single requested array is written as a table: an `index` column plus one column per scalar leaf (`value` for scalar elements, member paths such as `pos.x` for struct arrays). Any other request is written as `variable,path,type,value` rows. 64-bit values keep their exact text. stdout reports `format`, `rows`, `output` and the usual read metadata (`firmwareConsistency`, `partial`, `variableErrors`) instead of the values. The read budgets above still apply: if a large array fails with `LIVE_READ_BUDGET_EXCEEDED`, export it as slices (`log[0:1023]`, `log[1024:2047]`, ...) into separate files; element indices in each table stay absolute.
+
+```bash
+node <skill-dir>/scripts/read.js --workspace <workspace> --snapshot-csv --variables adc_buf --output exports/adc.csv
+```
+
 If an EmberProbe-managed debug target is running, reads are limited to writable allocated ELF RAM. A paused session may use DAP memory. Never pause a user-managed session implicitly. Report resolved names, inferred types, exact text values where present, source, and concise trend or composite results.
 
 On failure, use the diagnostic's `error.code`, `likelyCause`, `suggestedActions`, and `details`. Distinguish probe absence, target connection or power, probe ownership, Tcl port, configuration/ELF, and Bridge errors.

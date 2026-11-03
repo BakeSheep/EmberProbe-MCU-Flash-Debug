@@ -22,7 +22,7 @@ For frame-local C++ values and GDB's class/STL summaries and paged expansion, us
 `mcu-debug-control`'s paused inspection workflow. This skill reads ELF/DWARF globals and
 their supported runtime layouts; it does not substitute for task/frame-local GDB inspection.
 
-- For listing, reading, sampling, trending, chart integration, or CSV export, read [references/reading.md](references/reading.md) and use `scripts/read.js`.
+- For listing, reading, sampling, trending, chart integration, CSV export of chart history, or a CSV snapshot of current array/struct values, read [references/reading.md](references/reading.md) and use `scripts/read.js`.
 - For starting, stopping, or querying persistent sidebar/chart sampling, read the sampling controls in [references/reading.md](references/reading.md) and use `scripts/sampling.js`.
 - Only when the user explicitly asks to set, tune, override, or otherwise modify a variable, read [references/writing.md](references/writing.md) and use `scripts/write.js`.
 

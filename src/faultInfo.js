@@ -81,50 +81,109 @@ function decodeFaultRegisters(regs) {
     // ICSR.VECTACTIVE (bits 0-8): active exception number (0 = thread mode, 3 = HardFault, 4 = MemManage, 5 = BusFault,
     // 6 = UsageFault)
     const vectactive = icsr & 0x1ff;
-    const EXCEPTIONS = {
-        2: "NMI",
-        3: "HardFault",
-        4: "MemManage",
-        5: "BusFault",
-        6: "UsageFault",
-        11: "SVCall",
-        14: "PendSV",
-        15: "SysTick"
-    };
     const exception =
         regs?.icsr === undefined || regs?.icsr === null
             ? null
-            : {
-                  number: vectactive,
-                  name:
-                      vectactive === 0
-                          ? "Thread"
-                          : EXCEPTIONS[vectactive] || (vectactive >= 16 ? `IRQ${vectactive - 16}` : `#${vectactive}`)
-              };
+            : { number: vectactive, name: exceptionName(vectactive) };
     return { faultDetected: faults.length > 0, faults, exception, mmfarValid, bfarValid };
 }
 
+const EXCEPTIONS = {
+    2: "NMI",
+    3: "HardFault",
+    4: "MemManage",
+    5: "BusFault",
+    6: "UsageFault",
+    11: "SVCall",
+    14: "PendSV",
+    15: "SysTick"
+};
+
+function exceptionName(number) {
+    if (number === 0) return "Thread";
+    return EXCEPTIONS[number] || (number >= 16 ? `IRQ${number - 16}` : `#${number}`);
+}
+
+// Pure decoder for the halted execution context: the exception the core was executing (IPSR, xPSR bits 0-8) and the
+// interrupt masks. Hex string inputs; empty means not read. Returns null without xPSR.
+function decodeExecutionContext(raw) {
+    const hex = (value) => (/^0x[0-9a-f]+$/i.test(String(value || "")) ? parseInt(value, 16) >>> 0 : null);
+    const xpsr = hex(raw?.xpsr);
+    if (xpsr === null) return null;
+    const ipsr = xpsr & 0x1ff;
+    const masks = {};
+    for (const name of ["primask", "basepri", "faultmask"]) {
+        const value = hex(raw?.[name]);
+        if (value !== null) masks[name] = value;
+    }
+    return {
+        mode: ipsr === 0 ? "thread" : "handler",
+        exception: { number: ipsr, name: exceptionName(ipsr), ...(ipsr >= 16 ? { irq: ipsr - 16 } : {}) },
+        masks
+    };
+}
+
+// PC samples taken after the first halt when the target was running, to tell a tight loop from code that moves on
+const PC_SAMPLES = 4;
+const PC_SAMPLE_INTERVAL_MS = 10;
+
+// CPU registers need a halt: record the state, halt if not halted, read, and resume if this run halted. catch swallows
+// command output, so register lines need the same echo [...] form as mdw to reach stdout. In an exception the vector
+// table entry for IPSR (at VTOR) names the handler. A run that halted the target also samples PC a few times, resuming
+// in between, and always ends running.
+function cpuRegisterCommand() {
+    const word =
+        "proc _ep_fault_word {address} { " +
+        "if {[catch {read_memory $address 32 1} words]} { " +
+        "if {[catch {mem2array _ep_fault_words 32 $address 1}]} { return {} }; set words $_ep_fault_words(0) }; " +
+        "return [lindex $words 0] }; ";
+    const handler =
+        "catch { if {[regexp {0x([0-9a-fA-F]+)} [reg xPSR] -> _ep_x]} { set _ep_n [expr {[scan $_ep_x %x] & 0x1ff}]; " +
+        "if {$_ep_n >= 2} { set _ep_vtor [_ep_fault_word 0xe000ed08]; " +
+        'set _ep_h [_ep_fault_word [expr {($_ep_vtor & 0xffffff80) + 4 * $_ep_n}]]; echo [format "EP_KV handler 0x%08X" $_ep_h] } } }; ';
+    const samples =
+        `for {set _ep_i 0} {$_ep_i < ${PC_SAMPLES}} {incr _ep_i} { catch { resume }; sleep ${PC_SAMPLE_INTERVAL_MS}; ` +
+        'if {[catch {halt}]} { break }; catch { echo "EP_PC_SAMPLE [reg pc]" } }; ';
+    return (
+        word +
+        'catch { set o [[target current] curstate]; set h 0; if {$o ne "halted"} { if {![catch {halt}]} { set h 1 } }; ' +
+        "catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] }; catch { echo [reg xPSR] }; " +
+        "catch { echo [reg primask] }; catch { echo [reg basepri] }; catch { echo [reg faultmask] }; " +
+        handler +
+        `if {$h} { ${samples}catch { resume } } }`
+    );
+}
+
 // Reads fault and CPU registers in one run. options: { executable, probe, target, cwd }. Resolves { targetState,
-// registers: {cfsr,...} (hex strings), values: {cfsr,...} (numbers), pc, sp, lr, xpsr }
+// registers: {cfsr,...} (hex strings), values: {cfsr,...} (numbers), pc, sp, lr, xpsr, primask, basepri, faultmask,
+// handler (vector table entry of the active exception), pcSamples (hex strings) }
 async function readFaultInfo(options) {
     if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
         return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
     }
     const regReads = Object.values(FAULT_REGS).map((a) => `catch { echo [mdw 0x${a.toString(16)}] }`);
-    // CPU registers need a halt: record the state, halt if not halted, read, and resume if this run halted. catch
-    // swallows command output, so register lines need the same echo [...] form as mdw to reach stdout
-    const cpuRegCmd =
-        'catch { set o [[target current] curstate]; set h 0; if {$o ne "halted"} { if {![catch {halt}]} { set h 1 } }; ' +
-        "catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] }; catch { echo [reg xPSR] }; if {$h} { catch { resume } } }";
     const cmds = [
         "init",
         "catch { poll }",
         'catch { echo "EP_KV state [[target current] curstate]" }',
         ...regReads,
-        cpuRegCmd,
+        cpuRegisterCommand(),
         "shutdown"
     ];
-    const result = { targetState: "", registers: {}, values: {}, pc: "", sp: "", lr: "", xpsr: "" };
+    const result = {
+        targetState: "",
+        registers: {},
+        values: {},
+        pc: "",
+        sp: "",
+        lr: "",
+        xpsr: "",
+        primask: "",
+        basepri: "",
+        faultmask: "",
+        handler: "",
+        pcSamples: []
+    };
     const addrToKey = new Map(Object.entries(FAULT_REGS).map(([key, addr]) => [addr >>> 0, key]));
 
     const handleLine = (raw) => {
@@ -133,6 +192,20 @@ async function readFaultInfo(options) {
         const kv = parseKv(clean);
         if (kv) {
             if (kv.key === "state" && kv.value) result.targetState = kv.value;
+            if (kv.key === "handler" && /^0x[0-9a-f]{8}$/i.test(kv.value) && !result.handler)
+                result.handler = "0x" + kv.value.slice(2).toUpperCase();
+            return;
+        }
+        // Checked before parseRegLine, which would also match the "pc (/32): ..." text inside a sample line
+        const sample = clean.match(/EP_PC_SAMPLE\b.*?0x([0-9a-f]+)/i);
+        if (sample) {
+            if (result.pcSamples.length < PC_SAMPLES) result.pcSamples.push("0x" + sample[1].toUpperCase());
+            return;
+        }
+        const mask = clean.match(/(?:^|\s)(primask|basepri|faultmask)\s*\(\/\d+\)\s*:\s*0x([0-9a-f]+)/i);
+        if (mask) {
+            const name = mask[1].toLowerCase();
+            if (!result[name]) result[name] = "0x" + mask[2].toUpperCase();
             return;
         }
         const reg = parseRegLine(clean);
@@ -185,4 +258,4 @@ async function readFaultInfo(options) {
     throw Object.assign(new Error(diagnostic.message), diagnostic, { code: diagnostic.code || "FAULT_READ_FAILED" });
 }
 
-module.exports = { readFaultInfo, decodeFaultRegisters, FAULT_REGS, CFSR_BITS, HFSR_BITS };
+module.exports = { readFaultInfo, decodeFaultRegisters, decodeExecutionContext, FAULT_REGS, CFSR_BITS, HFSR_BITS };
