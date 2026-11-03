@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { parseMap, parseLinkerScript, stripComments } = require("../memoryRegions");
-const { analyzeMemory, topSymbols } = require("../memoryAnalysis");
+const { analyzeMemory, topSymbols, unplacedSections } = require("../memoryAnalysis");
 
 class MemoryAnalysisService {
     /** @param {any} options */
@@ -125,19 +125,47 @@ class MemoryAnalysisService {
                 const root = this.roots().find((item) => this.inside(item, snapshot.elf.path));
                 scripts = [...new Set(await this.findScripts(root))];
             }
-            if (scripts.length > 1) {
+            // Only watch the files of the script that is used or that failed to read.
+            const results = scripts.map((file) => {
+                const files = this.files;
+                this.files = new Set();
+                try {
+                    const parsed = parseLinkerScript(this.readScript(file));
+                    return { file, parsed, unplaced: unplacedSections(snapshot, parsed.regions), files: this.files };
+                } catch (error) {
+                    return { file, error, files: this.files };
+                } finally {
+                    this.files = files;
+                }
+            });
+            const use = (result) => {
+                for (const file of result.files) this.files.add(file);
+                if (result.error) return warn("MEMORY_SOURCE_READ_FAILED", `${result.file}: ${result.error.message}`);
+                diagnostics.push(...result.parsed.diagnostics);
+                if (result.parsed.regions.length && result.unplaced.length) {
+                    warn(
+                        "LINKER_SCRIPT_MISMATCH",
+                        `${result.file} has no region for ${result.unplaced.slice(0, 5).join(", ")}`
+                    );
+                    // A chosen script stays in use with the warning; a discovered one is not trusted.
+                    if (!requestedScript) return;
+                }
+                definitions = result.parsed.regions;
+                source.kind = definitions.length ? "linker-script" : "elf";
+                source.linkerScript = result.file;
+            };
+            const usable = results.filter((result) => result.parsed?.regions.length);
+            const matching = usable.filter((result) => !result.unplaced.length);
+            if (matching.length === 1 || results.length === 1) use(matching[0] || results[0]);
+            else if (matching.length > 1) {
+                source.candidates.push(...matching.map((result) => result.file));
+                warn("MEMORY_SOURCE_AMBIGUOUS", "Choose the linker script used by this ELF");
+            } else if (usable.length) {
+                source.candidates.push(...usable.map((result) => result.file));
+                warn("LINKER_SCRIPT_MISMATCH", "No linker script in the workspace places every ELF section");
+            } else if (results.length) {
                 source.candidates.push(...scripts);
                 warn("MEMORY_SOURCE_AMBIGUOUS", "Choose the linker script used by this ELF");
-            } else if (scripts.length === 1) {
-                try {
-                    const parsed = parseLinkerScript(this.readScript(scripts[0]));
-                    diagnostics.push(...parsed.diagnostics);
-                    definitions = parsed.regions;
-                    source.kind = definitions.length ? "linker-script" : "elf";
-                    source.linkerScript = scripts[0];
-                } catch (error) {
-                    warn("MEMORY_SOURCE_READ_FAILED", `${scripts[0]}: ${error.message}`);
-                }
             }
         }
         const kinds = this.regionKinds();

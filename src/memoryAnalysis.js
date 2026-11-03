@@ -37,6 +37,20 @@ function loadAddress(section, headers) {
     return address >= 0 && address + section.size <= 0x100000000 ? address : null;
 }
 
+// Sections the regions cannot hold: a linker script that leaves any out did not link this ELF.
+function unplacedSections(snapshot, regions) {
+    const fits = (address, size) =>
+        regions.some((region) => address >= region.origin && address + size <= region.origin + region.capacity);
+    return snapshot.memory.sections
+        .filter((section) => section.flags & 2 && section.size)
+        .filter((section) => {
+            if (!fits(section.addr, section.size)) return true;
+            const lma = section.type === 8 ? null : loadAddress(section, snapshot.memory.programHeaders);
+            return lma !== null && !fits(lma, section.size);
+        })
+        .map((section) => section.name);
+}
+
 function topSymbols(snapshot, top) {
     const sections = snapshot.memory.sections;
     return [
@@ -178,4 +192,4 @@ function analyzeMemory(snapshot, definitions = [], overrides = {}, initialDiagno
     };
 }
 
-module.exports = { analyzeMemory, topSymbols, loadAddress, unionBytes };
+module.exports = { analyzeMemory, topSymbols, loadAddress, unionBytes, unplacedSections };

@@ -38,6 +38,8 @@ module.exports = Object.freeze({
     "memory.layoutMissing": "Select a matching .map or .ld to show memory regions.",
     "memory.ambiguous": "Multiple layout files found. Choose the file used by this ELF.",
     "memory.mapMismatch": "The .map does not match this ELF. Rebuild the project or choose its linker script.",
+    "memory.scriptMismatch":
+        "The linker script's regions do not hold every section of this ELF. Choose the .ld that linked it.",
     "memory.unknownKind": "A custom region needs a type in emberprobe.memory.regionKinds.",
     "rtos.title": "RTOS tasks",
     "rtos.chooseSession": "Choose a debug session / core",

@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { evaluate, parseLinkerScript, parseMap } = require("../src/memoryRegions");
-const { analyzeMemory, topSymbols, loadAddress, unionBytes } = require("../src/memoryAnalysis");
+const { analyzeMemory, topSymbols, loadAddress, unionBytes, unplacedSections } = require("../src/memoryAnalysis");
 const { MemoryAnalysisService } = require("../src/services/memoryAnalysisService");
 const { ElfService } = require("../src/services/elfService");
 const { buildMemoryElf, snapshot, memoryMap, h750Regions, f407Regions } = require("./helpers/memory-fixture");
@@ -117,6 +117,15 @@ const { buildMemoryElf, snapshot, memoryMap, h750Regions, f407Regions } = requir
     );
     assert.strictEqual(custom.ram.total, result.ram.total);
     assert.strictEqual(loadAddress({ addr: 0, offset: 0, size: 1 }, []), null);
+    assert.deepStrictEqual(unplacedSections(data, h750Regions), []);
+    assert.deepStrictEqual(
+        unplacedSections(
+            data,
+            h750Regions.filter((r) => r.name !== "FLASH")
+        ),
+        [".text", ".itcm", ".data"],
+        "load images in FLASH need a region too"
+    );
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-memory-"));
     let workerService;
     try {
@@ -165,6 +174,35 @@ const { buildMemoryElf, snapshot, memoryMap, h750Regions, f407Regions } = requir
             (e) => e.code === "PATH_OUTSIDE_WORKSPACE"
         );
         assert.strictEqual((await service.analyze({ mapFile: "missing.map" })).source.kind, "linker-script");
+        // A discovered script must place every ELF section; a chosen one is kept with a warning.
+        const generic = path.join(temp, "generic.ld");
+        fs.writeFileSync(generic, "MEMORY { RAM : ORIGIN = 0x20000000, LENGTH = 32M }");
+        selection = {};
+        scripts = [generic];
+        service.invalidate();
+        report = await service.analyze();
+        assert.strictEqual(report.source.kind, "elf");
+        assert.strictEqual(report.regions.length, 0);
+        assert.ok(report.diagnostics.some((d) => d.code === "LINKER_SCRIPT_MISMATCH" && d.message.includes(".text")));
+        scripts = [generic, ld];
+        service.invalidate();
+        report = await service.analyze();
+        assert.strictEqual(report.source.linkerScript, ld);
+        assert.ok(!report.diagnostics.some((d) => d.code === "LINKER_SCRIPT_MISMATCH"));
+        assert.ok(report.source.files.includes(path.join(temp, "regions.ld")));
+        assert.ok(!report.source.files.includes(generic), "only the used script is watched");
+        scripts = [generic, generic.replace("generic", "generic2")];
+        fs.copyFileSync(generic, scripts[1]);
+        service.invalidate();
+        report = await service.analyze();
+        assert.ok(report.diagnostics.some((d) => d.code === "LINKER_SCRIPT_MISMATCH"));
+        assert.deepStrictEqual(report.source.candidates, scripts);
+        selection = { linkerScript: generic };
+        service.invalidate();
+        report = await service.analyze();
+        assert.strictEqual(report.source.linkerScript, generic);
+        assert.ok(report.diagnostics.some((d) => d.code === "LINKER_SCRIPT_MISMATCH"));
+        assert.ok(report.diagnostics.some((d) => d.code === "MEMORY_SECTION_UNMAPPED"));
         scripts = [];
         selection = {};
         service.invalidate();

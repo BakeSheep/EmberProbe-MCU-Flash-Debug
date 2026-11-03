@@ -83,6 +83,7 @@
             MEMORY_LAYOUT_MISSING: "memory.layoutMissing",
             MEMORY_SOURCE_AMBIGUOUS: "memory.ambiguous",
             MAP_ELF_MISMATCH: "memory.mapMismatch",
+            LINKER_SCRIPT_MISMATCH: "memory.scriptMismatch",
             REGION_KIND_UNKNOWN: "memory.unknownKind"
         };
         const warnings = result.diagnostics
