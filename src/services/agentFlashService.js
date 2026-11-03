@@ -28,6 +28,8 @@ class AgentFlashService {
         this.prepare = options.prepare || prepareProbeConnection;
         this.recordSuccess = options.recordSuccess || (async () => {});
         this.recordFlashed = options.recordFlashed || null;
+        this.yieldRtt = options.yieldRtt || null;
+        this.notifyRtt = options.notifyRtt || null;
     }
 
     request(params) {
@@ -101,6 +103,9 @@ class AgentFlashService {
     async execute(params = {}, verify = false) {
         const request = this.request(params);
         if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
+        // RTT releases its probe hold for the flash and re-attaches once a session is available again.
+        const rttYielded = this.yieldRtt?.("agentDownload");
+        if (rttYielded) await rttYielded;
         const lease = this.coordinator.acquire("download");
         let temporary;
         try {
@@ -222,6 +227,7 @@ class AgentFlashService {
                 if (temporary) await fs.rm(temporary, { recursive: true, force: true });
             } finally {
                 lease.release();
+                this.notifyRtt?.();
             }
         }
     }

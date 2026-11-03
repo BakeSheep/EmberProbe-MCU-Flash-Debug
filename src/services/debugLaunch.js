@@ -377,6 +377,7 @@ class DebugLaunch {
             try {
                 const info = await server.start();
                 phase?.("server");
+                this.host._rtt?.onSessionsChanged();
                 return info;
             } catch (error) {
                 lastError = error;
@@ -411,6 +412,7 @@ class DebugLaunch {
             this.host._sampling.resetRuntimeNotices();
         }
         if (!group) lease?.release();
+        this.host._rtt?.onSessionsChanged();
     }
     armStartupWatchdog() {
         return this.lifecycle.arm(DEBUG_STARTUP_TIMEOUT_MS, () => this.recoverStartupTimeout());
@@ -764,6 +766,8 @@ class DebugLaunch {
                 throw new Error("External GDB was disabled during startup");
             const stoppedAgent = this.host._agentOps.stopReadIfRunning();
             if (stoppedAgent) await stoppedAgent;
+            const rttYielded = this.host._rtt?.yieldForRestart("externalDebug");
+            if (rttYielded) await rttYielded;
             if (this.host._sampling.inUse) await this.host._sampling.stop({ preserveIntent: true });
             this.host._debugBridge.setWorkspace(folder);
             // Freeze settings read at entry. No probe detection or extra TCP readiness connection.
@@ -803,6 +807,9 @@ class DebugLaunch {
         }
         const agentStopped = this.host._agentOps.stopReadIfRunning();
         if (agentStopped) await agentStopped;
+        // RTT releases its probe hold and re-attaches to the managed debug server once it is ready.
+        const rttYielded = this.host._rtt?.yieldForRestart("debug");
+        if (rttYielded) await rttYielded;
         if (this.host._sampling.inUse) {
             const stopped = this.host._sampling.stop({ preserveIntent: true });
             if (stopped) await stopped;

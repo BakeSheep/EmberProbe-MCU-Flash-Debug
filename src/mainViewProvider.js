@@ -34,6 +34,7 @@ const { WriteExecution } = require("./services/writeExecution");
 const { AgentOperations } = require("./services/agentOperations");
 const { ConnectedProbes } = require("./services/connectedProbes");
 const { ChartHistoryFeed } = require("./services/chartHistoryFeed");
+const { RttController } = require("./services/rttController");
 const { createServices } = require("./composition");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
@@ -105,6 +106,7 @@ class MainViewProvider {
     _agentOperations = null;
     _connectedProbesController = null;
     _historyFeedController = null;
+    _rttController = null;
     // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
         return (this._samplingController ??= createSamplingController(this));
@@ -129,6 +131,14 @@ class MainViewProvider {
     }
     get _historyFeed() {
         return (this._historyFeedController ??= new ChartHistoryFeed(this));
+    }
+    // The RTT controller attaches to whichever session owns the probe; it is created on first use so construction
+    // order and tests without RTT are unaffected.
+    get _rtt() {
+        return (this._rttController ??= new RttController(this, {
+            vscode,
+            ManagedOpenOcdSession: liveWatch.ManagedOpenOcdSession
+        }));
     }
     constructor(context) {
         this.commandHandlers = {};
@@ -1131,6 +1141,9 @@ class MainViewProvider {
             // An unconfirmed OpenOCD exit is logged; the rest of the cleanup must still run.
             if (agentStopped) await agentStopped.catch((error) => console.error("Agent read cleanup failed:", error));
             this.debugLaunch.clearStartupWatchdog();
+            // RTT may own a session and a probe lease; release it before the managed server and sampling stop.
+            const rttStopped = this._rttController?.stop();
+            if (rttStopped) await rttStopped.catch((error) => console.error("RTT cleanup failed:", error));
             if (this.debugLaunch.managedGroup) {
                 for (const token of [...this.debugLaunch.managedGroup.members.keys()])
                     await this.debugLaunch.failGroupedCore(token, "Extension is shutting down");
