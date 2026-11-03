@@ -108,6 +108,7 @@ const TEST_GROUPS = Object.freeze({
         "rtt-buffer.test.js",
         "rtt-control-block.test.js",
         "rtt-control.test.js",
+        "rtt-controller.test.js",
         "rtt-line-formatter.test.js",
         "runtime-heap-region.test.js",
         "runtime-native-layouts.test.js",

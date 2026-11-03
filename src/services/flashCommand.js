@@ -33,6 +33,10 @@ async function runDownload(host, vscode, resource) {
     host._notices.clear("flash", "download-refresh");
     // Keep the live lease until process exit, then synchronously reserve download.
     const resumeSampling = !!host._sampling.intent && !!(host._sampling.running || host._sampling.session);
+    // RTT detaches first so flashing can take the probe; it re-attaches with a freshly resolved control block once
+    // this command finishes and a session is available again.
+    const rttYielded = host._rtt?.yieldForRestart("download");
+    if (rttYielded) await rttYielded;
     const liveStopped = host._sampling.running || host._sampling.session ? host._sampling.stop() : null;
     if (liveStopped) await liveStopped;
     const downloadLease = host._probeCoordinator.acquire("download");
@@ -125,6 +129,7 @@ async function runDownload(host, vscode, resource) {
                 });
             }
         }
+        host._rtt?.onSessionsChanged();
     }
 }
 

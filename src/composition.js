@@ -329,7 +329,9 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
         prepare: (options, settings) => host._probeConnectionService.prepare(options, settings),
         recordSuccess: (connection) => host._probeConnectionService.recordSuccess(connection),
         recordFlashed: (entry) => host._firmwareRecord.record(entry),
-        isDebugActive: () => host._debugBridge.hasAnySession || !!host.debugLaunch.liveSession()
+        isDebugActive: () => host._debugBridge.hasAnySession || !!host.debugLaunch.liveSession(),
+        yieldRtt: (operation) => host._rtt?.yieldForRestart(operation),
+        notifyRtt: () => host._rtt?.onSessionsChanged()
     });
     let bridgeRegistry = null;
     const storageDir = context.globalStorageUri?.fsPath;

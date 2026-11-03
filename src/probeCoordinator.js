@@ -6,6 +6,7 @@ const PROBE_OPERATIONS = Object.freeze([
     "liveStart",
     "chipInfo",
     "agentRead",
+    "rtt",
     "debugStart",
     "debugServer",
     "externalDebug",

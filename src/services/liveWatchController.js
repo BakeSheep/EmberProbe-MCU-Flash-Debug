@@ -944,6 +944,10 @@ class LiveWatchController {
         const cfg = this._vscode.workspace.getConfiguration("emberprobe");
         const configuredExecutable = cfg.get("openocdPath", "openocd");
         if (generation !== this._startGeneration) return;
+        // RTT yields its own probe hold and re-attaches by borrowing this session once it is running.
+        const rttYielded = this.host._rtt?.yieldForRestart("liveWatch");
+        if (rttYielded) await rttYielded;
+        if (generation !== this._startGeneration) return;
         const startingLease = this.host._probeCoordinator.acquire("liveStart");
         this._startLease = startingLease;
         let session = null;
@@ -1033,6 +1037,7 @@ class LiveWatchController {
             this._lease = startingLease.transition("liveWatch");
             this.setIntervalMs(intervalMs ?? this.intervalMs);
             this.host._postConsumerStatuses({ key: this.intent ? "sb.sampling" : "sb.stopped" });
+            this.host._rtt?.onSessionsChanged();
         } catch (error) {
             if (session && this.session === session) {
                 const closed = await session.stop().catch(() => false);
@@ -1104,6 +1109,7 @@ class LiveWatchController {
             if (this.session === session) this.session = null;
             this._startLease?.release();
             this._lease?.release();
+            this.host._rtt?.onSessionsChanged();
             this.closing = false;
             this.host._postConsumerStatuses(
                 preserveIntent && this.host._debugBridge.hasSession
