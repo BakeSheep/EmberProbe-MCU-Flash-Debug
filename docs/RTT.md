@@ -1,6 +1,6 @@
 # RTT 日志（开发中）
 
-> 状态：控制块定位、命令和格式化模块已完成；启动命令、终端和 Agent 接口尚未提供。设计与进度见 [RTT-AUDIT.md](RTT-AUDIT.md)。
+> 状态：控制块定位、命令、格式化与会话层（含 Worker 隔离与调试控制器透传）已完成；启动命令、终端和 Agent 接口尚未提供。设计与进度见 [RTT-AUDIT.md](RTT-AUDIT.md)。
 
 EmberProbe 通过 OpenOCD 内建的 RTT 支持读取 SEGGER RTT 输出，J-Link 和 CMSIS-DAP 用法相同。固件需要集成 SEGGER RTT（`SEGGER_RTT.c`），例如用 `SEGGER_RTT_printf(0, ...)` 或把 `printf` 重定向到通道 0。
 

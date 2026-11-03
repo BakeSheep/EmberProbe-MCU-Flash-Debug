@@ -234,6 +234,7 @@ function run(
                     "readOnce",
                     "writeAndVerify",
                     "peripheralTransaction",
+                    "rttControl",
                     "waitForIdle",
                     "waitForExit",
                     "stats"
