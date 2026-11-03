@@ -178,14 +178,21 @@ async function peripheralTransaction(session, request, timeoutMs = 5000) {
         throw Object.assign(new Error("Invalid or unsupported peripheral access width/range"), {
             code: "PERIPHERAL_ACCESS_UNSUPPORTED"
         });
-    const deadline = session.clock.now() + Math.min(Math.max(Number(timeoutMs) || 5000, 1), 5000);
-    const guard = { targetEpoch: session.targetEpoch, requireSampling: false, deadline };
+    // The budget is checked between OpenOCD commands; each command is bounded by the Tcl RPC timeout.
+    const budgetMs = Math.min(Math.max(Number(timeoutMs) || 5000, 1), 5000);
+    const deadline = session.clock.now() + budgetMs;
+    const guard = { targetEpoch: session.targetEpoch, requireSampling: false };
     await session._acquireExclusive(deadline);
     let attempted = null;
     let acknowledged = false;
     const output = { reads: [], writes: [] };
     const check = () => {
         session._assertReadGuard(guard);
+        if (session.clock.now() >= deadline)
+            throw Object.assign(new Error(`Peripheral transaction exceeded its ${budgetMs} ms budget`), {
+                code: "LIVE_READ_BUDGET_EXCEEDED",
+                details: { maxTransactionMs: budgetMs }
+            });
         if (session.stopped || !session.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
     };
     const read = async (item) => {

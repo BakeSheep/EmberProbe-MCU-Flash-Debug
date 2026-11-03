@@ -408,6 +408,57 @@ async function fixture(state) {
             await f.close();
         }
     }
+    // A write that finished before the state or SVD changed is returned as done, with the change beside it.
+    for (const change of ["state", "svd"]) {
+        const f = await fixture("running");
+        try {
+            const original = f.session.peripheralTransaction.bind(f.session);
+            f.session.peripheralTransaction = async (request, ...rest) => {
+                const result = await original(request, ...rest);
+                if (request.writes?.length) {
+                    if (change === "state") f.bridge.epoch++;
+                    else f.changeSvd();
+                }
+                return result;
+            };
+            const result = await f.service.writeFromUi({ writes: [{ target: "P.R.EN", value: "1" }] });
+            assert.strictEqual(result.results[0].verified, true);
+            assert.strictEqual(result.stateChangedAfterWrite.code, "DEBUG_STATE_CHANGED");
+            assert.strictEqual(f.bridge.peripheralBusy, false);
+            // A read is still refused once its values may be stale.
+            f.session.peripheralTransaction = async (...args) => {
+                const value = await original(...args);
+                f.bridge.epoch++;
+                return value;
+            };
+            await assert.rejects(f.service.read({ targets: ["P.R"] }), { code: "DEBUG_STATE_CHANGED" });
+        } finally {
+            await f.close();
+        }
+    }
+    {
+        const f = await fixture("none");
+        try {
+            const clock = new FakeClock();
+            const systemClock = f.session.clock;
+            f.session.clock = clock;
+            const send = f.session.tcl.sendChecked.bind(f.session.tcl);
+            f.session.tcl.sendChecked = async (command) => {
+                clock.time += 3000;
+                return send(command);
+            };
+            await assert.rejects(
+                f.session.peripheralTransaction({ reads: [{ address: base, size: 4 }] }),
+                (error) =>
+                    error.code === "LIVE_READ_BUDGET_EXCEEDED" &&
+                    /5000 ms budget/.test(error.message) &&
+                    error.details.maxTransactionMs === 5000
+            );
+            f.session.clock = systemClock;
+        } finally {
+            await f.close();
+        }
+    }
     console.log("Peripheral standalone/running/paused access, widths, approval, readback and generations passed");
 })().catch((error) => {
     console.error(error);

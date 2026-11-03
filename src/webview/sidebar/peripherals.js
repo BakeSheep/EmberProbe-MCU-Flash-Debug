@@ -127,11 +127,12 @@
             for (let offset = 0; offset < targets.length; offset += 32)
                 request("peripheralReadRequest", { targets: targets.slice(offset, offset + 32) });
         }
+        // Without a paused DAP session, registers are accessed only at natural 8/16/32-bit widths.
+        function widthAccessible(bits) {
+            return !state.debug.mode || state.debug.mode === "debug-paused" || [8, 16, 32].includes(bits);
+        }
         function readableNow(register) {
-            return (
-                safeToRead(register) &&
-                (!state.debug.mode || state.debug.mode === "debug-paused" || register.size <= 32)
-            );
+            return safeToRead(register) && widthAccessible(register.size);
         }
         // A standalone read starts a temporary OpenOCD that holds the probe, so it only follows a click.
         function automaticReads() {
@@ -243,10 +244,7 @@
             input.onblur = () => {
                 if (!rendering && draft.dirty && !draft.pending) commit();
             };
-            input.disabled =
-                !state.debug.canWrite ||
-                draft.pending ||
-                (state.debug.mode !== undefined && state.debug.mode !== "debug-paused" && registerBits > 32);
+            input.disabled = !state.debug.canWrite || draft.pending || !widthAccessible(registerBits);
             validation();
             controls.append(minus, input, plus);
             row.appendChild(controls);

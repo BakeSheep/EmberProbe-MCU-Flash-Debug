@@ -671,25 +671,31 @@ class SvdPeripheralService {
                         await checkModel();
                         return result;
                     },
+                    // An SVD change after a write is caught before the next item or reported beside the result.
                     write: async (...params) => {
                         await checkModel();
-                        const result = await transport.write(...params);
-                        try {
-                            await checkModel();
-                        } catch (error) {
-                            error.details = { ...error.details, writeAcknowledged: true, resultUnknown: false };
-                            throw error;
-                        }
-                        return result;
+                        return transport.write(...params);
                     }
                 };
                 const result = await scoped[method](...args);
-                transport.guard();
-                if ((await this.model()).svd.sha256 !== model.svd.sha256)
-                    throw Object.assign(new Error("SVD changed during peripheral access"), {
-                        code: "DEBUG_STATE_CHANGED"
-                    });
-                transport.guard();
+                try {
+                    transport.guard();
+                    if ((await this.model()).svd.sha256 !== model.svd.sha256)
+                        throw Object.assign(new Error("SVD changed during peripheral access"), {
+                            code: "DEBUG_STATE_CHANGED"
+                        });
+                    transport.guard();
+                } catch (error) {
+                    // Completed writes stay completed; the later change is reported beside them.
+                    if (!(write && result?.results)) throw error;
+                    return {
+                        ...result,
+                        stateChangedAfterWrite: {
+                            code: error.code || "DEBUG_STATE_CHANGED",
+                            message: String(error.message || error)
+                        }
+                    };
+                }
                 return result;
             },
             write,
@@ -1015,7 +1021,7 @@ class SvdPeripheralService {
                       )
                     : await this.debugBridge.writePausedMemory(item.addressNumber, item.bytes);
                 acknowledged = true;
-                guard();
+                if (!this.transport) guard();
                 const readBack = this.transport
                     ? {
                           value: response.readBack

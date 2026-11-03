@@ -52,5 +52,6 @@ Responses include access mode and generation. Write results include verification
 and verified. A completed write with verified: false may have been overwritten by firmware or hardware,
 or its readback may have failed. Never claim it was not written or automatically repeat it.
 A write timeout can leave the result unknown; report completed and attempted items before further action.
+A successful result with stateChangedAfterWrite means every write finished first; report the later change.
 
 On failure, parse the stderr diagnostic and report its `error.code`, `likelyCause`, `suggestedActions`, and details.

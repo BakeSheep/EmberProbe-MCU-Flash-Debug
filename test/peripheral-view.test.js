@@ -441,7 +441,7 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
         restored.send({
             type: "peripheralRegisters",
             name: "GPIOA",
-            registers: [register],
+            registers: [register, { ...register, name: "ODD", path: "GPIOA.ODD", size: 24, fields: [] }],
             requestGeneration: 1,
             requestSvdPath: "/device.svd"
         });
@@ -453,6 +453,13 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
         status("running", "debug-running", 3);
         await clock.advance(1000);
         assert.strictEqual(reads(), 2, "debug access still refreshes expanded registers");
+        const running = restored.messages.findLast((item) => item.type === "peripheralReadRequest");
+        assert.deepStrictEqual(running.targets, ["GPIOA.MODER"], "running access skips non-natural widths");
+        const inputs = restored.document.querySelectorAll(".peripheral-register .peripheral-editor-input");
+        assert.deepStrictEqual(
+            [...inputs].map((input) => input.disabled),
+            [false, true]
+        );
 
         status("running", "debug-running", 4);
         await clock.advance(1000);

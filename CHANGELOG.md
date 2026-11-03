@@ -28,6 +28,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   instead of starting a temporary OpenOCD when it opens or restores. The busy message for that temporary read no
   longer blames an Agent variable read. The sidebar keeps showing completed, readback-different or unknown write
   outcomes after the debug state changes.
+- 写入与回读完成后才发生的状态变化不再把成功写入报告为失败，改为附带 stateChangedAfterWrite；外设事务超时提示
+  给出实际的 5 秒预算；运行中与非调试状态的侧栏只读写 8/16/32 位寄存器。
+- A state change after every write and readback finished no longer turns a successful write into an error; the
+  result adds stateChangedAfterWrite. Peripheral transaction timeouts name their actual 5 s budget, and the
+  running/standalone sidebar only reads and writes 8/16/32-bit registers.
 
 ### 优化 / Improved
 

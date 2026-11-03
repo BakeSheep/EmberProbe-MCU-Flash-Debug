@@ -30,6 +30,11 @@ function failure(code, message) {
     return Object.assign(new Error(message), { code, retryable: false });
 }
 
+// Writes that already finished are reported as done; a later state change is a note, not a failure.
+function changedAfterWrite(error) {
+    return { code: error.code || "DEBUG_STATE_CHANGED", message: String(error.message || error) };
+}
+
 // Owns a complete SVD transaction, including the final original-value check and readback.
 // Connection creation/cleanup remains with the existing probe owner.
 class PeripheralAccessService {
@@ -168,7 +173,9 @@ class PeripheralAccessService {
                                     acknowledged = true;
                                     result = response.writes[0];
                                 }
-                                check();
+                                // A live transaction already read back under its own guard; later changes are
+                                // caught before the next item or reported beside the completed write.
+                                if (!transport.live) check();
                                 return result;
                             } catch (error) {
                                 if (acknowledged)
@@ -179,7 +186,12 @@ class PeripheralAccessService {
                     };
                     const result = await handler(transport);
                     completed = result;
-                    check();
+                    try {
+                        check();
+                    } catch (error) {
+                        if (!(write && result?.results)) throw error;
+                        return { ...result, access, stateChangedAfterWrite: changedAfterWrite(error) };
+                    }
                     return { ...result, access };
                 };
                 if (initial.mode === "debug-paused") {

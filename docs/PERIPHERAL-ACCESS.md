@@ -41,10 +41,14 @@ Responses add access mode and generation. Write results retain previous/written/
 verification: matched, different or unavailable. While running (including standalone), a completed write with
 different/unavailable readback reports verified: false; this does not prove the write did not happen. Paused DAP
 retains strict checking. Write timeouts/target changes report completed/attempted work and unknown outcomes.
-Never automatically resend a failed or unverified write.
+Never automatically resend a failed or unverified write. When the debug state or SVD changes only after every
+write and its readback finished, the result stays successful and adds stateChangedAfterWrite. Each running
+transaction has a 5 s budget checked between OpenOCD commands; each command is bounded by the Tcl RPC timeout.
 
 运行中回读不同或不可用时，写命令完成与校验结果分开报告，verified 为 false；不能据此认定没有写入。
 暂停 DAP 保留严格回读检查。写入超时或目标变化报告已完成项、尝试项及结果是否未知，不自动重试。
+写入与回读全部完成后才发生的调试状态或 SVD 变化不算失败，结果附带 stateChangedAfterWrite。运行中单个事务
+预算 5 秒，在 OpenOCD 命令之间检查；单条命令受 Tcl RPC 超时限制。
 
 ## Verification / 验证
 
