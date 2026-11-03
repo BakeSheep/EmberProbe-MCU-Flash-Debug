@@ -14,6 +14,7 @@ function args(argv) {
         "generate-candidate",
         "detect",
         "inspect",
+        "query",
         "prepare",
         "execute",
         "start",
@@ -41,7 +42,10 @@ function args(argv) {
                 "deletions",
                 "prefix",
                 "operation-id",
-                "request-id"
+                "request-id",
+                "operations",
+                "operations-file",
+                "candidate-hash"
             ].includes(key) &&
             argv[index + 1] !== undefined
         ) {
@@ -52,7 +56,7 @@ function args(argv) {
     }
     if (!result.action)
         throw new Error(
-            "Choose --detect, --inspect, --prepare, --execute, --start, --status, --check, --permission, --reset-permission or --cancel"
+            "Choose --detect, --inspect, --query, --prepare, --execute, --start, --status, --check, --permission, --reset-permission or --cancel"
         );
     if ((result.confirm || result.remember) && !["execute", "start"].includes(result.action))
         throw new Error("Confirmation applies only to --execute or --start");
@@ -72,6 +76,17 @@ function args(argv) {
         throw new Error("--operation-id applies only to --status or --cancel");
     if (result.deep && result.action !== "check") throw new Error("--deep applies only to --check");
     if (result.prefix && result.action !== "inspect") throw new Error("--prefix applies only to --inspect");
+    if (result.operations && result["operations-file"])
+        throw new Error("--operations and --operations-file are mutually exclusive");
+    if ((result.operations || result["operations-file"]) && !["query", "prepare"].includes(result.action))
+        throw new Error("--operations and --operations-file apply only to --query or --prepare");
+    if (result.action === "query" && !result.operations && !result["operations-file"])
+        throw new Error("--query requires --operations or --operations-file");
+    if ((result.operations || result["operations-file"]) && result.candidate)
+        throw new Error("--candidate is for .ioc projects; .ioc2 changes use --operations-file");
+    if (result["candidate-hash"] && !["execute", "start"].includes(result.action))
+        throw new Error("--candidate-hash applies only to --execute or --start");
+    if (result["candidate-hash"] && result.candidate) throw new Error("Use --candidate or --candidate-hash, not both");
     return result;
 }
 
@@ -135,6 +150,21 @@ function resolveRequestId(workspace, action, params, now = Date.now()) {
     fresh[fingerprint] = { requestId, createdAt: now };
     saveRequestRecords(workspace, fresh);
     return requestId;
+}
+
+// CubeMX2 operations: a JSON array of { command, args } (or one such object), inline or from a workspace file.
+function readOperations(workspace, opt) {
+    const text = opt.operations ?? fs.readFileSync(path.resolve(workspace, opt["operations-file"]), "utf8");
+    let value;
+    try {
+        value = JSON.parse(text);
+    } catch {
+        throw Object.assign(new Error('CubeMX2 operations must be JSON: [{ "command": ..., "args": {...} }]'), {
+            code: "CUBEMX2_OPERATION_INVALID",
+            retryable: false
+        });
+    }
+    return Array.isArray(value) ? value : [value];
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -208,15 +238,19 @@ async function main() {
             full: !!opt.full,
             ...(opt.prefix ? { prefix: opt.prefix } : {})
         };
+    } else if (action === "query") {
+        params = { operations: readOperations(workspace, opt) };
     } else if (action === "prepare") {
         params = {
             summary: !opt.full,
             full: !!opt.full,
-            ...(opt.candidate ? { candidatePath: path.resolve(workspace, opt.candidate) } : {})
+            ...(opt.candidate ? { candidatePath: path.resolve(workspace, opt.candidate) } : {}),
+            ...(opt.operations || opt["operations-file"] ? { operations: readOperations(workspace, opt) } : {})
         };
     } else if (action === "execute" || action === "start") {
         params = {
             ...(opt.candidate ? { candidatePath: path.resolve(workspace, opt.candidate) } : {}),
+            ...(opt["candidate-hash"] ? { candidateHash: opt["candidate-hash"] } : {}),
             ...(opt.confirm ? { confirmationId: opt.confirm } : {}),
             ...(opt.remember ? { remember: true } : {})
         };
@@ -255,7 +289,10 @@ async function main() {
         };
     }
 
-    const timeoutMs = action === "execute" || (action === "check" && opt.deep) ? 360000 : 30000;
+    const timeoutMs =
+        action === "execute" || action === "query" || (action === "check" && opt.deep) || params.operations
+            ? 360000
+            : 30000;
     let result = await call(workspace, methodName, params, timeoutMs);
     if (action === "start" || action === "execute") {
         try {
@@ -274,4 +311,4 @@ if (require.main === module)
         process.exitCode = 1;
     });
 
-module.exports = { args, resolveRequestId, requestFingerprint, finishRequest, pollDeepCheck };
+module.exports = { args, readOperations, resolveRequestId, requestFingerprint, finishRequest, pollDeepCheck };

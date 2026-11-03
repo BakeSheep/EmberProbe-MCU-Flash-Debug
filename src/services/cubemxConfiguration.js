@@ -109,7 +109,7 @@ class CubeMxConfiguration {
     }
     async iocCandidates() {
         const files = await this.vscode.workspace.findFiles(
-            "**/*.{ioc,IOC}",
+            "**/*.{ioc,IOC,ioc2,IOC2}",
             "{**/node_modules/**,**/.git/**,**/.agents/**,**/build/**,**/dist/**,**/Debug/**,**/Release/**,**/.emberprobe-cubemx-*/**}"
         );
         return (await Promise.all(files.map((file) => workspaceIoc(this.vscode, file.fsPath).catch(() => ""))))

@@ -134,6 +134,59 @@ const validator = new AjvJsonSchemaValidator();
         assert.strictEqual(tool("cubemx_prepare").result(trusted), trusted);
     });
 
+    await scenario("Route CubeMX2 operations, queries and candidate hashes", () => {
+        const tool = (name) => tools.TOOLS.find((item) => item.name === name);
+        const operations = [{ command: "peripherals enable", args: { peripheral: "USART1", override: true } }];
+        assert.deepStrictEqual(tool("cubemx_query").request({ operations }), {
+            method: "cubemx.query",
+            params: { operations },
+            timeoutMs: 360000
+        });
+        assert.ok(READ_ONLY_METHODS.has("cubemx.query"));
+        const schema = (name) => validator.getValidator(tool(name).inputSchema);
+        assert.strictEqual(schema("cubemx_query")({ operations }).valid, true);
+        for (const args of [
+            {},
+            { operations: [] },
+            { operations: [{ args: {} }] },
+            { operations: [{ command: "x", extra: 1 }] }
+        ])
+            assert.strictEqual(schema("cubemx_query")(args).valid, false, JSON.stringify(args));
+        assert.strictEqual(
+            schema("cubemx_query")({ operations: [{ command: "x", args: { a: { b: 1 } } }] }).valid,
+            false
+        );
+        const prepare = tool("cubemx_prepare").request({ operations }, {});
+        assert.deepStrictEqual(prepare, {
+            method: "cubemx.prepare",
+            params: { summary: true, full: false, operations },
+            timeoutMs: 360000
+        });
+        assert.strictEqual(tool("cubemx_prepare").request({}, {}).timeoutMs, 30000);
+        const candidateHash = "a".repeat(64);
+        const prepared = tool("cubemx_prepare").result({
+            generator: "cubemx2",
+            ioc: "/ws/c593.ioc2",
+            candidateHash,
+            confirmationId: "secret",
+            question: "Allow?"
+        });
+        assert.strictEqual(prepared.confirmationId, undefined);
+        assert.strictEqual(prepared.candidateHash, candidateHash);
+        assert.ok(prepared.nextStep.includes(candidateHash));
+        for (const name of ["cubemx_start", "cubemx_execute"]) {
+            assert.strictEqual(schema(name)({ candidateHash }).valid, true);
+            assert.strictEqual(schema(name)({ candidateHash: "ABC" }).valid, false);
+            const request = tool(name).request({ candidateHash, requestId: "r" });
+            assert.deepStrictEqual(request.params, { candidateHash, requestId: "r" });
+            assert.deepStrictEqual(tool(name).plan(request.params).params, {
+                summary: true,
+                full: false,
+                candidateHash
+            });
+        }
+    });
+
     await scenario("Translate arguments to Bridge requests", () => {
         const tool = (name) => tools.TOOLS.find((item) => item.name === name);
         // probeSerial passes through unchanged; write values are always strings

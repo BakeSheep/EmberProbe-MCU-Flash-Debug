@@ -53,6 +53,19 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - `mcu-variables` adds `--snapshot-csv --output <file>`: one read of an array or structure's current values written as
   CSV (a single array becomes a table with one row per element and one column per member; anything else becomes
   `variable,path,type,value` rows), ready for a spreadsheet.
+- Agent 支持 STM32CubeMX2（`.ioc2`）工程：按所选工程文件自动选择生成器（`.ioc` 用 CubeMX，`.ioc2` 用 CubeMX2）。
+  新增只读 `cubemx_query`（`mcu-cubemx --query`），`cubemx_prepare` 可在暂存副本上执行白名单内的 CubeMX2 CLI 配置命令
+  （外设、引脚、时钟、NVIC、DMA 等），确认后以 `candidateHash` 生成代码，沿用基线漂移检查、写回备份、清单与
+  `--check`。`main.c` 等用户文件存在时保持不变；EmberProbe 自启独立的 CubeMX2 后台，不接管用户打开的窗口，
+  不下载 pack。已在 Windows 上用 CubeMX2 1.2.0 与 STM32C593RET6 实测生成；Linux 与生成工程的编译未验证。
+- Agents support STM32CubeMX2 (`.ioc2`) projects: the selected project file chooses the generator (`.ioc` uses
+  CubeMX, `.ioc2` uses CubeMX2). The new read-only `cubemx_query` (`mcu-cubemx --query`) runs CubeMX2 queries, and
+  `cubemx_prepare` applies allowlisted CubeMX2 CLI configuration commands (peripherals, pins, clock, NVIC, DMA and
+  more) to a staged copy; generation after confirmation uses the returned `candidateHash` and keeps the baseline
+  drift check, writeback backup, manifest and `--check`. Existing user files such as `main.c` are kept. EmberProbe
+  starts its own CubeMX2 backend, never takes over a CubeMX2 window the user has open, and never downloads packs.
+  Generation was verified on Windows with CubeMX2 1.2.0 and an STM32C593RET6 project; Linux and building the
+  generated project are unverified.
 
 ### 优化 / Improved
 

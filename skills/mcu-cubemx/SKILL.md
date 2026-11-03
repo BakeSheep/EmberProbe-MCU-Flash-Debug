@@ -1,6 +1,6 @@
 ---
 name: mcu-cubemx
-description: Modify an existing STM32 .ioc configuration and regenerate initialization code with STM32CubeMX on Windows/Linux through EmberProbe. Use for pin, peripheral, clock or initialization changes and requested code regeneration.
+description: Modify an existing STM32 .ioc or CubeMX2 .ioc2 configuration and regenerate initialization code with STM32CubeMX or STM32CubeMX2 on Windows/Linux through EmberProbe. Use for pin, peripheral, clock or initialization changes and requested code regeneration.
 ---
 
 # CubeMX initialization code
@@ -43,5 +43,17 @@ Files EmberProbe keeps, and when they can be deleted:
 - `.emberprobe-cubemx-audit/` in the workspace holds the CLI's small request-ID records used for safe retries; delete it only when no `--start` request is unresolved. `.emberprobe-cubemx-*/` directories in a project root were left by EmberProbe 0.8.6 and earlier; they are safe to delete unless an operation reported `recoveryRequired` with a `backup` inside one.
 
 Links outside the generation scope, and tool directories such as `.claude`, `.agents`, `.vscode` and `.git`, are skipped. Links in CubeMX inputs or outputs (`Core`, `Drivers`, `Middlewares`, `cmake`, the `.ioc`, linker scripts and other generated root files), and any link that regenerated output would be written through, are rejected with `CUBEMX_LAYOUT_UNSUPPORTED`.
+
+## CubeMX2 (.ioc2) projects
+
+When the selected project is a `.ioc2`, EmberProbe uses STM32CubeMX2 (`emberprobe.cubemx2Path`) automatically. Do not write candidate files and do not edit the `.ioc2` (it is TOML with embedded JSON stores). Change it only through CubeMX2 operations, `[{ "command": "peripherals enable", "args": { "peripheral": "USART1", "mode": "Async" } }]`, with options written without dashes and flags as `true`:
+
+1. `--inspect` summarizes chip, peripherals and pins. `--query --operations '<json>'` (or `--operations-file ops.json`) runs read-only commands such as `peripherals list`, `peripherals view`, `pinout pin`, `clock get-clock-status` or `ide-project build-target list` on a staged copy; each result has `ok` and `data` or `error`. Look values up before changing them instead of guessing ids.
+2. `--prepare --operations-file ops.json` applies configuration commands to a staged copy, saves it, and returns `operationResults`, `clockStatus`, `candidateHash` and changes by category. Check `clockStatus` and the changes before asking the user. The workspace is not modified.
+3. After the user's answer, run `--start --candidate-hash <candidateHash> --confirm <confirmationId>`. Regeneration without configuration changes is `--prepare` without operations, then `--start --confirm <id>`.
+
+Unsupported commands, `generate`, `save`, project creation, pack installation and options such as `project-path` or `port` are rejected with `CUBEMX2_OPERATION_INVALID`. `CUBEMX2_PACK_MISSING` means the user must install the pack in CubeMX2; EmberProbe never downloads packs. `CUBEMX2_VERSION_MISMATCH` means the project's CubeMX2 version is not installed; do not migrate the project. CubeMX2 has no USER CODE markers: `main.c`, `main.h` and `user_modifiable/` files are user-owned and kept once they exist (edits are reported in `warnings`), while `generated/` and project files are CubeMX2-owned and covered by the drift check. Put application logic in user-owned or separate files. See docs/CUBEMX2-GENERATION.md.
+
+## .ioc projects
 
 Initialization configuration belongs in `.ioc`; application logic belongs in separate `.c/.h` files. Put necessary calls inside preserved `USER CODE` blocks. Do not hand-edit CubeMX-owned regions. The first version does not migrate CubeMX versions, install packages, change chips/toolchains, or support external generation paths, links inside the generation scope, hooks and custom templates.

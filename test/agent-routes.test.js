@@ -22,6 +22,7 @@ const { AgentService } = require("../src/services/agentService");
         "config.set": "_agentOps.setConfiguration",
         "cubemx.detect": "_cubemxConfiguration.detect",
         "cubemx.inspect": "_cubemxService.inspect",
+        "cubemx.query": "_cubemxService.query",
         "cubemx.prepare": "_cubemxService.prepare",
         "cubemx.candidate": "_cubemxService.generateCandidate",
         "cubemx.start": "_agentOps.startCubeMxOperation",

@@ -154,7 +154,10 @@ class CubeMxFirmware {
         return {
             target: this.context.workspaceState.get("mcu.mcuCore", ""),
             cubemxPath: this.vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
-            iocPath: this.context.workspaceState.get("mcu.iocPath", "")
+            // Firmware packages belong to legacy CubeMX; a CubeMX2 project is judged by the MCU target alone.
+            iocPath: /\.ioc2$/i.test(this.context.workspaceState.get("mcu.iocPath", ""))
+                ? ""
+                : this.context.workspaceState.get("mcu.iocPath", "")
         };
     }
     async refresh() {

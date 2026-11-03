@@ -4,7 +4,7 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { scenario } = require("./helpers/scenario");
-const { installation, discover } = require("../src/services/cubemx2Environment");
+const { installation, discover, applicationBundle } = require("../src/services/cubemx2Environment");
 
 (async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cubemx2-environment-")));
@@ -164,7 +164,16 @@ const { installation, discover } = require("../src/services/cubemx2Environment")
                 return { stdout: JSON.stringify(resolved) };
             };
             assert.strictEqual((await discover({ ...options, cubeCli, exec })).executable, officialLauncher);
+            // Since CubeMX2 1.2 the command is the bundled Node followed by bin.js.
+            const bundled = { ...resolved, command: [path.join(root, "node.exe"), resolved.command[2]] };
+            assert.strictEqual(
+                (await discover({ ...options, cubeCli, exec: async () => ({ stdout: JSON.stringify(bundled) }) }))
+                    .executable,
+                officialLauncher
+            );
             for (const value of [
+                JSON.stringify({ ...resolved, command: [resolved.command[2]] }),
+                JSON.stringify({ ...resolved, command: ["cube", "run", resolved.command[2]] }),
                 "not json",
                 JSON.stringify({ ...resolved, bundle: { ...manifest, version: "2.0.0" } }),
                 JSON.stringify({ ...resolved, bundle: { name: "other", version: "1.1.2" } }),
@@ -200,6 +209,75 @@ const { installation, discover } = require("../src/services/cubemx2Environment")
                 await writeJson(registryFile, registry);
             }
         );
+
+        await scenario(
+            "Open a registered bundle through its own executable when the root launcher is older",
+            async () => {
+                const newer = path.join(root, "upgraded/resources/stm32cubemx-application/1.2.0");
+                await launcher("upgraded", "stm32cubemx2-1.1.2.exe");
+                const own = await launcher("upgraded/resources/stm32cubemx-application/1.2.0/dist", "stm32cubemx2.exe");
+                await writeJson(path.join(newer, "CubeBundle.json"), { ...manifest, version: "1.2.0" });
+                const upgradedRoot = path.join(root, "upgraded-bundles");
+                await writeJson(path.join(upgradedRoot, ".config/external_bundles.json"), {
+                    externally_managed_bundles: [{ path: newer }]
+                });
+                const found = await discover({ ...options, env: { CUBE_BUNDLE_PATH: upgradedRoot } });
+                assert.strictEqual(found.executable, own);
+                assert.strictEqual(found.version, "1.2.0");
+            }
+        );
+
+        await scenario("Resolve the application bundle that matches a project's CubeMX2 version", async () => {
+            const install = path.join(root, "bundles-install");
+            const tool = { executable: await launcher("bundles-install", "stm32cubemx2-1.1.2.exe") };
+            const addBundle = async (
+                version,
+                exec = "${CUBE_BUNDLE_ROOT}/node/node.exe ${CUBE_BUNDLE_ROOT}/dist/bin.js"
+            ) => {
+                const directory = path.join(install, "resources/stm32cubemx-application", version);
+                for (const file of ["dist/stm32cubemx2.exe", "dist/bin.js", "node/node.exe"])
+                    await launcher(path.relative(root, path.join(directory, path.dirname(file))), path.basename(file));
+                await writeJson(path.join(directory, "CubeBundle.json"), {
+                    name: "stm32cubemx-application",
+                    version,
+                    variables: { CUBE_DCM: "${CUBE_BUNDLE_ROOT}/dcm.json", lower: "x", OTHER: 1 },
+                    export: ["CUBE_DCM", "lower", "OTHER", "MISSING"],
+                    commands: [{ name: "mx", exec }]
+                });
+                return directory;
+            };
+            await assert.rejects(applicationBundle(tool, "1.2.0", { platform: "win32" }), {
+                code: "CUBEMX2_BUNDLE_MISSING"
+            });
+            const older = await addBundle("1.1.2");
+            const newer = await addBundle("1.10.0");
+            await addBundle("1.3.0", "${CUBE_BUNDLE_ROOT}/../../escape/node.exe ${CUBE_BUNDLE_ROOT}/dist/bin.js");
+            await addBundle("1.4.0", "node ${CUBE_BUNDLE_ROOT}/dist/bin.js extra");
+            const selected = await applicationBundle(tool, "1.1.2", { platform: "win32" });
+            assert.deepStrictEqual(selected, {
+                directory: older,
+                version: "1.1.2",
+                backend: path.join(older, "dist", "stm32cubemx2.exe"),
+                node: path.join(older, "node", "node.exe"),
+                cli: path.join(older, "dist", "bin.js"),
+                env: { CUBE_DCM: older + "/dcm.json" }
+            });
+            assert.strictEqual((await applicationBundle(tool, "", { platform: "win32" })).directory, newer);
+            await assert.rejects(applicationBundle(tool, "1.3.0", { platform: "win32" }), (error) => {
+                assert.strictEqual(error.code, "CUBEMX2_VERSION_MISMATCH");
+                assert.deepStrictEqual(error.details.installed, ["1.10.0", "1.1.2"]);
+                return true;
+            });
+            // A launcher inside a bundle's dist directory uses that bundle.
+            const inside = await applicationBundle(
+                { executable: path.join(older, "dist", "stm32cubemx2.exe") },
+                "1.1.2",
+                { platform: "win32" }
+            );
+            assert.strictEqual(inside.directory, older);
+            await fs.rm(path.join(older, "node", "node.exe"));
+            await assert.rejects(applicationBundle(tool, "1.1.2", { platform: "win32" }), { code: "ENOENT" });
+        });
 
         await scenario("Accept executable Linux launchers and avoid Windows discovery commands", async () => {
             const file = await launcher("linux/STM32CubeMX2", "stm32cubemx2-1.1.2");

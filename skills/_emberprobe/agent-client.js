@@ -465,6 +465,7 @@ const DIAGNOSTICS = {
 // resend automatically. Unknown methods are treated as state-changing.
 const READ_ONLY_METHODS = new Set([
     "cubemx.inspect",
+    "cubemx.query",
     "config.get",
     "probe.list",
     "elf.analyze",

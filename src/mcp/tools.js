@@ -57,6 +57,22 @@ const variableItem = {
 };
 const variables = { type: "array", items: variableItem, minItems: 1, maxItems: 64, description: "Variables to read." };
 const toSpecs = (items) => (items || []).map((item) => (typeof item === "string" ? { name: item } : item));
+// One allowlisted CubeMX2 CLI command; EmberProbe adds the project path and backend port itself.
+const cubemx2Operation = object(
+    {
+        command: str("CubeMX2 command, e.g. 'peripherals enable' or 'clock get-clock-status'"),
+        args: {
+            type: "object",
+            additionalProperties: { type: ["string", "number", "boolean"] },
+            description:
+                "Options without leading dashes, e.g. { peripheral: 'USART1', mode: 'Async' }; flags take true."
+        }
+    },
+    ["command"]
+);
+const cubemx2CandidateHash = str(".ioc2 only: candidateHash returned by cubemx_prepare with operations", {
+    pattern: "^[0-9a-f]{64}$"
+});
 const permissionKinds = { kind: str("Permission store.", { enum: ["flash", "variables", "cubemx"] }) };
 const PERMISSION_METHODS = {
     flash: "flash.permission",
@@ -573,7 +589,8 @@ const TOOLS = [
         name: "cubemx_detect",
         toolset: "cubemx",
         title: "Detect STM32CubeMX",
-        description: "Report the configured STM32CubeMX executable and version.",
+        description:
+            "Report the configured STM32CubeMX executable and version, and STM32CubeMX2 under cubemx2. The selected project file decides: .ioc uses CubeMX, .ioc2 uses CubeMX2.",
         methods: ["cubemx.detect"],
         inputSchema: object(),
         request: () => ({ method: "cubemx.detect" })
@@ -581,14 +598,36 @@ const TOOLS = [
     {
         name: "cubemx_inspect",
         toolset: "cubemx",
-        title: "Inspect the .ioc project",
-        description: "Summarize the CubeMX project, or list full key/values filtered by prefix.",
+        title: "Inspect the .ioc/.ioc2 project",
+        description:
+            "Summarize the CubeMX project, or list full key/values filtered by prefix (.ioc2: internal settings files by path prefix).",
         methods: ["cubemx.inspect"],
         inputSchema: object({ full: bool("Return all keys"), prefix: str("Key prefix filter") }),
         request: (args) => ({
             method: "cubemx.inspect",
             params: { summary: !args.full, full: !!args.full, ...(args.prefix ? { prefix: args.prefix } : {}) }
         })
+    },
+    {
+        name: "cubemx_query",
+        toolset: "cubemx",
+        title: "Query a CubeMX2 project",
+        description:
+            "Run read-only STM32CubeMX2 CLI commands (peripherals, pinout, clock, nvic, dma, exti, middleware, utilities, sw-config, ide-project) on a staged copy of the selected .ioc2. Each operation is { command: 'peripherals view', args: { peripheral: 'USART1' } }.",
+        methods: ["cubemx.query"],
+        inputSchema: object(
+            {
+                operations: {
+                    type: "array",
+                    minItems: 1,
+                    maxItems: 64,
+                    items: cubemx2Operation,
+                    description: "Read-only commands, run in order."
+                }
+            },
+            ["operations"]
+        ),
+        request: (args) => ({ method: "cubemx.query", params: { operations: args.operations }, timeoutMs: 360000 })
     },
     {
         name: "cubemx_status",
@@ -603,16 +642,29 @@ const TOOLS = [
         name: "cubemx_prepare",
         toolset: "cubemx",
         title: "Prepare CubeMX generation",
-        description: "Validate the project or a candidate .ioc and summarize what generation would change.",
+        description:
+            "Validate the project or a candidate .ioc and summarize what generation would change. For .ioc2, pass CubeMX2 operations instead; they run on a staged copy and the result's candidateHash identifies the candidate for cubemx_start.",
         methods: ["cubemx.prepare"],
-        inputSchema: object({ full: bool("Full report"), candidatePath: str("Candidate .ioc path") }),
+        inputSchema: object({
+            full: bool("Full report"),
+            candidatePath: str("Candidate .ioc path"),
+            operations: {
+                type: "array",
+                minItems: 1,
+                maxItems: 64,
+                items: cubemx2Operation,
+                description: ".ioc2 only: CubeMX2 configuration commands, applied in order."
+            }
+        }),
         request: (args, context) => ({
             method: "cubemx.prepare",
             params: {
                 summary: !args.full,
                 full: !!args.full,
-                ...(args.candidatePath ? { candidatePath: workspacePath(context, args.candidatePath) } : {})
-            }
+                ...(args.candidatePath ? { candidatePath: workspacePath(context, args.candidatePath) } : {}),
+                ...(args.operations ? { operations: args.operations } : {})
+            },
+            timeoutMs: args.operations ? 360000 : 30000
         }),
         result: withoutApproval
     },
@@ -656,6 +708,7 @@ const TOOLS = [
         destructive: true,
         inputSchema: object({
             candidatePath: str("Candidate .ioc path"),
+            candidateHash: cubemx2CandidateHash,
             requestId: str("Idempotency key"),
             ...confirmation
         }),
@@ -672,6 +725,7 @@ const TOOLS = [
         destructive: true,
         inputSchema: object({
             candidatePath: str("Candidate .ioc path"),
+            candidateHash: cubemx2CandidateHash,
             requestId: str("Idempotency key"),
             ...confirmation
         }),
@@ -697,7 +751,7 @@ function cubemxRequest(method, args, context, timeoutMs = 30000) {
     if (args.candidatePath) {
         params.candidatePath = workspacePath(context, args.candidatePath);
         params.candidateHash = candidateHash(params.candidatePath);
-    }
+    } else if (args.candidateHash) params.candidateHash = args.candidateHash;
     // One tool call (including the repeat after confirmation) reuses one requestId so the Bridge can deduplicate.
     params.requestId = args.requestId || crypto.randomUUID();
     return { method, params, timeoutMs };
@@ -713,7 +767,9 @@ function cubemxPlan(params) {
             full: false,
             ...(params.candidatePath
                 ? { candidatePath: params.candidatePath, candidateHash: params.candidateHash }
-                : {})
+                : params.candidateHash
+                  ? { candidateHash: params.candidateHash }
+                  : {})
         },
         timeoutMs: 30000,
         context: params.candidatePath ? { candidatePath: params.candidatePath } : {}
@@ -727,8 +783,9 @@ function withoutApproval(result) {
     const { confirmationId: _id, expiresAt: _expiresAt, choices: _choices, question: _question, ...rest } = result;
     return {
         ...rest,
-        nextStep:
-            "To apply this plan, call cubemx_execute or cubemx_start with the same candidatePath; that call asks the user for approval."
+        nextStep: rest.candidateHash
+            ? `To apply this plan, call cubemx_execute or cubemx_start with candidateHash ${rest.candidateHash}; that call asks the user for approval.`
+            : "To apply this plan, call cubemx_execute or cubemx_start with the same candidatePath; that call asks the user for approval."
     };
 }
 

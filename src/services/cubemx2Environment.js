@@ -4,7 +4,7 @@ const path = require("path");
 const os = require("os");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
-const { failure, supportedPlatform } = require("./cubemxEnvironment");
+const { failure, inside, supportedPlatform } = require("./cubemxEnvironment");
 const exec = promisify(execFile);
 const VERSION = "(\\d+\\.\\d+\\.\\d+(?:[-+][\\w.-]+)?)";
 const BUNDLE_NAME = "stm32cubemx-application";
@@ -67,11 +67,82 @@ async function registeredInstallation(directory, platform) {
         return null;
     const root = path.resolve(directory, "../../..");
     const suffix = platform === "win32" ? ".exe" : "";
-    for (const name of [`stm32cubemx2-${manifest.version}${suffix}`, `STM32CubeMX2${suffix}`]) {
-        const tool = await installation(path.join(root, name), { platform }).catch(() => null);
+    // An installer may keep only an older versioned launcher in its root; the bundle's own application
+    // executable opens the same CubeMX2 version.
+    for (const file of [
+        path.join(root, `stm32cubemx2-${manifest.version}${suffix}`),
+        path.join(root, `STM32CubeMX2${suffix}`),
+        path.join(directory, "dist", `stm32cubemx2${suffix}`)
+    ]) {
+        const tool = await installation(file, { platform }).catch(() => null);
         if (tool) return { ...tool, version: manifest.version, source: "cube-bundle" };
     }
     return null;
+}
+
+// Application bundles installed next to a launcher, or the bundle that contains it.
+async function bundleDirectories(executable) {
+    const parent = path.dirname(executable);
+    if (path.basename(parent) === "dist") return [path.dirname(parent)];
+    const base = path.join(parent, "resources", BUNDLE_NAME);
+    const entries = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(base, entry.name));
+}
+
+function substitute(value, root) {
+    return typeof value === "string" ? value.split("${CUBE_BUNDLE_ROOT}").join(root) : "";
+}
+
+// Resolve the backend, CLI and bundled Node of an installed application bundle, as data from CubeBundle.json.
+// version selects the bundle that matches a project; without it the newest bundle is used.
+async function applicationBundle(tool, version, options = {}) {
+    const platform = options.platform || process.platform;
+    const suffix = platform === "win32" ? ".exe" : "";
+    const bundles = [];
+    for (const directory of await bundleDirectories(tool.executable)) {
+        const manifest = await readJson(path.join(directory, "CubeBundle.json"));
+        if (
+            manifest?.name !== BUNDLE_NAME ||
+            typeof manifest.version !== "string" ||
+            !new RegExp(`^${VERSION}$`).test(manifest.version) ||
+            path.basename(directory) !== manifest.version
+        )
+            continue;
+        const command = (manifest.commands || []).find((entry) => entry?.name === "mx");
+        const parts = typeof command?.exec === "string" ? command.exec.trim().split(/\s+/) : [];
+        const [node, cli] = parts.map((part) => path.resolve(substitute(part, directory)));
+        if (
+            parts.length !== 2 ||
+            !inside(directory, node) ||
+            path.basename(cli) !== "bin.js" ||
+            !inside(directory, cli)
+        )
+            continue;
+        const env = {};
+        for (const key of Array.isArray(manifest.export) ? manifest.export : [])
+            if (/^[A-Z][A-Z0-9_]*$/.test(key) && typeof manifest.variables?.[key] === "string")
+                env[key] = substitute(manifest.variables[key], directory);
+        bundles.push({
+            directory,
+            version: manifest.version,
+            backend: path.join(directory, "dist", `stm32cubemx2${suffix}`),
+            node,
+            cli,
+            env
+        });
+    }
+    bundles.sort((a, b) => b.version.localeCompare(a.version, "en", { numeric: true }));
+    const selected = version ? bundles.find((bundle) => bundle.version === version) : bundles[0];
+    if (!selected)
+        throw failure(
+            bundles.length ? "CUBEMX2_VERSION_MISMATCH" : "CUBEMX2_BUNDLE_MISSING",
+            bundles.length
+                ? "Install the CubeMX2 version recorded in the .ioc2; automatic migration is disabled"
+                : "The configured CubeMX2 installation has no application bundle",
+            { required: version || "", installed: bundles.map((bundle) => bundle.version) }
+        );
+    for (const file of [selected.backend, selected.node, selected.cli]) await fs.access(file);
+    return selected;
 }
 
 function newest(installs) {
@@ -106,18 +177,19 @@ async function discoverOfficial(options, platform, env, home) {
         });
         const resolved = JSON.parse(result.stdout);
         const command = resolved.command;
+        // Cube CLI returns ["cube", "node", <bin.js>] up to CubeMX2 1.1, and [<bundled node>, <bin.js>] since 1.2.
+        const cli = Array.isArray(command) ? command[command.length - 1] : undefined;
         if (
             resolved.bundle?.name !== BUNDLE_NAME ||
             !Array.isArray(command) ||
-            command.length !== 3 ||
-            command[1] !== "node" ||
-            typeof command[2] !== "string" ||
-            !path.isAbsolute(command[2]) ||
-            path.basename(command[2]) !== "bin.js" ||
-            path.basename(path.dirname(command[2])) !== "dist"
+            !(command.length === 2 || (command.length === 3 && command[1] === "node")) ||
+            typeof cli !== "string" ||
+            !path.isAbsolute(cli) ||
+            path.basename(cli) !== "bin.js" ||
+            path.basename(path.dirname(cli)) !== "dist"
         )
             return null;
-        const tool = await registeredInstallation(path.resolve(command[2], "../.."), platform);
+        const tool = await registeredInstallation(path.resolve(cli, "../.."), platform);
         return tool?.version === resolved.bundle.version ? tool : null;
     } catch {
         return null;
@@ -211,4 +283,4 @@ async function discover(options = {}) {
     return newest(installs);
 }
 
-module.exports = { installation, discover };
+module.exports = { installation, discover, applicationBundle };

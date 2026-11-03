@@ -23,9 +23,10 @@ common installation directories, versioned directories and PATH, plus Windows de
 uninstall registry locations. Registry/manifest JSON reads are bounded to 2 MiB. Linux accepts
 an executable `stm32cubemx2` or `stm32cubemx2-<version>` launcher; macOS detection is currently unavailable.
 
-CubeMX2 configuration currently records its installation only. Existing `.ioc` inspection, firmware checks and code
-generation continue to use `emberprobe.cubemxPath`. Agent configuration reads include both paths, but Agents cannot
-change either executable path.
+The selected project file chooses the tool: `.ioc` projects use `emberprobe.cubemxPath`, and `.ioc2` projects use
+`emberprobe.cubemx2Path` for inspection, CLI queries, configuration changes and generation (see
+[CUBEMX2-GENERATION.md](CUBEMX2-GENERATION.md)). Firmware package checks in the sidebar apply to `.ioc` projects only.
+Agent configuration reads include both paths, but Agents cannot change either executable path.
 
 ## Generation safety
 

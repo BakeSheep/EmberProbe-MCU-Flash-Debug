@@ -172,8 +172,8 @@ async function workspaceIoc(vscode, value) {
     const realRoots = await Promise.all(roots.map((root) => fs.realpath(root.uri.fsPath)));
     if (!realRoots.some((root) => inside(root, file)))
         throw failure("PATH_OUTSIDE_WORKSPACE", ".ioc must be inside a workspace");
-    if (path.extname(file).toLowerCase() !== ".ioc" || !(await fs.stat(file)).isFile())
-        throw failure("INVALID_FILE_TYPE", "Select an existing .ioc file");
+    if (![".ioc", ".ioc2"].includes(path.extname(file).toLowerCase()) || !(await fs.stat(file)).isFile())
+        throw failure("INVALID_FILE_TYPE", "Select an existing .ioc or .ioc2 file");
     return file;
 }
 module.exports = {

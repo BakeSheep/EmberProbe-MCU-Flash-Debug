@@ -29,8 +29,15 @@ function createAgentRoutes(host, probes = listProbes) {
             };
         },
         "config.set": (params) => host._agentOps.setConfiguration(params.values || {}),
-        "cubemx.detect": () => host._cubemxConfiguration.detect(),
+        "cubemx.detect": async () => {
+            // Both generators are reported; the selected project file decides which one runs.
+            const cubemx2 = await host._cubemxConfiguration.detect("cubemx2");
+            const tool = await host._cubemxConfiguration.detect();
+            if (!tool && !cubemx2) return null;
+            return tool ? { ...tool, cubemx2: cubemx2 || null } : { cubemx: null, cubemx2 };
+        },
         "cubemx.inspect": (params) => host._cubemxService.inspect(params || {}),
+        "cubemx.query": (params) => host._cubemxService.query(params || {}),
         "cubemx.prepare": (params) => host._cubemxService.prepare(params || {}),
         "cubemx.candidate": (params) => host._cubemxService.generateCandidate(params || {}),
         "cubemx.start": (params) => host._agentOps.startCubeMxOperation(params || {}),

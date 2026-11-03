@@ -305,6 +305,12 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         assert.strictEqual(await workspaceIoc(v, ioc), ioc);
         await rejects(() => workspaceIoc(v, tool.executable), "PATH_OUTSIDE_WORKSPACE");
         assert.strictEqual(await workspaceIoc(v, ""), "");
+        // CubeMX2 projects are selected the same way; other files are not projects.
+        const ioc2 = path.join(project, "board.ioc2");
+        await fs.writeFile(ioc2, '["Project Description"]\n');
+        assert.strictEqual(await workspaceIoc(v, ioc2), ioc2);
+        await rejects(() => workspaceIoc(v, path.join(project, "app.c")), "INVALID_FILE_TYPE");
+        await fs.rm(ioc2);
         assert.strictEqual(state.get("mcu.iocPath"), undefined);
         assert.strictEqual(await ui.detectIoc(), ioc);
         v.workspace.findFiles = async () => [{ fsPath: ioc }, { fsPath: ioc }];

@@ -12,7 +12,7 @@ Use `scripts/config.js` from this skill directory. Never edit VS Code storage or
 - **MCP first**: if this session provides EmberProbe MCP tools (such as `config_get`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: reading or changing EmberProbe workspace configuration (ELF, debugger, MCU target, SVD, selected `.ioc`, sampling interval, Tcl port, sample history limit), and identifying the supported route for CubeMX and firmware package setup.
 - **Requires**: the EmberProbe Agent Bridge. No probe or hardware is needed.
-- **Preconditions**: read the current configuration before changing it; change only the fields the user explicitly requested; `openocdPath` and `cubemxPath` are read-only through the Bridge.
+- **Preconditions**: read the current configuration before changing it; change only the fields the user explicitly requested; `openocdPath`, `cubemxPath` and `cubemx2Path` are read-only through the Bridge.
 - **Side effects**: `--get` is read-only and never mutates configuration, bindings, or hardware; `--set` changes workspace configuration and immediately synchronizes the sidebar.
 - **Success evidence**: the normalized configuration returned by EmberProbe. A config read does not verify hardware, and a config write success does not prove a later debug or flash will start.
 
@@ -30,7 +30,7 @@ For failure handling, retry limits, cross-skill routing, and result scoping, rea
    node <skill-dir>/scripts/config.js --workspace <workspace> --set debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg
    ```
 
-3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `iocPath`, `transport`, `rtos`, `probeSerial`, `adapterSpeedKhz`, `sampleFrequencyHz`, legacy `sampleIntervalMs`, and `tclPort`. `sampleFrequencyHz` is the requested sampling rate (0.1–200 Hz); the actual rate may be lower on a slow probe. The experimental waveform "Max rate" (unlimited sampling) toggle is user-only and cannot be enabled through the Agent Bridge; sampling status may report `unlimitedActive`, `limitedBy` and `effectiveIntervalMs: 0` while it is on. `iocPath` selects an existing workspace `.ioc`; it does not edit its contents. `rtos` enables RTOS task awareness for debugging only; it is case-sensitive, `""` turns it off, and it applies at the next debug start. Use `mcu-cubemx` for initialization configuration and code generation. `openocdPath` and `cubemxPath` are read-only through the Agent Bridge; instruct the user to change executable paths in VS Code settings or the EmberProbe sidebar instead.
+3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `iocPath`, `transport`, `rtos`, `probeSerial`, `adapterSpeedKhz`, `sampleFrequencyHz`, legacy `sampleIntervalMs`, and `tclPort`. `sampleFrequencyHz` is the requested sampling rate (0.1–200 Hz); the actual rate may be lower on a slow probe. The experimental waveform "Max rate" (unlimited sampling) toggle is user-only and cannot be enabled through the Agent Bridge; sampling status may report `unlimitedActive`, `limitedBy` and `effectiveIntervalMs: 0` while it is on. `iocPath` selects an existing workspace `.ioc` (STM32CubeMX) or `.ioc2` (STM32CubeMX2); it does not edit its contents. `rtos` enables RTOS task awareness for debugging only; it is case-sensitive, `""` turns it off, and it applies at the next debug start. Use `mcu-cubemx` for initialization configuration and code generation. `openocdPath` and `cubemxPath` are read-only through the Agent Bridge; instruct the user to change executable paths in VS Code settings or the EmberProbe sidebar instead.
 4. Report the normalized configuration returned by EmberProbe. The extension validates paths, configuration names, numeric ranges, and synchronizes the sidebar immediately.
 5. On failure, parse the stderr JSON diagnostic and report its `error.code`, `likelyCause`, and `suggestedActions`. Do not guess a hardware or service cause for configuration-validation errors.
 
@@ -38,7 +38,7 @@ For failure handling, retry limits, cross-skill routing, and result scoping, rea
 
 ## CubeMX, IOC and firmware packages
 
-Select or clear the project file using `--set "iocPath=path/to/project.ioc"` or `--set "iocPath="`. Selection validates an existing file inside the workspace; it neither edits the IOC nor proves its CubeMX version or firmware package is installed. Quote the whole assignment for paths with spaces. The comma-separated `--set` format cannot represent a path containing a comma.
+Select or clear the project file using `--set "iocPath=path/to/project.ioc"` (or a `.ioc2`) or `--set "iocPath="`. Selection validates an existing file inside the workspace; it neither edits the IOC nor proves its CubeMX version or firmware package is installed. Quote the whole assignment for paths with spaces. The comma-separated `--set` format cannot represent a path containing a comma.
 
 `--get` returns `cubemxPath` and `iocPath`, but does not return firmware installation status. CubeMX is a global executable setting, not a writable workspace setting through this Skill. Use the sidebar or VS Code user setting `emberprobe.cubemxPath` to change it. Do not bypass `CONFIG_KEY_FORBIDDEN` by editing storage.
 
