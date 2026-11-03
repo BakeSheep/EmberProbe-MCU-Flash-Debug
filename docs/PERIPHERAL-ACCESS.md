@@ -13,12 +13,15 @@ Access itself never sends halt, reset or resume. Variable sampling need not be e
 Reuse an active sampling connection or the selected debug session's managed OpenOCD connection. Without either,
 obtain an exclusive lease, initialize a temporary connection and confirm exit before releasing ownership.
 Paused access retains the selected session's DAP path. Multicore groups and external GDB servers remain paused-only.
+Without debugging, the sidebar reads only after a click (register, peripheral expansion or refresh), because each
+read starts a temporary OpenOCD that holds the probe; flash and debug start are refused while it runs.
 
 Running Tcl access uses aligned 8/16/32-bit transfers at the SVD width, never widened RAM reads or write fallbacks.
 64-bit access remains paused DAP only. Read-side-effect, write-only, write-once and special modified-write
 restrictions remain in place. Missing SVD side-effect annotations cannot guarantee a harmless read.
 
 已有连接会被复用；否则申请独占租约并临时连接，确认退出后释放，不抢占其他任务。
+非调试时侧栏只在点击寄存器、展开外设或刷新后读取：每次读取都会临时启动 OpenOCD 并占用探针，期间烧录与调试启动会被拒绝。
 运行中按 SVD 的 8/16/32 位自然宽度访问，不扩大范围；64 位、多核共享组及外部服务器仍要求暂停。
 保留读清零等副作用和特殊写入语义限制。SVD 没有标注副作用，不等于硬件一定没有副作用。
 

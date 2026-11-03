@@ -6,6 +6,7 @@ const assert = require("assert");
 const { PeripheralViewService } = require("../src/services/peripheralViewService");
 const { getModernWebviewContent } = require("../src/modernView");
 const { render } = require("./helpers/render-webview");
+const { FakeClock } = require("./helpers/fake-clock");
 const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
 
 (async () => {
@@ -260,6 +261,17 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
     assert.strictEqual(posted[0].result.results[0].verified, true);
     await handleMessage({ type: "peripheralWriteRequest", target: "GPIOA.MODER.MODE0", value: "" });
     assert.strictEqual(posted[1].type, "peripheralError");
+    assert.strictEqual(posted[1].writeAcknowledged, false);
+    host._svdPeripheralService.writeFromUi = async () => {
+        throw Object.assign(new Error("Peripheral access target or state changed"), {
+            code: "DEBUG_STATE_CHANGED",
+            details: { writeAcknowledged: true, resultUnknown: false }
+        });
+    };
+    await handleMessage({ type: "peripheralWriteRequest", target: "GPIOA.MODER.MODE0", value: "0x1" });
+    assert.strictEqual(posted[2].type, "peripheralError");
+    assert.strictEqual(posted[2].writeAcknowledged, true, "the view learns the write already completed");
+    assert.strictEqual(posted[2].resultUnknown, false);
 
     await scenario("Batch peripheral reads without reloading or hiding per-target failures", async () => {
         const { SvdPeripheralService } = require("../src/services/svdPeripheralService");
@@ -405,6 +417,70 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
         } finally {
             liveView.close();
         }
+    }
+    // Standalone reads start a temporary OpenOCD, so only clicks read; write outcomes survive a state change.
+    const clock = new FakeClock();
+    const restored = render(getModernWebviewContent({}, "en"), { peripheralExpanded: ["GPIOA"] }, { clock });
+    try {
+        restored.document.getElementById("peripheralSection").open = true;
+        const status = (state, mode, generation) =>
+            restored.send({
+                type: "peripheralDebugStatus",
+                state,
+                mode,
+                generation,
+                epoch: 1,
+                canRead: true,
+                canWrite: true
+            });
+        const reads = () => restored.messages.filter((item) => item.type === "peripheralReadRequest").length;
+        const notice = () => restored.document.getElementById("peripheralStatus").textContent;
+        status("none", "standalone", 1);
+        restored.send({ type: "svdStatus", state: "configured", path: "/device.svd" });
+        restored.send({ type: "peripheralCatalog", ...catalog, requestGeneration: 1, requestSvdPath: "/device.svd" });
+        restored.send({
+            type: "peripheralRegisters",
+            name: "GPIOA",
+            registers: [register],
+            requestGeneration: 1,
+            requestSvdPath: "/device.svd"
+        });
+        status("none", "standalone", 2);
+        await clock.advance(1000);
+        assert.strictEqual(reads(), 0, "restored or refreshed standalone views do not connect the probe");
+        restored.document.getElementById("peripheralRefresh").click();
+        assert.strictEqual(reads(), 1, "an explicit refresh reads");
+        status("running", "debug-running", 3);
+        await clock.advance(1000);
+        assert.strictEqual(reads(), 2, "debug access still refreshes expanded registers");
+
+        status("running", "debug-running", 4);
+        await clock.advance(1000);
+        const before = reads();
+        const writeError = {
+            type: "peripheralError",
+            operation: "peripheralWriteRequest",
+            target: "GPIOA.MODER",
+            requestGeneration: 3,
+            requestSvdPath: "/device.svd",
+            message: "Peripheral access target or state changed"
+        };
+        restored.send({ ...writeError, writeAcknowledged: true, resultUnknown: false });
+        assert(notice().includes("Write command completed, then failed"), notice());
+        restored.send({ ...writeError, writeAcknowledged: false, resultUnknown: true });
+        assert(notice().includes("Write result unknown"), notice());
+        restored.send({
+            type: "peripheralWriteResult",
+            target: "GPIOA.MODER",
+            requestGeneration: 3,
+            requestSvdPath: "/device.svd",
+            result: { results: [{ register: "GPIOA.MODER", verified: false, verification: "unavailable" }] }
+        });
+        assert(notice().includes("readback is unavailable"), notice());
+        assert.strictEqual(reads(), before, "a stale write result does not read with the new generation");
+        restored.assertHealthy();
+    } finally {
+        restored.close();
     }
     console.log("Native peripheral tree, DAP read guards and value controls passed");
 })().catch((error) => {

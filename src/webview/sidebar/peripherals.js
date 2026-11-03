@@ -78,6 +78,8 @@
             warning: "",
             svdPath: "",
             pending: new Set(),
+            // Peripherals the user expanded before their registers arrived; read once they do.
+            readOnLoad: new Set(),
             drafts: new Map()
         };
         let rendering = false;
@@ -131,8 +133,12 @@
                 (!state.debug.mode || state.debug.mode === "debug-paused" || register.size <= 32)
             );
         }
-        function refreshExpanded() {
-            if (!section.open || !state.debug.canRead) return;
+        // A standalone read starts a temporary OpenOCD that holds the probe, so it only follows a click.
+        function automaticReads() {
+            return state.debug.mode !== "standalone";
+        }
+        function refreshExpanded(explicit = false) {
+            if (!section.open || !state.debug.canRead || (!explicit && !automaticReads())) return;
             const targets = [];
             for (const [name, registers] of state.children) {
                 if (!state.expanded.has(name)) continue;
@@ -314,8 +320,10 @@
                 if (opened) state.expanded.delete(peripheral.name);
                 else {
                     state.expanded.add(peripheral.name);
-                    if (!state.children.has(peripheral.name)) requestRegisters(peripheral.name);
-                    else if (state.debug.canRead) refreshExpanded();
+                    if (!state.children.has(peripheral.name)) {
+                        state.readOnLoad.add(peripheral.name);
+                        requestRegisters(peripheral.name);
+                    } else if (state.debug.canRead) refreshExpanded(true);
                 }
                 save();
                 render();
@@ -415,7 +423,13 @@
             state.pending.delete(message.name);
             state.children.set(message.name, message.registers || []);
             render();
-            if (section.open && state.expanded.has(message.name) && state.debug.canRead)
+            const requested = state.readOnLoad.delete(message.name);
+            if (
+                section.open &&
+                state.expanded.has(message.name) &&
+                state.debug.canRead &&
+                (requested || automaticReads())
+            )
                 requestReads(
                     (message.registers || [])
                         .filter(readableNow)
@@ -445,8 +459,9 @@
             }
             render();
         }
+        // A write's outcome is shown even after the target or state changed: the register may already be written.
         function onWrite(message) {
-            if (!currentResponse(message)) return;
+            const current = currentResponse(message);
             const draft = state.drafts.get(message.target);
             if (draft) {
                 draft.pending = false;
@@ -463,7 +478,7 @@
                 : "";
             render();
             const register = message.result?.results?.[0]?.register;
-            if (register) requestReads([register]);
+            if (register && current) requestReads([register]);
         }
         function onDebug(message) {
             const wasPaused = state.debug.canRead;
@@ -474,6 +489,7 @@
                 state.drafts.clear();
                 state.readings.clear();
                 state.pending.clear();
+                state.readOnLoad.clear();
                 state.warning = "";
             }
             render();
@@ -482,16 +498,26 @@
             if (changed && !state.catalog && state.svdPath) requestCatalog();
         }
         function onError(message) {
-            if (!currentResponse(message)) return;
-            if (message.operation === "peripheralRegistersRequest") state.pending.clear();
-            if (message.operation === "peripheralWriteRequest") {
+            const write = message.operation === "peripheralWriteRequest";
+            if (!write && !currentResponse(message)) return;
+            if (message.operation === "peripheralRegistersRequest") {
+                state.pending.clear();
+                state.readOnLoad.clear();
+            }
+            if (write) {
                 for (const [target, draft] of state.drafts) {
                     if (message.target && target !== message.target) continue;
                     draft.pending = false;
                     draft.awaitingRead = false;
                 }
             }
-            state.error = message.message || t("peripheral.failed");
+            const error = message.message || t("peripheral.failed");
+            state.error =
+                write && message.writeAcknowledged
+                    ? t("peripheral.writeDoneThenFailed", { error })
+                    : write && message.resultUnknown
+                      ? t("peripheral.writeResultUnknown", { error })
+                      : error;
             render();
         }
         function onSvdStatus(message) {
@@ -501,6 +527,7 @@
                 state.children.clear();
                 state.readings.clear();
                 state.pending.clear();
+                state.readOnLoad.clear();
                 state.drafts.clear();
                 state.error = "";
                 render();
@@ -511,6 +538,7 @@
                 state.children.clear();
                 state.readings.clear();
                 state.pending.clear();
+                state.readOnLoad.clear();
                 state.drafts.clear();
                 state.error = "";
                 render();
@@ -521,7 +549,7 @@
             state.query = filter.value.trim();
             render();
         };
-        refresh.onclick = refreshExpanded;
+        refresh.onclick = () => refreshExpanded(true);
         format.onclick = () => {
             state.mode = { hex: "dec", dec: "bin", bin: "hex" }[state.mode];
             save();

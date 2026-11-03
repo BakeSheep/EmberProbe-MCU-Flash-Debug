@@ -109,7 +109,13 @@ async function peripheralRequest({ host, post: send }, message) {
             operation,
             target: operation === "peripheralWriteRequest" ? message.target : undefined,
             code: error.code,
-            message: error.message || String(error)
+            message: error.message || String(error),
+            ...(operation === "peripheralWriteRequest"
+                ? {
+                      writeAcknowledged: error.details?.writeAcknowledged === true,
+                      resultUnknown: error.details?.resultUnknown === true
+                  }
+                : {})
         });
     }
 }

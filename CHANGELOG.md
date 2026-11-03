@@ -22,6 +22,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   write approval and special-register restrictions, and report readback separately from write completion.
   64-bit, shared-group and external-server access remains paused-only; see the board-specific acceptance record.
   See docs/PERIPHERAL-ACCESS.md.
+- 非调试状态下，外设视图只在点击寄存器、展开外设或刷新时读取，不再在打开或恢复视图时自动启动临时 OpenOCD；
+  临时读取占用探针时的提示不再误报为 Agent 读取变量。调试状态变化后，侧栏仍显示写入已完成、回读不同或结果未知。
+- Without debugging, the peripheral view reads only after a register click, peripheral expansion or refresh,
+  instead of starting a temporary OpenOCD when it opens or restores. The busy message for that temporary read no
+  longer blames an Agent variable read. The sidebar keeps showing completed, readback-different or unknown write
+  outcomes after the debug state changes.
 
 ### 优化 / Improved
 

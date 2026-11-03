@@ -344,7 +344,7 @@ module.exports = Object.freeze({
     "peripheral.expand": "Expand or collapse",
     "peripheral.loading": "Loading SVD peripherals…",
     "peripheral.enableHint": "Choose an SVD under Other Configuration to browse registers.",
-    "peripheral.noSession": "Read registers without starting debugging",
+    "peripheral.noSession": "Not debugging · select a register to read it (connects the probe briefly)",
     "peripheral.running": "Target running · access without halting",
     "peripheral.paused": "Target paused · select a register to read it",
     "peripheral.unavailable":
@@ -353,6 +353,10 @@ module.exports = Object.freeze({
         "Write command completed; readback differs. Firmware or hardware may have changed the register.",
     "peripheral.readbackUnavailable":
         "Write command completed; readback is unavailable. Do not repeat the write automatically.",
+    "peripheral.writeDoneThenFailed":
+        "Write command completed, then failed: {error}. The register may be written; do not repeat the write automatically.",
+    "peripheral.writeResultUnknown":
+        "Write result unknown: {error}. Read the register before acting; do not repeat the write automatically.",
     "peripheral.noMatches": "No matching peripherals",
     "peripheral.readRegister": "Read register",
     "peripheral.readSideEffect": "SVD marks this register as unsafe to read",
@@ -703,7 +707,7 @@ module.exports = Object.freeze({
     "msg.debugStartTimeout":
         "The debugger did not finish starting within {seconds} seconds. The session was stopped and OpenOCD was released. Check that GDB starts normally from a terminal.",
     "msg.downloadBusy": "A download is already running; please wait for it to finish",
-    "msg.agentReadBusy": "The Agent is reading variables; try again shortly",
+    "msg.agentReadBusy": "A temporary probe read (Agent or peripheral view) is in progress; try again shortly",
     "msg.debugBusy": "A debug session is starting; try again shortly",
     "msg.liveBusyForDownload":
         "Live watch is running; stop it before downloading (the probe can only be used by one OpenOCD at a time)",
@@ -722,7 +726,7 @@ module.exports = Object.freeze({
     "live.exitUnconfirmed": "OpenOCD exit is unconfirmed. The probe remains reserved; retry Stop.",
     "live.downloadRunning": "A download is running; live watch cannot start at the same time",
     "live.chipReading": "Reading chip info; start live watch later",
-    "live.agentReading": "The Agent is reading variables; try again shortly",
+    "live.agentReading": "A temporary probe read (Agent or peripheral view) is in progress; try again shortly",
     "live.agentStarting": "The Agent is starting temporary sampling…",
     "live.agentSampling": "Agent temporary sampling {current}/{total}",
     "live.agentDone": "Agent sampling completed; the probe was released",
