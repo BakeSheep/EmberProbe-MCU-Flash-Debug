@@ -22,30 +22,6 @@ const COMPAT_LAYERS = Object.freeze([
         sites: [{ file: "src/services/probeSelectionStore.js", marker: "LEGACY_SUCCESS_KEY" }]
     },
     {
-        id: "sample-interval-setting",
-        purpose: "Reads and accepts the old emberprobe.sampleIntervalMs setting in place of sampleFrequencyHz",
-        removeIn: "1.0.0",
-        sites: [
-            { file: "package.json", marker: '"emberprobe.sampleIntervalMs"' },
-            { file: "src/samplingFrequency.js", marker: "legacyInterval" },
-            { file: "src/services/configurationStore.js", marker: '"sampleIntervalMs"' },
-            { file: "src/extension.js", marker: '"sampleIntervalMs"' },
-            { file: "src/mcp/tools.js", marker: "sampleIntervalMs:" },
-            { file: "skills/mcu-config/SKILL.md", marker: "legacy `sampleIntervalMs`" },
-            { file: "test/e2e/suite/smoke.test.js", marker: '"sampleIntervalMs"' }
-        ]
-    },
-    {
-        id: "max-samples-setting",
-        purpose: "Keeps the deprecated emberprobe.maxSamples setting declared so existing user settings stay known",
-        removeIn: "1.0.0",
-        sites: [
-            { file: "package.json", marker: '"emberprobe.maxSamples"' },
-            { file: "test/e2e/suite/smoke.test.js", marker: '"maxSamples"' },
-            { file: "docs/LAYERED-SAMPLING.md", marker: "emberprobe.maxSamples" }
-        ]
-    },
-    {
         id: "mcp-workspace-binding-cleanup",
         purpose: "Removes EMBERPROBE_WORKSPACE that earlier releases wrote into user-level MCP client configuration",
         removeIn: "1.0.0",

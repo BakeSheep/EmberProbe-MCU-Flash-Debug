@@ -122,7 +122,7 @@ function vector(mi, name = "numbers", length = 250, type = "std::vector<int, std
         }),
         /read only/
     );
-    alias.session.config.enablePrettyPrinting = false;
+    alias.session.config.prettyPrintingMode = "raw";
     await alias.session.clearVariables();
     assert.strictEqual((await alias.evaluate("alias")).result, "{...}");
 

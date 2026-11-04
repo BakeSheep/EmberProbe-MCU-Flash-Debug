@@ -111,8 +111,6 @@ class DebugLaunch {
             const pretty = resolvePrettyPrinting(
                 configuration || {},
                 {
-                    enablePrettyPrinting: ownDebug.get("enablePrettyPrinting", true),
-                    prettyPrinterPath: ownDebug.get("prettyPrinterPath", ""),
                     prettyPrintingMode: configuredPrettyPrintingMode(ownDebug),
                     prettyPrinterFiles: ownDebug.get("prettyPrinterFiles", [])
                 },
@@ -755,7 +753,6 @@ class DebugLaunch {
             const pretty = resolvePrettyPrinting(
                 validated,
                 {
-                    enablePrettyPrinting: own.get("enablePrettyPrinting", true),
                     prettyPrintingMode: configuredPrettyPrintingMode(own),
                     prettyPrinterFiles: own.get("prettyPrinterFiles", [])
                 },

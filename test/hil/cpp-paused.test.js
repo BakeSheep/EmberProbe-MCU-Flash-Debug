@@ -17,7 +17,11 @@ async function run() {
     if (process.env.CPP_BOARD_TRANSPORT)
         await config.update("transport", process.env.CPP_BOARD_TRANSPORT, vscode.ConfigurationTarget.Workspace);
     if (process.env.CPP_BOARD_PROBE_SERIAL)
-        await config.update("probeSerial", process.env.CPP_BOARD_PROBE_SERIAL, vscode.ConfigurationTarget.Workspace);
+        await provider._connectedProbes.selection().set({
+            probe: process.env.CPP_BOARD_PROBE,
+            probeSerial: process.env.CPP_BOARD_PROBE_SERIAL,
+            source: "user"
+        });
     if (process.env.CPP_BOARD_ADAPTER_SPEED_KHZ)
         await config.update(
             "adapterSpeedKhz",
@@ -76,7 +80,7 @@ async function run() {
                 executable: process.env.CPP_BOARD_ELF,
                 gdbPath: process.env.CPP_BOARD_GDB,
                 rtos: process.env.CPP_BOARD_RTOS || "",
-                enablePrettyPrinting: true
+                prettyPrintingMode: "builtin"
             })
         );
         const deadline = Date.now() + 30000;

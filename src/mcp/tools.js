@@ -140,9 +140,7 @@ const TOOLS = [
                     iocPath: str("CubeMX .ioc path"),
                     transport: str("Transport", { enum: ["auto", "swd", "jtag", "hla_swd", "hla_jtag"] }),
                     rtos: str("OpenOCD RTOS awareness name, case-sensitive; empty disables"),
-                    probeSerial: str("Probe USB serial, kept verbatim"),
                     adapterSpeedKhz: int("Adapter clock in kHz", 0, 2147483647),
-                    sampleIntervalMs: { type: "number", minimum: 5, maximum: 10000 },
                     sampleFrequencyHz: { type: "number", minimum: 0.1, maximum: 200 },
                     tclPort: int("OpenOCD Tcl port", 1, 65535)
                 })

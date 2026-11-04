@@ -114,7 +114,7 @@ function createProvider() {
 
     // Configuration and Agent Bridge limits stay at 200 Hz; unlimited is a separate, UI-only flag.
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-    const properties = pkg.contributes.configuration.properties;
+    const properties = Object.assign({}, ...pkg.contributes.configuration.map((group) => group.properties));
     assert.strictEqual(properties["emberprobe.sampleFrequencyHz"].maximum, 200);
     assert.strictEqual(properties["emberprobe.experimental.unlimitedSampling.enabled"], undefined);
     await assert.rejects(provider._agentOps.controlSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });

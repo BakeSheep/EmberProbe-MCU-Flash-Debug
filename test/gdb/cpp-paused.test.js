@@ -90,7 +90,7 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         await mi.command("-gdb-set pagination off");
         await mi.command("-gdb-set confirm off");
         assert(
-            await initializePrettyPrinting(mi, { gdbPath: gdb, enablePrettyPrinting: true }, (message) =>
+            await initializePrettyPrinting(mi, { gdbPath: gdb, prettyPrintingMode: "builtin" }, (message) =>
                 output.push(message)
             ),
             output.join("")

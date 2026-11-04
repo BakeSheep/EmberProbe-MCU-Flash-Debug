@@ -508,7 +508,7 @@ try {
     jlinkSidebar.send({ type: "probeOperationStatus", operations: { targetScan: false } });
     assert.deepStrictEqual([refresh.disabled, refresh.classList.contains("scanning")], [false, false]);
 
-    // A missing saved probe stays selected as a card, and an override or custom script locks the list.
+    // A missing saved probe stays selected as a card, and a custom script locks the list.
     jlinkSidebar.send(
         list({
             state: "absent",
@@ -526,14 +526,6 @@ try {
     assert.strictEqual(doc.getElementById("probeDriverHome").contains(driver), true);
     assert.strictEqual(driver.hidden, true);
     assert.strictEqual(manual.hidden, true);
-    jlinkSidebar.send(list({ override: true, source: "setting" }));
-    assert.deepStrictEqual(cardTexts(), [
-        "由设置 emberprobe.probeSerial 指定；清空该设置后才能在此选择",
-        "J-Link | 1234"
-    ]);
-    assert.strictEqual(pick(segger).disabled, true);
-    assert.strictEqual(auto.hidden, true);
-    assert.strictEqual(driver.hidden, false, "an overridden J-Link can still switch its driver");
     jlinkSidebar.send(
         list({
             debugger: "board.cfg",

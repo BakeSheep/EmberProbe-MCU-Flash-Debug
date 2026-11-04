@@ -47,9 +47,20 @@ async function run() {
 
     const config = vscode.workspace.getConfiguration("emberprobe");
     assert.strictEqual(config.get("tclPort"), 6666);
-    assert.strictEqual(config.get("sampleIntervalMs"), 33);
     assert.strictEqual(config.get("sampleFrequencyHz"), 30);
-    assert.strictEqual(config.get("maxSamples"), 2000);
+    const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
+        Object.entries(group.properties)
+    );
+    assert.strictEqual(settings.length, 23);
+    for (const [key, setting] of settings)
+        assert.deepStrictEqual(
+            vscode.workspace.getConfiguration().inspect(key)?.defaultValue,
+            setting.default,
+            `${key} must be registered from its settings group`
+        );
+    for (const key of ["probeSerial", "sampleIntervalMs", "maxSamples", "enablePrettyPrinting", "prettyPrinterPath"])
+        assert.strictEqual(config.inspect(key)?.defaultValue, undefined, `${key} must no longer be registered`);
+    assert.strictEqual(config.get("prettyPrintingMode"), "builtin");
     console.log("✓ contributes bounded live-watch defaults");
 
     const { Worker } = require("worker_threads");

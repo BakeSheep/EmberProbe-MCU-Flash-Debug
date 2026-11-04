@@ -371,8 +371,10 @@ async function storageAndHost() {
     assert.deepStrictEqual(panels[0].messages.at(-1).icon, sample);
     panels[1].activate({ webviewPanel: { active: true } });
     assert.deepStrictEqual(panels[1].messages.at(-1).icon, sample);
-    const setting =
-        require("../package.json").contributes.configuration.properties["emberprobe.chartBackgroundIcon.enabled"];
+    const setting = Object.assign(
+        {},
+        ...require("../package.json").contributes.configuration.map((group) => group.properties)
+    )["emberprobe.chartBackgroundIcon.enabled"];
     assert.equal(setting.scope, "application");
     assert.equal(setting.ignoreSync, true);
     assert.ok(setting.markdownDescription.includes("command:mcu-vscode.selectChartBackgroundIcon"));

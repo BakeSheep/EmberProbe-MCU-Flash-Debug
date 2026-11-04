@@ -7,29 +7,11 @@ const { quote } = require("../debug/mi");
 const MODES = ["builtin", "gdb", "raw"];
 
 function configuredPrettyPrintingMode(settings) {
-    const inspection = settings.inspect?.("prettyPrintingMode");
-    if (
-        inspection &&
-        ![
-            "globalValue",
-            "workspaceValue",
-            "workspaceFolderValue",
-            "globalLanguageValue",
-            "workspaceLanguageValue",
-            "workspaceFolderLanguageValue"
-        ].some((key) => inspection[key] !== undefined)
-    )
-        return undefined;
     return settings.get("prettyPrintingMode");
 }
 
 function resolvePrettyPrinting(launch = {}, settings = {}, cwd = launch.cwd || process.cwd()) {
-    const enablePrettyPrinting = launch.enablePrettyPrinting ?? settings.enablePrettyPrinting ?? true;
-    const prettyPrinterPath = launch.prettyPrinterPath ?? settings.prettyPrinterPath ?? "";
-    if (typeof enablePrettyPrinting !== "boolean") throw new Error("enablePrettyPrinting must be a boolean");
-    if (typeof prettyPrinterPath !== "string") throw new Error("prettyPrinterPath must be a directory path");
-    const prettyPrintingMode =
-        launch.prettyPrintingMode ?? settings.prettyPrintingMode ?? (enablePrettyPrinting ? "builtin" : "raw");
+    const prettyPrintingMode = launch.prettyPrintingMode ?? settings.prettyPrintingMode ?? "builtin";
     if (!MODES.includes(prettyPrintingMode)) throw new Error("prettyPrintingMode must be builtin, gdb or raw");
     const files = launch.prettyPrinterFiles ?? settings.prettyPrinterFiles ?? [];
     if (
@@ -44,7 +26,7 @@ function resolvePrettyPrinting(launch = {}, settings = {}, cwd = launch.cwd || p
             if (!fs.statSync(file).isFile()) throw new Error(`Pretty-printer script is not a file: ${file}`);
         }
     }
-    return { enablePrettyPrinting, prettyPrinterPath, prettyPrintingMode, prettyPrinterFiles };
+    return { prettyPrintingMode, prettyPrinterFiles };
 }
 
 // Every mode disables implicit scripts and inferior function calls. The gdb branch re-asserts
@@ -64,8 +46,6 @@ async function initializePrettyPrinting(mi, config, report) {
     Object.assign(config, resolved);
     config.effectivePrettyPrintingMode = resolved.prettyPrintingMode;
     await harden(mi);
-    if (config.prettyPrinterPath)
-        report("prettyPrinterPath is deprecated and ignored. EmberProbe uses its built-in STL display.\n");
     if (resolved.prettyPrintingMode !== "gdb") return resolved.prettyPrintingMode === "builtin";
     try {
         const features = await mi.command("-list-features");

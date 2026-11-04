@@ -367,9 +367,8 @@ class StlDisplay {
         if (
             node.stlAttempted ||
             node.raw ||
-            (this.session.config.effectivePrettyPrintingMode ??
-                this.session.config.prettyPrintingMode ??
-                (this.session.config.enablePrettyPrinting === false ? "raw" : "builtin")) !== "builtin" ||
+            (this.session.config.effectivePrettyPrintingMode ?? this.session.config.prettyPrintingMode ?? "builtin") !==
+                "builtin" ||
             !node.item.name ||
             !node.item.type
         )

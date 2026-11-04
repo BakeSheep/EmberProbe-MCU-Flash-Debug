@@ -44,8 +44,7 @@ Do not turn a Windows instance-ID tail into `--probe-serial`: it may differ from
 descriptor (for example, `ATK_20190528` versus `ATK 20190528`). Use the explicitly supplied
 USB serial or leave it empty for a uniquely matched probe. Network backends are configured
 in the trusted interface script and do not require a local USB probe.
-An empty serial resolves in this order: the `emberprobe.probeSerial` setting, a serial in the
-interface script, the workspace's
+An empty serial resolves in this order: a serial in the interface script, the workspace's
 selected probe (`config.get` → `selectedProbe` with `source: "user"`: the probe the user picked in
 the sidebar), then a unique connected probe. `probe.list` marks that device with `selected: true`;
 only the user changes the selection, in the sidebar. A selected probe that is not connected is

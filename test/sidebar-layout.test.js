@@ -8,7 +8,10 @@ const { getModernWebviewContent } = require("../src/modernView");
 const configured = { elf: "app.elf", debugger: "interface/stlink.cfg", mcu: "stm32f4x.cfg" };
 
 scenario("Keep CubeMX executable paths in machine-wide User settings rather than the sidebar", () => {
-    const properties = require("../package.json").contributes.configuration.properties;
+    const properties = Object.assign(
+        {},
+        ...require("../package.json").contributes.configuration.map((group) => group.properties)
+    );
     for (const key of ["emberprobe.cubemxPath", "emberprobe.cubemx2Path"]) {
         assert.strictEqual(properties[key].scope, "machine");
         assert.strictEqual(properties[key].type, "string");

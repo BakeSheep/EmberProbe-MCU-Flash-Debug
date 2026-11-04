@@ -111,9 +111,6 @@ module.exports = Object.freeze({
     "probe.source.target-chip": "Chosen by target chip",
     "probe.inventoryUnavailable": "USB device list unavailable",
     "probe.scriptDecides": "The interface script selects its own device",
-    "probe.lockedBySetting": "Set by emberprobe.probeSerial; clear that setting to choose here",
-    "probe.selectionLocked":
-        "emberprobe.probeSerial already selects the probe; clear it to choose under Connected probe.",
     "probe.selectionGone": "The selected probe has been disconnected.",
     "probe.noDefaultConfig":
         "This kind of probe has no default interface script; choose its cfg under Select debugger first.",
@@ -124,10 +121,11 @@ module.exports = Object.freeze({
         "This J-Link's USB driver cannot be switched automatically: {reason}. Change it to WinUSB manually with SEGGER J-Link Configurator or Zadig.",
     "probe.refresh": "Rescan probes",
     "probe.driverSelectionMultiple":
-        "Several J-Links are connected, so the one to switch is unknown. Select one under Connected probe first, or set emberprobe.probeSerial.",
+        "Several J-Links are connected, so the one to switch is unknown. Select one under Connected probe first.",
     "probe.driverSelectionRememberedMissing":
-        "The selected J-Link ({serial}) is not connected. Select the current device under Connected probe, or set emberprobe.probeSerial.",
-    "probe.driverSelectionConfiguredMissing": "The J-Link set in emberprobe.probeSerial ({serial}) is not connected.",
+        "The selected J-Link ({serial}) is not connected. Select the current device under Connected probe.",
+    "probe.driverSelectionConfiguredMissing":
+        "The specified J-Link ({serial}) is not connected; select the current device under Connected probe.",
     "probe.driverSelectionNone": "No J-Link is connected.",
     "probe.driverSelectionInventory": "The USB device list cannot be read, so the J-Link driver cannot be changed now.",
     "probe.driverSelectionRequired": "Cannot determine which J-Link's driver to change.",

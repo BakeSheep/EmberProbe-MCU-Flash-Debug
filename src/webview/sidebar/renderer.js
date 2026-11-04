@@ -339,16 +339,10 @@ function renderConnectedProbes(m) {
     if (m.debugger !== undefined) showDebuggerConfig(m.debugger);
     const devices = m.devices || [];
     const selected = devices.find((device) => device.selected);
-    // A settings override or a custom interface script selects the device; the list only shows it.
-    const locked = !!m.override || m.state === "script";
+    // A custom interface script selects its own device; the list only shows it.
+    const locked = m.state === "script";
     connectedProbeLocked = locked;
-    const source = m.override
-        ? t("probe.lockedBySetting")
-        : m.state === "script"
-          ? t("probe.scriptDecides")
-          : m.source
-            ? t("probe.source." + m.source)
-            : "";
+    const source = m.state === "script" ? t("probe.scriptDecides") : m.source ? t("probe.source." + m.source) : "";
     const error = m.error ? (m.error.i18nKey ? t(m.error.i18nKey, m.error.i18nParams) : m.error.message) : "";
     const cards = [];
     const cardsById = new Map();

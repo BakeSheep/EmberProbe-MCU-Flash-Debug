@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 设置整理 / Settings cleanup
+
+- VS Code 设置缩减为 23 项，按 8 个分组排列，全部提供中英双语描述。删除 `probeSerial`、
+  `sampleIntervalMs`、`maxSamples`、`enablePrettyPrinting` 和 `prettyPrinterPath`；探针改由侧栏选择，
+  采样与 C++ 显示统一使用频率和显示模式设置。见 docs/SETTINGS.md。
+- Organize 23 VS Code settings into eight groups with Chinese and English descriptions. Remove `probeSerial`,
+  `sampleIntervalMs`, `maxSamples`, `enablePrettyPrinting` and `prettyPrinterPath`; select probes in the sidebar
+  and use frequency/display-mode settings for sampling and C++ variables. See docs/SETTINGS.md.
+
 ### 新增 / Added
 
 - Agent Skills 和 MCP 服务器移至与 MCU 配置并列的可折叠“Agent 配置”卡片，新增默认关闭的工作区

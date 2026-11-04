@@ -79,7 +79,7 @@ class ProbeConnectionService {
         this.stopMismatchListener();
     }
 
-    // Automatic mode: neither the probeSerial setting, the request nor a workspace pick for the interface script
+    // Automatic mode: neither an explicit request serial nor a workspace pick for the interface script
     // names the probe. A pick made under another interface script is not used, as preflight ignores it.
     isAutomatic(request, selection = this.getSuccessfulConnection()) {
         const probe = request.probe || request.debugger;
@@ -451,7 +451,7 @@ class ProbeConnectionService {
             .then(async () => {
                 if (connection.settingsIdentity && this.settingsChanged({ options: connection })) return;
                 // Only the user's pick names a probe. A success on that probe refreshes it; one on another device of
-                // the same interface script (a probeSerial setting) keeps the pick, as it keeps automatic mode's
+                // the same interface script (an explicit request serial) keeps the pick, as it keeps automatic mode's
                 // chip record. Otherwise only the interface script is remembered, so automatic mode stays on.
                 const current = this.getSuccessfulConnection();
                 const serial = connection.selectionIdentity?.anonymous ? "" : connection.probeSerial;

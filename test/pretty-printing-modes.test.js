@@ -10,18 +10,15 @@ const { validateDebugConfiguration } = require("../src/services/debugConfigurati
 
 (async () => {
     const script = path.resolve(__dirname, "fixtures/gdb-printers.py");
-    assert.strictEqual(resolvePrettyPrinting({ enablePrettyPrinting: false }).prettyPrintingMode, "raw");
-    assert.strictEqual(
-        resolvePrettyPrinting({ enablePrettyPrinting: false, prettyPrintingMode: "gdb" }).prettyPrintingMode,
-        "gdb"
-    );
+    assert.strictEqual(resolvePrettyPrinting().prettyPrintingMode, "builtin");
+    assert.strictEqual(resolvePrettyPrinting({ prettyPrintingMode: "gdb" }).prettyPrintingMode, "gdb");
     assert.strictEqual(
         resolvePrettyPrinting({ prettyPrintingMode: "raw" }, { prettyPrintingMode: "gdb" }).prettyPrintingMode,
         "raw"
     );
     assert.strictEqual(
         configuredPrettyPrintingMode({ inspect: () => ({ defaultValue: "builtin" }), get: () => "builtin" }),
-        undefined
+        "builtin"
     );
     assert.strictEqual(
         configuredPrettyPrintingMode({ inspect: () => ({ globalValue: "gdb" }), get: () => "gdb" }),

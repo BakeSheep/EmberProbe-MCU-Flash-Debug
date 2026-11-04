@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const { loadProvider } = require("./helpers/load-provider");
 const { ProbeInventoryService } = require("../src/services/probeInventoryService");
 const { SELECTED_PROBE_KEY, LEGACY_SUCCESS_KEY } = require("../src/services/probeSelectionStore");
@@ -173,7 +174,7 @@ async function main() {
     failWrite = false;
     await provider._connectedProbes.select("");
 
-    // Devices that cannot be chosen, and a list locked by a setting or a custom script.
+    // Devices that cannot be chosen, and a list locked by a custom script.
     await assert.rejects(provider._connectedProbes.select(7), { code: "PROBE_SELECTION_INVALID" });
     await assert.rejects(provider._connectedProbes.select("USB\\VID_1366&PID_0101\\gone"), {
         code: "PROBE_SELECTED_NOT_FOUND",
@@ -191,13 +192,12 @@ async function main() {
     });
     assert.strictEqual(state.get("mcu.debugger"), "board.cfg", "a custom script is never replaced");
     state.set("mcu.debugger", "jlink.cfg");
-    settings.probeSerial = "1234";
-    await assert.rejects(provider._connectedProbes.select(first.id), {
-        code: "PROBE_SELECTION_LOCKED",
-        i18nKey: "probe.selectionLocked"
+    settings.probeSerial = "5678";
+    await scenario("Obsolete probeSerial settings cannot lock or override sidebar selection", async () => {
+        await provider._connectedProbes.select(first.id);
+        assert.deepStrictEqual([shown().source, selectedId()], ["remembered", first.id]);
+        assert.strictEqual(state.get(SELECTED_PROBE_KEY).probeSerial, "1234");
     });
-    await provider._connectedProbes.refresh();
-    assert.deepStrictEqual([shown().override, shown().source, selectedId()], [true, "setting", first.id]);
     settings.probeSerial = "";
 
     // No interface script yet: picking a device chooses its family's script.
@@ -294,11 +294,14 @@ async function main() {
     provider._resolveOpenOcdPath = async () => "";
     assert.strictEqual(await provider._connectedProbes.readTargets(), false);
     assert.deepStrictEqual(requests, []);
-    // A setting names the probe: only that one is read.
+    // An obsolete setting cannot hide the other probes from target discovery.
     provider._resolveOpenOcdPath = async () => "openocd";
     settings.probeSerial = "5678";
     assert.strictEqual(await provider._connectedProbes.readTargets(), true);
-    assert.deepStrictEqual(requests, [["jlink.cfg", "5678", "stm32f4x.cfg", "openocd", "/work"]]);
+    assert.deepStrictEqual(
+        requests.map((request) => request[1]),
+        ["1234", "5678", ""]
+    );
     settings.probeSerial = "";
 
     // After a restart automatic mode has its recorded chip but no reading of which probe holds it: the list reads

@@ -113,7 +113,7 @@ Set `EMBERPROBE_HIL_CONFIRM=YES`, `RUNTIME_BOARD_ELF`, `RUNTIME_BOARD_GDB`, `RUN
 Copy `test/hil/smoke.example.json` to `test/hil/smoke.local.json` (git-ignored) and edit it; `--config` or `EMBERPROBE_SMOKE_CONFIG` selects another file. `defaults` apply to every profile. Paths that differ between platforms are `{ "win32": ..., "linux": ... }` objects; a plain Windows `elf` path is read from WSL through `/mnt/<drive>`. Per profile:
 
 - `name`: lowercase letters, digits and `-`; selects the profile with `--profile a,b`.
-- `probe`, `target`: interface and target `.cfg` names, as in the sidebar; `transport`, `probeSerial`, `adapterSpeedKhz`, `rtos` as in the extension settings. Set `probeSerial` whenever two probes of one family are connected.
+- `probe`, `target`: interface and target `.cfg` names, as in the sidebar; `transport`, `adapterSpeedKhz`, `rtos` as in the extension settings. `probeSerial` pins the dedicated test probe through workspace selection; set it whenever two probes of one family are connected.
 - `openocd`: OpenOCD executable; `toolchain`: ARM GNU `bin` directory containing `arm-none-eabi-gdb` and `arm-none-eabi-objdump`.
 - `elf`: the board's smoke firmware. It is copied into the temporary workspace before the run.
 - `variables.read`: globals that must read successfully; `variables.write`: one writable RAM scalar and a test value. The original value is read first and restored after the check.

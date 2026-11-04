@@ -94,12 +94,11 @@ class ConnectedProbes {
     view(inventory) {
         const debuggerCfg = this.host._context.workspaceState.get(CACHE_KEYS.debugger) || "";
         const mcuCore = this.host._context.workspaceState.get(CACHE_KEYS.mcuCore) || "";
-        const probeSerial = this._vscode.workspace.getConfiguration("emberprobe").get("probeSerial", "");
+        const probeSerial = "";
         const successfulConnection = this.selection().get();
         const service = this.host._probeConnectionService;
         const view = {
             debugger: debuggerCfg,
-            override: !!probeSerial,
             ...this.inventory().describe({ probe: debuggerCfg, probeSerial, successfulConnection }, inventory)
         };
         // Target chips come from operations; without the connection service there are none to show.
@@ -185,9 +184,9 @@ class ConnectedProbes {
         if (!service?.identifyTarget || !target || this.driverSwitching) return false;
         const { inventory } = await this.inventory().scan();
         const view = this.view(inventory);
-        // A custom interface script opens its own device; a setting or that script shows only the selected one.
+        // A custom interface script opens its own device; that script shows only the selected one.
         const scriptChooses = view.state === "script";
-        const listed = view.override || scriptChooses ? view.devices.filter((device) => device.selected) : view.devices;
+        const listed = scriptChooses ? view.devices.filter((device) => device.selected) : view.devices;
         const devices = new Map((inventory?.devices || []).map((device) => [device.id, device]));
         const probes = listed.flatMap((device) => {
             const probe = scriptChooses || device.matchesDebugger ? view.debugger : device.defaultConfig;
@@ -246,11 +245,6 @@ class ConnectedProbes {
         if (deviceId !== "" && !validation.connectedProbeId(deviceId))
             throw Object.assign(new Error("Invalid connected probe"), { code: "PROBE_SELECTION_INVALID" });
         this.host._assertConnectionEditable({ probeSerial: true });
-        if (this._vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""))
-            throw Object.assign(new Error("emberprobe.probeSerial selects the probe; clear it to choose another"), {
-                code: "PROBE_SELECTION_LOCKED",
-                i18nKey: "probe.selectionLocked"
-            });
         const store = this.selection();
         this.inventory().resetBackoff();
         if (!deviceId) {
@@ -404,7 +398,7 @@ class ConnectedProbes {
         const resolveTarget = (inventory) => {
             const resolved = resolveJlinkDriverTarget(
                 inventory,
-                this._vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
+                "",
                 this.selection().get(),
                 target?.deviceId ? target : null
             );

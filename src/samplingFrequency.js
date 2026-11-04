@@ -20,12 +20,6 @@ function frequencyHzFromInterval(intervalMs) {
 }
 
 function configuredFrequencyHz(configuration) {
-    const frequency = configuration.inspect?.("sampleFrequencyHz") || {};
-    const legacyInterval = configuration.inspect?.("sampleIntervalMs") || {};
-    for (const scope of ["workspaceFolderValue", "workspaceValue", "globalValue"]) {
-        if (frequency[scope] !== undefined) return normalizeFrequencyHz(frequency[scope]);
-        if (legacyInterval[scope] !== undefined) return frequencyHzFromInterval(legacyInterval[scope]);
-    }
     return normalizeFrequencyHz(configuration.get("sampleFrequencyHz", DEFAULT_FREQUENCY_HZ));
 }
 

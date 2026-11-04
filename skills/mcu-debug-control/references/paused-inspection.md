@@ -29,8 +29,7 @@ stable symbol identities, and `evaluateName` is not permission to execute an exp
 The session's `prettyPrintingMode`/`emberprobe.prettyPrintingMode` chooses `builtin` (default,
 no Python), `gdb` (only explicitly configured `prettyPrinterFiles`) or `raw`. Do not download
 printers, enable scripts or change the mode merely to read an object. Legacy
-`enablePrettyPrinting=false` selects raw only when a newer mode was not explicitly set;
-`prettyPrinterPath` is deprecated and ignored. Unsupported built-in ABI/layouts fall back to
+Unsupported built-in ABI/layouts fall back to
 physical fields; that is not evidence of firmware corruption. Virtual bases and dynamic
 types use paused GDB. The separate live runtime reader supports only its validated DWARF
 layouts and memory ranges; it does not provide task/frame-local context. Built-in STL targets

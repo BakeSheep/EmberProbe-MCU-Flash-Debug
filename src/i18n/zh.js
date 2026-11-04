@@ -104,8 +104,6 @@ module.exports = Object.freeze({
     "probe.source.target-chip": "按目标芯片选择",
     "probe.inventoryUnavailable": "无法读取 USB 设备清单",
     "probe.scriptDecides": "接口脚本自行选择设备，不能在此选择",
-    "probe.lockedBySetting": "由设置 emberprobe.probeSerial 指定；清空该设置后才能在此选择",
-    "probe.selectionLocked": "设置 emberprobe.probeSerial 已指定调试器；清空该设置后才能在“已连接调试器”中选择。",
     "probe.selectionGone": "所选调试器已断开。",
     "probe.noDefaultConfig": "这类调试器没有默认接口脚本，请先在“选择调试器”中选择对应的 cfg。",
     "probe.noSerialShort": "无序列号",
@@ -114,11 +112,9 @@ module.exports = Object.freeze({
     "probe.driverManualHint":
         "无法自动切换这台 J-Link 的 USB 驱动：{reason}。请用 SEGGER J-Link Configurator 或 Zadig 手动改为 WinUSB。",
     "probe.refresh": "重新检测调试器",
-    "probe.driverSelectionMultiple":
-        "检测到多台 J-Link，无法确定要切换哪一台。请先在“已连接调试器”中选择设备，或设置 emberprobe.probeSerial。",
-    "probe.driverSelectionRememberedMissing":
-        "已选择的 J-Link（{serial}）未连接。请在“已连接调试器”中选择当前设备，或设置 emberprobe.probeSerial。",
-    "probe.driverSelectionConfiguredMissing": "设置 emberprobe.probeSerial 指定的 J-Link（{serial}）未连接。",
+    "probe.driverSelectionMultiple": "检测到多台 J-Link，无法确定要切换哪一台。请先在“已连接调试器”中选择设备。",
+    "probe.driverSelectionRememberedMissing": "已选择的 J-Link（{serial}）未连接。请在“已连接调试器”中选择当前设备。",
+    "probe.driverSelectionConfiguredMissing": "指定的 J-Link（{serial}）未连接，请在“已连接调试器”中选择当前设备。",
     "probe.driverSelectionNone": "未检测到 J-Link。",
     "probe.driverSelectionInventory": "无法读取 USB 设备清单，暂时不能切换 J-Link 驱动。",
     "probe.driverSelectionRequired": "无法确定要切换驱动的 J-Link。",

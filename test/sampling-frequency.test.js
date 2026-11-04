@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const { loadProvider } = require("./helpers/load-provider");
 const {
     configuredFrequencyHz,
@@ -13,22 +14,13 @@ assert.strictEqual(intervalMsFromHz(200), 5);
 assert.strictEqual(frequencyHzFromInterval(100), 10);
 assert.strictEqual(normalizeFrequencyHz(500), 200);
 assert.strictEqual(configuredFrequencyHz({ get: (_key, fallback) => fallback }), 30);
-assert.strictEqual(
-    configuredFrequencyHz({
-        inspect: (key) => (key === "sampleIntervalMs" ? { workspaceValue: 50 } : {}),
-        get: (_key, fallback) => fallback
-    }),
-    20,
-    "An explicit legacy interval should remain effective until a frequency is saved"
-);
-assert.strictEqual(
-    configuredFrequencyHz({
-        inspect: (key) => (key === "sampleIntervalMs" ? { workspaceValue: 50 } : { globalValue: 60 }),
-        get: (_key, fallback) => fallback
-    }),
-    20,
-    "A workspace legacy setting should take priority over a global frequency setting"
-);
+scenario("Ignore obsolete intervals and read the effective frequency", () => {
+    const legacy = { sampleIntervalMs: 50 };
+    const configuration = { get: (key, fallback) => legacy[key] ?? fallback };
+    assert.strictEqual(configuredFrequencyHz(configuration), 30);
+    legacy.sampleFrequencyHz = 60;
+    assert.strictEqual(configuredFrequencyHz(configuration), 60);
+});
 
 (async () => {
     const settings = new Map();

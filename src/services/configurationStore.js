@@ -1,13 +1,9 @@
 "use strict";
 const fs = require("fs");
 const { normalizeTransport, normalizeRtos } = require("../openocdScripts");
-const { configuredFrequencyHz, frequencyHzFromInterval, intervalMsFromHz } = require("../samplingFrequency");
+const { configuredFrequencyHz } = require("../samplingFrequency");
 const path = require("path");
-const {
-    normalizeProbeSerial,
-    normalizeAdapterSpeed,
-    probeFamily
-} = require("../../skills/_emberprobe/probe-connection");
+const { normalizeAdapterSpeed } = require("../../skills/_emberprobe/probe-connection");
 const { ELF_EXTENSIONS } = require("../../skills/_emberprobe/target-detection");
 
 const ALLOWED_KEYS = new Set([
@@ -21,15 +17,12 @@ const ALLOWED_KEYS = new Set([
     "openocdPath",
     "transport",
     "rtos",
-    "probeSerial",
     "adapterSpeedKhz",
-    "sampleIntervalMs",
     "sampleFrequencyHz",
     "tclPort"
 ]);
 
 const NUMBER_RANGES = Object.freeze({
-    sampleIntervalMs: [5, 10000],
     sampleFrequencyHz: [0.1, 200],
     tclPort: [1, 65535]
 });
@@ -70,14 +63,13 @@ class ConfigurationStore {
             svd: this.context.workspaceState.get(this.cacheKeys.svdPath) || "",
             transport: cfg.get("transport", "auto"),
             rtos: cfg.get("rtos", ""),
-            probeSerial: cfg.get("probeSerial", ""),
+            probeSerial: "",
             adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
             samplingAdapterSpeedKhz: cfg.get("samplingAdapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
             cubemx2Path: cfg.get("cubemx2Path", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
-            sampleIntervalMs: intervalMsFromHz(configuredFrequencyHz(cfg)),
             sampleFrequencyHz: configuredFrequencyHz(cfg),
             tclPort: cfg.get("tclPort", 6666)
         };
@@ -123,7 +115,6 @@ class ConfigurationStore {
         const operations = [];
         await this.beforeChange(values);
         const state = this.context.workspaceState;
-        const family = probeFamily({ debugger: values.debugger ?? state.get(this.cacheKeys.debugger) });
         const stateKeys = { elf: "elfPath", svd: "svdPath", mcu: "mcuCore", debugger: "debugger", iocPath: "iocPath" };
         const addState = (key, value) => {
             const storageKey = this.cacheKeys[stateKeys[key]];
@@ -159,8 +150,6 @@ class ConfigurationStore {
                 addSetting(key, normalizeTransport(value));
             } else if (key === "rtos") {
                 addSetting(key, normalizeRtos(value));
-            } else if (key === "probeSerial") {
-                addSetting(key, normalizeProbeSerial(value, family));
             } else if (key === "adapterSpeedKhz") {
                 addSetting(key, normalizeAdapterSpeed(value));
             } else if (NUMBER_RANGES[key]) {
@@ -175,7 +164,6 @@ class ConfigurationStore {
                         code: "INVALID_CONFIG_VALUE"
                     });
                 addSetting(key, number);
-                if (key === "sampleIntervalMs") addSetting("sampleFrequencyHz", frequencyHzFromInterval(number));
             } else {
                 const executable = String(value || "").trim();
                 if (!executable || /[\r\n]/.test(executable))

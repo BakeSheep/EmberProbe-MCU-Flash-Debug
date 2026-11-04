@@ -71,7 +71,7 @@ function setup() {
     const adapter = new EmberDebugSession({ mi });
     adapter.setRunAsServer(true);
     adapter.ready = true;
-    adapter.config.enablePrettyPrinting = false;
+    adapter.config.prettyPrintingMode = "raw";
     const events = [];
     adapter.sendEvent = (event) => events.push(event);
     const frameId = adapter.handleFor({ kind: "frame", thread: 1, level: 0, file: "C:/src/a.cpp" });

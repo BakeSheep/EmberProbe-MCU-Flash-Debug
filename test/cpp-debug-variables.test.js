@@ -71,7 +71,7 @@ function setup(item = {}) {
     const adapter = new EmberDebugSession({ mi });
     adapter.setRunAsServer(true);
     adapter.ready = true;
-    adapter.config.enablePrettyPrinting = false;
+    adapter.config.prettyPrintingMode = "raw";
     adapter.sendEvent = () => {};
     const node = adapter.variableStore.root(
         {

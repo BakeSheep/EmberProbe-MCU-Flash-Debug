@@ -22,7 +22,11 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
     const attributes = manifest.contributes.debuggers[0].configurationAttributes;
     const documented = ["", ...launch.OPENOCD_RTOS_NAMES];
-    assert.deepStrictEqual(manifest.contributes.configuration.properties["emberprobe.rtos"].enum, documented);
+    assert.deepStrictEqual(
+        Object.assign({}, ...manifest.contributes.configuration.map((group) => group.properties))["emberprobe.rtos"]
+            .enum,
+        documented
+    );
     assert.deepStrictEqual(attributes.launch.properties.rtos.enum, documented);
     assert.deepStrictEqual(attributes.attach.properties.rtos.enum, documented);
     assert.strictEqual(normalizeFileIdentity("c:\\Work\\File.elf", "win32"), "C:/Work/File.elf");

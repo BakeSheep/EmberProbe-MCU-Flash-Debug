@@ -160,231 +160,276 @@
         }
       ]
     },
-    "configuration": {
-      "title": "EmberProbe 配置",
-      "properties": {
-        "emberprobe.openocdPath": {
-          "type": "string",
-          "default": "openocd",
-          "description": "默认 openocd 在 Windows/Linux x64 上自动使用内置版本；可填写 OpenOCD >= 0.12.0 的绝对路径以使用外部版本（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
-        },
-        "emberprobe.tclPort": {
-          "type": "number",
-          "default": 6666,
-          "description": "实时变量采样使用的 OpenOCD Tcl-RPC 端口；显式配置后固定使用该端口，未显式配置时自动选用随机临时端口（OpenOCD Tcl 端口无认证，建议保持随机）"
-        },
-        "emberprobe.sampleIntervalMs": {
-          "type": "number",
-          "default": 33,
-          "minimum": 5,
-          "maximum": 10000,
-          "description": "旧版实时变量采样目标间隔（毫秒）；未设置采样频率时仍兼容此设置"
-        },
-        "emberprobe.sampleFrequencyHz": {
-          "type": "number",
-          "default": 30,
-          "minimum": 0.1,
-          "maximum": 200,
-          "description": "波形窗口目标采样频率（Hz），默认 30Hz；插件侧栏固定目标 20Hz，实际频率受探针吞吐能力调控"
-        },
-        "emberprobe.maxSamples": {
-          "type": "number",
-          "default": 2000,
-          "minimum": 100,
-          "maximum": 360001,
-          "deprecationMessage": "此设置已弃用，波形历史统一保留最近 30 分钟；原配置值不会被删除。",
-          "description": "已弃用；不再限制波形历史点数"
-        },
-        "emberprobe.chartHistoryMaxMiB": {
-          "type": "number",
-          "default": 512,
-          "minimum": 64,
-          "maximum": 4096,
-          "description": "波形历史内存预算（MiB），包含冻结历史；耗尽时暂停全局采样并保留磁盘归档"
-        },
-        "emberprobe.samplingArchiveMaxMiB": {
-          "type": "number",
-          "default": 1024,
-          "minimum": 64,
-          "maximum": 102400,
-          "description": "当前扩展会话的自动采样历史最大磁盘占用（MiB），修改立即生效（调高后已写满停止的采样可重新开始），退出时自动删除"
-        },
-        "emberprobe.cubemxPath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX). Configure in User settings; shared by all workspaces on this machine. Leave empty for automatic detection."
-        },
-        "emberprobe.cubemx2Path": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "STM32CubeMX2 launcher path (for example stm32cubemx2-1.1.2.exe). Configure in User settings; shared by all workspaces on this machine. Leave empty to detect through the official Cube bundle registration or Cube CLI, then installation directories, PATH and Windows shortcuts."
-        },
-        "emberprobe.probeSerial": {
-          "type": "string",
-          "default": "",
-          "description": "探针 USB 序列号：适用于支持序列号选择的 J-Link、CMSIS-DAP、ST-Link、XDS110、Nu-Link、TI-ICDI、FTDI/FT232R 和 VSLLINK 后端。保留大小写、前导零及内部空格；J-Link 使用十进制整数。留空时使用侧栏“已连接调试器”中点选的设备，未点选时自动选择（同类型多台时按目标芯片区分）；无可靠序列号仅允许唯一设备，Agent 写入每次确认。TCP 主机及端口在接口脚本中配置。"
-        },
-        "emberprobe.adapterSpeedKhz": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 2147483647,
-          "default": 0,
-          "description": "调试链路时钟（kHz）；非零值同时限制 target 复位事件的提速，保留事件中的必要降速，并作为 SWD 烧录时钟。0 使用脚本默认值，烧录时按探针能力提速（失败自动降回）；不是变量采样频率。"
-        },
-        "emberprobe.samplingAdapterSpeedKhz": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 2147483647,
-          "default": 0,
-          "description": "独立采样的调试链路时钟（kHz）；0 沿用 adapterSpeedKhz。非零值仅用于独立采样连接（同样限制复位事件提速），调试、烧录和变量采样频率不变；修改后自动重连独立采样。"
-        },
-        "emberprobe.transport": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "swd",
-            "jtag",
-            "hla_swd",
-            "hla_jtag"
-          ],
-          "default": "auto",
-          "description": "高级覆盖：OpenOCD 传输协议。J-Link 为 auto 时，已知 Cortex-M 目标使用 SWD，其他目标采用接口脚本默认协议；不自动切换重试。"
-        },
-        "emberprobe.rtos": {
-          "type": "string",
-          "enum": [
-            "",
-            "auto",
-            "none",
-            "FreeRTOS",
-            "ThreadX",
-            "chibios",
-            "Chromium-EC",
-            "eCos",
-            "embKernel",
-            "linux",
-            "mqx",
-            "nuttx",
-            "RIOT",
-            "uCOS-III",
-            "Zephyr"
-          ],
-          "default": "",
-          "description": "高级覆盖：调试时让 OpenOCD 感知的 RTOS（名称区分大小写）。留空表示关闭（默认），调用栈保持单线程；填写后调用栈显示 RTOS 任务，栈帧、变量与单步都绑定到对应任务。仅作用于调试模式，在 target 配置加载后、init 之前写入当前 target，因此改动在下次启动调试时生效；调试会话内的“重启”会复用同一个 OpenOCD 服务，不会重新配置，需停止后重新启动。launch.json 的 rtos 优先于此设置。"
-        },
-        "emberprobe.gdbPath": {
-          "type": "string",
-          "default": "",
-          "description": "ARM GDB executable path."
-        },
-        "emberprobe.armToolchainPath": {
-          "type": "string",
-          "default": "",
-          "description": "ARM toolchain bin directory."
-        },
-        "emberprobe.armToolchainPrefix": {
-          "type": "string",
-          "default": "",
-          "description": "Toolchain prefix; defaults to arm-none-eabi."
-        },
-        "emberprobe.objdumpPath": {
-          "type": "string",
-          "default": "",
-          "description": "ARM objdump executable path."
-        },
-        "emberprobe.enablePrettyPrinting": {
-          "type": "boolean",
-          "default": true,
-          "description": "Legacy display switch: false selects raw when prettyPrintingMode is not explicitly configured."
-        },
-        "emberprobe.prettyPrintingMode": {
-          "type": "string",
-          "enum": [
-            "builtin",
-            "gdb",
-            "raw"
-          ],
-          "default": "builtin",
-          "description": "Paused C++ display: builtin requires no Python; gdb loads only explicit prettyPrinterFiles; raw shows physical fields."
-        },
-        "emberprobe.prettyPrinterFiles": {
-          "type": "array",
-          "items": {
-            "type": "string"
+    "configuration": [
+      {
+        "id": "emberprobe.connection",
+        "title": "EmberProbe: 连接 / Connection",
+        "order": 1,
+        "properties": {
+          "emberprobe.openocdPath": {
+            "type": "string",
+            "default": "openocd",
+            "description": "OpenOCD 可执行文件路径。默认在 Windows/Linux x64 使用内置版本；使用外部版本时填写 OpenOCD ≥ 0.12.0 的绝对路径。 / OpenOCD executable path. Uses the bundled version on Windows/Linux x64 by default; enter an absolute path to use external OpenOCD ≥ 0.12.0.",
+            "order": 1
           },
-          "maxItems": 32,
-          "default": [],
-          "description": "Explicit Python printer scripts for gdb mode. Relative paths resolve against the debug cwd; scripts execute inside GDB."
-        },
-        "emberprobe.prettyPrinterPath": {
-          "type": "string",
-          "default": "",
-          "description": "Deprecated and ignored: STL display is implemented inside EmberProbe.",
-          "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb for explicit Python scripts."
-        },
-        "emberprobe.memory.regionKinds": {
-          "type": "object",
-          "default": {},
-          "additionalProperties": {
+          "emberprobe.tclPort": {
+            "type": "number",
+            "default": 6666,
+            "description": "实时采样的 OpenOCD Tcl-RPC 端口。未显式设置时使用随机临时端口；显式设置后使用固定端口。Tcl 端口无认证，建议保持随机。 / OpenOCD Tcl-RPC port for live sampling. Uses a random ephemeral port unless explicitly configured. Tcl has no authentication; a random port is recommended.",
+            "order": 2
+          },
+          "emberprobe.adapterSpeedKhz": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0,
+            "description": "调试和烧录的链路时钟（kHz）。0 使用脚本默认值，烧录时按探针能力提速，失败自动回退；非零值也限制复位事件提速，保留必要降速。 / Debug and flash adapter clock (kHz). 0 uses the script default and allows faster flashing with automatic fallback; nonzero values also cap reset-event speed increases while preserving required slowdowns.",
+            "order": 3
+          },
+          "emberprobe.transport": {
             "type": "string",
             "enum": [
-              "flash",
-              "ram",
-              "other"
-            ]
+              "auto",
+              "swd",
+              "jtag",
+              "hla_swd",
+              "hla_jtag"
+            ],
+            "default": "auto",
+            "description": "覆盖 OpenOCD 传输协议。auto 下 J-Link 对已知 Cortex-M 目标使用 SWD，其他目标使用接口脚本默认协议；不自动切换重试。 / Override the OpenOCD transport. With auto, J-Link uses SWD for known Cortex-M targets and the interface script default for other targets; no automatic transport retry.",
+            "order": 4
+          }
+        }
+      },
+      {
+        "id": "emberprobe.sampling",
+        "title": "EmberProbe: 采样与波形 / Sampling & Waveforms",
+        "order": 2,
+        "properties": {
+          "emberprobe.sampleFrequencyHz": {
+            "type": "number",
+            "default": 30,
+            "minimum": 0.1,
+            "maximum": 200,
+            "description": "波形窗口目标采样频率（Hz），默认 30，范围 0.1–200。侧栏目标固定为 20 Hz；实际速率受探针吞吐能力限制。 / Target waveform sampling frequency (Hz), default 30, range 0.1–200. The sidebar targets a fixed 20 Hz; actual rates depend on probe throughput.",
+            "order": 1
           },
-          "markdownDescription": "Override memory region types by their exact linker names, e.g. {\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}. Capacities come from the project .map or .ld file."
-        },
-        "emberprobe.mcp.toolsets": {
-          "type": "array",
-          "items": {
+          "emberprobe.samplingAdapterSpeedKhz": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "default": 0,
+            "description": "独立采样的链路时钟（kHz）。0 沿用 adapterSpeedKhz；非零值只用于独立采样，并限制复位事件提速。修改后自动重连，不改变调试、烧录时钟或采样频率。 / Standalone sampling adapter clock (kHz). 0 inherits adapterSpeedKhz; nonzero values apply only to standalone sampling and cap reset-event speed increases. Changes reconnect sampling without changing debug/flash clocks or sampling frequency.",
+            "order": 2
+          },
+          "emberprobe.chartHistoryMaxMiB": {
+            "type": "number",
+            "default": 512,
+            "minimum": 64,
+            "maximum": 4096,
+            "description": "波形历史的内存预算（MiB），包含冻结历史。耗尽时暂停全局采样并保留磁盘归档。 / Waveform history memory budget (MiB), including frozen history. Sampling pauses globally when exhausted; disk archives are retained.",
+            "order": 3
+          },
+          "emberprobe.samplingArchiveMaxMiB": {
+            "type": "number",
+            "default": 1024,
+            "minimum": 64,
+            "maximum": 102400,
+            "description": "当前扩展会话的采样历史磁盘占用上限（MiB）。修改立即生效；调高后可重新开始因写满停止的采样。退出时自动删除归档。 / Sampling history disk limit (MiB) for the current extension session. Changes apply immediately; raising the limit allows sampling stopped by a full archive to restart. Archives are deleted on exit.",
+            "order": 4
+          },
+          "emberprobe.chartBackgroundIcon.enabled": {
+            "type": "boolean",
+            "default": true,
+            "scope": "application",
+            "ignoreSync": true,
+            "markdownDescription": "在波形背景居中显示淡色图标。[导入/更换 PNG](command:mcu-vscode.selectChartBackgroundIcon) · [移除图标](command:mcu-vscode.removeChartBackgroundIcon)。支持透明底或纯色底 PNG；仅在本地处理，所有项目共享，不保存原图颜色和路径。 / Show a faint centered waveform background icon. [Import/replace PNG](command:mcu-vscode.selectChartBackgroundIcon) · [Remove icon](command:mcu-vscode.removeChartBackgroundIcon). Supports transparent or solid PNG backgrounds; processed locally and shared across projects. Original colors and source paths are not stored.",
+            "order": 5
+          }
+        }
+      },
+      {
+        "id": "emberprobe.debug",
+        "title": "EmberProbe: 工具链与调试 / Toolchain & Debugging",
+        "order": 3,
+        "properties": {
+          "emberprobe.gdbPath": {
+            "type": "string",
+            "default": "",
+            "description": "ARM GDB 可执行文件路径。 / ARM GDB executable path.",
+            "order": 1
+          },
+          "emberprobe.armToolchainPath": {
+            "type": "string",
+            "default": "",
+            "description": "ARM 工具链的 bin 目录。 / ARM toolchain bin directory.",
+            "order": 2
+          },
+          "emberprobe.armToolchainPrefix": {
+            "type": "string",
+            "default": "",
+            "description": "ARM 工具链前缀，留空使用 arm-none-eabi。 / ARM toolchain prefix; leave empty to use arm-none-eabi.",
+            "order": 3
+          },
+          "emberprobe.objdumpPath": {
+            "type": "string",
+            "default": "",
+            "description": "ARM objdump 可执行文件路径。 / ARM objdump executable path.",
+            "order": 4
+          },
+          "emberprobe.rtos": {
             "type": "string",
             "enum": [
+              "",
+              "auto",
+              "none",
+              "FreeRTOS",
+              "ThreadX",
+              "chibios",
+              "Chromium-EC",
+              "eCos",
+              "embKernel",
+              "linux",
+              "mqx",
+              "nuttx",
+              "RIOT",
+              "uCOS-III",
+              "Zephyr"
+            ],
+            "default": "",
+            "description": "调试时的 OpenOCD RTOS 感知，名称区分大小写；留空关闭。启用后调用栈显示 RTOS 任务，栈帧、变量和单步绑定对应任务。修改后需停止并重新启动调试；会话内重启不重新配置。launch.json 的 rtos 优先。 / OpenOCD RTOS awareness for debugging; names are case-sensitive and empty disables it. The call stack shows RTOS tasks with task-bound frames, variables and stepping. Stop and start debugging to apply changes; session restart reuses the server. launch.json rtos takes precedence.",
+            "order": 5
+          }
+        }
+      },
+      {
+        "id": "emberprobe.cpp",
+        "title": "EmberProbe: C++ 变量显示 / C++ Variable Display",
+        "order": 4,
+        "properties": {
+          "emberprobe.prettyPrintingMode": {
+            "type": "string",
+            "enum": [
+              "builtin",
+              "gdb",
+              "raw"
+            ],
+            "default": "builtin",
+            "description": "暂停时的 C++ 变量显示：builtin 使用内置解析，无需 Python；gdb 仅加载 prettyPrinterFiles 明确指定的脚本；raw 显示原始字段。 / Paused C++ variable display: builtin uses internal parsing without Python; gdb loads only scripts explicitly listed in prettyPrinterFiles; raw shows physical fields.",
+            "order": 1
+          },
+          "emberprobe.prettyPrinterFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "default": [],
+            "description": "gdb 显示模式加载的 Python 打印脚本，最多 32 个。相对路径基于调试工作目录解析；脚本在 GDB 内执行。 / Python printer scripts loaded in gdb display mode, up to 32 files. Relative paths resolve against the debug working directory; scripts execute inside GDB.",
+            "order": 2
+          }
+        }
+      },
+      {
+        "id": "emberprobe.cubemx",
+        "title": "EmberProbe: STM32CubeMX",
+        "order": 5,
+        "properties": {
+          "emberprobe.cubemxPath": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "description": "独立 STM32CubeMX 可执行文件路径（Windows：STM32CubeMX.exe；Linux：STM32CubeMX）。在用户设置中配置，本机所有工作区共享；留空自动检测。 / Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX). Configure in User settings for all workspaces on this machine; leave empty for automatic detection.",
+            "order": 1
+          },
+          "emberprobe.cubemx2Path": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "description": "STM32CubeMX2 启动器路径。在用户设置中配置，本机所有工作区共享；留空时依次通过官方 Cube 注册信息或 Cube CLI、安装目录、PATH 和 Windows 快捷方式检测。 / STM32CubeMX2 launcher path. Configure in User settings for all workspaces on this machine; leave empty to detect via official Cube registration or Cube CLI, then installation directories, PATH and Windows shortcuts.",
+            "order": 2
+          }
+        }
+      },
+      {
+        "id": "emberprobe.memory",
+        "title": "EmberProbe: 内存 / Memory",
+        "order": 6,
+        "properties": {
+          "emberprobe.memory.regionKinds": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "flash",
+                "ram",
+                "other"
+              ]
+            },
+            "markdownDescription": "按链接器中的精确名称覆盖内存区域类型，例如 `{\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}`。容量来自项目的 .map 或 .ld 文件。 / Override memory region types by exact linker names, e.g. `{\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}`. Capacities come from project .map or .ld files.",
+            "order": 1
+          }
+        }
+      },
+      {
+        "id": "emberprobe.mcp",
+        "title": "EmberProbe: Agent 与 MCP / Agent & MCP",
+        "order": 7,
+        "properties": {
+          "emberprobe.mcp.toolsets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "core",
+                "debug",
+                "cubemx"
+              ]
+            },
+            "uniqueItems": true,
+            "default": [
               "core",
-              "debug",
-              "cubemx"
-            ]
+              "debug"
+            ],
+            "markdownDescription": "MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义占用 Agent 上下文，按需开启。参见 docs/MCP.md。 / Toolsets exposed by the MCP server: `core` (configuration, flashing, variables, peripherals), `debug` (debug control, breakpoints, RTOS), `cubemx` (STM32CubeMX generation). Tool definitions occupy Agent context; enable as needed. See docs/MCP.md.",
+            "order": 1
+          }
+        }
+      },
+      {
+        "id": "emberprobe.experimental",
+        "title": "EmberProbe: 实验功能 / Experimental",
+        "order": 8,
+        "properties": {
+          "emberprobe.experimental.externalGdb.enabled": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "markdownDescription": "实验性：允许显式配置的外部 GDB 附加。使用后停止外部服务器并关闭此设置，以释放探针占用；现有调试按钮仍使用 OpenOCD。 / Experimental: allow explicitly configured external GDB attach. Stop the external server and disable this setting after use to release the probe hold; existing debug buttons still use OpenOCD.",
+            "order": 1
           },
-          "uniqueItems": true,
-          "default": [
-            "core",
-            "debug"
-          ],
-          "markdownDescription": "EmberProbe MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义会常驻 Agent 上下文，只开启需要的工具集。见 `docs/MCP.md`。"
-        },
-        "emberprobe.experimental.externalGdb.enabled": {
-          "type": "boolean",
-          "default": false,
-          "scope": "resource",
-          "markdownDescription": "Experimental: allow explicit EmberProbe external attach configurations. After use, stop the external server and disable this setting to release the probe hold. Existing debug buttons continue to use OpenOCD."
-        },
-        "emberprobe.experimental.externalGdb.target": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Experimental external GDB TCP target: host:port or [IPv6]:port. Required for explicit external attach; the server must already be running."
-        },
-        "emberprobe.experimental.externalGdb.connectionMode": {
-          "type": "string",
-          "enum": [
-            "remote",
-            "extended-remote"
-          ],
-          "default": "extended-remote",
-          "scope": "resource",
-          "description": "Experimental external GDB connection mode. Read at attach startup; changing it does not redirect an active session."
-        },
-        "emberprobe.chartBackgroundIcon.enabled": {
-          "type": "boolean",
-          "default": true,
-          "scope": "application",
-          "ignoreSync": true,
-          "markdownDescription": "在波形图背景居中显示淡色图标。[导入/更换 PNG](command:mcu-vscode.selectChartBackgroundIcon) · [移除背景图标](command:mcu-vscode.removeChartBackgroundIcon)。支持透明底或纯色底 PNG，仅在本地处理，所有项目共享。不保存原图颜色和路径。 / [Import or replace PNG](command:mcu-vscode.selectChartBackgroundIcon) · [Remove](command:mcu-vscode.removeChartBackgroundIcon). Local, monochrome background shared across projects."
+          "emberprobe.experimental.externalGdb.target": {
+            "type": "string",
+            "default": "",
+            "scope": "resource",
+            "description": "实验性：外部 GDB TCP 地址，格式为 host:port 或 [IPv6]:port。显式外部附加时必填，服务器须已运行。 / Experimental: external GDB TCP target as host:port or [IPv6]:port. Required for explicit external attach; the server must already be running.",
+            "order": 2
+          },
+          "emberprobe.experimental.externalGdb.connectionMode": {
+            "type": "string",
+            "enum": [
+              "remote",
+              "extended-remote"
+            ],
+            "default": "extended-remote",
+            "scope": "resource",
+            "description": "实验性：外部 GDB 连接模式，在附加启动时读取。修改不会切换现有会话的连接。 / Experimental: external GDB connection mode, read when attach starts. Changes do not redirect an active session.",
+            "order": 3
+          }
         }
       }
-    },
+    ],
     "debuggers": [
       {
         "type": "emberprobe",
@@ -475,10 +520,6 @@
                 "default": "",
                 "description": "RTOS for OpenOCD task awareness. Empty keeps the single-thread behavior; a session value overrides the emberprobe.rtos setting."
               },
-              "enablePrettyPrinting": {
-                "type": "boolean",
-                "description": "Override emberprobe.enablePrettyPrinting for this session."
-              },
               "prettyPrintingMode": {
                 "type": "string",
                 "enum": [
@@ -495,11 +536,6 @@
                 },
                 "maxItems": 32,
                 "description": "Explicit Python printer scripts, loaded only in gdb mode."
-              },
-              "prettyPrinterPath": {
-                "type": "string",
-                "description": "Deprecated and ignored. EmberProbe uses built-in STL display.",
-                "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb."
               },
               "symbolFiles": {
                 "type": "array",
@@ -780,10 +816,6 @@
                 "default": "",
                 "description": "RTOS for OpenOCD task awareness. Empty keeps the single-thread behavior; a session value overrides the emberprobe.rtos setting."
               },
-              "enablePrettyPrinting": {
-                "type": "boolean",
-                "description": "Override emberprobe.enablePrettyPrinting for this session."
-              },
               "prettyPrintingMode": {
                 "type": "string",
                 "enum": [
@@ -800,11 +832,6 @@
                 },
                 "maxItems": 32,
                 "description": "Explicit Python printer scripts, loaded only in gdb mode."
-              },
-              "prettyPrinterPath": {
-                "type": "string",
-                "description": "Deprecated and ignored. EmberProbe uses built-in STL display.",
-                "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb."
               },
               "symbolFiles": {
                 "type": "array",

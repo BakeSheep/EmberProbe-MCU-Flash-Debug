@@ -47,7 +47,12 @@ async function run() {
     const target = vscode.ConfigurationTarget.Workspace;
     if (env.RUNTIME_BOARD_OPENOCD) await config.update("openocdPath", env.RUNTIME_BOARD_OPENOCD, target);
     if (env.RUNTIME_BOARD_TRANSPORT) await config.update("transport", env.RUNTIME_BOARD_TRANSPORT, target);
-    if (env.RUNTIME_BOARD_PROBE_SERIAL) await config.update("probeSerial", env.RUNTIME_BOARD_PROBE_SERIAL, target);
+    if (env.RUNTIME_BOARD_PROBE_SERIAL)
+        await provider._connectedProbes.selection().set({
+            probe: env.RUNTIME_BOARD_PROBE,
+            probeSerial: env.RUNTIME_BOARD_PROBE_SERIAL,
+            source: "user"
+        });
     if (env.RUNTIME_BOARD_ADAPTER_SPEED_KHZ)
         await config.update("adapterSpeedKhz", Number(env.RUNTIME_BOARD_ADAPTER_SPEED_KHZ), target);
     await provider._elfView.refreshBindings();

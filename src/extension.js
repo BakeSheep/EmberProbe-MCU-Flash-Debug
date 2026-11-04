@@ -50,10 +50,10 @@ function activate(context) {
             )) provider.debugLaunch.scheduleGdbWarmup();
             if (event.affectsConfiguration("emberprobe.chartBackgroundIcon.enabled")) provider.chartBackground().broadcast();
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.debugLaunch.externalSettingsChanged().catch(console.error);
-            const connectionChanged = ["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
+            const connectionChanged = ["openocdPath", "transport", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
             const samplingSpeedChanged = event.affectsConfiguration("emberprobe.samplingAdapterSpeedKhz");
             if (connectionChanged || samplingSpeedChanged) provider.connectionConfigurationChanged(samplingSpeedChanged, !connectionChanged);
-            if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
+            if (event.affectsConfiguration("emberprobe.sampleFrequencyHz")) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.samplingArchiveMaxMiB")) provider.samplingArchiveConfigurationChanged();
             if (["cubemxPath", "cubemx2Path"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.refreshCubeMxStatus().catch(console.error);
             if (event.affectsConfiguration("emberprobe.mcp.toolsets")) provider.mcpConfigurationChanged();

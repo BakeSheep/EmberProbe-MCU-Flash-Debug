@@ -8,6 +8,23 @@ const os = require("os");
 const path = require("path");
 const { assertAgentSettable } = require("../src/services/configurationStore");
 const { createFixture } = require("./helpers/service-fixture");
+
+scenario("Expose grouped bilingual settings without removed configuration keys", () => {
+    const groups = require("../package.json").contributes.configuration;
+    assert.ok(Array.isArray(groups));
+    const entries = groups.flatMap((group) => Object.entries(group.properties));
+    const keys = entries.map(([key]) => key);
+    assert.strictEqual(keys.length, 23);
+    assert.strictEqual(new Set(keys).size, keys.length);
+    for (const key of ["probeSerial", "sampleIntervalMs", "maxSamples", "enablePrettyPrinting", "prettyPrinterPath"])
+        assert.ok(!keys.includes(`emberprobe.${key}`));
+    for (const [key, setting] of entries) {
+        const description = setting.markdownDescription || setting.description;
+        assert.match(description, /[\u4e00-\u9fff]/, `${key} needs a Chinese description`);
+        assert.match(description, / \/ [A-Za-z]/, `${key} needs an English description`);
+    }
+});
+
 (async () => {
     const fixture = createFixture();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-outside-"));
@@ -17,11 +34,10 @@ const { createFixture } = require("./helpers/service-fixture");
             elf: "firmware.elf",
             debugger: "cmsis-dap.cfg",
             mcu: "stm32f4x.cfg",
-            sampleIntervalMs: 50
+            sampleFrequencyHz: 20
         });
         assert.ok(snapshot.elf.endsWith("/firmware.elf"));
         assert.strictEqual(snapshot.debugger, "cmsis-dap.cfg");
-        assert.strictEqual(snapshot.sampleIntervalMs, 50);
         assert.strictEqual(snapshot.sampleFrequencyHz, 20);
         assert.strictEqual(settings.get("sampleFrequencyHz"), 20);
         assert.strictEqual(fixture.changed, 1);
@@ -59,7 +75,7 @@ const { createFixture } = require("./helpers/service-fixture");
         });
         assert.strictEqual((await store.update({ iocPath: "" })).iocPath, "");
         await assert.rejects(
-            () => store.update({ sampleIntervalMs: 1 }),
+            () => store.update({ sampleFrequencyHz: 0 }),
             (error) => error.code === "INVALID_CONFIG_VALUE"
         );
         assert.strictEqual((await store.update({ sampleFrequencyHz: 30.5 })).sampleFrequencyHz, 30.5);
@@ -105,17 +121,24 @@ const { createFixture } = require("./helpers/service-fixture");
         await assert.rejects(store.update({ rtos: "FreeRTOs" }), { code: "OPENOCD_RTOS_INVALID" });
         assert.strictEqual(store.snapshot().rtos, "FreeRTOS", "A rejected update leaves the setting alone");
         assert.strictEqual((await store.update({ rtos: "" })).rtos, "", "An empty value turns RTOS awareness off");
-        assert.strictEqual((await store.update({ probeSerial: "000Aa123" })).probeSerial, "000Aa123");
-        await assert.rejects(store.update({ probeSerial: "000Aa123", debugger: "jlink.cfg" }), {
-            code: "PROBE_SERIAL_INVALID"
+        await scenario("Reject removed settings without applying a partial update", async () => {
+            settings.set("probeSerial", "1234");
+            settings.set("sampleIntervalMs", 50);
+            assert.strictEqual(store.snapshot().probeSerial, "");
+            assert.ok(!("sampleIntervalMs" in store.snapshot()));
+            for (const key of [
+                "probeSerial",
+                "sampleIntervalMs",
+                "maxSamples",
+                "enablePrettyPrinting",
+                "prettyPrinterPath"
+            ]) {
+                await assert.rejects(store.update({ debugger: "jlink.cfg", [key]: "obsolete" }), {
+                    code: "UNSUPPORTED_CONFIG"
+                });
+                assert.strictEqual(store.snapshot().debugger, "cmsis-dap.cfg");
+            }
         });
-        assert.strictEqual(store.snapshot().debugger, "cmsis-dap.cfg", "A rejected serial leaves all settings intact");
-        assert.strictEqual((await store.update({ probeSerial: "000123", debugger: "jlink.cfg" })).probeSerial, "123");
-        await assert.rejects(store.update({ probeSerial: "ABC" }), { code: "PROBE_SERIAL_INVALID" });
-        assert.strictEqual(
-            (await store.update({ debugger: "stlink.cfg", probeSerial: "000aBc" })).probeSerial,
-            "000aBc"
-        );
     } finally {
         fixture.dispose();
         fs.rmSync(outside, { recursive: true, force: true });
@@ -141,7 +164,7 @@ const { createFixture } = require("./helpers/service-fixture");
         try {
             const { store, state, settings, context } = fixture;
             await assert.rejects(
-                store.update({ debugger: "stlink.cfg", sampleIntervalMs: 0 }),
+                store.update({ debugger: "stlink.cfg", sampleFrequencyHz: 0 }),
                 (error) => error.code === "INVALID_CONFIG_VALUE"
             );
             assert.strictEqual(state.size, 0);
@@ -163,8 +186,8 @@ const { createFixture } = require("./helpers/service-fixture");
                 (error) => error.details.rollbackErrors.length === 2 && error.details.actual.debugger === "stlink.cfg"
             );
             context.workspaceState.update = original;
-            await Promise.all([store.update({ sampleIntervalMs: 25 }), store.update({ sampleIntervalMs: 50 })]);
-            assert.strictEqual(settings.get("sampleIntervalMs"), 50);
+            await Promise.all([store.update({ sampleFrequencyHz: 40 }), store.update({ sampleFrequencyHz: 20 })]);
+            assert.strictEqual(settings.get("sampleFrequencyHz"), 20);
             await assert.rejects(store.update(null), (error) => error.code === "INVALID_CONFIG_VALUE");
         } finally {
             fixture.context.workspaceState.update = original;
