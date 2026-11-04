@@ -3,7 +3,7 @@
 const assert = require("assert");
 const { scenario } = require("./helpers/scenario");
 const { FakeClock } = require("./helpers/fake-clock");
-const { RttLineFormatter, formatTimestamp, stripAnsi } = require("../src/rttLineFormatter");
+const { AnsiStripper, RttLineFormatter, formatTimestamp } = require("../src/rttLineFormatter");
 
 const stamp = (ms) => `t${ms}`;
 
@@ -43,8 +43,13 @@ scenario("ANSI sequences pass through and can be stripped for files", () => {
     const formatter = new RttLineFormatter();
     const colored = "\x1b[31mERR\x1b[0m done\x1b]0;title\x07\n";
     assert.strictEqual(formatter.push(colored), "\x1b[31mERR\x1b[0m done\x1b]0;title\x07\r\n");
-    assert.strictEqual(stripAnsi(colored), "ERR done\n");
-    assert.strictEqual(stripAnsi(undefined), "");
+    assert.strictEqual(new AnsiStripper().push(colored), "ERR done\n");
+    assert.strictEqual(new AnsiStripper().push(undefined), "");
+    const split = new AnsiStripper();
+    assert.strictEqual(["a\x1b[3", "1mb\x1b]0;t", "\x1b\\c"].map((chunk) => split.push(chunk)).join(""), "abc");
+    split.push("\x1b[");
+    split.reset();
+    assert.strictEqual(split.push("plain"), "plain", "reset forgets an unfinished sequence");
 });
 
 scenario("default timestamps are local HH:MM:SS.mmm", () => {

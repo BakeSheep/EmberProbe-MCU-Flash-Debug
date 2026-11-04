@@ -30,6 +30,11 @@ async function run() {
         "mcu-vscode.folderAttachDebug",
         "mcu-vscode.folderDownload",
         "mcu-vscode.openLiveWatch",
+        "mcu-vscode.startRtt",
+        "mcu-vscode.stopRtt",
+        "mcu-vscode.showRttTerminals",
+        "mcu-vscode.rttSaveLog",
+        "mcu-vscode.rttToggleTimestamps",
         "mcu-vscode.checkOpenOcd",
         "mcu-vscode.installMcpServer",
         "mcu-vscode.enableAgentAccess",
@@ -51,7 +56,7 @@ async function run() {
     const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
         Object.entries(group.properties)
     );
-    assert.strictEqual(settings.length, 21);
+    assert.strictEqual(settings.length, 30);
     for (const [key, setting] of settings)
         assert.deepStrictEqual(
             vscode.workspace.getConfiguration().inspect(key)?.defaultValue,
@@ -69,6 +74,10 @@ async function run() {
     ])
         assert.strictEqual(config.inspect(key)?.defaultValue, undefined, `${key} must no longer be registered`);
     assert.strictEqual(config.get("prettyPrintingMode"), "builtin");
+    assert.deepStrictEqual(config.get("rtt.channels"), [0]);
+    assert.strictEqual(config.get("rtt.timestamps"), false);
+    assert.strictEqual(config.get("rtt.logFile.enabled"), false);
+    await vscode.commands.executeCommand("mcu-vscode.stopRtt");
     console.log("✓ contributes bounded live-watch defaults");
 
     const { Worker } = require("worker_threads");

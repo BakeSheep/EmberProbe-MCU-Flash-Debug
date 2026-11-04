@@ -199,12 +199,6 @@ function parseChannelList(text) {
     return result;
 }
 
-// OpenOCD announces each RTT TCP server with "Listening on port N for rtt connections".
-function parseRttListening(line) {
-    const match = /Listening on port (\d+) for rtt connections/i.exec(String(line ?? ""));
-    return match ? Number(match[1]) : null;
-}
-
 module.exports = {
     AUTO_SCAN_MAX_BYTES,
     CONTROL_BLOCK_SYMBOL,
@@ -214,7 +208,6 @@ module.exports = {
     SCAN_SLICE_BYTES,
     commands,
     parseChannelList,
-    parseRttListening,
     resolveControlBlock,
     scanSlices
 };

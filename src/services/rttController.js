@@ -15,6 +15,7 @@ const net = require("net");
 const { SYSTEM_CLOCK } = require("../samplingClock");
 const { resolveControlBlock, scanSlices } = require("../rttControlBlock");
 const { RttBuffer } = require("../rttBuffer");
+const { MAX_SERVER_COMMANDS } = require("../rttControl");
 const { findFreePort } = require("../liveWatch");
 const { CACHE_KEYS } = require("../cacheKeys");
 
@@ -33,6 +34,10 @@ const CONNECT_MAX_ATTEMPTS = 20;
 const PENDING_SETTLE_MS = 1000;
 // The ELF service reports these while it reloads; the symbol outranks every scan, so RTT waits for it.
 const TRANSIENT_ELF_ERRORS = ["ELF_LOADING", "ELF_CHANGED"];
+// A shared host can be busy for one transaction; the retry ladder outlasts that.
+const TRANSIENT_HOST_ERRORS = ["LIVE_READ_CANCELLED", "PROBE_CONNECTION_BUSY_TIMEOUT"];
+// One terminal line per write; the target's down buffer is small and OpenOCD drops what does not fit.
+const MAX_WRITE_BYTES = 1024;
 
 const rttError = (code, message, details) =>
     Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
@@ -51,10 +56,12 @@ class RttController {
         this._rttSettings = options.rttSettings;
         this._ramRegions = options.ramRegions;
         this.onStatus = options.onStatus || (() => {});
+        this.onBeforeStop = options.onBeforeStop || (() => {});
         this.state = "stopped"; // stopped | starting | running | pending-host
         this.source = null; // debug-server | live-watch | own-session
         this.reason = null;
         this.channels = null;
+        this.missingChannels = []; // Selected up channels the firmware did not configure.
         this.error = null;
         this._hostSession = null;
         this._ownSession = null;
@@ -90,6 +97,7 @@ class RttController {
                 ? { source: this._block.source, address: this._block.address, size: this._block.size }
                 : null,
             channels: this.channels,
+            missingChannels: this.missingChannels,
             servers: this._servers.map((server) => ({ ...server })),
             buffers: [...this._buffers.entries()].map(([channel, buffer]) => {
                 const socket = this._sockets.get(channel);
@@ -106,6 +114,30 @@ class RttController {
         const buffer = this._buffers.get(channel);
         if (!buffer) throw rttError("RTT_UNKNOWN_CHANNEL", `RTT channel ${channel} is not available`, { channel });
         return buffer.read(request);
+    }
+
+    // Writes to a down channel through the same channel's RTT TCP port: OpenOCD's rtt server copies client input
+    // into the down buffer of the channel it serves. Returns the bytes accepted.
+    write(channel, data) {
+        if (this.state !== "running")
+            throw rttError("RTT_NOT_RUNNING", `RTT is ${this.state || "stopped"}`, { state: this.state });
+        const socket = this._sockets.get(channel);
+        if (!socket || socket.destroyed)
+            throw rttError("RTT_CHANNEL_DISCONNECTED", `RTT channel ${channel} has no data connection`, { channel });
+        if (!this.channels?.down?.some((entry) => entry.index === channel && entry.size > 0))
+            throw rttError("RTT_INPUT_UNAVAILABLE", `RTT channel ${channel} has no down buffer`, { channel });
+        if (socket.writableNeedDrain)
+            throw rttError("RTT_INPUT_BUSY", `RTT channel ${channel} is still sending input`, { channel });
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.from(String(data ?? ""), "utf8");
+        if (bytes.length > MAX_WRITE_BYTES)
+            throw rttError("RTT_WRITE_TOO_LARGE", `RTT input is limited to ${MAX_WRITE_BYTES} bytes per line`, {
+                channel,
+                bytes: bytes.length,
+                maxBytes: MAX_WRITE_BYTES
+            });
+        if (!bytes.length) return 0;
+        socket.write(bytes);
+        return bytes.length;
     }
 
     // Manual start. Resolves once the attachment is launched; the retry ladder finishes in the background and
@@ -255,6 +287,7 @@ class RttController {
         return {
             controlBlockAddress: configuration.get("rtt.controlBlockAddress"),
             searchRange: configuration.get("rtt.searchRange"),
+            channels: configuration.get("rtt.channels", [0]),
             pollingIntervalMs: configuration.get("rtt.pollingIntervalMs")
         };
     }
@@ -302,6 +335,8 @@ class RttController {
         const run = ++this._attachRun;
         this.state = "starting";
         this.reason = null;
+        this._yieldOperation = null;
+        this.error = null;
         this._startAttempts = 0;
         this._retry = null;
         this._postStatus();
@@ -318,10 +353,19 @@ class RttController {
             this.channels = result.channels;
             if (!result.channels?.up?.length)
                 return await this._scheduleStartRetry(run, false, "waiting for the firmware to configure its channels");
-            await this._startChannels(run);
+            const up = this._selectChannels(result.channels);
+            if (!up.length)
+                return await this._scheduleStartRetry(
+                    run,
+                    false,
+                    "None of the selected RTT up channels are configured",
+                    "RTT_UNKNOWN_CHANNEL"
+                );
+            await this._startChannels(run, up);
             return null;
         } catch (error) {
-            if (error?.retryable) return this._scheduleStartRetry(run, true, error.message);
+            if (error?.retryable || TRANSIENT_HOST_ERRORS.includes(error?.code))
+                return this._scheduleStartRetry(run, true, error.message);
             await this._fail(error);
             return error;
         }
@@ -347,14 +391,11 @@ class RttController {
         throw failure;
     }
 
-    // Backoff ladder over _attemptStart.
-    async _scheduleStartRetry(run, fullStart, reason) {
+    // Backoff ladder over _attemptStart. timeoutCode names what the exhausted ladder failed on.
+    async _scheduleStartRetry(run, fullStart, reason, timeoutCode = "RTT_START_TIMEOUT") {
         this._startAttempts++;
         if (this._startAttempts > START_MAX_ATTEMPTS) {
-            const error = rttError(
-                "RTT_START_TIMEOUT",
-                `RTT did not find the control block after ${START_MAX_ATTEMPTS} attempts: ${reason}`
-            );
+            const error = rttError(timeoutCode, `RTT gave up after ${START_MAX_ATTEMPTS} attempts: ${reason}`);
             await this._fail(error);
             return error;
         }
@@ -373,8 +414,31 @@ class RttController {
         return null;
     }
 
-    async _startChannels(run) {
-        const up = this.channels.up;
+    // The firmware may configure more channels a moment later, so an empty result is retried by the caller and a
+    // partial one proceeds with the missing channels reported in the status.
+    _selectChannels(channels) {
+        const selected = this._settings().channels;
+        if (selected === undefined) {
+            this.missingChannels = [];
+            return channels.up.slice(0, MAX_SERVER_COMMANDS);
+        }
+        if (
+            !Array.isArray(selected) ||
+            !selected.length ||
+            selected.length > MAX_SERVER_COMMANDS ||
+            selected.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)
+        )
+            throw rttError(
+                "RTT_INVALID_CHANNELS",
+                `RTT channels must list 1..${MAX_SERVER_COMMANDS} integers from 0 to 255`
+            );
+        const available = new Set(channels.up.map((channel) => channel.index));
+        this.missingChannels = selected.filter((channel) => !available.has(channel));
+        return channels.up.filter((channel) => selected.includes(channel.index));
+    }
+
+    async _startChannels(run, up) {
+        this.channels = { ...this.channels, up };
         const servers = [];
         for (const channel of up) {
             const port = await this._findFreePort();
@@ -533,10 +597,16 @@ class RttController {
 
     async _stopInternal(reason, nextState = "stopped") {
         if (this.state === "stopped") return;
+        try {
+            this.onBeforeStop(); // Drain terminal/log cursors before the attachment's buffers disappear.
+        } catch {
+            /* A terminal consumer must not prevent releasing the probe. */
+        }
         this._attachRun++; // Retries and socket handlers from the previous attachment go quiet.
         this._cancelTimers();
         this.state = nextState;
         this.reason = reason;
+        if (reason === "user-stopped") this.error = null;
         if (nextState === "stopped") {
             this._ownSessionIntent = false;
             this._yieldOperation = null;
@@ -574,6 +644,7 @@ class RttController {
         this._buffers.clear();
         this._servers = [];
         this.channels = null;
+        this.missingChannels = [];
         this._hostSession = null;
         this.source = null;
         this._block = null;

@@ -55,6 +55,44 @@ const { RtosViewService } = require("./services/rtosViewService");
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService } = require("./services/chartHistoryService");
+const { RttController } = require("./services/rttController");
+const { RttTerminalService } = require("./services/rttTerminalService");
+
+function createRttController(host, vscode, ManagedOpenOcdSession) {
+    return new RttController(host, {
+        vscode,
+        ManagedOpenOcdSession,
+        onStatus: (status) => host._rttTerminals.onStatus(status),
+        onBeforeStop: () => host._rttTerminalController?.flush()
+    });
+}
+
+function createRttTerminals(host, vscode) {
+    return new RttTerminalService({
+        vscode,
+        controller: () => host._rtt,
+        t: (key, params) => host._t(key, params),
+        settings: () => {
+            const config = vscode.workspace.getConfiguration("emberprobe");
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            const directory = config.get("rtt.logFile.directory", "") || root;
+            const resolved =
+                directory && (path.isAbsolute(directory) ? directory : root && path.resolve(root, directory));
+            const logEnabled = config.get("rtt.logFile.enabled", false) === true;
+            return {
+                timestamps: config.get("rtt.timestamps", false),
+                logEnabled,
+                logDirectory: resolved || "",
+                logFile: logEnabled && resolved ? path.join(resolved, "rtt.log") : "",
+                logMaxBytes: config.get("rtt.logFile.maxBytes", 8 * 1024 * 1024),
+                stripAnsi: config.get("rtt.logFile.stripAnsi", true)
+            };
+        },
+        post: (message) => host._webviewView?.webview.postMessage(message),
+        onNotice: (notice, id = "rtt") => host._notices.notify("rtt", id, notice),
+        clearNotice: (id = "rtt") => host._notices.clear("rtt", id)
+    });
+}
 
 // Probe ownership, the external GDB server hold, J-Link driver and connection resolution, and chip reads.
 function createProbeServices(host, context, vscode) {
@@ -496,4 +534,4 @@ function createServices(host, context, { vscode }) {
     };
 }
 
-module.exports = { createServices };
+module.exports = { createServices, createRttController, createRttTerminals };

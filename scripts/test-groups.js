@@ -115,6 +115,8 @@ const TEST_GROUPS = Object.freeze({
         "rtt-control.test.js",
         "rtt-controller.test.js",
         "rtt-line-formatter.test.js",
+        "rtt-log-writer.test.js",
+        "rtt-terminal.test.js",
         "runtime-heap-region.test.js",
         "runtime-native-layouts.test.js",
         "runtime-objects.test.js",

@@ -30,7 +30,16 @@ const SHARED_PRELUDE = [
     "cardReorder.js"
 ];
 const PAGE_PRELUDE = {
-    sidebar: ["chipView.js", "memoryView.js", "peripherals.js", "rtos.js", "writeList.js", "agentControls.js"],
+    sidebar: [
+        "chipView.js",
+        "memoryView.js",
+        "openocdCard.js",
+        "peripherals.js",
+        "rtt.js",
+        "rtos.js",
+        "writeList.js",
+        "agentControls.js"
+    ],
     liveWatch: [
         "seriesStyles.js",
         "analysisState.js",
