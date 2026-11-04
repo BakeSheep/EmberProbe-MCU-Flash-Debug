@@ -2,6 +2,7 @@
     box-sizing: border-box;
 }
 body {
+    container: emberprobe-page / inline-size;
     margin: 0;
     color: var(--vscode-foreground);
     background: var(--vscode-editor-background);
@@ -119,7 +120,7 @@ input[type="number"] {
 .layout {
     display: grid;
     grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
-    min-height: calc(100vh - 86px);
+    min-height: calc(calc(100 * var(--emberprobe-vh, 1vh)) - 86px);
 }
 .side {
     border-right: 1px solid var(--vscode-panel-border, transparent);
@@ -278,8 +279,8 @@ input[type="number"] {
     display: none;
 }
 .panel {
-    width: min(650px, 94vw);
-    max-height: 82vh;
+    width: min(650px, calc(94 * var(--emberprobe-vw, 1vw)));
+    max-height: calc(82 * var(--emberprobe-vh, 1vh));
     display: flex;
     flex-direction: column;
     padding: 14px;
@@ -325,12 +326,12 @@ input[type="number"] {
     justify-content: flex-end;
     gap: 7px;
 }
-@media (max-width: 760px) {
+@container emberprobe-page (max-width: 760px) {
     .layout {
         grid-template-columns: 1fr;
     }
     .side {
-        max-height: 42vh;
+        max-height: calc(42 * var(--emberprobe-vh, 1vh));
         border-right: 0;
         border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
@@ -341,7 +342,7 @@ input[type="number"] {
         display: none;
     }
 }
-@media (max-width: 430px) {
+@container emberprobe-page (max-width: 430px) {
     .group {
         border: 0;
     }
@@ -408,7 +409,7 @@ body {
     color: var(--vscode-button-foreground);
     background: var(--vscode-errorForeground);
 }
-@media (max-width: 760px) {
+@container emberprobe-page (max-width: 760px) {
     .layout {
         grid-template-rows: minmax(110px, 38%) minmax(0, 1fr);
     }
@@ -419,7 +420,7 @@ body {
         min-height: 0;
     }
 }
-@media (max-width: 430px) {
+@container emberprobe-page (max-width: 430px) {
     .var-card {
         grid-template-columns: 32px auto minmax(0, 1fr) auto;
     }
@@ -486,7 +487,7 @@ body.debug-stale .member-value {
     padding: 1px 7px;
     font-size: 12px;
 }
-@media (max-width: 760px) {
+@container emberprobe-page (max-width: 760px) {
     .layout {
         grid-template-columns: 1fr;
         grid-template-rows: minmax(110px, 38%) minmax(0, 1fr);
@@ -762,7 +763,7 @@ input[type="number"]::-webkit-outer-spin-button {
     backdrop-filter: blur(1px);
 }
 .panel {
-    width: min(760px, 94vw);
+    width: min(760px, calc(94 * var(--emberprobe-vw, 1vw)));
     box-shadow: 0 8px 28px color-mix(in srgb, var(--vscode-widget-shadow, #000) 38%, transparent);
 }
 .imp-head,
@@ -802,7 +803,7 @@ input[type="number"]::-webkit-outer-spin-button {
     margin-left: 0;
 }
 .export-panel {
-    width: min(640px, 94vw);
+    width: min(640px, calc(94 * var(--emberprobe-vw, 1vw)));
 }
 .export-filename {
     display: flex;
@@ -1163,7 +1164,7 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Keep diagnostics and operation notices inside the import dialog. */
 .import-notices {
     flex-shrink: 0;
-    max-height: 30vh;
+    max-height: calc(30 * var(--emberprobe-vh, 1vh));
     overflow-y: auto;
 }
 .import-notices > .notice-area {
@@ -1174,7 +1175,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .array-panel {
     min-width: 280px;
-    max-width: 92vw;
+    max-width: calc(92 * var(--emberprobe-vw, 1vw));
     padding: 16px;
     border: 1px solid var(--vscode-panel-border);
     border-radius: 6px;
@@ -1481,7 +1482,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .chart-stage.dragging #chart {
     cursor: grabbing !important;
 }
-@media (max-width: 760px) {
+@container emberprobe-page (max-width: 760px) {
     .chart-stage {
         min-height: 150px;
     }
@@ -1566,8 +1567,8 @@ input[type="number"]::-webkit-outer-spin-button {
     z-index: 100;
     box-sizing: border-box;
     width: 272px;
-    max-width: calc(100vw - 8px);
-    max-height: calc(100vh - 8px);
+    max-width: calc(calc(100 * var(--emberprobe-vw, 1vw)) - 8px);
+    max-height: calc(calc(100 * var(--emberprobe-vh, 1vh)) - 8px);
     overflow: auto;
     padding: 12px;
     display: grid;
@@ -1752,7 +1753,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .chart-wrap {
     min-height: 260px;
 }
-@media (max-width: 760px) {
+@container emberprobe-page (max-width: 760px) {
     .layout {
         grid-template-rows: minmax(100px, 24%) minmax(0, 1fr);
     }
@@ -1766,7 +1767,7 @@ input[type="number"]::-webkit-outer-spin-button {
         min-height: 180px;
     }
 }
-@media (max-width: 430px) {
+@container emberprobe-page (max-width: 430px) {
     .chart-tools {
         gap: 3px;
         padding: 5px;
@@ -2258,7 +2259,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .ac-dropdown {
     min-width: max(100%, 280px);
-    max-width: calc(100vw - 24px);
+    max-width: calc(calc(100 * var(--emberprobe-vw, 1vw)) - 24px);
 }
 .ac-dropdown > .sampling-hint {
     position: sticky;
@@ -2613,7 +2614,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .ac-dropdown {
     width: max(100%, 220px);
-    max-width: calc(100vw - 28px);
+    max-width: calc(calc(100 * var(--emberprobe-vw, 1vw)) - 28px);
     left: auto;
     right: 0;
 }
@@ -2624,7 +2625,7 @@ input[type="number"]::-webkit-outer-spin-button {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: -1px;
 }
-@media (max-width: 760px) {
+@container emberprobe-page (max-width: 760px) {
     .layout {
         grid-template-rows: clamp(100px, var(--side-height, 38%), max(100px, calc(100% - 169px))) 9px minmax(0, 1fr);
     }
@@ -2779,7 +2780,7 @@ input[type="number"]::-webkit-outer-spin-button {
     z-index: 12;
     top: calc(100% + 6px);
     right: 0;
-    width: min(230px, calc(100vw - 28px));
+    width: min(230px, calc(calc(100 * var(--emberprobe-vw, 1vw)) - 28px));
     padding: 10px;
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     border-radius: 4px;
@@ -3036,7 +3037,7 @@ input[type="number"]::-webkit-outer-spin-button {
     z-index: 12;
     top: calc(100% + 6px);
     right: 0;
-    width: min(290px, calc(100vw - 28px));
+    width: min(290px, calc(calc(100 * var(--emberprobe-vw, 1vw)) - 28px));
     padding: 6px;
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     border-radius: 8px;

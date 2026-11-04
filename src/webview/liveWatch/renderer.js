@@ -392,13 +392,8 @@ function finishFrequencyDrag(commit) {
         selectFrequencyPreset();
     } else renderUnlimited(true);
 }
-function positionFrequencyPopup() {
-    var popup = $("frequencyPopup");
-    popup.style.removeProperty("transform");
-    var rect = popup.getBoundingClientRect();
-    var shift = Math.max(8 - rect.left, Math.min(0, window.innerWidth - 8 - rect.right));
-    if (shift) popup.style.transform = "translateX(" + shift + "px)";
-}
+const positionFrequencyPopup = () => EmberProbePageZoom.constrainPopup($("frequencyPopup"));
+
 function setFrequencyPopup(open, focusSlider) {
     $("frequencyPopup").hidden = !open;
     if (!open) finishFrequencyDrag(false);
@@ -672,6 +667,7 @@ function saveUi() {
     if (api && api.setState)
         api.setState({
             panelId: CFG.panelId,
+            pageZoom: state.pageZoom?.factor ?? 1,
             watchKey: CFG.watchKey,
             hidden: curves,
             expanded: state.expanded,
@@ -1064,7 +1060,7 @@ function arrangeVariableCards(force) {
     // A collapsed card has no width; keep its columns until it is shown again.
     var columns = panelLayout.collapsed
         ? box.classList.contains("independent-columns")
-        : $("valuePane").getBoundingClientRect().width >= PANEL_COLUMNS_WIDTH;
+        : EmberProbePageZoom.rect($("valuePane")).width >= PANEL_COLUMNS_WIDTH;
     if (!force && columns === box.classList.contains("independent-columns")) return;
     var focused = document.activeElement;
     // The docked sidebar scrolls as a whole; the floating card scrolls only its list.
@@ -1825,7 +1821,7 @@ controls = window.EmberProbeChartControls.create({
 });
 var suppressClickUntil = 0;
 canvas.addEventListener("click", function (e) {
-    var point = canvasPoint(e);
+    var point = EmberProbePageZoom.point(e, canvas);
     if (
         e.button !== 0 ||
         Date.now() < suppressClickUntil ||
@@ -2097,7 +2093,7 @@ function draw(now) {
         backgroundIcon: chartBackground.bitmap(getComputedStyle(document.body)),
         series,
         hasBounds,
-        pixelRatio: window.devicePixelRatio,
+        pixelRatio: window.devicePixelRatio * EmberProbePageZoom.scale(document),
         style: getComputedStyle(document.body),
         elements: { chartEmpty: $("chartEmpty"), points: $("points"), range: $("range") },
         VP,
@@ -2153,16 +2149,13 @@ function chartYAt(py, range) {
         ratio = Math.max(0, Math.min(1, (py - g.padT) / g.ph));
     return range.max - ratio * VP.span(range);
 }
-function canvasPoint(e) {
-    var rect = canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-}
+
 function setCanvasCursor(region) {
     canvas.style.cursor =
         region === "plot" ? "crosshair" : region === "x" ? "ew-resize" : region === "y" ? "ns-resize" : "default";
 }
 canvas.addEventListener("pointermove", function (e) {
-    var p = canvasPoint(e);
+    var p = EmberProbePageZoom.point(e, canvas);
     if (chartState.drag) {
         var g = chartState.geometry,
             drag = chartState.drag,
@@ -2195,7 +2188,7 @@ canvas.addEventListener("pointerleave", function () {
     state.dirty = true;
 });
 canvas.addEventListener("pointerdown", function (e) {
-    var p = canvasPoint(e);
+    var p = EmberProbePageZoom.point(e, canvas);
     if ((e.button !== 0 && e.button !== 1) || chartRegion(p.x, p.y) !== "plot" || !chartState.x || !chartState.y)
         return;
     e.preventDefault();
@@ -2230,7 +2223,7 @@ canvas.addEventListener("auxclick", function (e) {
 canvas.addEventListener(
     "wheel",
     function (e) {
-        var p = canvasPoint(e),
+        var p = EmberProbePageZoom.point(e, canvas),
             region = chartRegion(p.x, p.y);
         if (region === "none" || !chartState.x || !chartState.y) return;
         e.preventDefault();
@@ -2321,7 +2314,7 @@ $("chartRangeFill").addEventListener("pointerdown", function (e) {
     settleFollowView();
     var fill = this,
         track = $("chartTimeline"),
-        startX = e.clientX,
+        startX = EmberProbePageZoom.coordinate(e.clientX, document),
         startRange = { min: chartState.x.min, max: chartState.x.max },
         pointerId = e.pointerId;
     chartState.follow = false;
@@ -2329,8 +2322,9 @@ $("chartRangeFill").addEventListener("pointerdown", function (e) {
     fill.classList.add("dragging");
     fill.setPointerCapture(pointerId);
     var move = function (ev) {
-        var width = track.getBoundingClientRect().width || 1,
-            delta = ((ev.clientX - startX) / width) * VP.span(chartState.bounds);
+        var width = EmberProbePageZoom.rect(track).width || 1,
+            delta =
+                ((EmberProbePageZoom.coordinate(ev.clientX, document) - startX) / width) * VP.span(chartState.bounds);
         chartState.x = VP.panClamped(startRange, delta, chartState.bounds, minimumXSpan());
         snapDraggedRangeEdges();
         setWindowCustom();
@@ -2944,6 +2938,14 @@ window.EmberProbeMessages.connect(window, {
         requestedFrequencyHz = m.frequencyHz;
         renderUnlimited(true);
     }
+});
+EmberProbePageZoom.create({
+    target: window,
+    api,
+    state,
+    saved: saved?.pageZoom,
+    save: saveUi,
+    changed: panelLayout.apply
 });
 panelLayout.apply();
 window.addEventListener("resize", function () {

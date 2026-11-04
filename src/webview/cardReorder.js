@@ -1,8 +1,8 @@
 "use strict";
 (function (root, factory) {
-    if (typeof module === "object" && module.exports) module.exports = factory();
-    else root.EmberProbeCardReorder = factory();
-})(globalThis, function () {
+    if (typeof module === "object" && module.exports) module.exports = factory(require("./pageZoom"));
+    else root.EmberProbeCardReorder = factory(root.EmberProbePageZoom);
+})(globalThis, function (pageZoom) {
     const DRAG_THRESHOLD_PX = 3;
     const EDGE_SCROLL_PX = 24;
     const EDGE_SCROLL_STEP = 8;
@@ -108,13 +108,13 @@
                 target.classList.add(drag.target.after ? "reorder-drop-after" : "reorder-drop-before");
                 const siblings = cards().filter((card) => card.parentElement === target.parentElement);
                 const neighbor = siblings[siblings.indexOf(target) + (drag.target.after ? 1 : -1)];
-                const rect = target.getBoundingClientRect();
+                const rect = pageZoom.rect(target);
                 const gap = parseFloat(view.getComputedStyle(target.parentElement).rowGap) || 0;
                 const edge = drag.target.after ? rect.bottom : rect.top;
                 const adjacent = neighbor
-                    ? neighbor.getBoundingClientRect()[drag.target.after ? "top" : "bottom"]
+                    ? pageZoom.rect(neighbor)[drag.target.after ? "top" : "bottom"]
                     : edge + (drag.target.after ? gap : -gap);
-                const bounds = container.getBoundingClientRect();
+                const bounds = pageZoom.rect(container);
                 // Keep the marker outside cards so their rounded, clipped content cannot hide it.
                 Object.assign(insertionLine.style, {
                     left: rect.left - bounds.left - container.clientLeft + container.scrollLeft + "px",
@@ -134,7 +134,7 @@
         function zoneAt(x) {
             let best = null;
             for (const zone of zones()) {
-                const rect = zone.getBoundingClientRect();
+                const rect = pageZoom.rect(zone);
                 if (!rect.width) continue;
                 const distance = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
                 if (!best || distance < best.distance) best = { zone, distance };
@@ -148,7 +148,7 @@
                 return candidates.length ? null : { name: null, zone: zone.dataset.reorderZone, after: false };
             let best = null;
             for (const card of candidates) {
-                const rect = card.getBoundingClientRect();
+                const rect = pageZoom.rect(card);
                 if (!rect.width && !rect.height) continue;
                 const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
                 const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
@@ -170,8 +170,8 @@
             const scroller = scrollParent(container);
             const rect =
                 scroller === doc.scrollingElement || scroller === doc.documentElement
-                    ? { top: 0, bottom: view.innerHeight }
-                    : scroller.getBoundingClientRect();
+                    ? { top: 0, bottom: pageZoom.viewport(view).height }
+                    : pageZoom.rect(scroller);
             const step =
                 drag.y < rect.top + EDGE_SCROLL_PX
                     ? -EDGE_SCROLL_STEP
@@ -213,10 +213,10 @@
                 name: card.dataset.reorderKey,
                 pointerId: event.pointerId,
                 pointerType: event.pointerType,
-                startX: event.clientX,
-                startY: event.clientY,
-                x: event.clientX,
-                y: event.clientY,
+                startX: pageZoom.coordinate(event.clientX, doc),
+                startY: pageZoom.coordinate(event.clientY, doc),
+                x: pageZoom.coordinate(event.clientX, doc),
+                y: pageZoom.coordinate(event.clientY, doc),
                 active: false,
                 target: null
             };
@@ -232,16 +232,19 @@
         });
         view.addEventListener("pointermove", (event) => {
             if (!drag || !samePointer(event, drag)) return;
-            drag.x = event.clientX;
-            drag.y = event.clientY;
+            drag.x = pageZoom.coordinate(event.clientX, doc);
+            drag.y = pageZoom.coordinate(event.clientY, doc);
             if (
                 !drag.active &&
-                Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_THRESHOLD_PX
+                Math.hypot(
+                    pageZoom.coordinate(event.clientX, doc) - drag.startX,
+                    pageZoom.coordinate(event.clientY, doc) - drag.startY
+                ) < DRAG_THRESHOLD_PX
             )
                 return;
             drag.active = true;
             event.preventDefault();
-            drag.target = hitTarget(event.clientX, event.clientY);
+            drag.target = hitTarget(pageZoom.coordinate(event.clientX, doc), pageZoom.coordinate(event.clientY, doc));
             applyMarks();
             if (scrollFrame === null) edgeScroll();
         });

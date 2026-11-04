@@ -9,6 +9,7 @@ const openocdChecker = require("./openocdChecker");
 const { MainViewProvider } = require("./mainViewProvider");
 const { validateDebugConfiguration } = require("./services/debugConfiguration");
 const { ReplFocusRestorer } = require("./services/replFocus");
+const { broadcastWebviewSettings } = require("./services/webviewSettings");
 let activeProvider = null;
 
 function activate(context) {
@@ -43,6 +44,7 @@ function activate(context) {
             await provider.refreshOpenOcdStatus(true);
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration("editor.mouseWheelZoom")) broadcastWebviewSettings(provider, vscode);
             if (["gdbPath", "armToolchainPath", "armToolchainPrefix", "objdumpPath"].some(
                 key => event.affectsConfiguration("emberprobe." + key)
             )) provider.debugLaunch.scheduleGdbWarmup();

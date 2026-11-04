@@ -1,8 +1,8 @@
 "use strict";
 (function (root, factory) {
-    if (typeof module === "object" && module.exports) module.exports = factory();
-    else root.EmberProbeChartControls = factory();
-})(globalThis, function () {
+    if (typeof module === "object" && module.exports) module.exports = factory(require("../pageZoom"));
+    else root.EmberProbeChartControls = factory(root.EmberProbePageZoom);
+})(globalThis, function (pageZoom) {
     function create(env) {
         const { document: doc, t, change, get } = env;
         const $ = (id) => doc.getElementById(id);
@@ -143,16 +143,22 @@
                 actions
             );
             menu.classList.remove("hidden");
-            const rect = anchor.getBoundingClientRect();
+            const rect = pageZoom.rect(anchor);
             menu.style.left =
                 Math.max(
                     4,
-                    Math.min(doc.documentElement.clientWidth - menu.offsetWidth - 4, point?.clientX ?? rect.left)
+                    Math.min(
+                        pageZoom.viewport(doc.defaultView).width - menu.offsetWidth - 4,
+                        (point ? pageZoom.coordinate(point.clientX, doc) : undefined) ?? rect.left
+                    )
                 ) + "px";
             menu.style.top =
                 Math.max(
                     4,
-                    Math.min(doc.documentElement.clientHeight - menu.offsetHeight - 4, point?.clientY ?? rect.bottom)
+                    Math.min(
+                        pageZoom.viewport(doc.defaultView).height - menu.offsetHeight - 4,
+                        (point ? pageZoom.coordinate(point.clientY, doc) : undefined) ?? rect.bottom
+                    )
                 ) + "px";
             (menu.querySelector(".series-type") || $("seriesRemove")).focus();
         }

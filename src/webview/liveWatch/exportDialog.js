@@ -3,10 +3,13 @@
 // the time range. The host lists the archive (samplingArchiveInfo with openExport) and writes the file (exportCsv).
 (function (root, factory) {
     const commonJs = typeof module === "object" && module.exports;
-    const exportDialog = factory(commonJs ? require("../cardReorder") : root.EmberProbeCardReorder);
+    const exportDialog = factory(
+        commonJs ? require("../cardReorder") : root.EmberProbeCardReorder,
+        commonJs ? require("../pageZoom") : root.EmberProbePageZoom
+    );
     if (commonJs) module.exports = exportDialog;
     else root.EmberProbeExportDialog = exportDialog;
-})(typeof globalThis === "object" ? globalThis : this, function (cardReorder) {
+})(typeof globalThis === "object" ? globalThis : this, function (cardReorder, pageZoom) {
     function exportBounds(candidates) {
         let from = Infinity,
             to = -Infinity;
@@ -150,10 +153,10 @@
         function updateDrag() {
             if (!drag || !drag.moved) return;
             const box = drag.box,
-                rect = box.getBoundingClientRect(),
+                rect = pageZoom.rect(box),
                 left = rect.left + box.clientLeft,
                 top = rect.top + box.clientTop,
-                headerHeight = box.querySelector("thead").getBoundingClientRect().height,
+                headerHeight = pageZoom.rect(box.querySelector("thead")).height,
                 x = Math.max(0, Math.min(box.clientWidth, drag.clientX - left)) + box.scrollLeft,
                 y = Math.max(headerHeight, Math.min(box.clientHeight, drag.clientY - top)) + box.scrollTop,
                 x1 = Math.min(drag.x, x),
@@ -176,8 +179,8 @@
         function scrollDrag(now) {
             if (!drag || !drag.moved) return;
             const box = drag.box,
-                rect = box.getBoundingClientRect(),
-                top = rect.top + box.clientTop + box.querySelector("thead").getBoundingClientRect().height,
+                rect = pageZoom.rect(box),
+                top = rect.top + box.clientTop + pageZoom.rect(box.querySelector("thead")).height,
                 bottom = rect.top + box.clientTop + box.clientHeight,
                 edge = Math.min(28, (bottom - top) / 3),
                 speed =
@@ -194,13 +197,13 @@
         function beginDrag(event) {
             if (event.button !== 0 || drag || !candidates.length) return;
             const box = $("exportSeries"),
-                rect = box.getBoundingClientRect(),
+                rect = pageZoom.rect(box),
                 left = rect.left + box.clientLeft,
                 top = rect.top + box.clientTop;
             if (
                 event.target.closest("thead") ||
-                event.clientX >= left + box.clientWidth ||
-                event.clientY >= top + box.clientHeight
+                pageZoom.coordinate(event.clientX, document) >= left + box.clientWidth ||
+                pageZoom.coordinate(event.clientY, document) >= top + box.clientHeight
             )
                 return;
             event.preventDefault();
@@ -214,18 +217,18 @@
                 pointerId: event.pointerId,
                 pointerType: event.pointerType,
                 checkbox: row && row.querySelector("input"),
-                x: event.clientX - left + box.scrollLeft,
-                y: event.clientY - top + box.scrollTop,
-                clientX: event.clientX,
-                clientY: event.clientY,
-                startX: event.clientX,
-                startY: event.clientY,
+                x: pageZoom.coordinate(event.clientX, document) - left + box.scrollLeft,
+                y: pageZoom.coordinate(event.clientY, document) - top + box.scrollTop,
+                clientX: pageZoom.coordinate(event.clientX, document),
+                clientY: pageZoom.coordinate(event.clientY, document),
+                startX: pageZoom.coordinate(event.clientX, document),
+                startY: pageZoom.coordinate(event.clientY, document),
                 moved: false,
                 marquee: marquee,
                 frame: 0,
                 lastFrame: performance.now(),
                 rows: Array.from(box.querySelectorAll("tbody tr:not([hidden])"), function (entry) {
-                    const bounds = entry.getBoundingClientRect(),
+                    const bounds = pageZoom.rect(entry),
                         checkbox = entry.querySelector("input");
                     return {
                         checkbox: checkbox,
@@ -245,9 +248,15 @@
                 endDrag(event);
                 return;
             }
-            drag.clientX = event.clientX;
-            drag.clientY = event.clientY;
-            if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 4) {
+            drag.clientX = pageZoom.coordinate(event.clientX, document);
+            drag.clientY = pageZoom.coordinate(event.clientY, document);
+            if (
+                !drag.moved &&
+                Math.hypot(
+                    pageZoom.coordinate(event.clientX, document) - drag.startX,
+                    pageZoom.coordinate(event.clientY, document) - drag.startY
+                ) >= 4
+            ) {
                 drag.moved = true;
                 drag.lastFrame = performance.now();
                 drag.frame = requestAnimationFrame(scrollDrag);

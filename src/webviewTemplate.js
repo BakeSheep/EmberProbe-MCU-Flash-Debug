@@ -20,6 +20,7 @@ function loadWebviewAsset(area, name) {
 }
 
 const SHARED_PRELUDE = [
+    "pageZoom.js",
     "notice.js",
     "elfDiagnostics.js",
     "runtime.js",

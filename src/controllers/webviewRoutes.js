@@ -1,10 +1,12 @@
 "use strict";
+const { webviewSettings } = require("../services/webviewSettings");
 
 // Message routes of the webview pages, keyed by message type. A route takes the page it serves and the message; the
 // page is { host, post, watchKey, vscode }, where host is the MainViewProvider and watchKey the page's watch list.
 
 // Messages both the sidebar and the chart panels send.
 const SHARED_ROUTES = {
+    getWebviewSettings: ({ post, vscode }) => post(webviewSettings(vscode)),
     copyText: ({ host }, message) => host._copyToClipboard(message.text),
     setLang: ({ host }, message) => {
         host._setLang(message.lang);

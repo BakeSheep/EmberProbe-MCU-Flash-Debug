@@ -234,6 +234,7 @@ const TEST_GROUPS = Object.freeze({
         "webview-assets.test.js",
         "sampling-rate-picker.test.js",
         "webview-runtime.test.js",
+        "webview-zoom.test.js",
         "ui-messages.test.js",
         "webview.test.js",
         "write-stepping.test.js",

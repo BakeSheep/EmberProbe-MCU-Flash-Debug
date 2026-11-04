@@ -1476,31 +1476,9 @@ variableBrowser.addEventListener("toggle", () => {
     if (api && api.setState) api.setState(uiState);
 });
 function attachResizeHandle(handle, box, stateKey) {
-    const savedHeight = Number(uiState[stateKey]);
-    if (Number.isFinite(savedHeight) && savedHeight >= 80) box.style.height = savedHeight + "px";
-    handle.addEventListener("pointerdown", (e) => {
-        e.preventDefault();
-        const startY = e.clientY,
-            startHeight = box.getBoundingClientRect().height;
-        handle.classList.add("dragging");
-        handle.setPointerCapture(e.pointerId);
-        const move = (ev) => {
-            const max = Math.max(120, window.innerHeight * 0.7),
-                height = Math.min(max, Math.max(80, startHeight + ev.clientY - startY));
-            box.style.height = height + "px";
-        };
-        const end = (ev) => {
-            handle.classList.remove("dragging");
-            handle.releasePointerCapture(ev.pointerId);
-            handle.removeEventListener("pointermove", move);
-            handle.removeEventListener("pointerup", end);
-            handle.removeEventListener("pointercancel", end);
-            uiState[stateKey] = Math.round(box.getBoundingClientRect().height);
-            if (api && api.setState) api.setState(uiState);
-        };
-        handle.addEventListener("pointermove", move);
-        handle.addEventListener("pointerup", end);
-        handle.addEventListener("pointercancel", end);
+    EmberProbePageZoom.resizeHandle(handle, box, Number(uiState[stateKey]), (height) => {
+        uiState[stateKey] = height;
+        api?.setState?.(uiState);
     });
 }
 attachResizeHandle(document.getElementById("varResizeHandle"), availableBox, "variableHeight");
@@ -1511,6 +1489,16 @@ attachResizeHandle(
     "peripheralHeight"
 );
 document.getElementById("githubLink").onclick = () => api?.postMessage({ type: "openGitHub" });
+EmberProbePageZoom.create({
+    target: window,
+    api,
+    state,
+    saved: uiState.pageZoom,
+    save: (factor) => {
+        uiState.pageZoom = factor;
+        api?.setState?.(uiState);
+    }
+});
 window.EmberProbeMessages.connect(window, {
     memoryAnalysis: function (m) {
         memoryView?.receive(m);

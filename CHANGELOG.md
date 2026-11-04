@@ -19,6 +19,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - List each MCP client's state in the Agent Configuration card, with install, upgrade, remove and copy actions in
   the sidebar. GitHub Copilot shows as built in. Installing and upgrading no longer ask first; removing still does.
 
+- 开启 VS Code `editor.mouseWheelZoom` 后，EmberProbe 侧栏和波形图支持 Ctrl＋滚轮独立缩放（macOS 也支持
+  Command＋滚轮），范围为 50%～200%，各页面分别保存比例；普通滚轮保留原有滚动及波形坐标轴缩放行为。
+- Honor VS Code `editor.mouseWheelZoom` with independent Ctrl+wheel page zoom in the EmberProbe sidebar and waveform
+  tabs (also Command+wheel on macOS). Each page retains its own 50–200% scale; ordinary wheel scrolling and waveform
+  axis zoom keep their existing behavior.
+
 - APM32F407 + J-Link/WinUSB 实板通过外设三态读取及 6 次同值写入；修复 xPack OpenOCD 仅提供公开内存命令
   时访问失败，以及后台发现 CubeMX 路径导致外设事务误失效的问题。仅验证 32 位同值写入，未测试实际改值。
 - Validate three-state peripheral reads and six same-value writes on APM32F407 + J-Link/WinUSB. Discover public

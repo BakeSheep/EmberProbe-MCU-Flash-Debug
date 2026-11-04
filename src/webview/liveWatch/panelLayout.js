@@ -4,10 +4,13 @@
 // the page state.
 (function (root, factory) {
     const commonJs = typeof module === "object" && module.exports;
-    const panelLayout = factory(commonJs ? require("../cardReorder") : root.EmberProbeCardReorder);
+    const panelLayout = factory(
+        commonJs ? require("../cardReorder") : root.EmberProbeCardReorder,
+        commonJs ? require("../pageZoom") : root.EmberProbePageZoom
+    );
     if (commonJs) module.exports = panelLayout;
     else root.EmberProbePanelLayout = panelLayout;
-})(typeof globalThis === "object" ? globalThis : this, function (cardReorder) {
+})(typeof globalThis === "object" ? globalThis : this, function (cardReorder, pageZoom) {
     const PANEL_MARGIN = 8,
         PANEL_MIN_WIDTH = 220,
         PANEL_MIN_HEIGHT = 120;
@@ -68,7 +71,7 @@
             const content = rows.reduce(function (widest, row) {
                 const style = getComputedStyle(row),
                     children = Array.from(row.children).filter(function (child) {
-                        return child.id !== "rate" && child.getBoundingClientRect().width > 0;
+                        return child.id !== "rate" && pageZoom.rect(child).width > 0;
                     });
                 let width =
                     px(style.paddingLeft) +
@@ -76,8 +79,7 @@
                     px(style.columnGap) * Math.max(0, children.length - 1);
                 children.forEach(function (child) {
                     const childStyle = getComputedStyle(child);
-                    width +=
-                        child.getBoundingClientRect().width + px(childStyle.marginLeft) + px(childStyle.marginRight);
+                    width += pageZoom.rect(child).width + px(childStyle.marginLeft) + px(childStyle.marginRight);
                 });
                 return Math.max(widest, width);
             }, 0);
@@ -109,7 +111,7 @@
                 });
                 return;
             }
-            const bounds = layout.getBoundingClientRect();
+            const bounds = pageZoom.rect(layout);
             if (!bounds.width || !bounds.height) return;
             const g = panelGeometry(bounds);
             valuePane.style.left = g.x + "px";
@@ -181,9 +183,9 @@
             page.changed();
         }
         function updateSplitter() {
-            const stacked = window.innerWidth <= 760;
-            const bounds = layout.getBoundingClientRect();
-            const pane = valuePane.getBoundingClientRect();
+            const stacked = pageZoom.viewport(window).width <= 760;
+            const bounds = pageZoom.rect(layout);
+            const pane = pageZoom.rect(valuePane);
             sideSplitter.setAttribute("aria-label", t("lw.splitterHint"));
             sideSplitter.setAttribute("aria-orientation", stacked ? "horizontal" : "vertical");
             sideSplitter.setAttribute("aria-valuemin", stacked ? "100" : "220");
@@ -195,7 +197,7 @@
             sideSplitter.tabIndex = sideCollapsed || panelFloating() ? -1 : 0;
         }
         function resizeSide(size, stacked) {
-            const bounds = layout.getBoundingClientRect();
+            const bounds = pageZoom.rect(layout);
             const min = stacked ? 100 : 220;
             const max = Math.max(min, stacked ? bounds.height - 169 : bounds.width - 300);
             size = Math.round(Math.min(max, Math.max(min, size)));
@@ -233,17 +235,25 @@
         function trackPanelPointer(target, e, update) {
             if (e.button !== 0 || !panelFloating()) return;
             e.preventDefault();
-            const bounds = layout.getBoundingClientRect(),
+            const bounds = pageZoom.rect(layout),
                 start = panelGeometry(bounds),
-                startX = e.clientX,
-                startY = e.clientY;
+                startX = pageZoom.coordinate(e.clientX, document),
+                startY = pageZoom.coordinate(e.clientY, document);
             valuePane.classList.add("dragging");
             target.classList.add("active");
             trackPointer(
                 target,
                 e,
                 function (ev) {
-                    setPanelGeometry(update(start, ev.clientX - startX, ev.clientY - startY, bounds), bounds);
+                    setPanelGeometry(
+                        update(
+                            start,
+                            pageZoom.coordinate(ev.clientX, document) - startX,
+                            pageZoom.coordinate(ev.clientY, document) - startY,
+                            bounds
+                        ),
+                        bounds
+                    );
                 },
                 function () {
                     valuePane.classList.remove("dragging");
@@ -255,7 +265,7 @@
             const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
             if (!step || !panelFloating()) return;
             e.preventDefault();
-            const bounds = layout.getBoundingClientRect(),
+            const bounds = pageZoom.rect(layout),
                 size = e.shiftKey ? 50 : 10;
             setPanelGeometry(update(panelGeometry(bounds), step[0] * size, step[1] * size, bounds), bounds);
             page.save();
@@ -279,21 +289,28 @@
         };
         sideSplitter.addEventListener("pointerdown", function (e) {
             if (e.button !== 0) return;
-            const stacked = window.innerWidth <= 760;
+            const stacked = pageZoom.viewport(window).width <= 760;
             e.preventDefault();
             if (sideCollapsed) {
                 sideCollapsed = false;
                 apply();
             }
-            const start = stacked ? e.clientY : e.clientX,
-                bounds = valuePane.getBoundingClientRect(),
+            const start = stacked ? pageZoom.coordinate(e.clientY, document) : pageZoom.coordinate(e.clientX, document),
+                bounds = pageZoom.rect(valuePane),
                 startSize = stacked ? bounds.height : bounds.width;
             sideSplitter.classList.add("dragging");
             trackPointer(
                 sideSplitter,
                 e,
                 function (ev) {
-                    resizeSide(startSize + (stacked ? ev.clientY : ev.clientX) - start, stacked);
+                    resizeSide(
+                        startSize +
+                            (stacked
+                                ? pageZoom.coordinate(ev.clientY, document)
+                                : pageZoom.coordinate(ev.clientX, document)) -
+                            start,
+                        stacked
+                    );
                 },
                 function () {
                     sideSplitter.classList.remove("dragging");
@@ -301,11 +318,11 @@
             );
         });
         sideSplitter.addEventListener("keydown", function (e) {
-            const stacked = window.innerWidth <= 760;
+            const stacked = pageZoom.viewport(window).width <= 760;
             const direction = stacked ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : { ArrowLeft: -1, ArrowRight: 1 }[e.key];
             if (!direction) return;
             e.preventDefault();
-            const bounds = valuePane.getBoundingClientRect();
+            const bounds = pageZoom.rect(valuePane);
             resizeSide((stacked ? bounds.height : bounds.width) + direction * (e.shiftKey ? 50 : 10), stacked);
             page.save();
         });

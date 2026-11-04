@@ -5,11 +5,23 @@
 (function (root, factory) {
     const commonJs = typeof module === "object" && module.exports;
     const writeList = commonJs
-        ? factory(require("../runtime"), require("../valueTree"), require("../cardReorder"), require("../notice"))
-        : factory(root.EmberProbeRuntime, root.EmberProbeValueTree, root.EmberProbeCardReorder, root.EmberProbeNotice);
+        ? factory(
+              require("../runtime"),
+              require("../valueTree"),
+              require("../cardReorder"),
+              require("../notice"),
+              require("../pageZoom")
+          )
+        : factory(
+              root.EmberProbeRuntime,
+              root.EmberProbeValueTree,
+              root.EmberProbeCardReorder,
+              root.EmberProbeNotice,
+              root.EmberProbePageZoom
+          );
     if (commonJs) module.exports = writeList;
     else root.EmberProbeWriteList = writeList;
-})(typeof globalThis === "object" ? globalThis : this, function (runtime, valueTree, cardReorder, notice) {
+})(typeof globalThis === "object" ? globalThis : this, function (runtime, valueTree, cardReorder, notice, pageZoom) {
     const { fmtNum } = valueTree;
     const WRITE_INTERVAL_MS = 100;
     // While the debugger is paused the CPU never sees intermediate drag values, yet every write makes the debugger
@@ -164,11 +176,11 @@
             riskTip.textContent = icon.dataset.tip;
             riskTip.hidden = false;
             icon.setAttribute("aria-describedby", riskTip.id);
-            const anchor = icon.getBoundingClientRect(),
+            const anchor = pageZoom.rect(icon),
                 width = riskTip.offsetWidth,
                 height = riskTip.offsetHeight,
-                viewWidth = document.documentElement.clientWidth || window.innerWidth,
-                viewHeight = document.documentElement.clientHeight || window.innerHeight;
+                viewWidth = pageZoom.viewport(window).width,
+                viewHeight = pageZoom.viewport(window).height;
             const left = Math.max(4, Math.min(anchor.left, viewWidth - width - 4));
             const below = anchor.bottom + 4;
             riskTip.style.left = left + "px";
