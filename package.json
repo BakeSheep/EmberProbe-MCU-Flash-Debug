@@ -251,9 +251,10 @@
         },
         "emberprobe.rtt.pollingIntervalMs": {
           "type": "integer",
-          "minimum": 1,
+          "default": 0,
+          "minimum": 0,
           "maximum": 60000,
-          "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒）。未设置时使用 OpenOCD 默认值；仅影响 OpenOCD 侧轮询，终端读取不受此设置限制。"
+          "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒）。0 表示使用 OpenOCD 默认值；仅影响 OpenOCD 侧轮询，终端读取不受此设置限制。"
         },
         "emberprobe.rtt.timestamps": {
           "type": "boolean",

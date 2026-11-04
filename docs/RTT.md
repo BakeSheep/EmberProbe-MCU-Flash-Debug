@@ -11,10 +11,10 @@ EmberProbe 通过 OpenOCD 内建的 RTT 支持读取 SEGGER RTT 输出，J-Link 
 1. 设置 `emberprobe.rtt.controlBlockAddress`（如 `0x24000000`）：直接使用该地址。
 2. 当前 ELF 中的 `_SEGGER_RTT` 符号：使用其精确地址和大小（大小不足 72 字节时按 72 字节）。
 3. 设置 `emberprobe.rtt.searchRange`（`{ "address": "0x20000000", "size": "0x20000" }`）：在该范围内搜索 `"SEGGER RTT"` 标识，最大 16 MiB。
-4. ELF 中可写的已分配段：取包含 `.bss` 的连续区间（间隔不超过 64 KiB 的段合并），否则取最大的区间。
+4. ELF 中可写的已分配段：间隔不超过 64 KiB 的段合并为一个区间，先搜含 `.bss` 的区间，其余按大小依次搜索，控制块放在独立 RAM 段时也能找到。
 5. 链接脚本中的第一个 RAM 区。
 
-第 4、5 步自动扫描最多 1 MiB，超出时报 `RTT_SCAN_RANGE_TOO_LARGE`，需要设置地址或搜索范围。范围按 32 KiB 分片搜索，每片之间释放会话，所以实时观察和调试可以继续；适配器速度很低时建议直接设置地址。配置了地址时不需要 ELF；ELF 正在重新加载时 RTT 会等待后重试。符号名区分大小写；ELF 中有多个 `_SEGGER_RTT` 时报 `RTT_CONTROL_BLOCK_AMBIGUOUS`。
+第 4、5 步自动扫描最多 1 MiB：首个区间超出时报 `RTT_SCAN_RANGE_TOO_LARGE`，需要设置地址或搜索范围；第 4 步其余区间超出总量时不搜索。范围按 32 KiB 分片搜索，每片之间释放会话，所以实时观察和调试可以继续；适配器速度很低时建议直接设置地址。配置了地址时不需要 ELF；ELF 正在重新加载时 RTT 会等待后重试。符号名区分大小写；ELF 中有多个 `_SEGGER_RTT` 时报 `RTT_CONTROL_BLOCK_AMBIGUOUS`。
 
 ## 显示
 
@@ -47,10 +47,10 @@ EmberProbe reads SEGGER RTT output through OpenOCD's built-in RTT support. J-Lin
 1. `emberprobe.rtt.controlBlockAddress`
 2. the ELF `_SEGGER_RTT` symbol
 3. `emberprobe.rtt.searchRange` (up to 16 MiB)
-4. the writable ELF section span around `.bss`
+4. the writable ELF section spans: the one around `.bss` first, then the others by size, so a block in its own RAM section is found
 5. the first linker RAM region
 
-Automatic scans (steps 4 and 5) are capped at 1 MiB. Ranges are searched in 32 KiB slices, releasing the session between them; on a very slow adapter, set the address. A configured address needs no ELF, and RTT retries while the ELF reloads. Channels keep their firmware numbers, and unconfigured channels are not listed. Each up channel will get its own terminal, with CRLF normalization, UTF-8 joining, ANSI pass-through and optional host timestamps. Commands and terminals are implemented; Agent access is still in development and hardware validation is pending; see [RTT-AUDIT.md](RTT-AUDIT.md).
+Automatic scans (steps 4 and 5) are capped at 1 MiB: a first span over the cap reports `RTT_SCAN_RANGE_TOO_LARGE`, and later spans over it are skipped. Ranges are searched in 32 KiB slices, releasing the session between them; on a very slow adapter, set the address. A configured address needs no ELF, and RTT retries while the ELF reloads. Channels keep their firmware numbers, and unconfigured channels are not listed. Each up channel will get its own terminal, with CRLF normalization, UTF-8 joining, ANSI pass-through and optional host timestamps. Commands and terminals are implemented; Agent access is still in development and hardware validation is pending; see [RTT-AUDIT.md](RTT-AUDIT.md).
 
 Start RTT from the sidebar card or `mcu-vscode.startRtt`; stop with `mcu-vscode.stopRtt`. Select up to 16 up channels with `emberprobe.rtt.channels` (default `[0]`). RTT keeps retrying while the firmware has configured none of them, and starts with a warning when only some are missing. Each configured selected channel has its own terminal; Enter sends a line to the matching down channel. A line is capped at 1023 UTF-8 bytes plus LF and must fit the down buffer (its size minus one); a longer line is not sent. Input problems are shown in that terminal and stay out of the log, which records only input that was sent. Closing a running terminal keeps capture running; `mcu-vscode.showRttTerminals` reopens it. After a stop the terminals stay readable with the reason as their last line and the next start reuses them. Start failures, an exhausted background retry and lost connections appear in the RTT card's notice box, expanding the card if needed. Input delivery to firmware is not acknowledged, and a down buffer still holding unread data may discard input.
 

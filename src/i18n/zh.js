@@ -291,7 +291,7 @@ module.exports = Object.freeze({
     "rtt.err.probeBusy": "调试探针正被其他操作占用",
     "rtt.err.configIncomplete": "请先在侧栏选择调试器和目标芯片",
     "rtt.err.openocdMissing": "OpenOCD 不可用，请先在侧栏完成环境检查",
-    "rtt.err.startTimeout": "RTT 未找到控制块：固件尚未初始化 RTT，或地址不匹配",
+    "rtt.err.startTimeout": "RTT 未找到控制块：固件尚未初始化 RTT，或控制块不在搜索范围内；可设置控制块地址或搜索范围",
     "rtt.err.portUnavailable": "没有可用的本地端口",
     "rtt.err.scanTooLarge": "自动扫描范围超过上限，请设置控制块地址或搜索范围",
     "rtt.err.ambiguous": "ELF 中存在多个 _SEGGER_RTT 符号",

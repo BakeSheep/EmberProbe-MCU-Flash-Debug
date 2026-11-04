@@ -315,7 +315,7 @@ module.exports = Object.freeze({
     "rtt.err.configIncomplete": "Select the debug probe and target first",
     "rtt.err.openocdMissing": "OpenOCD is not available; check the environment first",
     "rtt.err.startTimeout":
-        "RTT did not find the control block: the firmware has not initialized RTT, or the address does not match",
+        "RTT did not find the control block: the firmware has not initialized RTT, or the block is outside the searched memory; set its address or a search range",
     "rtt.err.portUnavailable": "No free local port",
     "rtt.err.scanTooLarge": "The automatic scan range is too large; set the control-block address or a search range",
     "rtt.err.ambiguous": "Several _SEGGER_RTT symbols in the ELF",

@@ -33,6 +33,8 @@ class FakeOpenOcdServer {
         this.rttChannels = "Channels: up=0, down=0\nUp-channels:\nDown-channels:\n";
         this.rttServers = [];
         this.rttPollingIntervalMs = null;
+        // `rtt channels` returns what it printed as its error when a channel's name cannot be read.
+        this.rttChannelsTruncated = false;
         this.rttSupported = true;
     }
 
@@ -214,7 +216,8 @@ class FakeOpenOcdServer {
                 return { ok: true, response: "" };
             }
             if (command === "rtt start") {
-                if (!this.rttBlockPresent) return { ok: false, response: "rtt: No control block found" };
+                // OpenOCD logs the miss; its Tcl result stays empty.
+                if (!this.rttBlockPresent) return { ok: false, response: "" };
                 this.rttStarted = true;
                 return { ok: true, response: "" };
             }
@@ -224,7 +227,7 @@ class FakeOpenOcdServer {
             }
             if (command === "rtt channels") {
                 if (!this.rttStarted) return { ok: false, response: "rtt: Control block not available" };
-                return { ok: true, response: this.rttChannels };
+                return { ok: !this.rttChannelsTruncated, response: this.rttChannels };
             }
             const serverStart = command.match(/^rtt server start (\d+) (\d+)$/);
             if (serverStart) {

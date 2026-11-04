@@ -12,6 +12,11 @@ const MAX_SERVER_COMMANDS = 16;
 // An OpenOCD without the rtt command set cannot gain it by retrying. Other Tcl failures ("control block not found"
 // while the firmware initializes) may clear on their own, so the controller may retry them with backoff.
 const MISSING_RTT_SUPPORT = /invalid command name|unknown command/i;
+// OpenOCD logs the reason for a failed `rtt start` and leaves the Tcl result empty, so the transport's text only names
+// the command. A search miss is what that nearly always is.
+const SILENT_START_FAILURE = /^OpenOCD command failed/;
+// `rtt channels` fails on a channel whose name it cannot read and returns the listing printed so far as the error.
+const PARTIAL_CHANNEL_LISTING = /^Up-channels:$/m;
 
 const rttError = (code, message, details) =>
     Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
@@ -74,6 +79,19 @@ function buildPlan(request) {
     return { operation, steps: [{ command: commands.stop(), channels: false }] };
 }
 
+async function runStep(session, step) {
+    try {
+        return await session.tcl.sendChecked(step.command);
+    } catch (error) {
+        if (error?.code !== "OPENOCD_TCL_ERROR") throw error;
+        if (step.channels && PARTIAL_CHANNEL_LISTING.test(error.message)) return error.message;
+        error.retryable = !MISSING_RTT_SUPPORT.test(error.message);
+        if (step.command === commands.start() && SILENT_START_FAILURE.test(error.message))
+            error.message = "no control block found in the searched memory";
+        throw error;
+    }
+}
+
 // request: { operation: "start"|"channels"|"serverStart"|"serverStop"|"stop", block?, pollingIntervalMs?, servers?,
 // ports? }. Returns { channels? }; start and channels parse the channel listing, which may be empty until the firmware
 // configures its up buffers.
@@ -100,13 +118,7 @@ async function rttControl(session, request, timeoutMs = 5000) {
         let channelText = "";
         for (const step of plan.steps) {
             check();
-            let response;
-            try {
-                response = await session.tcl.sendChecked(step.command);
-            } catch (error) {
-                if (error?.code === "OPENOCD_TCL_ERROR") error.retryable = !MISSING_RTT_SUPPORT.test(error.message);
-                throw error;
-            }
+            const response = await runStep(session, step);
             executed++;
             check();
             if (step.channels) channelText = response;
