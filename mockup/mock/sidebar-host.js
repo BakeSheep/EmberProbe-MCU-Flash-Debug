@@ -23,6 +23,7 @@
             return item.name;
         });
         var stopped = false;
+        var rtt = { running: false, terminals: false, saving: false, timestamps: false };
         var initialized = false;
         var debugTimer = null;
         var targetState = "halted";
@@ -470,6 +471,37 @@
             }
         }
 
+        // RTT card: the channels a demo firmware would configure, with the view fields the host adds.
+        function postRttStatus() {
+            var up = [
+                { index: 0, name: "Terminal", mode: "skip" },
+                { index: 1, name: "Trace", mode: "block" }
+            ];
+            send({
+                type: "rttStatus",
+                state: rtt.running ? "running" : "stopped",
+                channels: rtt.running ? { up: up, down: [{ index: 0, size: 64 }] } : null,
+                buffers: rtt.running
+                    ? up.map(function (channel) {
+                          return { channel: channel.index, connected: true };
+                      })
+                    : [],
+                view: {
+                    terminals: rtt.terminals ? up.length : 0,
+                    timestamps: rtt.timestamps,
+                    log: { enabled: rtt.saving, directory: rtt.saving ? "D:/work/firmware/logs" : "" }
+                }
+            });
+        }
+
+        function handleRtt(cmd) {
+            if (cmd === "mcu-vscode.startRtt") rtt.running = rtt.terminals = true;
+            else if (cmd === "mcu-vscode.stopRtt") rtt.running = false;
+            else if (cmd === "mcu-vscode.rttSaveLog") rtt.saving = !rtt.saving;
+            else if (cmd === "mcu-vscode.rttToggleTimestamps") rtt.timestamps = !rtt.timestamps;
+            postRttStatus();
+        }
+
         function handleExecute(cmd) {
             switch (cmd) {
                 case "mcu-vscode.download":
@@ -481,6 +513,14 @@
                 case "mcu-vscode.openLiveWatch":
                     send({ type: "commandSuccess", cmd: cmd });
                     notify({ action: "openLiveWatch" });
+                    break;
+                case "mcu-vscode.startRtt":
+                case "mcu-vscode.stopRtt":
+                case "mcu-vscode.showRttTerminals":
+                case "mcu-vscode.rttSaveLog":
+                case "mcu-vscode.rttToggleTimestamps":
+                    handleRtt(cmd);
+                    send({ type: "commandSuccess", cmd: cmd });
                     break;
                 case "mcu-vscode.manageAgentSkills":
                     simulateSkillToggle(cmd);

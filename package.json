@@ -101,6 +101,26 @@
         "title": "EmberProbe: 实时变量查看"
       },
       {
+        "command": "mcu-vscode.startRtt",
+        "title": "EmberProbe: 启动 RTT 日志"
+      },
+      {
+        "command": "mcu-vscode.stopRtt",
+        "title": "EmberProbe: 停止 RTT 日志"
+      },
+      {
+        "command": "mcu-vscode.showRttTerminals",
+        "title": "EmberProbe: 显示 RTT 终端"
+      },
+      {
+        "command": "mcu-vscode.rttSaveLog",
+        "title": "EmberProbe: 保存/停止保存 RTT 日志"
+      },
+      {
+        "command": "mcu-vscode.rttToggleTimestamps",
+        "title": "EmberProbe: 切换 RTT 时间戳"
+      },
+      {
         "command": "mcu-vscode.selectChartBackgroundIcon",
         "title": "EmberProbe: 导入/更换波形背景图标"
       },
@@ -208,6 +228,74 @@
           "minimum": 64,
           "maximum": 102400,
           "description": "当前扩展会话的自动采样历史最大磁盘占用（MiB），修改立即生效（调高后已写满停止的采样可重新开始），退出时自动删除"
+        },
+        "emberprobe.rtt.controlBlockAddress": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "RTT 控制块地址（如 `0x24000000`）。设置后直接使用该地址，不再读取 ELF 符号或扫描；未设置时依次尝试 ELF 的 `_SEGGER_RTT` 符号、搜索范围、可写段和链接脚本 RAM 区。"
+        },
+        "emberprobe.rtt.searchRange": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "搜索范围起始地址（如 0x20000000）"
+            },
+            "size": {
+              "type": "string",
+              "description": "搜索范围大小（字节，十进制或 0x 十六进制，最大 16 MiB）"
+            }
+          },
+          "markdownDescription": "RTT 控制块搜索范围 `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`，按 32 KiB 分片搜索，片间释放会话。优先级低于 ELF `_SEGGER_RTT` 符号，高于自动扫描。"
+        },
+        "emberprobe.rtt.pollingIntervalMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒）。未设置时使用 OpenOCD 默认值；仅影响 OpenOCD 侧轮询，终端读取不受此设置限制。"
+        },
+        "emberprobe.rtt.timestamps": {
+          "type": "boolean",
+          "default": false,
+          "description": "在 RTT 终端和日志的每行行首添加主机时间戳 [HH:MM:SS.mmm]。修改对运行中的终端立即生效。"
+        },
+        "emberprobe.rtt.channels": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 16,
+          "default": [
+            0
+          ],
+          "description": "要读取的 RTT up 通道编号，最多 16 个。修改后重新启动 RTT 生效。"
+        },
+        "emberprobe.rtt.logFile.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "将 RTT 输出追加保存到日志文件。修改立即生效。"
+        },
+        "emberprobe.rtt.logFile.directory": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "RTT 日志目录，空值使用工作区根目录，相对路径从工作区解析。目录须已存在；单通道写入 `rtt.log`，多通道写入 `rtt-chN.log`。无工作区时请指定绝对路径。"
+        },
+        "emberprobe.rtt.logFile.maxBytes": {
+          "type": "integer",
+          "default": 8388608,
+          "minimum": 4,
+          "maximum": 1073741824,
+          "description": "单个 RTT 日志文件的字节上限；写满后轮转为 .1 备份，仅保留一个备份。"
+        },
+        "emberprobe.rtt.logFile.stripAnsi": {
+          "type": "boolean",
+          "default": true,
+          "description": "从 RTT 日志文件中移除 ANSI 转义序列。终端保留 ANSI 颜色。"
         },
         "emberprobe.cubemxPath": {
           "type": "string",

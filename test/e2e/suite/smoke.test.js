@@ -30,6 +30,11 @@ async function run() {
         "mcu-vscode.folderAttachDebug",
         "mcu-vscode.folderDownload",
         "mcu-vscode.openLiveWatch",
+        "mcu-vscode.startRtt",
+        "mcu-vscode.stopRtt",
+        "mcu-vscode.showRttTerminals",
+        "mcu-vscode.rttSaveLog",
+        "mcu-vscode.rttToggleTimestamps",
         "mcu-vscode.checkOpenOcd",
         "mcu-vscode.installMcpServer",
         "mcu-vscode.enableAgentAccess",
@@ -50,6 +55,10 @@ async function run() {
     assert.strictEqual(config.get("sampleIntervalMs"), 33);
     assert.strictEqual(config.get("sampleFrequencyHz"), 30);
     assert.strictEqual(config.get("maxSamples"), 2000);
+    assert.deepStrictEqual(config.get("rtt.channels"), [0]);
+    assert.strictEqual(config.get("rtt.timestamps"), false);
+    assert.strictEqual(config.get("rtt.logFile.enabled"), false);
+    await vscode.commands.executeCommand("mcu-vscode.stopRtt");
     console.log("✓ contributes bounded live-watch defaults");
 
     const { Worker } = require("worker_threads");

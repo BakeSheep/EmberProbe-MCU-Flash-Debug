@@ -8,7 +8,6 @@ const {
     SCAN_SLICE_BYTES,
     commands,
     parseChannelList,
-    parseRttListening,
     resolveControlBlock,
     scanSlices
 } = require("../src/rttControlBlock");
@@ -196,10 +195,4 @@ scenario("scan ranges are searched in overlapping slices that cover the range", 
             );
     });
     assert.strictEqual(slices.at(-1).address + slices.at(-1).size, large.address + large.size);
-});
-
-scenario("RTT server listening lines give the port", () => {
-    assert.strictEqual(parseRttListening("Info : Listening on port 50123 for rtt connections"), 50123);
-    assert.strictEqual(parseRttListening("Info : Listening on port 6666 for tcl connections"), null);
-    assert.strictEqual(parseRttListening(undefined), null);
 });

@@ -19,7 +19,8 @@ const NOTICE_SLOTS = {
     config: "noticeConfig",
     chip: "noticeChip",
     live: "noticeLive",
-    write: "noticeWrite"
+    write: "noticeWrite",
+    rtt: "noticeRtt"
 };
 const notices = Object.create(null);
 function noticeArea(area) {
@@ -176,8 +177,7 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
 function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
-var lastOpenocd = { state: "checking" },
-    lastLive = { running: false, key: "sb.waiting" },
+var lastLive = { running: false, key: "sb.waiting" },
     lastChip = { state: "idle" },
     lastSvd = { state: "idle", key: "svd.notConfigured" },
     lastChipInfo = null,
@@ -200,6 +200,8 @@ const chipRead = document.getElementById("chipRead"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
+const rttView = window.EmberProbeRttView?.create({ api, t, uiState });
+const openocdCard = window.EmberProbeOpenocdCard?.create({ api, uiState, setNotice, clearNotice });
 const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
 const mcuConfigSection = document.getElementById("mcuConfigSection");
 for (const id of [
@@ -207,7 +209,8 @@ for (const id of [
     "memoryAnalysisSection",
     "chipInfoSection",
     "liveValuesSection",
-    "variableBrowser"
+    "variableBrowser",
+    "rttSection"
 ]) {
     const section = document.getElementById(id);
     if (!section) continue;
@@ -259,6 +262,7 @@ function setProbeDriverBusy(busy) {
         button.disabled = busy || lastChip.state === "reading";
     });
     liveToggle.disabled = busy;
+    rttView?.setBusy(busy);
     document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = busy));
 }
 const PROBE_FAMILY_LABELS = {
@@ -620,7 +624,8 @@ function rerenderDynamic() {
     renderSkillStatus(lastSkill);
     renderAgentAccess(lastAgentAccess);
     liveStatus(lastLive);
-    openocdStatus(lastOpenocd);
+    rttView?.render();
+    openocdCard?.render();
     chipStatus(lastChip);
     svdStatus(lastSvd);
     if (lastConnectedProbes) renderConnectedProbes(lastConnectedProbes);
@@ -1222,30 +1227,6 @@ function liveStatus(m) {
     liveLabel.textContent = (!m.error && msgText(m)) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
 }
-function openocdStatus(m) {
-    m = m || {};
-    lastOpenocd = m;
-    uiState.sidebarStatus ||= {};
-    const { state, key, params, message } = m;
-    uiState.sidebarStatus.openocd = { state, key, params, message };
-    api?.setState?.(uiState);
-    const k = m.state || "checking",
-        busy = k === "checking" || k === "preparing";
-    if (k === "ready") return clearNotice("global", "openocd");
-    const action = (key, name, primary) => ({
-        label: { key },
-        primary,
-        message: { type: "openocdAction", action: name }
-    });
-    setNotice("global", "openocd", {
-        level: busy ? "info" : k === "missing" ? "warning" : "error",
-        busy,
-        title: { key: "sb.openocdEnv" },
-        text: m.key ? { key: m.key, params: m.params } : m.message || { key: "oc.checking" },
-        actions: busy ? [] : [action("sb.selectPath", "select", true), action("sb.recheck", "check")],
-        dismissible: false
-    });
-}
 function renderSkillStatus(m) {
     lastSkill = m || lastSkill;
     const el = document.getElementById("skillStatus");
@@ -1567,11 +1548,10 @@ window.EmberProbeMessages.connect(window, {
     agentAccess: function (m) {
         renderAgentAccess(m);
     },
-    openocdStatus: function (m) {
-        openocdStatus(m);
-    },
+    openocdStatus: (m) => openocdCard?.onStatus(m),
     notice: function (m) {
         setNotice(m.area, m.id, window.EmberProbeNotice.hostNotice(m.notice));
+        if (m.area === "rtt" && (m.notice?.level === "error" || m.notice?.level === "warning")) rttView?.reveal();
     },
     noticeClear: function (m) {
         clearNotice(m.area, m.id);
@@ -1752,6 +1732,9 @@ window.EmberProbeMessages.connect(window, {
         else if (m.running) clearNotice("live", "live");
         liveStatus(m);
     },
+    rttStatus: function (m) {
+        rttView?.onStatus(m);
+    },
     chipInfo: function (m) {
         renderChip(m.info);
     },
@@ -1805,7 +1788,7 @@ window.EmberProbeMessages.connect(window, {
     }
 });
 updateLangToggle();
-if (uiState.sidebarStatus?.openocd) openocdStatus(uiState.sidebarStatus.openocd);
+if (uiState.sidebarStatus?.openocd) openocdCard?.onStatus(uiState.sidebarStatus.openocd);
 renderSkillStatus(uiState.sidebarStatus?.skill || lastSkill);
 if (langToggle) langToggle.onclick = () => setLang(LANG === "zh" ? "en" : "zh", true);
 if (api) api.postMessage({ type: "initCheck" });

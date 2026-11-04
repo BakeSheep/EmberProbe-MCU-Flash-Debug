@@ -55,6 +55,7 @@ function initCheck({ host, post }) {
     host._syncChipInfo(post);
     host._svdManager.syncStatus().catch((error) => console.error("SVD status check failed:", error.message));
     host._postPeripheralDebugStatus(post);
+    host._rttTerminals.postStatus(post);
     post({ type: "openocdStatus", ...host._openOcdStatusService.status });
     host.refreshOpenOcdStatus(false);
     host.refreshSkillStatus().catch((error) => console.error("Agent Skills status check failed:", error.message));

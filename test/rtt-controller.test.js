@@ -51,6 +51,16 @@ function idleSocket() {
     return socket;
 }
 
+// An idle socket whose writes are recorded, for down-channel input.
+function writableSocket(writes = []) {
+    const socket = idleSocket();
+    socket.write = (bytes) => {
+        writes.push(Buffer.from(bytes));
+        return true;
+    };
+    return socket;
+}
+
 const fakeVscode = { workspace: { getConfiguration: () => ({ get: (_name, fallback) => fallback }) } };
 
 // A borrowed host session (managed debug server or live-watch session) with a scriptable rttControl.
@@ -116,7 +126,8 @@ function makeController(host, options = {}) {
         rttSettings: options.rttSettings || (() => ({ controlBlockAddress: "0x24000000" })),
         ramRegions: options.ramRegions,
         net: options.net,
-        onStatus: (status) => statuses.push(status)
+        onStatus: (status) => statuses.push(status),
+        onBeforeStop: options.onBeforeStop
     });
     return { controller, statuses };
 }
@@ -868,6 +879,191 @@ function makeController(host, options = {}) {
         }
     );
 
+    await scenario("down-channel input goes to the connected channel socket", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const writes = [];
+        const sockets = [writableSocket(writes)];
+        const { controller } = makeController(host, { net: { connect: () => sockets[0] } });
+        await controller.start();
+        assert.throws(() => controller.write(0, "early\n"), /no data connection/);
+        sockets[0].emit("connect");
+        assert.strictEqual(controller.write(0, "line\n"), 5);
+        assert.deepStrictEqual(writes, [Buffer.from("line\n")]);
+        assert.throws(() => controller.write(4, "x\n"), /no data connection/);
+        assert.strictEqual(controller.write(0, ""), 0, "an empty write sends nothing");
+        assert.strictEqual(writes.length, 1);
+        await controller.stop();
+        assert.throws(() => controller.write(0, "late\n"), /RTT is stopped/);
+    });
+
+    await scenario("oversized input is refused before it reaches the socket", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const writes = [];
+        const socket = writableSocket(writes);
+        const { controller } = makeController(host, { net: { connect: () => socket } });
+        await controller.start();
+        socket.emit("connect");
+        assert.throws(() => controller.write(0, "x".repeat(2049)), /limited to/);
+        assert.deepStrictEqual(writes, [], "nothing is written when the input is refused");
+        await controller.stop();
+    });
+
+    await scenario("selected channels preserve firmware numbers and reject invalid selections", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession({
+            channels: {
+                up: [oneChannel.up[0], { ...oneChannel.up[0], index: 2 }],
+                down: []
+            }
+        });
+        host.debugLaunch.managedServer = managed.session;
+        const tooMany = Array.from({ length: 17 }, (_, index) => index);
+        for (const selection of [[2], [], [256], ["0"], tooMany]) {
+            const { controller } = makeController(host, {
+                rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: selection }),
+                net: { connect: () => idleSocket() }
+            });
+            if (selection[0] === 2) {
+                await controller.start();
+                assert.deepStrictEqual(
+                    controller.status().channels.up.map((channel) => channel.index),
+                    [2]
+                );
+                assert.strictEqual(controller.status().servers[0].channel, 2);
+            } else {
+                await assert.rejects(controller.start(), (error) => error.code === "RTT_INVALID_CHANNELS");
+                assert.strictEqual(controller.state, "stopped");
+            }
+            await controller.stop();
+        }
+    });
+
+    await scenario("a selected channel the firmware adds late is waited for, then reported", async () => {
+        const host = fakeHost();
+        const late = { up: [{ ...oneChannel.up[0], index: 7 }], down: [] };
+        const managed = fakeHostSession({ channels: (calls) => (calls >= 3 ? late : oneChannel) });
+        host.debugLaunch.managedServer = managed.session;
+        const clock = new FakeClock();
+        const options = { clock, net: { connect: () => idleSocket() } };
+        const settings = () => ({ controlBlockAddress: "0x24000000", channels: [7] });
+        const { controller } = makeController(host, { ...options, rttSettings: settings });
+        await controller.start();
+        assert.strictEqual(controller.state, "starting", "an unconfigured selection retries instead of failing");
+        await clock.advance(2000);
+        await flushQueue(controller);
+        assert.strictEqual(controller.state, "running");
+        await controller.stop();
+
+        const never = fakeHost();
+        never.debugLaunch.managedServer = fakeHostSession({ channels: oneChannel }).session;
+        const { controller: exhausted } = makeController(never, { ...options, rttSettings: settings });
+        await exhausted.start();
+        await clock.advance(60000);
+        await flushQueue(exhausted);
+        assert.strictEqual(exhausted.status().error.code, "RTT_UNKNOWN_CHANNEL");
+    });
+
+    await scenario("a partly configured selection runs and names what is missing", async () => {
+        const host = fakeHost();
+        const twoUp = { up: [oneChannel.up[0], { ...oneChannel.up[0], index: 2 }], down: [] };
+        host.debugLaunch.managedServer = fakeHostSession({ channels: twoUp }).session;
+        const { controller } = makeController(host, {
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [2, 5] }),
+            net: { connect: () => idleSocket() }
+        });
+        await controller.start();
+        assert.strictEqual(controller.state, "running");
+        assert.deepStrictEqual(controller.status().missingChannels, [5]);
+        await controller.stop();
+        assert.deepStrictEqual(controller.status().missingChannels, []);
+    });
+
+    await scenario("a shared host busy for one transaction does not fail the start", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession({ channels: oneChannel });
+        const rttControl = managed.session.rttControl;
+        let busy = 2;
+        managed.session.rttControl = (request) => {
+            if (request.operation === "start" && busy-- > 0)
+                return Promise.reject(
+                    Object.assign(new Error("busy"), { code: "LIVE_READ_CANCELLED", retryable: false })
+                );
+            return rttControl.call(managed.session, request);
+        };
+        host.debugLaunch.managedServer = managed.session;
+        const clock = new FakeClock();
+        const { controller } = makeController(host, {
+            clock,
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [0] }),
+            net: { connect: () => idleSocket() }
+        });
+        await controller.start();
+        await clock.advance(1000);
+        await flushQueue(controller);
+        assert.strictEqual(controller.state, "running");
+        await controller.stop();
+    });
+
+    await scenario("re-attaching and a user stop leave no stale yield or error behind", async () => {
+        const host = fakeHost();
+        host.debugLaunch.managedServer = fakeHostSession({ channels: oneChannel }).session;
+        const { controller } = makeController(host, { net: { connect: () => idleSocket() } });
+        await controller.start();
+        await controller.yieldForRestart("download");
+        assert.strictEqual(controller.status().yieldedFor, "download");
+        controller.onSessionsChanged();
+        await flushQueue(controller);
+        assert.strictEqual(controller.state, "running");
+        assert.strictEqual(controller.status().yieldedFor, null);
+        controller.error = { code: "RTT_CHANNEL_DISCONNECTED", message: "lost" };
+        await controller.stop();
+        assert.strictEqual(controller.status().error, null);
+    });
+
+    await scenario("input rejects missing down buffers and socket backpressure", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession({ channels: { up: oneChannel.up, down: [] } });
+        host.debugLaunch.managedServer = managed.session;
+        const writes = [];
+        const socket = writableSocket(writes);
+        const { controller } = makeController(host, { net: { connect: () => socket } });
+        await controller.start();
+        socket.emit("connect");
+        assert.throws(
+            () => controller.write(0, "x"),
+            (error) => error.code === "RTT_INPUT_UNAVAILABLE"
+        );
+        controller.channels.down = oneChannel.down;
+        socket.writableNeedDrain = true;
+        assert.throws(
+            () => controller.write(0, "x"),
+            (error) => error.code === "RTT_INPUT_BUSY"
+        );
+        assert.deepStrictEqual(writes, []);
+        await controller.stop();
+    });
+    await scenario("stop drains unread terminal data before destroying the attachment", async () => {
+        const host = fakeHost();
+        host.debugLaunch.managedServer = fakeHostSession().session;
+        const socket = writableSocket();
+        let drained;
+        const { controller } = makeController(host, {
+            net: { connect: () => socket },
+            onBeforeStop: () => {
+                drained = controller.read(0).data.toString();
+            }
+        });
+        await controller.start();
+        socket.emit("connect");
+        socket.emit("data", Buffer.from("last line\n"));
+        await controller.stop();
+        assert.strictEqual(drained, "last line\n");
+        assert.strictEqual(socket.destroyed, true);
+    });
     console.log("RTT controller tests passed");
 })().catch((error) => {
     console.error(error);

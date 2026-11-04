@@ -6,17 +6,47 @@
 const { StringDecoder } = require("string_decoder");
 const { SYSTEM_CLOCK } = require("./samplingClock");
 
-// CSI/OSC/other ESC sequences; used for plain-text log files.
-const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
-
-const stripAnsi = (text) => String(text ?? "").replace(ANSI_PATTERN, "");
-
 const pad = (value, width = 2) => String(value).padStart(width, "0");
 
 // Local wall-clock time HH:MM:SS.mmm
 function formatTimestamp(ms) {
     const date = new Date(ms);
     return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+// Removes CSI, string (OSC, DCS, ...) and other ESC sequences from text for plain-text logs. A sequence may span
+// pushes: channel data arrives in arbitrary chunks.
+class AnsiStripper {
+    constructor() {
+        this.state = "";
+    }
+
+    reset() {
+        this.state = "";
+    }
+
+    push(text) {
+        const input = String(text ?? "");
+        if (!this.state && !input.includes("\x1b")) return input;
+        let plain = "";
+        for (const char of input) {
+            if (!this.state) {
+                if (char === "\x1b") this.state = "escape";
+                else plain += char;
+            } else if (this.state === "escape") {
+                this.state =
+                    char === "[" ? "csi" : "]PX^_".includes(char) ? "string" : /[ -/]/.test(char) ? "escape" : "";
+            } else if (this.state === "csi") {
+                if (/[@-~]/.test(char)) this.state = "";
+            } else if (this.state === "string") {
+                if (char === "\x07") this.state = "";
+                else if (char === "\x1b") this.state = "string-escape";
+            } else {
+                this.state = char === "\\" || char === "\x07" ? "" : char === "\x1b" ? "string-escape" : "string";
+            }
+        }
+        return plain;
+    }
 }
 
 class RttLineFormatter {
@@ -84,4 +114,4 @@ class RttLineFormatter {
     }
 }
 
-module.exports = { RttLineFormatter, formatTimestamp, stripAnsi };
+module.exports = { AnsiStripper, RttLineFormatter, formatTimestamp };
