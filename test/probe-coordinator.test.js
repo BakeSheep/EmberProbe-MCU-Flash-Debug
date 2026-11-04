@@ -9,7 +9,16 @@ assert.deepStrictEqual(
     "all probe operations should start inactive"
 );
 
+const yielding = coordinator.acquire("rtt");
+coordinator.assertAvailable("download", ["rtt"]);
+assert.throws(() => coordinator.assertAvailable("download"), { code: "PROBE_BUSY", activeOperation: "rtt" });
+yielding.release();
+
 const download = coordinator.acquire("download");
+assert.throws(() => coordinator.assertAvailable("liveStart", ["rtt"]), {
+    code: "PROBE_BUSY",
+    activeOperation: "download"
+});
 assert.strictEqual(download.operation, "download");
 assert.strictEqual(coordinator.isActive("download"), true);
 assert.strictEqual(coordinator.anyActive(), true);

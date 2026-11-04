@@ -18,6 +18,7 @@ class ChipInfoService {
         this.onPost = options.onPost;
         this.onDiagnostics = options.onDiagnostics;
         this.isDebugActive = options.isDebugActive;
+        this.yieldRtt = options.yieldRtt || null;
         this.info = null;
         this.infoConnection = null;
     }
@@ -75,6 +76,7 @@ class ChipInfoService {
             if (!target) reject("chip.needConfig", "CONFIG_INCOMPLETE");
             const probe = this.context.workspaceState.get(this.cacheKeys.debugger) || (await this.resolveProbe?.());
             if (!probe) reject("chip.needConfig", "CONFIG_INCOMPLETE");
+            await this.yieldRtt?.("chipInfo");
             lease = this.coordinator.acquire("chipInfo");
             const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const executable = await this.resolveExecutable(configured);
@@ -146,6 +148,7 @@ class ChipInfoService {
             return this.rejectBusy("chip.readAgain", "CHIP_INFO_STALE", false);
         let lease;
         try {
+            await this.yieldRtt?.("chipInfo");
             lease = this.coordinator.acquire("chipInfo");
             this.post({ state: "reading", key: "chip.controlling" });
             const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");

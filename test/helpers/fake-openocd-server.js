@@ -24,11 +24,13 @@ class FakeOpenOcdServer {
         this.scatterVersion = null;
         this.scatterFailures = 0;
         this.scatterReply = null;
-        // RTT emulation: setup registers the block, start begins polling, channellist reports the configured
-        // channels until stop. rttSupported=false emulates an OpenOCD build without the rtt command set.
+        // RTT emulation of the bundled OpenOCD: setup registers the block, start searches once and fails while
+        // rttBlockPresent is false, and channels lists the configured channels until stop. rttSupported=false
+        // emulates an OpenOCD build without the rtt command set.
         this.rtt = null;
         this.rttStarted = false;
-        this.rttChannels = "up {} down {}";
+        this.rttBlockPresent = true;
+        this.rttChannels = "Channels: up=0, down=0\nUp-channels:\nDown-channels:\n";
         this.rttServers = [];
         this.rttPollingIntervalMs = null;
         this.rttSupported = true;
@@ -212,6 +214,7 @@ class FakeOpenOcdServer {
                 return { ok: true, response: "" };
             }
             if (command === "rtt start") {
+                if (!this.rttBlockPresent) return { ok: false, response: "rtt: No control block found" };
                 this.rttStarted = true;
                 return { ok: true, response: "" };
             }
@@ -219,14 +222,12 @@ class FakeOpenOcdServer {
                 this.rttStarted = false;
                 return { ok: true, response: "" };
             }
-            if (command === "rtt channellist") {
-                // Before the polling finds the control block OpenOCD reports the failure as a command error.
-                if (!this.rttStarted) return { ok: false, response: "rtt: control block not found" };
+            if (command === "rtt channels") {
+                if (!this.rttStarted) return { ok: false, response: "rtt: Control block not available" };
                 return { ok: true, response: this.rttChannels };
             }
             const serverStart = command.match(/^rtt server start (\d+) (\d+)$/);
             if (serverStart) {
-                if (!this.rttStarted) return { ok: false, response: "rtt: control block not found" };
                 this.rttServers.push({ port: Number(serverStart[1]), channel: Number(serverStart[2]) });
                 return { ok: true, response: "" };
             }

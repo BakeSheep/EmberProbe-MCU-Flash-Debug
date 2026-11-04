@@ -403,6 +403,8 @@ class AgentOperations {
                 throw Object.assign(new Error("Another Agent variable read is in progress"), {
                     code: "AGENT_READ_BUSY"
                 });
+            // An RTT-owned session is not shared; it gives way and comes back once this read ends.
+            await this.host._rtt?.yieldOwnSession("agentRead");
             if (
                 this.host._downloadRunning ||
                 this.host._chipInfoRunning ||
@@ -574,6 +576,7 @@ class AgentOperations {
             (await this.host._probeConnectionService.resolveProbe());
         const mcuCore = this.host._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore) busy("chip.needConfig", "CONFIG_INCOMPLETE");
+        await this.host._rtt?.yieldOwnSession("chipInfo");
         this.host._chipInfoLease = this.host._probeCoordinator.acquire("chipInfo");
         try {
             const executable = await this.host._resolveOpenOcdPath(

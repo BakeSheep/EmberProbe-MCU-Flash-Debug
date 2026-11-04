@@ -44,7 +44,7 @@ async function fixture(options = {}) {
 }
 
 (async () => {
-    await scenario("start runs setup, interval, start and channellist as one transaction", async () => {
+    await scenario("start runs setup, interval, start and channels as one transaction", async () => {
         const f = await fixture();
         try {
             const result = await f.session.rttControl({ operation: "start", block, pollingIntervalMs: 20 });
@@ -52,12 +52,16 @@ async function fixture(options = {}) {
                 'rtt setup 0x20000400 168 "SEGGER RTT"',
                 "rtt polling_interval 20",
                 "rtt start",
-                "rtt channellist"
+                "rtt channels"
             ]);
             assert.deepStrictEqual(f.fake.rtt, { address: 0x20000400, size: 168 });
             assert.strictEqual(f.fake.rttStarted, true);
             assert.strictEqual(f.fake.rttPollingIntervalMs, 20);
-            assert.deepStrictEqual(result.channels, { up: [], down: [] }, "the list may be empty until found");
+            assert.deepStrictEqual(
+                result.channels,
+                { up: [], down: [] },
+                "the list may be empty until the firmware configures it"
+            );
             assert.strictEqual(f.locks(), 0, "the exclusive lock is released");
         } finally {
             await f.close();
@@ -71,7 +75,7 @@ async function fixture(options = {}) {
             assert.deepStrictEqual(f.rttCommands(), [
                 'rtt setup 0x20000400 168 "SEGGER RTT"',
                 "rtt start",
-                "rtt channellist"
+                "rtt channels"
             ]);
             assert.strictEqual(f.fake.rttPollingIntervalMs, null);
         } finally {
@@ -79,17 +83,17 @@ async function fixture(options = {}) {
         }
     });
 
-    await scenario("channellist parses the channel modes and sizes", async () => {
+    await scenario("the channel listing keeps channel numbers, modes and sizes", async () => {
         const f = await fixture();
         try {
             await f.session.rttControl({ operation: "start", block });
             f.fake.rttChannels =
-                "up {{name Terminal size 1024 flags 2} {name Log size 64 flags 0}} down {{name Input size 16 flags 1}}";
+                "Channels: up=3, down=1\nUp-channels:\n0: Terminal 1024 2\n2: Log 64 0\nDown-channels:\n0: Input 16 1\n";
             const result = await f.session.rttControl({ operation: "channels" });
             assert.deepStrictEqual(result.channels, {
                 up: [
                     { index: 0, name: "Terminal", size: 1024, flags: 2, mode: "block" },
-                    { index: 1, name: "Log", size: 64, flags: 0, mode: "skip" }
+                    { index: 2, name: "Log", size: 64, flags: 0, mode: "skip" }
                 ],
                 down: [{ index: 0, name: "Input", size: 16, flags: 1, mode: "trim" }]
             });
@@ -132,7 +136,7 @@ async function fixture(options = {}) {
                 'rtt setup 0x20000400 168 "SEGGER RTT"',
                 "rtt polling_interval 10",
                 "rtt start",
-                "rtt channellist"
+                "rtt channels"
             ]);
             assert.deepStrictEqual(result.channels, { up: [], down: [] });
         } finally {
@@ -150,10 +154,13 @@ async function fixture(options = {}) {
                 assert.strictEqual(error.details.executed, 0, "the rejected command is not counted as executed");
                 return true;
             });
-            await assert.rejects(
-                f.session.rttControl({ operation: "serverStart", servers: [{ port: 19021, channel: 0 }] }),
-                { code: "OPENOCD_TCL_ERROR" }
-            );
+            f.fake.rttBlockPresent = false;
+            await assert.rejects(f.session.rttControl({ operation: "start", block }), (error) => {
+                assert.strictEqual(error.code, "OPENOCD_TCL_ERROR");
+                assert.strictEqual(error.retryable, true, "the firmware may not have initialized yet");
+                assert.strictEqual(f.fake.rttStarted, false);
+                return true;
+            });
             assert.strictEqual(f.locks(), 0, "failed transactions release the lock");
         } finally {
             await f.close();

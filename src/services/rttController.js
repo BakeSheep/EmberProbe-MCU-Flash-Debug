@@ -4,17 +4,21 @@
 // then the live-watch session, otherwise a lightweight session under this controller's own "rtt" lease), resolves the
 // control block, drives the session-layer rttControl transactions with a backoff retry while the firmware initializes,
 // reads each up channel from its RTT TCP port into a bounded buffer, and follows probe-session switches: operations
-// that take over the probe ask the controller to yield and re-attach once their session is ready, while a session that
-// ends without a successor stops RTT. Channel data never flows through the Tcl connection or the sampling worker.
+// that take over the probe ask the controller to yield, and it waits in pending-host until a session appears, the
+// probe falls idle (restoring a session it owned) or nothing is left to follow. Channel data never flows through the
+// Tcl connection or the sampling worker.
+//
+// Every state change runs through one queue, so a start, stop, yield or session change that arrives while another is
+// in flight acts on its final state. Queued tasks call the internal methods directly and must never await _enqueue.
 
 const net = require("net");
 const { SYSTEM_CLOCK } = require("../samplingClock");
-const { resolveControlBlock } = require("../rttControlBlock");
+const { resolveControlBlock, scanSlices } = require("../rttControlBlock");
 const { RttBuffer } = require("../rttBuffer");
 const { findFreePort } = require("../liveWatch");
 const { CACHE_KEYS } = require("../cacheKeys");
 
-// The firmware may need several polling rounds after reset before the control block and its channels appear.
+// The firmware may need several rounds after reset before the control block and its channels appear.
 const START_FIRST_DELAY_MS = 200;
 const START_BACKOFF_FACTOR = 1.5;
 const START_MAX_DELAY_MS = 2000;
@@ -24,9 +28,15 @@ const CONNECT_FIRST_DELAY_MS = 25;
 const CONNECT_BACKOFF_FACTOR = 2;
 const CONNECT_MAX_DELAY_MS = 400;
 const CONNECT_MAX_ATTEMPTS = 20;
+// Sessions are replaced with short gaps (an operation stops the old one before it reserves the probe; live watch
+// restores 350 ms after a debug server stops). A pending controller decides only after the probe stayed quiet this long.
+const PENDING_SETTLE_MS = 1000;
+// The ELF service reports these while it reloads; the symbol outranks every scan, so RTT waits for it.
+const TRANSIENT_ELF_ERRORS = ["ELF_LOADING", "ELF_CHANGED"];
 
 const rttError = (code, message, details) =>
     Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
+const probeBusy = (message) => Object.assign(new Error(message), { code: "PROBE_BUSY", retryable: true });
 
 class RttController {
     // host: the provider. options: { vscode, ManagedOpenOcdSession, clock, net, findFreePort, rttSettings,
@@ -50,6 +60,7 @@ class RttController {
         this._ownSession = null;
         this._lease = null;
         this._buffers = new Map(); // up channel index -> RttBuffer
+        this._bufferGeneration = 0;
         this._sockets = new Map(); // up channel index -> net.Socket
         this._connectTimers = new Map();
         this._servers = []; // [{ port, channel }]
@@ -58,12 +69,14 @@ class RttController {
         this._retryTimer = null;
         this._retry = null; // { attempts, delayMs, reason } while starting
         this._startAttempts = 0;
-        // Yielding for another probe operation keeps the user's intent: a controller that owned its session
-        // restores it once no borrowed session remains.
+        this._settleTimer = null;
+        // Yielding keeps the user's intent: a controller that owned its session restores it once no borrowed session
+        // remains, however many operations it yielded to in between.
         this._ownSessionIntent = false;
         this._yieldOperation = null;
-        this._tearingDown = false;
-        this._stopPromise = null;
+        this._queue = Promise.resolve();
+        this._queued = 0;
+        this._interrupts = 0; // Bumped ahead of the queue so a long control-block scan stops between slices.
     }
 
     status() {
@@ -96,39 +109,38 @@ class RttController {
     }
 
     // Manual start. Resolves once the attachment is launched; the retry ladder finishes in the background and
-    // reports through onStatus. Terminal setup failures reject and leave the controller stopped.
-    async start() {
-        // A pending controller first takes whatever session appeared since it yielded.
-        if (this.state === "pending-host") this.onSessionsChanged();
-        if (this.state !== "stopped") return this.status();
-        this._ownSessionIntent = false;
-        this._yieldOperation = null;
-        this.error = null;
-        const selection = this._selectHost();
-        if (selection?.blocked === "multicore")
-            throw rttError("RTT_MULTICORE_UNSUPPORTED", "RTT control is unavailable for multicore debug sessions");
-        if (selection?.blocked)
-            throw rttError("PROBE_BUSY", "The debug server is starting; start RTT once it is ready", {
-                retryable: true
-            });
-        if (!selection) await this._startOwnSession();
-        else {
-            this._hostSession = selection.session;
-            this.source = selection.source;
-        }
-        const failure = await this._attach();
-        if (failure) throw failure;
+    // reports through onStatus. Terminal setup failures reject. A pending controller stops waiting: the user asked now.
+    start() {
+        return this._enqueue(async () => {
+            if (this.state === "running" || this.state === "starting") return this.status();
+            this._cancelTimers();
+            this._ownSessionIntent = false;
+            this._yieldOperation = null;
+            this.error = null;
+            const selection = this._selectHost();
+            if (selection?.blocked === "multicore")
+                throw rttError("RTT_MULTICORE_UNSUPPORTED", "RTT control is unavailable for multicore debug sessions");
+            if (selection?.blocked) throw probeBusy("The debug server is starting; start RTT once it is ready");
+            if (!selection) await this._startOwnSession();
+            else {
+                this._hostSession = selection.session;
+                this.source = selection.source;
+            }
+            const failure = await this._attach();
+            if (failure) throw failure;
+            return this.status();
+        });
     }
 
-    async stop() {
-        this._ownSessionIntent = false;
-        this._yieldOperation = null;
-        await this._stopInternal("user-stopped");
+    stop() {
+        this._interrupts++;
+        return this._enqueue(() => this._stopInternal("user-stopped"));
     }
 
-    // True when yielding would actually release something: the owned session and lease, or an active attachment.
+    // True when yielding would actually release something: the owned session and lease, an active attachment, or a
+    // queued change that may produce one.
     holdsProbe() {
-        return !!this._ownSession || this.state === "running" || this.state === "starting";
+        return !!this._ownSession || this.state === "running" || this.state === "starting" || this._queued > 0;
     }
 
     // A probe operation that will take the connection over (debug start, live watch, flash) asks RTT to release
@@ -136,41 +148,78 @@ class RttController {
     // Returns null when nothing is held, so callers stay synchronous in the common case.
     yieldForRestart(operation) {
         if (!this.holdsProbe()) return null;
-        return this._yield(operation);
+        return this._yield(operation, false);
     }
 
-    async _yield(operation) {
-        this._ownSessionIntent = !!this._ownSession;
-        this._yieldOperation = operation || null;
-        await this._stopInternal("yielded");
-        this.state = "pending-host";
-        this._postStatus();
+    // An operation that shares a borrowed host but needs the probe to itself (chip info, an Agent read) only displaces
+    // a session RTT owns; it never detaches RTT from a live-watch or debug session.
+    yieldOwnSession(operation) {
+        if (!this._ownSession && !(this._queued > 0 && !this._hostSession)) return null;
+        return this._yield(operation, true);
+    }
+
+    _yield(operation, ownOnly) {
+        this._interrupts++;
+        return this._enqueue(async () => {
+            if (this.state === "stopped" || (ownOnly && !this._ownSession)) return;
+            this._ownSessionIntent ||= !!this._ownSession;
+            this._yieldOperation = operation || null;
+            await this._detachToPending("yielded");
+        });
     }
 
     // Session topology changed (debug server started or stopped, live watch started or stopped, flash finished).
-    // pending-host re-attaches to whatever session is available; an attachment whose host disappeared without a
-    // successor stops, unless the controller owned its session before yielding and restores it.
     onSessionsChanged() {
+        if (this.state === "stopped" && !this._queued) return;
+        void this._enqueue(() => this._reconcile());
+    }
+
+    // A probe lease changed: this is what ends a pending wait for an operation that hosts no session.
+    onProbeChanged() {
+        if (this.state === "pending-host") this.onSessionsChanged();
+    }
+
+    _enqueue(task) {
+        this._queued++;
+        const result = this._queue.then(task).finally(() => {
+            this._queued--;
+        });
+        this._queue = result.catch(() => {});
+        return result;
+    }
+
+    async _reconcile() {
         if (this.state === "stopped") return;
         const selection = this._selectHost();
         if (selection?.session) {
             if (this.state === "pending-host") {
+                this._cancelSettle();
                 this._hostSession = selection.session;
                 this.source = selection.source;
-                void this._attach();
-            } else if (selection.session !== this._hostSession) void this._followHost(selection);
+                await this._attach();
+            } else if (selection.session !== this._hostSession) {
+                await this._detachToPending("host-switched");
+                this._cancelSettle();
+                this._hostSession = selection.session;
+                this.source = selection.source;
+                await this._attach();
+            }
             return;
         }
-        if (this.state === "pending-host") {
-            if (this._ownSessionIntent) void this._resumeOwnSession();
-            return;
-        }
-        if (this._ownSession) return;
-        if (this._ownSessionIntent) {
-            void this._restoreOwnSession();
-            return;
-        }
-        void this._stopInternal("host-ended");
+        if (this.state === "pending-host") this._armSettle();
+        else if (!this._ownSession) await this._detachToPending("host-ended");
+    }
+
+    // The probe stayed quiet: restore the owned session, or stop when nothing is left to follow. A busy probe keeps the
+    // wait going; its lease release reconciles again.
+    async _settle() {
+        if (this.state !== "pending-host" || this._selectHost() || this._probeBusy()) return;
+        if (this._ownSessionIntent) await this._resumeOwnSession();
+        else await this._stopInternal("host-ended");
+    }
+
+    _probeBusy() {
+        return !!this.host._probeCoordinator?.anyActive() || !!this.host.debugLaunch?.liveSession?.();
     }
 
     // Managed debug server first, then the live-watch session; blocked while a server is starting or multicore.
@@ -186,38 +235,18 @@ class RttController {
         return null;
     }
 
-    async _followHost(selection) {
-        await this._stopInternal("host-switched");
-        this.state = "pending-host";
-        this._hostSession = selection.session;
-        this.source = selection.source;
-        await this._attach();
-    }
-
-    // Restores ownership after the borrowed host of a yielded controller disappeared.
-    async _restoreOwnSession() {
-        await this._stopInternal("host-ended");
-        this.state = "pending-host";
-        await this._resumeOwnSession();
-    }
-
     async _resumeOwnSession() {
         try {
             await this._startOwnSession();
-            this._ownSessionIntent = false;
-            await this._attach();
         } catch (error) {
             this.error = { code: error.code, message: error.message };
-            // Another operation took the probe between events; the intent survives and the next session change
-            // tries again.
-            if (error?.retryable) {
-                this.state = "pending-host";
-                this._postStatus();
-                return;
-            }
-            this._ownSessionIntent = false;
-            await this._stopInternal("resume-failed");
+            // Another operation took the probe between events; the intent survives and its release tries again.
+            if (error?.retryable) this._postStatus();
+            else await this._stopInternal("resume-failed");
+            return;
         }
+        this._ownSessionIntent = false;
+        await this._attach();
     }
 
     _settings() {
@@ -230,12 +259,24 @@ class RttController {
         };
     }
 
+    // A configured address needs no ELF. Without a usable ELF the ranges still apply, except while it is reloading:
+    // its symbol may be the exact answer, so that failure retries.
+    _readElf(settings) {
+        const address = settings.controlBlockAddress;
+        if (address !== undefined && address !== null && address !== "") return {};
+        try {
+            return this.host.readElfSymbols?.() || {};
+        } catch (error) {
+            if (!TRANSIENT_ELF_ERRORS.includes(error?.code)) return {};
+            throw Object.assign(error, { retryable: true });
+        }
+    }
+
     // Location priority from the audit: configured address, ELF symbol, configured range, writable ELF sections,
     // linker RAM regions. The region analysis reads linker and map files, so it only runs when everything above it
     // failed.
-    async _resolveBlock() {
-        const settings = this._settings();
-        const elf = this.host.readElfSymbols?.() || {};
+    async _resolveBlock(settings) {
+        const elf = this._readElf(settings);
         const inputs = { settings, symbols: elf.symbols, sections: elf.memory?.sections };
         try {
             return resolveControlBlock(inputs);
@@ -257,51 +298,65 @@ class RttController {
 
     // Runs one attachment. Returns the terminal failure, if any, instead of throwing: callers that fire and forget
     // (session changes) must not produce unhandled rejections.
-    async _attach() {
+    _attach() {
         const run = ++this._attachRun;
         this.state = "starting";
+        this.reason = null;
         this._startAttempts = 0;
         this._retry = null;
         this._postStatus();
+        return this._attemptStart(run, true);
+    }
+
+    // `rtt start` searches once, so a miss repeats it; once found, an empty listing only polls the listing.
+    async _attemptStart(run, fullStart) {
         try {
-            const block = await this._resolveBlock();
-            if (run !== this._attachRun) return null;
-            this._block = block;
-            const settings = this._settings();
-            const request = { operation: "start", block };
-            if (settings.pollingIntervalMs !== undefined) request.pollingIntervalMs = settings.pollingIntervalMs;
-            const result = await this._session().rttControl(request);
-            if (run !== this._attachRun) return null;
+            const result = fullStart
+                ? await this._startRtt(this._interrupts)
+                : await this._session().rttControl({ operation: "channels" });
+            if (!result) return null;
             this.channels = result.channels;
-            if (!result.channels?.up?.length) {
-                this._scheduleStartRetry(run, { fullStart: false, reason: "waiting for the control block" });
-                return null;
-            }
+            if (!result.channels?.up?.length)
+                return await this._scheduleStartRetry(run, false, "waiting for the firmware to configure its channels");
             await this._startChannels(run);
             return null;
         } catch (error) {
-            if (run !== this._attachRun) return null;
-            if (error?.retryable) {
-                this._scheduleStartRetry(run, { fullStart: true, reason: error.message });
-                return null;
-            }
+            if (error?.retryable) return this._scheduleStartRetry(run, true, error.message);
             await this._fail(error);
             return error;
         }
     }
 
-    // Backoff ladder: a failed `rtt start` repeats the whole sequence, an empty channellist only polls the list.
-    _scheduleStartRetry(run, { fullStart, reason }) {
-        if (run !== this._attachRun) return;
+    // Searches the resolved block slice by slice. Returns the start result, or null when a stop or yield interrupted
+    // the search; its queued task follows at once.
+    async _startRtt(interrupts) {
+        const settings = this._settings();
+        this._block = await this._resolveBlock(settings);
+        let failure = null;
+        for (const block of scanSlices(this._block)) {
+            if (this._interrupts !== interrupts) return null;
+            const request = { operation: "start", block };
+            if (settings.pollingIntervalMs !== undefined) request.pollingIntervalMs = settings.pollingIntervalMs;
+            try {
+                return await this._session().rttControl(request);
+            } catch (error) {
+                if (!error?.retryable) throw error;
+                failure = error;
+            }
+        }
+        throw failure;
+    }
+
+    // Backoff ladder over _attemptStart.
+    async _scheduleStartRetry(run, fullStart, reason) {
         this._startAttempts++;
         if (this._startAttempts > START_MAX_ATTEMPTS) {
-            void this._fail(
-                rttError(
-                    "RTT_START_TIMEOUT",
-                    `RTT did not find the control block after ${START_MAX_ATTEMPTS} attempts: ${reason}`
-                )
+            const error = rttError(
+                "RTT_START_TIMEOUT",
+                `RTT did not find the control block after ${START_MAX_ATTEMPTS} attempts: ${reason}`
             );
-            return;
+            await this._fail(error);
+            return error;
         }
         const delayMs = Math.min(
             START_FIRST_DELAY_MS * START_BACKOFF_FACTOR ** (this._startAttempts - 1),
@@ -309,26 +364,13 @@ class RttController {
         );
         this._retry = { attempts: this._startAttempts, delayMs, reason };
         this._postStatus();
-        this._retryTimer = this.clock.schedule(async () => {
+        this._retryTimer = this.clock.schedule(() => {
             this._retryTimer = null;
-            if (run !== this._attachRun || this.state !== "starting") return;
-            try {
-                const result = await this._session().rttControl(
-                    fullStart ? { operation: "start", block: this._block } : { operation: "channels" }
-                );
-                if (run !== this._attachRun) return;
-                this.channels = result.channels;
-                if (!result.channels?.up?.length) {
-                    this._scheduleStartRetry(run, { fullStart, reason });
-                    return;
-                }
-                await this._startChannels(run);
-            } catch (error) {
-                if (run !== this._attachRun) return;
-                if (error?.retryable) this._scheduleStartRetry(run, { fullStart: true, reason: error.message });
-                else void this._fail(error);
-            }
+            void this._enqueue(async () => {
+                if (run === this._attachRun && this.state === "starting") await this._attemptStart(run, fullStart);
+            });
         }, delayMs);
+        return null;
     }
 
     async _startChannels(run) {
@@ -339,11 +381,22 @@ class RttController {
             if (!port) throw rttError("RTT_PORT_UNAVAILABLE", "No free local port for an RTT server");
             servers.push({ port, channel: channel.index });
         }
-        if (servers.length) await this._session().rttControl({ operation: "serverStart", servers });
-        if (run !== this._attachRun) return;
+        try {
+            await this._session().rttControl({ operation: "serverStart", servers });
+        } catch (error) {
+            // A failed batch leaves the servers before it running on a host that outlives this attachment.
+            const started = servers.slice(0, error?.details?.executed ?? 0);
+            if (started.length)
+                await this._session()
+                    .rttControl({ operation: "serverStop", ports: started.map((server) => server.port) })
+                    .catch(() => {});
+            throw error;
+        }
         this._servers = servers;
-        this._buffers = new Map(up.map((channel) => [channel.index, new RttBuffer()]));
+        const generation = ++this._bufferGeneration;
+        this._buffers = new Map(up.map((channel) => [channel.index, new RttBuffer({ generation })]));
         this.state = "running";
+        this.error = null;
         this._retry = null;
         this._postStatus();
         for (const server of servers) this._connectChannel(run, server);
@@ -354,7 +407,7 @@ class RttController {
     _connectChannel(run, server) {
         let attempts = 0;
         const attempt = () => {
-            if (run !== this._attachRun || this.state === "stopped") return;
+            if (run !== this._attachRun) return;
             const buffer = this._buffers.get(server.channel);
             if (!buffer) return;
             const socket = this.net.connect({ host: "127.0.0.1", port: server.port });
@@ -364,6 +417,7 @@ class RttController {
                     socket.destroy();
                     return;
                 }
+                attempts = 0;
                 this._sockets.set(server.channel, socket);
                 this._postStatus();
             });
@@ -374,6 +428,10 @@ class RttController {
                 if (run !== this._attachRun || this.state !== "running") return;
                 attempts++;
                 if (attempts > CONNECT_MAX_ATTEMPTS) {
+                    this.error = {
+                        code: "RTT_CHANNEL_DISCONNECTED",
+                        message: `RTT channel ${server.channel} lost its data connection`
+                    };
                     this._postStatus();
                     return;
                 }
@@ -401,7 +459,7 @@ class RttController {
             this.host.debugLaunch?.starting ||
             this.host.debugLaunch?.liveSession?.()
         )
-            throw rttError("PROBE_BUSY", "The debug probe is busy with another operation", { retryable: true });
+            throw probeBusy("The debug probe is busy with another operation");
         const lease = this.host._probeCoordinator.acquire("rtt");
         this._lease = lease;
         let session = null;
@@ -441,7 +499,9 @@ class RttController {
                             void this.host._probeConnectionService.recordSuccess(session.options);
                     },
                     onDisconnect: () => {
-                        if (this._ownSession === session && !this._tearingDown) void this._handleHostLost();
+                        void this._enqueue(async () => {
+                            if (this._ownSession === session) await this._stopInternal("host-lost");
+                        });
                     }
                 }
             );
@@ -461,31 +521,28 @@ class RttController {
         }
     }
 
-    async _handleHostLost() {
-        await this._stopInternal("host-lost");
-    }
-
     async _fail(error) {
         this.error = { code: error.code, message: error.message };
         await this._stopInternal("start-failed");
     }
 
-    async _stopInternal(reason) {
-        if (this._stopPromise) return this._stopPromise;
+    async _detachToPending(reason) {
+        await this._stopInternal(reason, "pending-host");
+        this._armSettle();
+    }
+
+    async _stopInternal(reason, nextState = "stopped") {
         if (this.state === "stopped") return;
         this._attachRun++; // Retries and socket handlers from the previous attachment go quiet.
         this._cancelTimers();
-        this.state = "stopped";
+        this.state = nextState;
         this.reason = reason;
-        this._tearingDown = true;
-        this._stopPromise = this._detach()
-            .catch(() => {})
-            .finally(() => {
-                this._stopPromise = null;
-                this._tearingDown = false;
-                this._postStatus();
-            });
-        return this._stopPromise;
+        if (nextState === "stopped") {
+            this._ownSessionIntent = false;
+            this._yieldOperation = null;
+        }
+        await this._detach().catch(() => {});
+        this._postStatus();
     }
 
     // Teardown order: stop reading data, stop the RTT servers and RTT itself while the Tcl session is alive, then
@@ -493,7 +550,6 @@ class RttController {
     async _detach() {
         for (const socket of this._sockets.values()) socket.destroy();
         this._sockets.clear();
-        this._cancelTimers();
         const session = this._hostSession;
         if (session?.rttControl) {
             if (this._servers.length)
@@ -525,7 +581,22 @@ class RttController {
         this._startAttempts = 0;
     }
 
+    _armSettle() {
+        this._cancelSettle();
+        this._settleTimer = this.clock.schedule(() => {
+            this._settleTimer = null;
+            void this._enqueue(() => this._settle());
+        }, PENDING_SETTLE_MS);
+    }
+
+    _cancelSettle() {
+        if (this._settleTimer === null) return;
+        this.clock.cancel(this._settleTimer);
+        this._settleTimer = null;
+    }
+
     _cancelTimers() {
+        this._cancelSettle();
         if (this._retryTimer !== null) {
             this.clock.cancel(this._retryTimer);
             this._retryTimer = null;

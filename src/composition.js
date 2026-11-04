@@ -56,7 +56,10 @@ const { ChartHistoryService } = require("./services/chartHistoryService");
 
 // Probe ownership, the external GDB server hold, J-Link driver and connection resolution, and chip reads.
 function createProbeServices(host, context, vscode) {
-    const probeCoordinator = new ProbeCoordinator(() => host._postProbeOperationStatus());
+    const probeCoordinator = new ProbeCoordinator(() => {
+        host._postProbeOperationStatus();
+        host._rttController?.onProbeChanged();
+    });
     const externalDebug = new ExternalDebugService({
         state: context.workspaceState,
         coordinator: probeCoordinator,
@@ -118,7 +121,8 @@ function createProbeServices(host, context, vscode) {
         commandContext: () => host._commandContext(),
         onPost: (message) => host._webviewView?.webview.postMessage(message),
         onDiagnostics: (diag, info) => host._writeChipDiagnostics(diag, info),
-        isDebugActive: () => !!host.debugLaunch.liveSession()
+        isDebugActive: () => !!host.debugLaunch.liveSession(),
+        yieldRtt: (operation) => host._rtt?.yieldOwnSession(operation)
     });
     return { probeCoordinator, externalDebug, probeDriverService, probeConnectionService, chipInfoService };
 }
@@ -331,6 +335,7 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
         recordFlashed: (entry) => host._firmwareRecord.record(entry),
         isDebugActive: () => host._debugBridge.hasAnySession || !!host.debugLaunch.liveSession(),
         yieldRtt: (operation) => host._rtt?.yieldForRestart(operation),
+        yieldOwnRtt: (operation) => host._rtt?.yieldOwnSession(operation),
         notifyRtt: () => host._rtt?.onSessionsChanged()
     });
     let bridgeRegistry = null;

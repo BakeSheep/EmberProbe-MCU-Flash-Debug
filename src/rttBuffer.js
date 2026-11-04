@@ -2,7 +2,7 @@
 
 // Bounded byte history of one RTT up channel for cursor-based readers (Agent Bridge). A cursor is the absolute byte
 // offset since the buffer's generation started; old bytes are evicted by maxBytes and reported as droppedBytes.
-// reset() (new session, re-attach, flash) starts a new generation so cursors from before it cannot alias new data.
+// Every attachment creates its buffers with a new generation, so a cursor from before it cannot alias new data.
 const DEFAULT_MAX_BYTES = 256 * 1024;
 const DEFAULT_READ_BYTES = 16 * 1024;
 const MAX_READ_BYTES = 256 * 1024;
@@ -25,23 +25,14 @@ function utf8Boundary(bytes, end) {
 }
 
 class RttBuffer {
-    constructor({ maxBytes = DEFAULT_MAX_BYTES } = {}) {
+    constructor({ maxBytes = DEFAULT_MAX_BYTES, generation = 0 } = {}) {
         if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
             throw Object.assign(new Error(`Invalid RTT buffer size: ${maxBytes}`), { code: "RTT_INVALID_BUFFER" });
         this.maxBytes = maxBytes;
-        this.generation = 0;
-        this._reset();
-    }
-
-    _reset() {
+        this.generation = generation;
         this.chunks = [];
         this.start = 0; // absolute offset of chunks[0][0]
         this.end = 0;
-    }
-
-    reset() {
-        this.generation++;
-        this._reset();
     }
 
     append(data) {
