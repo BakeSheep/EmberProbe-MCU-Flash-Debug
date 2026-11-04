@@ -10,7 +10,7 @@ const OPERATIONS = ["start", "channels", "serverStart", "serverStop", "stop"];
 // A transaction is a bounded command list; the controller splits larger channel sets across calls.
 const MAX_SERVER_COMMANDS = 16;
 // An OpenOCD without the rtt command set cannot gain it by retrying. Other Tcl failures ("control block not found"
-// while the firmware initializes) clear on their own, so the controller may retry them with backoff.
+// while the firmware initializes) may clear on their own, so the controller may retry them with backoff.
 const MISSING_RTT_SUPPORT = /invalid command name|unknown command/i;
 
 const rttError = (code, message, details) =>
@@ -38,7 +38,7 @@ function portCommands(request) {
 }
 
 // Validates the whole request up front and returns the steps to run; the step flagged `channels` carries the
-// channellist response, which is parsed into the transaction result.
+// channel listing, which is parsed into the transaction result.
 function buildPlan(request) {
     const operation = request?.operation;
     if (!OPERATIONS.includes(operation))
@@ -52,20 +52,21 @@ function buildPlan(request) {
             });
         const interval =
             request.pollingIntervalMs === undefined ? [] : [commands.pollingInterval(request.pollingIntervalMs)];
-        // channellist runs last: OpenOCD finds the control block by polling, so the list may still be empty here.
+        // `rtt start` searches once and fails when the control block is missing; the controller repeats it. The
+        // listing runs last and may still be empty when the firmware has not configured an up buffer yet.
         return {
             operation,
             steps: [
                 { command: commands.setup(request.block), channels: false },
                 ...interval.map((command) => ({ command, channels: false })),
                 { command: commands.start(), channels: false },
-                { command: commands.channelList(), channels: true }
+                { command: commands.channels(), channels: true }
             ],
             parseChannels: true
         };
     }
     if (operation === "channels")
-        return { operation, steps: [{ command: commands.channelList(), channels: true }], parseChannels: true };
+        return { operation, steps: [{ command: commands.channels(), channels: true }], parseChannels: true };
     if (operation === "serverStart")
         return { operation, steps: serverCommands(request).map((command) => ({ command, channels: false })) };
     if (operation === "serverStop")
@@ -74,8 +75,8 @@ function buildPlan(request) {
 }
 
 // request: { operation: "start"|"channels"|"serverStart"|"serverStop"|"stop", block?, pollingIntervalMs?, servers?,
-// ports? }. Returns { channels? }; start and channels parse the channellist, which may be empty until the polling
-// finds the control block.
+// ports? }. Returns { channels? }; start and channels parse the channel listing, which may be empty until the firmware
+// configures its up buffers.
 async function rttControl(session, request, timeoutMs = 5000) {
     const plan = buildPlan(request);
     // The budget is checked between OpenOCD commands; each command is bounded by the Tcl RPC timeout.

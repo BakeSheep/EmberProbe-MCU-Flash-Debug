@@ -42,7 +42,13 @@ const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connecti
             },
             isDebugActive: () => false
         });
+        const rttYields = [];
+        chipService.yieldRtt = async (operation) => {
+            assert.strictEqual(active.has("chipInfo"), false, "RTT yields before the lease is taken");
+            rttYields.push(operation);
+        };
         const chipResult = await chipService.read();
+        assert.deepStrictEqual(rttYields, ["chipInfo"]);
         assert.strictEqual(chipResult.core, "Cortex-M4");
         assert.ok(Number.isFinite(Date.parse(chipResult.readAt)));
         assert.strictEqual(chipService.running, false);

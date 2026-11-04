@@ -5,11 +5,12 @@ const { scenario } = require("./helpers/scenario");
 const {
     AUTO_SCAN_MAX_BYTES,
     MIN_CONTROL_BLOCK_SIZE,
+    SCAN_SLICE_BYTES,
     commands,
     parseChannelList,
     parseRttListening,
     resolveControlBlock,
-    splitTclList
+    scanSlices
 } = require("../src/rttControlBlock");
 
 const code = (expected) => (error) => error.code === expected;
@@ -133,7 +134,7 @@ scenario("OpenOCD commands are built from validated values", () => {
     assert.strictEqual(commands.start(), "rtt start");
     assert.strictEqual(commands.stop(), "rtt stop");
     assert.strictEqual(commands.pollingInterval(10), "rtt polling_interval 10");
-    assert.strictEqual(commands.channelList(), "rtt channellist");
+    assert.strictEqual(commands.channels(), "rtt channels");
     assert.strictEqual(commands.serverStart(50123, 1), "rtt server start 50123 1");
     assert.strictEqual(commands.serverStop(50123), "rtt server stop 50123");
     assert.throws(() => commands.setup({ address: 0x20000400, size: 8 }), code("RTT_INVALID_RANGE"));
@@ -144,26 +145,57 @@ scenario("OpenOCD commands are built from validated values", () => {
     assert.throws(() => commands.pollingInterval(0), code("RTT_INVALID_INTERVAL"));
 });
 
-scenario("Tcl list splitting handles braces, quotes and escapes", () => {
-    assert.deepStrictEqual(splitTclList('a {b {c d}} "e \\"f\\"" {}'), ["a", "b {c d}", 'e "f"', ""]);
-    assert.throws(() => splitTclList("{a"), code("RTT_PARSE_ERROR"));
-    assert.throws(() => splitTclList('"a'), code("RTT_PARSE_ERROR"));
-});
-
-scenario("rtt channellist result is parsed into up and down channels", () => {
+scenario("the OpenOCD channel listing keeps the real channel numbers", () => {
+    // Bundled OpenOCD output: channel 1 is unconfigured (size 0), so OpenOCD omits it and the numbers have a gap.
     const parsed = parseChannelList(
-        "up {{name Terminal size 1024 flags 2} {name {} size 0 flags 0} {name Log size 512 flags 1}} " +
-            "down {{name Terminal size 16 flags 0}}"
+        "Channels: up=3, down=1\nUp-channels:\n0: Terminal 1024 2\n2: Log 512 1\nDown-channels:\n0: Terminal 16 0\n"
     );
     assert.deepStrictEqual(parsed.up, [
         { index: 0, name: "Terminal", size: 1024, flags: 2, mode: "block" },
-        { index: 1, name: "", size: 0, flags: 0, mode: "skip" },
         { index: 2, name: "Log", size: 512, flags: 1, mode: "trim" }
     ]);
     assert.deepStrictEqual(parsed.down, [{ index: 0, name: "Terminal", size: 16, flags: 0, mode: "skip" }]);
-    assert.deepStrictEqual(parseChannelList(""), { up: [], down: [] });
-    // Unknown keys from newer OpenOCD are ignored
-    assert.strictEqual(parseChannelList("up {{name A size 8 flags 0 extra x}} down {}").up[0].name, "A");
+});
+
+scenario("channel names come from the firmware and may be empty or contain spaces", () => {
+    const parsed = parseChannelList("Up-channels:\r\n0:  64 0\r\n1: Log Out 2 128 0\r\nDown-channels:\r\n");
+    assert.deepStrictEqual(
+        parsed.up.map((channel) => [channel.index, channel.name, channel.size]),
+        [
+            [0, "", 64],
+            [1, "Log Out 2", 128]
+        ]
+    );
+    assert.deepStrictEqual(parseChannelList("Channels: up=0, down=0\nUp-channels:\nDown-channels:\n"), {
+        up: [],
+        down: []
+    });
+});
+
+scenario("an unexpected channel listing is a parse error", () => {
+    assert.throws(() => parseChannelList(""), code("RTT_PARSE_ERROR"));
+    assert.throws(() => parseChannelList("{\n}\n{\n}\n"), code("RTT_PARSE_ERROR"));
+});
+
+scenario("scan ranges are searched in overlapping slices that cover the range", () => {
+    const exact = { source: "symbol", address: 0x20000000, size: 168, exact: true };
+    assert.deepStrictEqual(scanSlices(exact), [exact]);
+    const small = { source: "sections", address: 0x20000000, size: SCAN_SLICE_BYTES, exact: false };
+    assert.deepStrictEqual(scanSlices(small), [small]);
+    const large = { source: "region", address: 0x20000000, size: AUTO_SCAN_MAX_BYTES, exact: false };
+    const slices = scanSlices(large);
+    assert.strictEqual(slices.length, Math.ceil(AUTO_SCAN_MAX_BYTES / SCAN_SLICE_BYTES));
+    assert.strictEqual(slices[0].address, large.address);
+    slices.forEach((slice, index) => {
+        assert.ok(slice.size >= 16 && slice.size <= SCAN_SLICE_BYTES + 16, "every slice is a valid bounded range");
+        if (index)
+            assert.strictEqual(
+                slice.address + 16,
+                slices[index - 1].address + slices[index - 1].size,
+                "neighbours overlap by the control block ID"
+            );
+    });
+    assert.strictEqual(slices.at(-1).address + slices.at(-1).size, large.address + large.size);
 });
 
 scenario("RTT server listening lines give the port", () => {

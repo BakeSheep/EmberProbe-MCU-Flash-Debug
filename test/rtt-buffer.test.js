@@ -46,11 +46,11 @@ scenario("old bytes are evicted and reported as dropped", () => {
     assert.deepStrictEqual(buffer.stats(), { generation: 0, start: 14, end: 22, bytes: 8 });
 });
 
-scenario("reset starts a new generation and stale cursors restart at the oldest byte", () => {
-    const buffer = new RttBuffer({ maxBytes: 64 });
-    buffer.append("before");
-    const old = buffer.read();
-    buffer.reset();
+scenario("cursors from another generation restart at the oldest byte", () => {
+    const previous = new RttBuffer({ maxBytes: 64, generation: 0 });
+    previous.append("before");
+    const old = previous.read();
+    const buffer = new RttBuffer({ maxBytes: 64, generation: 1 });
     buffer.append("after");
     const read = buffer.read({ generation: old.generation, cursor: old.nextCursor });
     assert.strictEqual(read.generation, 1);

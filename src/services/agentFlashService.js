@@ -29,6 +29,7 @@ class AgentFlashService {
         this.recordSuccess = options.recordSuccess || (async () => {});
         this.recordFlashed = options.recordFlashed || null;
         this.yieldRtt = options.yieldRtt || null;
+        this.yieldOwnRtt = options.yieldOwnRtt || null;
         this.notifyRtt = options.notifyRtt || null;
     }
 
@@ -55,6 +56,8 @@ class AgentFlashService {
 
     async authorize(params = {}) {
         // Probe preflight participates in admission even before flash confirmation.
+        const rttYielded = this.yieldOwnRtt?.("agentRead");
+        if (rttYielded) await rttYielded;
         const lease = this.coordinator.acquire("agentRead");
         try {
             const request = this.request(params);
@@ -103,9 +106,13 @@ class AgentFlashService {
     async execute(params = {}, verify = false) {
         const request = this.request(params);
         if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
-        // RTT releases its probe hold for the flash and re-attaches once a session is available again.
-        const rttYielded = this.yieldRtt?.("agentDownload");
-        if (rttYielded) await rttYielded;
+        // RTT releases its probe hold for the flash and re-attaches once a session is available again; a flash that
+        // another operation blocks anyway must not interrupt it.
+        if (this.yieldRtt) {
+            this.coordinator.assertAvailable("download", ["rtt"]);
+            const rttYielded = this.yieldRtt("agentDownload");
+            if (rttYielded) await rttYielded;
+        }
         const lease = this.coordinator.acquire("download");
         let temporary;
         try {

@@ -12,6 +12,11 @@ const CONTROL_BLOCK_SYMBOL = "_SEGGER_RTT";
 const MIN_CONTROL_BLOCK_SIZE = 72;
 const AUTO_SCAN_MAX_BYTES = 1024 * 1024;
 const MANUAL_SCAN_MAX_BYTES = 16 * 1024 * 1024;
+// `rtt start` scans in one blocking command and a Tcl RPC timeout resets the connection, so a range is searched in
+// slices small enough to finish inside that timeout on a slow adapter, releasing the session between them. Slices
+// overlap by the ID so a control block across a boundary is still found.
+const SCAN_SLICE_BYTES = 32 * 1024;
+const SCAN_SLICE_OVERLAP = 16;
 // Writable sections closer than this are scanned as one range (alignment padding, small heaps between .data and .bss)
 const SECTION_MERGE_GAP = 64 * 1024;
 const MAX_CHANNEL = 255;
@@ -125,6 +130,17 @@ function resolveControlBlock({ settings = {}, symbols, sections, regions } = {})
     );
 }
 
+// The `rtt setup` ranges to try in order for a resolved block; an exact block is one range.
+function scanSlices(block) {
+    if (block.exact || block.size <= SCAN_SLICE_BYTES + SCAN_SLICE_OVERLAP) return [block];
+    const slices = [];
+    for (let offset = 0; ; offset += SCAN_SLICE_BYTES) {
+        const size = Math.min(SCAN_SLICE_BYTES + SCAN_SLICE_OVERLAP, block.size - offset);
+        slices.push({ ...block, address: block.address + offset, size });
+        if (offset + size >= block.size) return slices;
+    }
+}
+
 function integerIn(value, min, max, code, label) {
     if (!Number.isSafeInteger(value) || value < min || value > max)
         throw rttError(code, `Invalid RTT ${label}: ${value}`, { [label]: value });
@@ -141,68 +157,45 @@ const commands = Object.freeze({
     stop: () => "rtt stop",
     pollingInterval: (ms) =>
         `rtt polling_interval ${integerIn(ms, 1, 60000, "RTT_INVALID_INTERVAL", "pollingIntervalMs")}`,
-    channelList: () => "rtt channellist",
+    channels: () => "rtt channels",
     serverStart: (port, channel) =>
         `rtt server start ${integerIn(port, 1, 65535, "RTT_INVALID_PORT", "port")} ` +
         integerIn(channel, 0, MAX_CHANNEL, "RTT_INVALID_CHANNEL", "channel"),
     serverStop: (port) => `rtt server stop ${integerIn(port, 1, 65535, "RTT_INVALID_PORT", "port")}`
 });
 
-// Minimal Tcl list splitter for OpenOCD results: words, {braced} groups (nested) and "quoted" words with escapes.
-function splitTclList(text) {
-    const source = String(text ?? "");
-    const words = [];
-    let i = 0;
-    while (i < source.length) {
-        while (i < source.length && /\s/.test(source[i])) i++;
-        if (i >= source.length) break;
-        if (source[i] === "{") {
-            let depth = 1,
-                j = i + 1;
-            for (; j < source.length && depth; j++) {
-                if (source[j] === "\\") j++;
-                else if (source[j] === "{") depth++;
-                else if (source[j] === "}") depth--;
-            }
-            if (depth) throw rttError("RTT_PARSE_ERROR", "Unbalanced braces in OpenOCD RTT result");
-            words.push(source.slice(i + 1, j - 1));
-            i = j;
-        } else if (source[i] === '"') {
-            let word = "",
-                j = i + 1;
-            for (; j < source.length && source[j] !== '"'; j++) word += source[j] === "\\" ? source[++j] : source[j];
-            if (j >= source.length) throw rttError("RTT_PARSE_ERROR", "Unterminated quote in OpenOCD RTT result");
-            words.push(word);
-            i = j + 1;
-        } else {
-            let j = i;
-            while (j < source.length && !/\s/.test(source[j])) j++;
-            words.push(source.slice(i, j));
-            i = j;
+const CHANNEL_MODES = ["skip", "trim", "block"];
+const CHANNEL_LINE = /^(\d+): (.*) (\d+) (\d+)$/;
+
+// Parses `rtt channels` into { up: [...], down: [...] } with { index, name, size, flags, mode }:
+//   Channels: up=3, down=1
+//   Up-channels:
+//   0: Terminal 1024 0
+//   2: Log 1024 2
+//   Down-channels:
+//   0: Terminal 16 0
+// OpenOCD omits unconfigured channels (size 0), so only this listing gives the channel number; `rtt channellist`
+// has none. The firmware owns the name, which may be empty or contain spaces, hence the anchored numeric fields.
+function parseChannelList(text) {
+    const result = { up: [], down: [] };
+    let direction = null;
+    for (const line of String(text ?? "").split(/\r?\n/)) {
+        if (line === "Up-channels:") direction = "up";
+        else if (line === "Down-channels:") direction = "down";
+        else {
+            const match = direction && CHANNEL_LINE.exec(line);
+            if (!match) continue;
+            const flags = Number(match[4]);
+            result[direction].push({
+                index: Number(match[1]),
+                name: match[2],
+                size: Number(match[3]),
+                flags,
+                mode: CHANNEL_MODES[flags & 3] || "unknown"
+            });
         }
     }
-    return words;
-}
-
-const CHANNEL_MODES = ["skip", "trim", "block"];
-
-// Parses `rtt channellist`: "up {{name Terminal size 1024 flags 2} ...} down {{...}}" into { up: [...], down: [...] }
-// with { index, name, size, flags, mode }. Unknown keys are ignored so newer OpenOCD fields do not break parsing.
-function parseChannelList(text) {
-    const top = splitTclList(text);
-    const result = { up: [], down: [] };
-    for (let i = 0; i + 1 < top.length; i += 2) {
-        const direction = top[i];
-        if (direction !== "up" && direction !== "down") continue;
-        result[direction] = splitTclList(top[i + 1]).map((entry, index) => {
-            const fields = splitTclList(entry);
-            const record = {};
-            for (let k = 0; k + 1 < fields.length; k += 2) record[fields[k]] = fields[k + 1];
-            const size = Number(record.size) || 0;
-            const flags = Number(record.flags) || 0;
-            return { index, name: record.name || "", size, flags, mode: CHANNEL_MODES[flags & 3] || "unknown" };
-        });
-    }
+    if (direction === null) throw rttError("RTT_PARSE_ERROR", "Unexpected OpenOCD rtt channels result");
     return result;
 }
 
@@ -218,9 +211,10 @@ module.exports = {
     MANUAL_SCAN_MAX_BYTES,
     MIN_CONTROL_BLOCK_SIZE,
     RTT_ID,
+    SCAN_SLICE_BYTES,
     commands,
     parseChannelList,
     parseRttListening,
     resolveControlBlock,
-    splitTclList
+    scanSlices
 };
