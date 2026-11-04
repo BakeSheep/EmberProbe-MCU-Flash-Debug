@@ -198,17 +198,17 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     background: var(--notice-accent);
 }
 /* MCU configuration: a card like flash/debug that folds to one row naming the configured chip and probe. */
-#mcuConfigSection.config-card {
+.config-card {
     margin: 6px 9px;
     border: 1px solid var(--vscode-widget-border, var(--vscode-sideBarSectionHeader-border));
     border-radius: 5px;
     background: var(--vscode-editor-background);
     overflow: hidden;
 }
-#mcuConfigSection.config-card + .flash-debug-card {
+.config-card + .flash-debug-card {
     margin-top: 0;
 }
-#mcuConfigSection > summary {
+.config-card > summary {
     gap: 8px;
     height: 32px;
     padding: 0 10px 0 8px;
@@ -217,16 +217,16 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     font: 600 12px var(--vscode-font-family);
     text-transform: none;
 }
-#mcuConfigSection > summary:hover {
+.config-card > summary:hover {
     background: var(--vscode-list-hoverBackground);
 }
-#mcuConfigSection > summary:before {
+.config-card > summary:before {
     margin-right: 0;
 }
-#mcuConfigSection[open] > summary {
+.config-card[open] > summary {
     border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-sideBarSectionHeader-border));
 }
-#mcuConfigSection .config-title {
+.config-card .config-title {
     flex: none;
     line-height: 1;
     transform: translateY(-1px);
@@ -243,11 +243,14 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 #mcuConfigSection > .tree > .tree-row {
     padding-left: 12px;
 }
-/* Agent integration rows in the flash card's Other dropdown, laid out like the memory block heading. */
+/* Agent integrations share their own collapsible card. */
 .agent-block {
-    margin-top: 6px;
-    padding-top: 6px;
-    border-top: 1px solid var(--vscode-widget-border, transparent);
+    padding: 8px;
+}
+.agent-error {
+    margin: 6px 2px 0;
+    color: var(--vscode-errorForeground);
+    font: 11px/1.5 var(--vscode-font-family);
 }
 .agent-row {
     min-height: 32px;
@@ -263,6 +266,41 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .agent-row > .skill-toggle {
     width: 30px;
     flex: none;
+}
+.mcp-clients {
+    display: block;
+}
+.mcp-client-list {
+    margin-top: 4px;
+}
+.mcp-client {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+}
+.mcp-client .row-copy {
+    display: flex;
+    flex: 1;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+.mcp-client-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.mcp-client small {
+    flex: none;
+    white-space: nowrap;
+}
+.mcp-client-outdated small {
+    color: var(--vscode-editorWarning-foreground);
+}
+.mcp-client-invalid small {
+    color: var(--vscode-errorForeground);
 }
 .agent-install {
     flex: none;

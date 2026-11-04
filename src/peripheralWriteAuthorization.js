@@ -46,6 +46,7 @@ function invalid(message, details) {
 class PeripheralWriteAuthorization {
     constructor(options = {}) {
         this.ttlMs = options.ttlMs || DEFAULT_TTL_MS;
+        this.fullAccess = options.fullAccess || (() => false);
         this.now = options.now || (() => Date.now());
         this.createId = options.createId || (() => crypto.randomBytes(16).toString("hex"));
         this.confirmations = new ConfirmationStore({ ttlMs: this.ttlMs, now: this.now, createId: this.createId });
@@ -57,6 +58,7 @@ class PeripheralWriteAuthorization {
     }
 
     request(plan) {
+        if (this.fullAccess()) return { confirmationRequired: false, mode: "full" };
         this._prune();
         const { confirmationId, expiresAt } = this.confirmations.request(stableIdentity(plan));
         return {
@@ -86,6 +88,7 @@ class PeripheralWriteAuthorization {
     }
 
     authorize(plan, confirmationId) {
+        if (!confirmationId && this.fullAccess()) return { authorized: true, mode: "full" };
         this._prune();
         const id = String(confirmationId || "").trim();
         const pending = this.pending.get(id);

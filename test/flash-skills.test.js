@@ -5,6 +5,7 @@ const { minimalElf } = require("./helpers/elf-fixture");
 // scripts with shell:false on Windows (EINVAL), so --execute cases run only on Unix; preflight is pure Node and runs
 // everywhere.
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -421,6 +422,21 @@ function lastJsonLine(stdout) {
                 "download should preserve target RAM used as work-area"
             );
             assert.ok(downloaded.stdout.includes("EP_VERIFY OK"));
+
+            await scenario(
+                "Flash skill entry points honor full access without manufacturing confirmation IDs",
+                async () => {
+                    flashAuthorization.fullAccess = () => true;
+                    try {
+                        for (const script of ["program.js", "verify.js"]) {
+                            const runResult = await run("mcu-flash/scripts/" + script, ["--execute"]);
+                            assert.strictEqual(lastJsonLine(runResult.stdout).permission.mode, "full");
+                        }
+                    } finally {
+                        flashAuthorization.fullAccess = () => false;
+                    }
+                }
+            );
 
             const oldOpenOcd = path.join(root, "bin", "old-openocd.sh");
             fs.writeFileSync(oldOpenOcd, '#!/bin/sh\necho "Open On-Chip Debugger 0.11.0"\nexit 0\n');

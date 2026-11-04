@@ -143,7 +143,7 @@ function legacyManifestFiles(before, after, ownedFiles) {
 class CubeMxService {
     constructor(options) {
         this.options = options;
-        this.authorization = new CubeMxAuthorization(options.storage);
+        this.authorization = new CubeMxAuthorization(options.storage, { fullAccess: options.fullAccess });
         this.jobs = new Map();
         this.activeExecutions = new Map();
         this.recordFailures = new Map();

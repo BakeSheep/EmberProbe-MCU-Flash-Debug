@@ -11,6 +11,7 @@ const path = require("path");
 const YAML = require("yaml");
 const { execFileSync } = require("child_process");
 const {
+    CLIENTS,
     McpRegistration,
     configSnippet,
     cursorInstallLink,
@@ -21,7 +22,12 @@ const {
     serverCommand,
     wrapperSource
 } = require("../src/services/mcpRegistration");
-const { prepareClientInstall, commitClientInstall } = require("../src/services/mcpConfigFiles");
+const {
+    clientStatus,
+    commitClientInstall,
+    prepareClientInstall,
+    prepareClientUninstall
+} = require("../src/services/mcpConfigFiles");
 
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-mcp-registration-")));
 const RUNTIME = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
@@ -44,6 +50,7 @@ class McpStdioServerDefinition {
 }
 
 function setup(vscodeExtra = {}, state = {}) {
+    const posted = [];
     const clientHome = path.join(base, `client-${++clientNumber}`);
     const context = {
         extensionPath: path.join(base, "extension"),
@@ -63,7 +70,10 @@ function setup(vscodeExtra = {}, state = {}) {
                 state.picks = items;
                 return items.find((item) => item.client === state.pick);
             },
-            showWarningMessage: (...args) => messages.push(["warn", ...args]),
+            showWarningMessage: async (...args) => {
+                messages.push(["warn", ...args]);
+                return args[1]?.modal ? state.confirm : undefined;
+            },
             showErrorMessage: (...args) => messages.push(["error", ...args]),
             showInformationMessage: async (...args) => {
                 messages.push(["info", ...args]);
@@ -79,7 +89,6 @@ function setup(vscodeExtra = {}, state = {}) {
                 return state.openExternal !== false;
             }
         },
-        workspace: { workspaceFolders: state.workspace ? [{ uri: { fsPath: state.workspace } }] : [] },
         ...vscodeExtra
     };
     const events = { resolved: 0, configured: 0 };
@@ -102,16 +111,19 @@ function setup(vscodeExtra = {}, state = {}) {
             cli.push([file, ...args]);
             return (state.cliResults || []).shift() || { ok: true, stdout: "", stderr: "" };
         },
-        prepareInstall: async (client, snippet, workspace) => {
+        post: (message) => posted.push(message),
+        prepareInstall: async (client, snippet) => {
             if (state.prepareError) throw new Error(state.prepareError);
-            return prepareClientInstall(client, snippet, { home: clientHome, env: {}, workspace });
+            return prepareClientInstall(client, snippet, { home: clientHome, env: {} });
         },
+        prepareUninstall: (client) => prepareClientUninstall(client, { home: clientHome, env: {} }),
+        readStatus: (client, snippet) => clientStatus(client, snippet, { home: clientHome, env: {} }),
         commitInstall: async (plan) => {
             if (state.commitError) throw new Error(state.commitError);
             return commitClientInstall(plan);
         }
     });
-    return { registration, context, messages, clipboard, opened, cli, events, vscode, state, clientHome };
+    return { registration, context, messages, clipboard, opened, cli, events, vscode, state, clientHome, posted };
 }
 
 function cursorApi() {
@@ -350,21 +362,20 @@ function cursorApi() {
             assert.strictEqual(configSnippet("cursor", spec), cursorInstallLink(spec));
         });
 
-        await scenario("Export Antigravity JSON and a DSH patch with explicit workspace and long-call limits", () => {
-            const workspace = "C:\\工作区\\MCU #1: 'demo' & ${value}\\firmware";
+        await scenario("Export Antigravity JSON and a DSH patch with long-call limits and no binding", () => {
             const spec = {
                 command: RUNTIME,
                 args: ["C:\\Users\\me\\mcp.js"],
                 env: { ELECTRON_RUN_AS_NODE: "1", EMBERPROBE_MCP_TOOLSETS: "core,cubemx" }
             };
-            const env = { ...spec.env, EMBERPROBE_WORKSPACE: workspace };
-            const antigravity = JSON.parse(configSnippet("antigravity", spec, "win32", workspace));
+            const { env } = spec;
+            const antigravity = JSON.parse(configSnippet("antigravity", spec));
             assert.deepStrictEqual(antigravity, {
                 mcpServers: {
                     emberprobe: { command: RUNTIME, args: spec.args, env, timeoutSeconds: 1800 }
                 }
             });
-            const patch = YAML.parse(configSnippet("dsh", spec, "win32", workspace));
+            const patch = YAML.parse(configSnippet("dsh", spec));
             assert.deepStrictEqual(patch, [
                 {
                     insert: [
@@ -383,26 +394,22 @@ function cursorApi() {
                     ]
                 }
             ]);
-            assert.ok(!Object.hasOwn(spec.env, "EMBERPROBE_WORKSPACE"), "export must not mutate the base spec");
             assert.ok(!Object.hasOwn(env, "EMBERPROBE_BRIDGE_INSTANCE"), "exports survive Bridge restarts");
         });
 
-        await scenario("Preserve POSIX paths and YAML-sensitive characters without requiring a workspace", () => {
+        await scenario("Preserve POSIX paths and YAML-sensitive characters", () => {
             const spec = {
                 command: "/home/o'neil/Ember Probe/mcp",
                 args: [],
                 env: { VALUE: 'true: # \\"quoted\\"\n!!js x\u0085y\u2028z\u2029end' }
             };
-            for (const workspace of [undefined, "/tmp/MCU\u0085one\u2028two\u2029three"]) {
-                const antigravity = JSON.parse(configSnippet("antigravity", spec, "linux", workspace));
-                const dsh = YAML.parse(configSnippet("dsh", spec, "linux", workspace))[0].insert[0].config;
-                const env = workspace ? { ...spec.env, EMBERPROBE_WORKSPACE: workspace } : spec.env;
-                assert.deepStrictEqual(antigravity.mcpServers.emberprobe.env, env);
-                assert.deepStrictEqual(dsh.env, env);
-                assert.strictEqual(dsh.command, spec.command);
-                assert.deepStrictEqual(dsh.args, []);
-            }
-            const empty = YAML.parse(configSnippet("dsh", { command: "/s/mcp", args: [], env: {} }, "linux"));
+            const antigravity = JSON.parse(configSnippet("antigravity", spec));
+            const dsh = YAML.parse(configSnippet("dsh", spec))[0].insert[0].config;
+            assert.deepStrictEqual(antigravity.mcpServers.emberprobe.env, spec.env);
+            assert.deepStrictEqual(dsh.env, spec.env);
+            assert.strictEqual(dsh.command, spec.command);
+            assert.deepStrictEqual(dsh.args, []);
+            const empty = YAML.parse(configSnippet("dsh", { command: "/s/mcp", args: [], env: {} }));
             assert.ok(!Object.hasOwn(empty[0].insert[0].config, "env"));
         });
 
@@ -544,7 +551,6 @@ function cursorApi() {
                     {
                         pick: client,
                         confirm: "mcp.copyConfig",
-                        workspace: path.join(base, "MCU workspace"),
                         executables: { [client]: `/usr/bin/${client}` }
                     }
                 );
@@ -552,7 +558,7 @@ function cursorApi() {
                 assert.strictEqual(result.method, "clipboard");
                 assert.deepStrictEqual(cli, []);
                 assert.deepStrictEqual(clipboard, [result.snippet]);
-                assert.ok(result.snippet.includes("EMBERPROBE_WORKSPACE"));
+                assert.ok(!result.snippet.includes("EMBERPROBE_WORKSPACE"));
                 assert.strictEqual(events.configured, 1);
                 assert.strictEqual(messages.at(-1)[1], `mcp.configCopied.${client}`);
             }
@@ -560,7 +566,7 @@ function cursorApi() {
 
         await scenario("Install every named harness directly after displaying target files", async () => {
             for (const client of ["claude", "codex", "gemini", "opencode", "antigravity", "dsh"]) {
-                const state = { pick: client, confirm: "mcp.install", workspace: path.join(base, "workspace") };
+                const state = { pick: client, confirm: "mcp.install" };
                 const { registration, clientHome, events, cli, clipboard } = setup({}, state);
                 state.onConfirm = (message, options) => {
                     assert.ok(message.startsWith("mcp.nativeConfirm"));
@@ -733,13 +739,11 @@ function cursorApi() {
             "Copy named client configurations with setup guidance and no CLI or link side effects",
             async () => {
                 for (const client of ["antigravity", "dsh", "gemini", "opencode"]) {
-                    const workspace = path.join(base, "MCU workspace");
                     const { registration, clipboard, cli, opened, messages, events, state } = setup(
                         {},
                         {
                             pick: client,
-                            confirm: "mcp.copyConfig",
-                            workspace
+                            confirm: "mcp.copyConfig"
                         }
                     );
                     const result = await registration.installClient();
@@ -752,7 +756,7 @@ function cursorApi() {
                             : client === "opencode"
                               ? JSON.parse(result.snippet).mcp.emberprobe
                               : JSON.parse(result.snippet).mcpServers.emberprobe;
-                    assert.strictEqual((spec.env || spec.environment).EMBERPROBE_WORKSPACE, workspace);
+                    assert.ok(!Object.hasOwn(spec.env || spec.environment, "EMBERPROBE_WORKSPACE"));
                     assert.ok(fs.existsSync(spec.args?.[0] || spec.command[1]), "the exported launcher exists");
                     const method = "native";
                     assert.ok(
@@ -776,6 +780,125 @@ function cursorApi() {
             const remote = setup({}, { pick: "json", remoteName: "wsl" });
             await remote.registration.installClient();
             assert.ok(!remote.state.picks.some((pick) => pick.client === "cursor"));
+        });
+
+        await scenario("List every client with the actions its state allows", async () => {
+            const { registration } = setup();
+            const status = await registration.clientStatuses();
+            assert.strictEqual(status.type, "mcpClients");
+            assert.deepStrictEqual(
+                status.clients.map(({ client, state, actions }) => [client, state, actions]),
+                CLIENTS.map((client) =>
+                    client === "json" ? [client, "manual", ["copy"]] : [client, "notInstalled", ["install"]]
+                )
+            );
+            const inCursor = setup({ cursor: cursorApi() });
+            inCursor.registration.register();
+            const cursor = await inCursor.registration.clientStatuses();
+            assert.ok(!cursor.clients.some((item) => ["cursor", "copilot"].includes(item.client)));
+        });
+
+        await scenario("Install, upgrade and remove one client from the sidebar", async () => {
+            const state = { executables: { gemini: "/usr/bin/gemini" } };
+            const { registration, clientHome, cli, messages } = setup({}, state);
+            const read = async () =>
+                (await registration.clientStatuses()).clients.find((item) => item.client === "gemini");
+            const result = await registration.runClientAction("gemini", "install");
+            assert.strictEqual(result.method, "file");
+            assert.strictEqual(state.picks, undefined, "the sidebar names the client, so nothing asks for it");
+            assert.strictEqual((await read()).state, "installed");
+
+            const file = result.files[0];
+            const stale = JSON.parse(fs.readFileSync(file, "utf8"));
+            stale.mcpServers.emberprobe.env = { EMBERPROBE_WORKSPACE: "/old" };
+            fs.writeFileSync(file, JSON.stringify(stale));
+            const outdated = await read();
+            assert.deepStrictEqual([outdated.state, outdated.actions], ["outdated", ["upgrade", "uninstall"]]);
+            assert.ok(outdated.files[0].startsWith(clientHome));
+
+            await registration.runClientAction("gemini", "upgrade");
+            assert.strictEqual((await read()).state, "installed");
+            assert.deepStrictEqual(cli, [], "an upgrade merges instead of calling `mcp add`");
+
+            state.confirm = undefined;
+            assert.strictEqual(await registration.runClientAction("gemini", "uninstall"), null);
+            assert.strictEqual((await read()).state, "installed", "dismissing the dialog removes nothing");
+
+            state.confirm = "mcp.uninstall";
+            await registration.runClientAction("gemini", "uninstall");
+            assert.strictEqual((await read()).state, "notInstalled");
+            assert.ok(messages.some((entry) => entry[0] === "warn" && entry[1].startsWith("mcp.uninstallConfirm")));
+            assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers, {});
+        });
+
+        await scenario("Sidebar installs and upgrades write without a dialog or the CLI", async () => {
+            const state = { confirm: undefined, executables: { gemini: "/usr/bin/gemini" } };
+            const { registration, cli, messages } = setup({}, state);
+            for (const action of ["install", "upgrade"]) {
+                const result = await registration.runClientAction("gemini", action);
+                assert.strictEqual(result.method, "file");
+            }
+            assert.strictEqual(messages.filter((message) => message[2]?.modal).length, 0);
+            assert.ok(messages.some((message) => String(message[1]).startsWith("mcp.nativeInstalled")));
+            assert.deepStrictEqual(cli, []);
+        });
+
+        await scenario("Show Copilot as built in only where the provider serves it", async () => {
+            const { registration } = setup({
+                McpStdioServerDefinition,
+                lm: { registerMcpServerDefinitionProvider: () => ({ dispose() {} }) }
+            });
+            registration.register();
+            const [first] = (await registration.clientStatuses()).clients;
+            assert.deepStrictEqual(first, { client: "copilot", state: "builtin", actions: [], files: [] });
+            await assert.rejects(registration.runClientAction("copilot", "install"), /Unknown MCP client action/);
+        });
+
+        await scenario("Copy a manual client and an unreadable file's configuration", async () => {
+            const { registration, clipboard, clientHome, messages } = setup();
+            await registration.runClientAction("json", "copy");
+            assert.ok(clipboard[0].includes("mcpServers"));
+            assert.ok(messages.at(-1)[1].startsWith("mcp.configCopied:"));
+
+            fs.mkdirSync(path.join(clientHome, ".gemini"), { recursive: true });
+            fs.writeFileSync(path.join(clientHome, ".gemini", "settings.json"), '{"secret":"DO_NOT_ECHO",broken}');
+            const invalid = (await registration.clientStatuses()).clients.find((item) => item.client === "gemini");
+            assert.strictEqual(invalid.state, "invalid");
+            assert.deepStrictEqual(invalid.actions, ["copy"]);
+            assert.ok(!invalid.error.includes("DO_NOT_ECHO"));
+            await registration.runClientAction("gemini", "copy");
+            assert.ok(messages.at(-1)[1].startsWith("mcp.configCopied.gemini"));
+
+            fs.mkdirSync(path.join(clientHome, ".cursor"), { recursive: true });
+            fs.writeFileSync(path.join(clientHome, ".cursor", "mcp.json"), "{broken");
+            const cursor = (await registration.clientStatuses()).clients.find((item) => item.client === "cursor");
+            assert.deepStrictEqual([cursor.state, cursor.actions], ["invalid", ["install"]]);
+        });
+
+        await scenario("Reject unknown actions and overlapping changes", async () => {
+            const { registration } = setup();
+            for (const [client, action] of [
+                ["gemini", "delete"],
+                ["toString", "install"],
+                [undefined, "install"]
+            ])
+                await assert.rejects(registration.runClientAction(client, action), { code: "INVALID_PARAMS" });
+            const inCursor = setup({ cursor: cursorApi() });
+            inCursor.registration.register();
+            await assert.rejects(inCursor.registration.runClientAction("cursor", "install"), {
+                code: "INVALID_PARAMS"
+            });
+            registration.busyClient = "codex";
+            await assert.rejects(registration.runClientAction("gemini", "install"), { code: "MCP_BUSY" });
+            assert.strictEqual((await registration.clientStatuses()).busy, "codex");
+        });
+
+        await scenario("Publish client states after the palette command", async () => {
+            const state = { pick: "gemini", confirm: "mcp.install" };
+            const { registration, posted } = setup({}, state);
+            await registration.installClient();
+            const gemini = posted.at(-1).clients.find((item) => item.client === "gemini");
+            assert.strictEqual(gemini.state, "installed");
         });
     } finally {
         fs.rmSync(base, { recursive: true, force: true });

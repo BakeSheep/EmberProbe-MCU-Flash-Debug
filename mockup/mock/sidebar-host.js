@@ -24,6 +24,23 @@
         });
         var stopped = false;
         var initialized = false;
+        var agentFullAccess = false;
+        var mcpClientStates = {
+            claude: "installed",
+            codex: "outdated",
+            gemini: "notInstalled",
+            opencode: "notInstalled",
+            cursor: "notInstalled",
+            antigravity: "notInstalled",
+            dsh: "notInstalled"
+        };
+        var MCP_ACTIONS = {
+            notInstalled: ["install"],
+            installed: ["uninstall"],
+            outdated: ["upgrade", "uninstall"],
+            manual: ["copy"],
+            builtin: []
+        };
         var debugTimer = null;
         var targetState = "halted";
         var stopEpoch = 1;
@@ -290,8 +307,33 @@
             }, 900);
         }
 
+        function sendMcpClients() {
+            var clients = Object.keys(mcpClientStates).map(function (client) {
+                var state = mcpClientStates[client];
+                return { client: client, state: state, actions: MCP_ACTIONS[state], files: [] };
+            });
+            clients.unshift({ client: "copilot", state: "builtin", actions: MCP_ACTIONS.builtin, files: [] });
+            clients.push({ client: "json", state: "manual", actions: MCP_ACTIONS.manual, files: [] });
+            send({ type: "mcpClients", clients: clients, busy: "" });
+        }
+
         function handleCommand(message) {
             switch (message.type) {
+                case "getMcpClients":
+                    sendMcpClients();
+                    break;
+                case "mcpClientAction":
+                    if (message.client !== "json")
+                        mcpClientStates[message.client] = message.action === "uninstall" ? "notInstalled" : "installed";
+                    sendMcpClients();
+                    break;
+                case "getAgentPermissions":
+                    send({ type: "agentPermissions", fullAccess: agentFullAccess, available: true });
+                    break;
+                case "setAgentFullAccess":
+                    agentFullAccess = message.enabled === true;
+                    send({ type: "agentPermissions", fullAccess: agentFullAccess, available: true });
+                    break;
                 case "initCheck":
                     initialized = true;
                     sendInitialState();
@@ -484,10 +526,6 @@
                     break;
                 case "mcu-vscode.manageAgentSkills":
                     simulateSkillToggle(cmd);
-                    break;
-                case "mcu-vscode.installMcpServer":
-                    send({ type: "commandSuccess", cmd: cmd });
-                    notify({ action: "toast", text: "已把 EmberProbe MCP 服务器添加到 Claude Code" });
                     break;
                 case "mcu-vscode.downloadOfficialSvd":
                     simulateSvdDownload(cmd);

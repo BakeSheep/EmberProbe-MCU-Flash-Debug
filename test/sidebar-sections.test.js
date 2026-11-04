@@ -4,7 +4,7 @@ const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 
-const ids = ["mcuConfigSection", "chipInfoSection", "liveValuesSection", "variableBrowser"];
+const ids = ["mcuConfigSection", "agentConfigSection", "chipInfoSection", "liveValuesSection", "variableBrowser"];
 const html = getModernWebviewContent({}, "en");
 const view = render(html);
 let saved;
@@ -13,7 +13,8 @@ try {
     assert.strictEqual(config.open, false, "the MCU configuration card starts folded");
     config.open = true;
     config.dispatchEvent(new view.window.Event("toggle"));
-    for (const id of ids.slice(1))
+    assert.strictEqual(view.document.getElementById("agentConfigSection").open, false);
+    for (const id of ids.slice(2))
         assert.ok(view.document.getElementById(id).open, "first use keeps the default expansion");
     for (const id of ids) {
         const section = view.document.getElementById(id);

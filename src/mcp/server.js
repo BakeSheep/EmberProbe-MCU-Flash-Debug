@@ -180,8 +180,8 @@ function createServer(options = {}) {
                 ...(program && args.remember ? { remember: true } : {})
             });
         const authorization = await call("flash.authorize", { ...identity, operation: tool.operation });
-        // With a 24-hour workspace authorization in place, run directly and include trustedExpiresAt in the result.
-        if (program && authorization?.authorized === true)
+        // The Bridge may authorize through remembered permission or the explicit full-access workspace grant.
+        if (authorization?.authorized === true)
             return execute({}).then((value) => {
                 value.structuredContent.authorization = authorization;
                 return value;

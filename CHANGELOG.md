@@ -8,6 +8,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 新增 / Added
 
+- Agent Skills 和 MCP 服务器移至与 MCU 配置并列的可折叠“Agent 配置”卡片，新增默认关闭的工作区
+  “完全允许 Agent 操作”开关，对适用操作免除确认，保留身份、输入及固件一致性保护。
+- Move Agent Skills and MCP installation into a peer Agent Configuration card with independent collapse state.
+  Add an opt-in workspace full-access switch that skips applicable operation confirmations while retaining
+  identity, input and firmware-consistency guards.
+
+- “Agent 配置”卡片逐行列出各 MCP 客户端的状态，可在侧边栏直接安装、升级、移除或复制配置；GitHub Copilot 显示为默认安装，
+  安装和升级不再弹出确认，移除仍需确认。
+- List each MCP client's state in the Agent Configuration card, with install, upgrade, remove and copy actions in
+  the sidebar. GitHub Copilot shows as built in. Installing and upgrading no longer ask first; removing still does.
+
 - APM32F407 + J-Link/WinUSB 实板通过外设三态读取及 6 次同值写入；修复 xPack OpenOCD 仅提供公开内存命令
   时访问失败，以及后台发现 CubeMX 路径导致外设事务误失效的问题。仅验证 32 位同值写入，未测试实际改值。
 - Validate three-state peripheral reads and six same-value writes on APM32F407 + J-Link/WinUSB. Discover public
@@ -69,6 +80,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 优化 / Improved
 
+- MCP 客户端配置不再写入 `EMBERPROBE_WORKSPACE`，也不再写入项目级配置：用户级条目由所有工程共用，按 Agent 的
+  MCP roots 或工作目录定位窗口，多个工作区可同时使用。此前写入的绑定会让其他工程静默连到被绑定的窗口，升级时移除。
+- Stop writing `EMBERPROBE_WORKSPACE` and project-level files when configuring MCP clients. The user-level entry
+  serves every project and finds the window from the Agent's MCP roots or working directory, so several workspaces
+  can work at once. A binding from an earlier release sent other projects to the bound window; upgrading removes it.
 - CubeMX 和 CubeMX2 路径统一放到 VS Code 用户设置，在本机所有工作区共享，移除侧栏路径入口；CubeMX2 优先通过 ST 官方安装登记和 Cube CLI 只读解析检测，目录、PATH 与 Windows 快捷方式作为兜底。保留已有配置，原有 CubeMX 生成流程继续使用独立路径。
 - Move CubeMX and CubeMX2 paths to machine-wide VS Code User settings and remove their sidebar entries. CubeMX2 discovery prefers ST's official bundle registration and read-only Cube CLI resolution, with directory, PATH and Windows shortcut fallbacks. Preserve saved paths and the existing CubeMX generation flow.
 

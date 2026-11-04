@@ -105,12 +105,9 @@ class AgentFlashService {
         let temporary;
         try {
             // Plans come from flash.authorize; execution never issues a confirmation itself. Without an ID,
-            // only a remembered workspace permission for this exact path and connection may proceed.
+            // a workspace permission or the explicit full-access grant must apply to the current connection.
             const remember = !verify && !!params.remember;
-            if (!params.confirmationId && (verify || remember))
-                throw new Error(
-                    verify ? "Flash verification confirmation is required" : "Flash confirmation is required"
-                );
+            if (!params.confirmationId && remember) throw new Error("Flash confirmation is required");
             temporary = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-flash-"));
             const snapshot = path.join(temporary, "firmware.elf");
             const inspected = await inspectElf(params.elf, { snapshot });
@@ -127,12 +124,21 @@ class AgentFlashService {
                 elf: inspected,
                 operation: verify ? "flash.verify" : "flash.execute"
             };
-            if (!params.confirmationId && !this.authorization.isTrusted?.(plan))
-                throw Object.assign(new Error("Flash confirmation is required"), {
-                    code: "FLASH_CONFIRMATION_REQUIRED",
-                    category: "user_decision",
-                    retryable: false
-                });
+            if (
+                !params.confirmationId &&
+                !this.authorization.isFullyAllowed?.(plan) &&
+                (verify || !this.authorization.isTrusted?.(plan))
+            )
+                throw Object.assign(
+                    new Error(
+                        verify ? "Flash verification confirmation is required" : "Flash confirmation is required"
+                    ),
+                    {
+                        code: "FLASH_CONFIRMATION_REQUIRED",
+                        category: "user_decision",
+                        retryable: false
+                    }
+                );
             const authorization = this.authorization.authorize(plan, params.confirmationId, { remember });
             if (!authorization.authorized) return authorization;
             // Only the private, bounded snapshot whose digest was authorized is consumed.

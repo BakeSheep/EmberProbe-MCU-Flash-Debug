@@ -224,6 +224,22 @@ class FakeDebugBridge {
                 error.details.allowedEnumerations.length === 0
         );
 
+        await scenario("Full-access peripheral writes retain register, stop and readback guards", async () => {
+            let fullAccess = true;
+            service.authorization = new PeripheralWriteAuthorization({ fullAccess: () => fullAccess });
+            const request = { writes: [{ target: "GPIOA.MODER.MODE0", value: "1" }] };
+            const result = await service.write(request);
+            assert.strictEqual(result.permission.mode, "full");
+            assert.strictEqual(result.results[0].verified, true);
+            await assert.rejects(service.write({ writes: [{ target: "GPIOA.FLAGS", value: "1" }] }), {
+                code: "PERIPHERAL_WRITE_SEMANTICS_UNSUPPORTED"
+            });
+            debugBridge.paused = false;
+            await assert.rejects(service.write(request), { code: "TARGET_NOT_PAUSED" });
+            debugBridge.paused = true;
+            fullAccess = false;
+            assert.strictEqual((await service.write(request)).confirmationRequired, true);
+        });
         const originalRead = debugBridge.readPausedMemory.bind(debugBridge);
         debugBridge.readPausedMemory = async (address, count) => {
             const data = await originalRead(address, count);

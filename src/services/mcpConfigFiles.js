@@ -3,7 +3,8 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { randomUUID } = require("crypto");
-const { editConfig, yamlTargets } = require("./mcpConfigEdits");
+const { isDeepStrictEqual } = require("util");
+const { editConfig, readEntry, removeConfig, yamlTargets } = require("./mcpConfigEdits");
 
 const MAX_CONFIG_BYTES = 2 * 1024 * 1024;
 const FILE_CLIENTS = Object.freeze(["claude", "codex", "gemini", "opencode", "antigravity", "dsh"]);
@@ -24,8 +25,10 @@ function absolute(value, fallback) {
     return value;
 }
 
-/** @param {string} client @param {{ home?: string, env?: NodeJS.ProcessEnv, workspace?: string, io?: any }} [options] */
-async function configTargets(client, { home = os.homedir(), env = process.env, workspace, io = fs } = {}) {
+// Only user-level files: project configuration belongs to the project, and its owner may keep a binding there.
+/** @param {string} client @param {{ home?: string, env?: NodeJS.ProcessEnv, io?: any }} [options] */
+async function configTargets(client, { home = os.homedir(), env = process.env, io = fs } = {}) {
+    if (client === "cursor") return { targets: [path.join(home, ".cursor", "mcp.json")] };
     if (!FILE_CLIENTS.includes(client)) throw new Error(`No configuration file adapter for MCP client: ${client}`);
     if (client === "dsh") {
         const root = absolute(env.DSH_HOME, path.join(home, ".dsh"));
@@ -43,24 +46,12 @@ async function configTargets(client, { home = os.homedir(), env = process.env, w
     if (client === "codex")
         return { targets: [path.join(absolute(env.CODEX_HOME, path.join(home, ".codex")), "config.toml")] };
     if (client === "gemini") return { targets: [path.join(home, ".gemini", "settings.json")] };
-    if (client === "antigravity") {
-        const project = workspace && path.join(workspace, ".agents", "mcp_config.json");
-        return {
-            targets: [
-                project && (await exists(project, io))
-                    ? project
-                    : path.join(home, ".gemini", "config", "mcp_config.json")
-            ]
-        };
-    }
+    if (client === "antigravity") return { targets: [path.join(home, ".gemini", "config", "mcp_config.json")] };
     if (env.OPENCODE_CONFIG) return { targets: [absolute(env.OPENCODE_CONFIG, "")] };
     const global = path.join(absolute(env.XDG_CONFIG_HOME, path.join(home, ".config")), "opencode");
-    // Project configuration can override a global server; update an existing project file first.
-    for (const directory of [workspace, global].filter(Boolean)) {
-        for (const name of ["opencode.jsonc", "opencode.json"]) {
-            const file = path.join(directory, name);
-            if (await exists(file, io)) return { targets: [file] };
-        }
+    for (const name of ["opencode.jsonc", "opencode.json"]) {
+        const file = path.join(global, name);
+        if (await exists(file, io)) return { targets: [file] };
     }
     return { targets: [path.join(global, "opencode.json")] };
 }
@@ -90,7 +81,14 @@ async function canonical(file, io) {
     }
 }
 
-async function prepareClientInstall(client, snippet, options = {}) {
+// Rejects invalid UTF-8 rather than replacing bytes in a user-owned configuration file.
+function configText(previous) {
+    const text = previous?.toString("utf8") || "";
+    if (previous && !Buffer.from(text).equals(previous)) throw new Error("MCP configuration must use UTF-8");
+    return text.startsWith("\ufeff") ? { bom: "\ufeff", body: text.slice(1) } : { bom: "", body: text };
+}
+
+async function preparePlan(client, options, transform) {
     const io = options.io || fs;
     const { targets, guard } = await configTargets(client, options);
     const files = [];
@@ -103,12 +101,8 @@ async function prepareClientInstall(client, snippet, options = {}) {
         }
         seen.add(file);
         const original = await snapshot(file, io);
-        const text = original.previous?.toString("utf8") || "";
-        // Reject invalid UTF-8 rather than replacing bytes in a user-owned configuration file.
-        if (original.previous && !Buffer.from(text).equals(original.previous))
-            throw new Error("MCP configuration must use UTF-8");
-        const bom = text.startsWith("\ufeff") ? "\ufeff" : "";
-        const next = Buffer.from(bom + editConfig(client, bom ? text.slice(1) : text, snippet));
+        const { bom, body } = configText(original.previous);
+        const next = Buffer.from(bom + transform(body));
         if (next.length > MAX_CONFIG_BYTES) throw new Error("MCP configuration exceeds 2 MiB");
         files.push({ file, sources: [target], ...original, next });
     }
@@ -124,6 +118,37 @@ async function prepareClientInstall(client, snippet, options = {}) {
         guards.push({ file, sources: [guard], ...original });
     }
     return { client, files, guards };
+}
+
+function prepareClientInstall(client, snippet, options = {}) {
+    return preparePlan(client, options, (text) => editConfig(client, text, snippet));
+}
+
+async function prepareClientUninstall(client, options = {}) {
+    const plan = await preparePlan(client, options, (text) => removeConfig(client, text));
+    // A file that never existed stays absent instead of being created empty.
+    return { ...plan, files: plan.files.filter((entry) => entry.previous) };
+}
+
+/**
+ * Compares the configured entry with what an installation would leave there, so the fields a client or user added
+ * themselves do not read as outdated. Read-only; configuration that cannot be read throws.
+ * @returns {Promise<{ state: "notInstalled" | "installed" | "outdated", files: string[] }>}
+ */
+async function clientStatus(client, snippet, options = {}) {
+    const io = options.io || fs;
+    const { targets } = await configTargets(client, options);
+    let found = 0;
+    let current = 0;
+    for (const target of targets) {
+        const { body } = configText((await snapshot(await canonical(target, io), io)).previous);
+        const entry = readEntry(client, body);
+        if (entry === undefined) continue;
+        found++;
+        if (isDeepStrictEqual(entry, readEntry(client, editConfig(client, body, snippet)))) current++;
+    }
+    const state = !found ? "notInstalled" : current === targets.length ? "installed" : "outdated";
+    return { state, files: targets };
 }
 
 async function assertUnchanged(entry, io) {
@@ -242,4 +267,12 @@ async function commitClientInstall(plan, { io = fs } = {}) {
     return { files: plan.files.map((entry) => entry.file), changed: changed.length };
 }
 
-module.exports = { FILE_CLIENTS, MAX_CONFIG_BYTES, configTargets, prepareClientInstall, commitClientInstall };
+module.exports = {
+    FILE_CLIENTS,
+    MAX_CONFIG_BYTES,
+    clientStatus,
+    configTargets,
+    prepareClientInstall,
+    prepareClientUninstall,
+    commitClientInstall
+};

@@ -67,6 +67,17 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         confirmations.prune();
         assert.strictEqual(confirmations.pending.size, 0);
 
+        scenario("Full-access CubeMX permission is live, revocable and still validates supplied confirmations", () => {
+            let fullAccess = true;
+            const full = new CubeMxAuthorization(memory(), { fullAccess: () => fullAccess });
+            assert.deepStrictEqual(full.request(plan), { confirmationRequired: false, mode: "full" });
+            assert.doesNotThrow(() => full.authorize(plan));
+            assert.throws(() => full.authorize(plan, "stale-id"), { code: "CUBEMX_CONFIRMATION_INVALID" });
+            fullAccess = false;
+            assert.strictEqual(full.request(plan).confirmationRequired, true);
+            assert.throws(() => full.authorize(plan), { code: "CUBEMX_CONFIRMATION_INVALID" });
+        });
+
         assert.strictEqual(parseIoc(content)["USART2.BaudRate"], "9600");
         for (const invalid of [
             "abc",

@@ -347,7 +347,7 @@ const inspection = new AgentDebugInspection(debugBridge);
                 }
             };
             for (const name of ["claude", "gemini", "opencode", "antigravity", "dsh", "json"]) {
-                const snippet = configSnippet(name, spec, process.platform, workspace);
+                const snippet = configSnippet(name, spec);
                 const native =
                     name === "dsh"
                         ? YAML.parse(snippet)[0].insert[0].config
@@ -358,12 +358,13 @@ const inspection = new AgentDebugInspection(debugBridge);
                     name === "opencode"
                         ? { command: native.command[0], args: native.command.slice(1), env: native.environment }
                         : native;
+                assert.strictEqual(config.env?.EMBERPROBE_WORKSPACE, undefined, "the entry stays workspace-neutral");
                 const client = new Client({ name: `test-${name}`, version: "1.0.0" }, { capabilities: {} });
                 const transport = new StdioClientTransport({
                     command: config.command,
                     args: config.args,
                     env: config.env,
-                    cwd: base
+                    cwd: workspace
                 });
                 try {
                     await client.connect(transport);
@@ -857,6 +858,15 @@ const inspection = new AgentDebugInspection(debugBridge);
                 assert.strictEqual(verify.method, "flash.verify");
                 assert.strictEqual(verify.params.remember, undefined, "verification never remembers");
                 assert.strictEqual(flashRuns.length, 4);
+                flash.authorization.fullAccess = () => true;
+                try {
+                    const noPrompt = await client.callTool({ name: "flash_verify", arguments: {} });
+                    assert.strictEqual(noPrompt.structuredContent.verified, true);
+                    assert.strictEqual(noPrompt.structuredContent.permission.mode, "full");
+                    assert.strictEqual(elicitations.length, 3, "full access skips the verification dialog");
+                } finally {
+                    flash.authorization.fullAccess = () => false;
+                }
                 await client.close();
             } finally {
                 flashCommon.preflight = realPreflight;

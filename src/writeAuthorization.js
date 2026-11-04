@@ -73,6 +73,7 @@ function authorizationError(message, code, details) {
 class WriteAuthorization {
     constructor(storage, options = {}) {
         this.storage = storage;
+        this.fullAccess = options.fullAccess || (() => false);
         this.storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
         this.ttlMs = options.ttlMs || DEFAULT_TTL_MS;
         this.trustTtlMs = options.trustTtlMs || DEFAULT_TRUST_TTL_MS;
@@ -157,6 +158,14 @@ class WriteAuthorization {
                 "A connection identity is required before confirming a write",
                 "WRITE_CONNECTION_REQUIRED"
             );
+        if (
+            !options.confirmationId &&
+            !options.remember &&
+            options.allowTrusted !== false &&
+            this.fullAccess() &&
+            canRememberWrite(plan?.connection)
+        )
+            return { authorized: true, mode: "full", remember: false };
         if (options.allowTrusted !== false && this.isTrusted(plan))
             return { authorized: true, mode: "workspace", remember: false };
         const confirmationId = String(options.confirmationId || "").trim();

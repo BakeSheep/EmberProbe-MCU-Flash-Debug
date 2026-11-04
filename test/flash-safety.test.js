@@ -213,6 +213,25 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             fs.open = openFile;
             fs.mkdtemp = makeTemporary;
         }
+        await scenario("Full access permits validated flash and verify calls and revocation takes effect", async () => {
+            let fullAccess = true;
+            service.authorization.fullAccess = () => fullAccess;
+            service.run = async (options) => {
+                options.onLine("EP_VERIFY OK");
+                return { exitCode: 0, openocdTail: [] };
+            };
+            for (const verify of [false, true]) {
+                const result = await service.execute(params, verify);
+                assert.strictEqual(result.verified, true);
+                assert.strictEqual(result.permission.mode, "full");
+            }
+            await assert.rejects(service.execute({ ...params, elfSha256: "wrong" }), {
+                code: "ELF_CHANGED_DURING_FLASH_CONFIRMATION"
+            });
+            fullAccess = false;
+            await assert.rejects(service.execute(params, true), { code: "FLASH_CONFIRMATION_REQUIRED" });
+            assert.strictEqual(coordinator.anyActive(), false);
+        });
         service.getConfig = () => ({ openocdPath: "" });
         await assert.rejects(service.authorize(params), /Configure OpenOCD/);
     } finally {

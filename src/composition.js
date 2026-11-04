@@ -27,6 +27,7 @@ const { FirmwareRecord } = require("./services/firmwareRecord");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
+const { AgentPermissions } = require("./services/agentPermissions");
 const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
@@ -221,7 +222,7 @@ function createSamplingServices(host, context, vscode) {
 }
 
 // Workspace configuration, CubeMX, ELF, SVD, and the OpenOCD and Agent skill status cards.
-function createWorkspaceServices(host, context, vscode) {
+function createWorkspaceServices(host, context, vscode, fullAccess) {
     const configurationStore = new ConfigurationStore({
         vscode,
         context,
@@ -254,6 +255,7 @@ function createWorkspaceServices(host, context, vscode) {
         t: (key) => host._t(key)
     });
     const cubemxService = new CubeMxService({
+        fullAccess,
         storage: context.workspaceState,
         storageDir: context.globalStorageUri?.fsPath,
         config: () => host._configurationStore.snapshot(),
@@ -365,7 +367,8 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
         instanceId: () => host._agentService.instanceId(),
         toolsets: () => host._mcpToolsets(),
         onResolve: () => host._requestMcpBridge(),
-        onConfigured: () => host._markMcpConfigured()
+        onConfigured: () => host._markMcpConfigured(),
+        post: (message) => host._webviewView?.webview.postMessage(message)
     });
     return { agentFlashService, bridgeRegistry, agentService, mcpRegistration };
 }
@@ -379,11 +382,18 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
  * @param {{ vscode: any }} modules
  */
 function createServices(host, context, { vscode }) {
+    const agentPermissions = new AgentPermissions({
+        storage: context.workspaceState,
+        available: () => !!vscode.workspace.isTrusted && !!vscode.workspace.workspaceFolders?.length,
+        channelEnabled: () => host._agentAccessDecision(host._skillStatusService.lastStatus).enabled,
+        enableChannel: () => host.setAgentAccess("enabled")
+    });
+    const fullAccess = agentPermissions.isAllowed;
     const probe = createProbeServices(host, context, vscode);
     const sampling = createSamplingServices(host, context, vscode);
     const { debugBridge } = sampling;
-    const peripheralWriteAuthorization = new PeripheralWriteAuthorization();
-    const flashAuthorization = new FlashAuthorization({ storage: context.workspaceState });
+    const peripheralWriteAuthorization = new PeripheralWriteAuthorization({ fullAccess });
+    const flashAuthorization = new FlashAuthorization({ storage: context.workspaceState, fullAccess });
     const peripheralAccessService = new PeripheralAccessService({
         debugBridge,
         configurationKey: () =>
@@ -436,12 +446,13 @@ function createServices(host, context, { vscode }) {
     return {
         ...probe,
         ...sampling,
-        ...createWorkspaceServices(host, context, vscode),
+        ...createWorkspaceServices(host, context, vscode, fullAccess),
         ...createAgentServices(host, context, vscode, { probeCoordinator: probe.probeCoordinator, flashAuthorization }),
         runtimeSampleHold: new RuntimeSampleHold(),
         samplingCoordinator: new SamplingCoordinator(),
         rtosViewService: new RtosViewService(debugBridge),
-        writeAuthorization: new WriteAuthorization(context.workspaceState),
+        agentPermissions,
+        writeAuthorization: new WriteAuthorization(context.workspaceState, { fullAccess }),
         peripheralWriteAuthorization,
         flashAuthorization,
         firmwareRecord,

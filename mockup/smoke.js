@@ -127,7 +127,21 @@ async function testSidebar() {
     await sleep(80);
 
     const doc = window.document;
-    check("OpenOCD card hidden when ready", doc.getElementById("openocdCard").hidden === true);
+    check("OpenOCD notice cleared when ready", !doc.querySelector("[data-notice-id='openocd']"));
+    send({
+        type: "mcpClients",
+        busy: "",
+        clients: [
+            { client: "copilot", state: "builtin", actions: [], files: [] },
+            { client: "claude", state: "installed", actions: ["uninstall"], files: [] },
+            { client: "codex", state: "outdated", actions: ["upgrade", "uninstall"], files: [] },
+            { client: "gemini", state: "notInstalled", actions: ["install"], files: [] },
+            { client: "json", state: "manual", actions: ["copy"], files: [] }
+        ]
+    });
+    check("MCP clients listed", doc.querySelectorAll("#mcpClientList .mcp-client").length === 5);
+    check("MCP outdated row offers upgrade", !!doc.querySelector(".mcp-client-outdated [data-action='upgrade']"));
+    check("MCP built-in client has no action", !doc.querySelector(".mcp-client-builtin button"));
     check("skill toggle enabled", doc.getElementById("skillStatus").disabled === false);
     check("variable browser rows", doc.querySelectorAll("#availableVars .available-row").length >= 25);
     check("watch list rows", doc.querySelectorAll("#liveValues .value-row").length === 4);

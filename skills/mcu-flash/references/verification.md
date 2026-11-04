@@ -2,6 +2,11 @@
 
 Use `scripts/verify.js` from the Skill directory. This operation does not program Flash, but it temporarily halts the core while comparing and restores the original running state.
 
+The sidebar full-access workspace grant is an alternative to per-operation confirmation. If the Bridge
+reports `authorized: true` and `mode: "full"`, keep the detected plan and execute with `--execute`
+without a confirmation ID. Never infer this permission or enable it yourself. Otherwise follow the
+confirmation steps below.
+
 First run detection only:
 
 ```bash
@@ -11,7 +16,7 @@ node <skill-dir>/scripts/verify.js --workspace <workspace>
 Report the selected ELF and SHA-256, target, probe, OpenOCD executable, compatibility result,
 and returned `verificationAuthorization` plan. Stop if detection is incomplete or OpenOCD is
 older than 0.12.0 (no plan is returned then). If the plan could not be issued, the preflight
-carries `verificationAuthorizationError` and the script exits 1; report it and stop. Ask the user in the Agent conversation to approve this one verification,
+carries `verificationAuthorizationError` and the script exits 1; report it and stop. When `confirmationRequired` is true, ask the user in the Agent conversation to approve this one verification,
 explaining that it temporarily halts and restores the target. Only after approval run:
 
 ```bash

@@ -125,6 +125,17 @@ async function run() {
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
     await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
     const provider = extension.exports.debugTestProvider;
+    const oldAgentAccess = extension.exports.debugTestProvider._context.workspaceState.get("emberprobe.agentAccess");
+    try {
+        assert.strictEqual(provider._agentPermissions.status().fullAccess, false);
+        assert.strictEqual((await provider._agentPermissions.setEnabled(true)).fullAccess, true);
+        assert.strictEqual((await provider._agentPermissions.setEnabled(false)).fullAccess, false);
+    } finally {
+        await provider._context.workspaceState.update("emberprobe.agentFullAccess", undefined);
+        await provider._context.workspaceState.update("emberprobe.agentAccess", oldAgentAccess);
+        await provider._syncAgentBridge();
+    }
+    console.log("✓ workspace full-access grants default off, enable and revoke through the real host");
     assert.strictEqual((await provider._configurationSnapshot()).mcu, "");
     const chipPosts = [];
     const originalPost = provider._chipInfoService.onPost;

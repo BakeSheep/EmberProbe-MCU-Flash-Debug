@@ -2,7 +2,11 @@
 
 Use `scripts/write.js` from the Skill directory. Writing RAM changes firmware behavior immediately and uses a two-step authorization flow.
 
-Start by requesting the exact write plan:
+Submit only the intended write. With the sidebar full-access grant active, this command may execute immediately
+and return `permission.mode: "full"`; otherwise it returns a confirmation plan when needed.
+Never enable that grant yourself.
+
+Submit the exact write:
 
 ```bash
 node <skill-dir>/scripts/write.js --workspace <workspace> --set kp=0.5

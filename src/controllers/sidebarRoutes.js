@@ -189,6 +189,24 @@ async function writeVariable({ host, post }, message) {
 
 const SIDEBAR_ROUTES = {
     ...SHARED_ROUTES,
+    getAgentPermissions: ({ host, post }) => post(host._agentPermissions.status()),
+    setAgentFullAccess: async ({ host, post }, message) => {
+        try {
+            post(await host._agentPermissions.setEnabled(message.enabled));
+        } catch (error) {
+            post({ ...host._agentPermissions.status(), error: error.message });
+        }
+    },
+    getMcpClients: async ({ host, post }) => post(await host._mcpRegistration.clientStatuses()),
+    mcpClientAction: async ({ host, post }, message) => {
+        let failure;
+        try {
+            await host._mcpRegistration.runClientAction(message.client, message.action);
+        } catch (error) {
+            failure = error.message;
+        }
+        post(await host._mcpRegistration.clientStatuses(failure));
+    },
     executeCommand,
     initCheck,
     ...Object.fromEntries(Object.keys(PERIPHERAL_REQUESTS).map((type) => [type, peripheralRequest])),

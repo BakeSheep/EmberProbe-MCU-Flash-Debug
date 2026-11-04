@@ -23,7 +23,15 @@ matching skill script or MCP tool.
 
 ## Failure handling
 
-Confirm sensitive Bridge operations in the Agent conversation. Show the returned concrete
+The user may enable **Allow all Agent operations** in the EmberProbe sidebar's Agent Configuration card.
+When the Bridge reports `mode: "full"` with `authorized: true` or `confirmationRequired: false`,
+use that explicit workspace grant without asking for a second approval or manufacturing a confirmation ID.
+Never enable this setting yourself, infer it from the task, or bypass a returned confirmation request.
+Probe ownership, target identity, firmware consistency and input checks still apply. Anonymous probes
+retain one-time-only Flash/variable-write permission, and a mismatched ELF still requires write confirmation.
+
+
+When `confirmationRequired` is true, confirm sensitive Bridge operations in the Agent conversation. Show the returned concrete
 plan and wait for the human's answer before submitting its confirmation ID. Flash programming,
 variable/peripheral writes, CubeMX generation, and Flash verification that temporarily halts
 the target use plan-bound IDs; EmberProbe does not show a second operation approval dialog.

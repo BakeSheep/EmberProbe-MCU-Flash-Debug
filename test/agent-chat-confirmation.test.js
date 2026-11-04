@@ -4,6 +4,7 @@ const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
 const { WriteAuthorization } = require("../src/writeAuthorization");
 const { FlashAuthorization } = require("../src/flashAuthorization");
+const { scenario } = require("./helpers/scenario");
 
 (async () => {
     const state = new Map();
@@ -86,6 +87,37 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
     assert((await provider._writes.writeAgentVariables({ values })).confirmationRequired);
     assert.strictEqual(writes, 3);
 
+    await scenario(
+        "Full access skips Agent write prompts and revokes without bypassing firmware or probe guards",
+        async () => {
+            let fullAccess = true;
+            provider._writeAuthorization.fullAccess = () => fullAccess;
+            const allowed = await provider._writes.writeAgentVariables({ values });
+            assert.strictEqual(allowed.permission.mode, "full");
+            assert.strictEqual(writes, 4);
+            // Use a real recorded identity to keep the mismatch check independent of storage representation.
+            provider._firmwareRecord = new FirmwareRecord({
+                get: (key) => state.get(key),
+                update: async (key, value) => state.set(key, value)
+            });
+            await provider._firmwareRecord.record({ elf: "firmware.elf", sha256: "a".repeat(64) });
+            assert.strictEqual((await provider._writes.writeAgentVariables({ values })).confirmationRequired, true);
+            assert.strictEqual(writes, 4);
+            delete provider._firmwareRecord;
+            const prepareConnection = provider._writes.prepareConnection;
+            provider._writes.prepareConnection = async () => ({
+                ...connection,
+                probeSerial: "",
+                selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "attachment-1" }
+            });
+            assert.strictEqual((await provider._writes.writeAgentVariables({ values })).confirmationRequired, true);
+            assert.strictEqual(writes, 4);
+            provider._writes.prepareConnection = prepareConnection;
+            fullAccess = false;
+            assert.strictEqual((await provider._writes.writeAgentVariables({ values })).confirmationRequired, true);
+        }
+    );
+
     const flash = new FlashAuthorization();
     const image = { elf: { path: "firmware.elf", sha256: "firmware" }, ...connection };
     const verify = flash.authorize({ ...image, operation: "flash.verify" });
@@ -100,6 +132,26 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
     assert(flash.authorize({ ...image, operation: "flash.verify" }, fresh.confirmationId).authorized);
     assert.throws(() => flash.authorize({ ...image, operation: "flash.verify" }, fresh.confirmationId), {
         code: "FLASH_CONFIRMATION_INVALID"
+    });
+    scenario("Full Flash access covers programming and verification but retains identity validation", () => {
+        let fullAccess = true;
+        const auth = new FlashAuthorization({ fullAccess: () => fullAccess });
+        for (const operation of ["flash.execute", "flash.verify"])
+            assert.strictEqual(auth.authorize({ ...image, operation }).mode, "full");
+        assert.strictEqual(
+            auth.authorize({
+                ...image,
+                probeSerial: "",
+                selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "attachment-1" }
+            }).confirmationRequired,
+            true
+        );
+        assert.throws(() => auth.authorize({ ...image, selectionIdentity: { kind: "usb", anonymous: true } }), {
+            code: "PROBE_IDENTITY_UNVERIFIED"
+        });
+        assert.throws(() => auth.authorize({ ...image, operation: "invalid" }), { code: "FLASH_CONFIRMATION_INVALID" });
+        fullAccess = false;
+        assert.strictEqual(auth.authorize(image).confirmationRequired, true);
     });
     console.log("Agent conversation confirmation, explicit remembered permission and operation binding passed");
 })().catch((error) => {

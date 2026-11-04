@@ -6,6 +6,11 @@ const YAML = require("yaml");
 const { isDeepStrictEqual } = require("util");
 const { CLIENTS, SERVER_NAME } = require("./mcpClientConfig");
 
+// Older releases wrote this binding into user-level configuration, which sent every project to one window. Merging
+// removes it, and the entry reads as outdated until then.
+const STALE_BINDING = "EMBERPROBE_WORKSPACE";
+const LENIENT_JSON = new Set(["opencode", "cursor"]);
+
 function invalid(format) {
     // Parser messages may contain user configuration (including credentials); never surface them in notifications.
     return new Error(`Invalid or unsupported ${format} MCP configuration`);
@@ -18,8 +23,8 @@ function assertObject(value, format) {
 function jsonTree(text, client) {
     const errors = [];
     const tree = jsonc.parseTree(text || "{}", errors, {
-        allowTrailingComma: client === "opencode",
-        disallowComments: client !== "opencode"
+        allowTrailingComma: LENIENT_JSON.has(client),
+        disallowComments: !LENIENT_JSON.has(client)
     });
     if (errors.length || tree?.type !== "object") throw invalid("JSON");
     const visit = (node) => {
@@ -62,7 +67,20 @@ function editJson(text, client, snippet) {
             for (const [name, item] of Object.entries(value)) set([envKey, name], item);
         } else set([key], value);
     }
-    if (!desired[envKey]?.EMBERPROBE_WORKSPACE) set([envKey, "EMBERPROBE_WORKSPACE"], undefined);
+    set([envKey, STALE_BINDING], undefined);
+    jsonTree(next, client);
+    return next;
+}
+
+function removeJson(text, client) {
+    if (!text.trim()) return text;
+    jsonTree(text, client);
+    const next = jsonc.applyEdits(
+        text,
+        jsonc.modify(text, [client === "opencode" ? "mcp" : "mcpServers", SERVER_NAME], undefined, {
+            formattingOptions: { insertSpaces: true, tabSize: 4, eol: text.includes("\r\n") ? "\r\n" : "\n" }
+        })
+    );
     jsonTree(next, client);
     return next;
 }
@@ -194,9 +212,25 @@ function editToml(text, snippet) {
             for (const [name, item] of Object.entries(value)) next = setToml(next, [...root, key, name], item);
         } else next = setToml(next, [...root, key], value);
     }
-    if (!desired.env?.EMBERPROBE_WORKSPACE) next = setToml(next, [...root, "env", "EMBERPROBE_WORKSPACE"], undefined);
+    next = setToml(next, [...root, "env", STALE_BINDING], undefined);
     parseToml(next);
     return next;
+}
+
+function removeToml(text) {
+    const root = ["mcp_servers", SERVER_NAME];
+    let next = text;
+    for (;;) {
+        const { assignments, tables } = tomlAssignments(parseToml(next));
+        const table = tables.find((node) => startsWith(node.resolvedKey, root));
+        if (table) {
+            next = next.slice(0, table.range[0]) + next.slice(table.range[1]).replace(/^\r?\n/, "");
+            continue;
+        }
+        const entry = assignments.find((item) => startsWith(item.keys, root));
+        if (!entry) return next;
+        next = setToml(next, entry.keys, undefined);
+    }
 }
 
 function yamlTargets(text) {
@@ -244,7 +278,7 @@ function editDsh(text, snippet) {
         if (current.config.env !== undefined) assertObject(current.config.env, "DSH YAML");
         const config = { ...current.config, ...desired.config, env: { ...current.config.env, ...desired.config.env } };
         for (const key of ["url", "headers"]) delete config[key];
-        if (!desired.config.env?.EMBERPROBE_WORKSPACE) delete config.env.EMBERPROBE_WORKSPACE;
+        delete config.env[STALE_BINDING];
         if (!Object.keys(config.env).length) delete config.env;
         const merged = { ...current, config, ...(current.disabled !== undefined ? { disabled: false } : {}) };
         if (isDeepStrictEqual(current, merged)) return text;
@@ -272,12 +306,54 @@ function flowJson(value) {
     );
 }
 
-function editConfig(client, text, snippet) {
-    if (!CLIENTS.includes(client) || client === "json" || client === "cursor")
+// Removes the EmberProbe plugin line by line, so the other plugins keep their exact source text.
+function removeDsh(text) {
+    const { document, targets } = yamlTargets(text);
+    if (!targets.length) return text;
+    const [node] = targets;
+    YAML.visit(node, (_, value) => {
+        if (YAML.isAlias(value) || (YAML.isNode(value) && (value.tag || value.anchor))) throw invalid("DSH YAML");
+    });
+    // yamlTargets found a target, so the document is a sequence of maps.
+    const plugins = /** @type {any} */ (document.contents);
+    const outer = plugins.items.find((item) => item === node || item.get("insert", true)?.items.includes(node));
+    const insert = outer === node ? null : outer.get("insert", true);
+    const onlyPlugin = outer === node || (outer.items.length === 1 && insert.items.length === 1);
+    const victim = onlyPlugin ? outer : node;
+    const start = text.lastIndexOf("\n", victim.range[0] - 1) + 1;
+    if (!/^\s*-\s+$/.test(text.slice(start, victim.range[0]))) throw invalid("DSH YAML");
+    const next = text.slice(0, start) + text.slice(victim.range[2]);
+    yamlTargets(next);
+    return next;
+}
+
+function assertAdapter(client) {
+    if (!CLIENTS.includes(client) || client === "json")
         throw new Error(`No configuration file adapter for MCP client: ${client}`);
+}
+
+function editConfig(client, text, snippet) {
+    assertAdapter(client);
     if (client === "codex") return editToml(text, snippet);
     if (client === "dsh") return editDsh(text, snippet);
     return editJson(text, client, snippet);
 }
 
-module.exports = { editConfig, yamlTargets };
+function removeConfig(client, text) {
+    assertAdapter(client);
+    if (client === "codex") return removeToml(text);
+    if (client === "dsh") return removeDsh(text);
+    return removeJson(text, client);
+}
+
+/** The EmberProbe entry in a client's configuration text, or undefined when there is none. */
+function readEntry(client, text) {
+    assertAdapter(client);
+    if (client === "codex") return toml.getStaticTOMLValue(parseToml(text)).mcp_servers?.[SERVER_NAME];
+    if (client === "dsh") return yamlTargets(text).targets[0]?.toJSON();
+    const group = client === "opencode" ? "mcp" : "mcpServers";
+    const node = jsonc.findNodeAtLocation(jsonTree(text, client), [group, SERVER_NAME]);
+    return node && jsonc.getNodeValue(node);
+}
+
+module.exports = { editConfig, readEntry, removeConfig, yamlTargets };

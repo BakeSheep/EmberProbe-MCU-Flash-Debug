@@ -15,7 +15,7 @@ const {
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 // Workspace authorization for programming binds the ELF path and connection, not the ELF contents, so rebuilt firmware
 // can be programmed again; every result still reports the actual SHA-256. Only flash.execute qualifies; verification
-// (flash.verify) is always confirmed per call.
+// (flash.verify) is confirmed per call unless the user enabled the separate full-access workspace grant.
 const DEFAULT_TRUST_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STORAGE_KEY = "agent.flashTrusted";
 
@@ -70,6 +70,7 @@ function invalid(message) {
 class FlashAuthorization {
     constructor(options = {}) {
         this.storage = options.storage || null;
+        this.fullAccess = options.fullAccess || (() => false);
         this.storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
         this.ttlMs = options.ttlMs || DEFAULT_TTL_MS;
         this.trustTtlMs = options.trustTtlMs || DEFAULT_TRUST_TTL_MS;
@@ -85,6 +86,10 @@ class FlashAuthorization {
 
     canRemember(plan) {
         return !!this.storage && (plan?.operation || "flash.execute") === "flash.execute" && canRememberWrite(plan);
+    }
+
+    isFullyAllowed(plan) {
+        return this.fullAccess() && canRememberWrite(plan);
     }
 
     _saved() {
@@ -125,6 +130,8 @@ class FlashAuthorization {
         if (!id) {
             if (remember) throw invalid("--remember requires a valid confirmation ID");
             const identity = flashIdentity(plan);
+            if (this.isFullyAllowed(plan))
+                return { authorized: true, confirmationRequired: false, mode: "full", ...identity };
             if (this.isTrusted(plan))
                 return {
                     authorized: true,

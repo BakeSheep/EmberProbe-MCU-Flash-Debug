@@ -201,9 +201,11 @@ const chipRead = document.getElementById("chipRead"),
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
 const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
+const agentControls = EmberProbeAgentControls.create({ document, api, state, uiState, setNotice, clearNotice, t });
 const mcuConfigSection = document.getElementById("mcuConfigSection");
 for (const id of [
     "mcuConfigSection",
+    "agentConfigSection",
     "memoryAnalysisSection",
     "chipInfoSection",
     "liveValuesSection",
@@ -1248,57 +1250,12 @@ function openocdStatus(m) {
 }
 function renderSkillStatus(m) {
     lastSkill = m || lastSkill;
-    const el = document.getElementById("skillStatus");
-    if (!el) return;
-    const workspace = lastSkill?.scopes?.workspace;
-    uiState.sidebarStatus ||= {};
-    uiState.sidebarStatus.skill = {
-        state: lastSkill.state,
-        busy: !!lastSkill.busy,
-        scopes: workspace ? { workspace: { state: workspace.state } } : {}
-    };
-    api?.setState?.(uiState);
-    el.classList.toggle("status-ready", !!workspace || lastSkill.state !== "checking");
-    el.setAttribute("aria-checked", String(!!workspace && workspace.state !== "notInstalled"));
-    el.disabled = !workspace || !!lastSkill.busy;
+    agentControls.renderSkills(lastSkill);
 }
-// Agent access switch and the legacy global skills notice; the state comes only from the extension's agentAccess
-// messages.
 function renderAgentAccess(m) {
     lastAgentAccess = m || lastAgentAccess;
-    const card = lastAgentAccess?.card || "";
-    if (!card) clearNotice("global", "agent-access");
-    else
-        setNotice("global", "agent-access", {
-            level: "info",
-            text: { key: card === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
-            actions: [
-                {
-                    label: { key: card === "enabled" ? "agent.disable" : "agent.enable" },
-                    primary: card !== "enabled",
-                    command: card === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
-                }
-            ],
-            dismissible: false
-        });
-    const old = lastAgentAccess?.legacyGlobal;
-    if (!old) clearNotice("global", "agent-legacy");
-    else
-        setNotice("global", "agent-legacy", {
-            level: "warning",
-            text: { key: "agent.legacyGlobal", params: { version: old.version || "?" } },
-            actions: [{ label: { key: "agent.cleanup" }, command: "mcu-vscode.cleanupGlobalSkills" }],
-            dismissible: false
-        });
+    agentControls.renderAccess(lastAgentAccess);
 }
-const skillToggle = document.getElementById("skillStatus");
-if (skillToggle)
-    skillToggle.onclick = () => {
-        if (skillToggle.disabled || !api) return;
-        skillToggle.classList.add("animate");
-        skillToggle.disabled = true;
-        api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" });
-    };
 function chipStatus(m) {
     m = m || {};
     lastChip = m;
@@ -1564,9 +1521,9 @@ window.EmberProbeMessages.connect(window, {
     skillStatus: function (m) {
         renderSkillStatus(m);
     },
-    agentAccess: function (m) {
-        renderAgentAccess(m);
-    },
+    agentPermissions: (m) => agentControls.receive(m),
+    mcpClients: (m) => agentControls.renderClients(m),
+    agentAccess: (m) => renderAgentAccess(m),
     openocdStatus: function (m) {
         openocdStatus(m);
     },

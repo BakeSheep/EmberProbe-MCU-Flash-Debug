@@ -31,7 +31,8 @@ try {
     view.assertHealthy();
     const doc = view.document;
     const config = doc.getElementById("mcuConfigSection");
-    assert.strictEqual(config.nextElementSibling.id, "flashDebugSection");
+    assert.strictEqual(config.nextElementSibling.id, "agentConfigSection");
+    assert.strictEqual(config.nextElementSibling.nextElementSibling.id, "flashDebugSection");
     assert.strictEqual(config.previousElementSibling.id, "noticeGlobal");
     assert.strictEqual(config.open, false, "the configuration card is folded on first use");
     const summary = doc.getElementById("mcuConfigSummary");
@@ -45,15 +46,58 @@ try {
     view.send({ type: "debuggerConfig", debugger: "" });
     assert.strictEqual(summary.textContent, "", "an incomplete configuration names nothing");
 
-    // Agent Skills and the MCP installer sit in the flash card's Other dropdown, without the old description.
-    const other = doc.getElementById("memoryAnalysisSection");
-    assert.strictEqual(doc.getElementById("skillStatus").closest("#memoryAnalysisSection"), other);
-    const mcp = other.querySelector('[data-command="mcu-vscode.installMcpServer"]');
-    assert.ok(mcp, "Other offers the MCP installer");
+    // Agent integrations have their own peer card and fold independently of MCU configuration.
+    const agents = doc.getElementById("agentConfigSection");
+    assert.strictEqual(agents.open, false);
+    assert.strictEqual(agents.parentElement, config.parentElement);
+    assert.strictEqual(doc.getElementById("skillStatus").closest("details"), agents);
+    assert.strictEqual(doc.getElementById("skillStatus").closest("#memoryAnalysisSection"), null);
     assert.strictEqual(doc.querySelector(".skill-row, .skill-tree"), null);
-    mcp.click();
-    assert.deepStrictEqual(view.messages.at(-1), { type: "executeCommand", cmd: "mcu-vscode.installMcpServer" });
+    assert.ok(view.messages.some((message) => message.type === "getMcpClients"));
+    view.send({
+        type: "mcpClients",
+        busy: "",
+        clients: [
+            { client: "copilot", state: "builtin", actions: [], files: [] },
+            { client: "claude", state: "installed", actions: ["uninstall"], files: ["/home/.claude.json"] },
+            { client: "codex", state: "outdated", actions: ["upgrade", "uninstall"], files: ["/home/config.toml"] },
+            { client: "gemini", state: "notInstalled", actions: ["install"], files: [] },
+            { client: "json", state: "invalid", actions: ["copy"], files: [], error: "broken file" }
+        ]
+    });
+    const client = (name) => agents.querySelector(`[data-client="${name}"]`);
+    const actions = (name) => [...client(name).querySelectorAll("button")].map((button) => button.textContent);
+    assert.deepStrictEqual(actions("claude"), ["Remove"]);
+    assert.deepStrictEqual(actions("codex"), ["Upgrade", "Remove"]);
+    assert.deepStrictEqual(actions("gemini"), ["Install"]);
+    assert.strictEqual(client("claude").querySelector("small").textContent, "Installed");
+    assert.strictEqual(client("claude").querySelector("small").title, "/home/.claude.json");
+    assert.strictEqual(client("codex").querySelector("small").textContent, "Outdated");
+    assert.strictEqual(client("copilot").querySelector("small").textContent, "Built in");
+    assert.deepStrictEqual(actions("copilot"), []);
+    assert.strictEqual(client("json").querySelector("small").title, "broken file");
+    view.send({ type: "setLang", lang: "zh" });
+    assert.deepStrictEqual(actions("codex"), ["升级", "移除"]);
+    client("codex").querySelector('[data-action="upgrade"]').click();
+    assert.deepStrictEqual(view.messages.at(-1), { type: "mcpClientAction", client: "codex", action: "upgrade" });
+    assert.ok(
+        [...agents.querySelectorAll("#mcpClientList button")].every((button) => button.disabled),
+        "one change runs at a time"
+    );
     assert.strictEqual(config.open, false, "installing the MCP server needs no MCU configuration");
+    view.send({ type: "mcpClients", clients: [], busy: "", error: "write failed" });
+    assert.strictEqual(doc.getElementById("mcpClientError").textContent, "write failed");
+    view.messages.length = 0;
+    agents.open = true;
+    agents.dispatchEvent(new view.window.Event("toggle"));
+    assert.deepStrictEqual(view.messages.at(-1), { type: "getMcpClients" });
+    view.messages.length = 0;
+    view.window.dispatchEvent(new view.window.Event("focus"));
+    assert.ok(view.messages.some((message) => message.type === "getMcpClients"));
+    agents.open = false;
+    view.messages.length = 0;
+    view.window.dispatchEvent(new view.window.Event("focus"));
+    assert.ok(!view.messages.some((message) => message.type === "getMcpClients"), "a folded card reads no files");
 
     // An operation that needs the configuration opens the card while it is incomplete.
     doc.querySelector('[data-command="mcu-vscode.download"]').click();
@@ -89,4 +133,36 @@ try {
 } finally {
     view.close();
 }
-console.log("Sidebar layout: folded MCU card, shared flash notice box, Agent entries under Other");
+scenario("Full-access switch uses confirmed host state and reports failure without retaining a grant", () => {
+    const page = render(getModernWebviewContent({}, "zh"));
+    try {
+        const control = page.document.getElementById("agentFullAccess");
+        assert.strictEqual(control.disabled, true);
+        assert.ok(page.messages.some((message) => message.type === "getAgentPermissions"));
+        page.send({ type: "agentPermissions", fullAccess: false, available: true });
+        control.click();
+        assert.deepStrictEqual(page.messages.at(-1), { type: "setAgentFullAccess", enabled: true });
+        assert.strictEqual(control.disabled, true);
+        assert.strictEqual(control.getAttribute("aria-checked"), "false", "wait for the host to persist the grant");
+        page.send({ type: "agentPermissions", fullAccess: true, available: true });
+        assert.strictEqual(control.getAttribute("aria-checked"), "true");
+        control.click();
+        assert.deepStrictEqual(page.messages.at(-1), { type: "setAgentFullAccess", enabled: false });
+        page.send({ type: "agentPermissions", fullAccess: false, available: true, error: "save failed" });
+        assert.strictEqual(control.getAttribute("aria-checked"), "false");
+        assert.strictEqual(control.disabled, false);
+        assert.strictEqual(page.document.getElementById("agentPermissionError").textContent, "save failed");
+        page.send({ type: "agentPermissions", fullAccess: false, available: false });
+        assert.strictEqual(control.disabled, true);
+        assert.strictEqual(page.document.getElementById("agentPermissionError").hidden, true);
+        page.send({ type: "setLang", lang: "en" });
+        assert.strictEqual(
+            page.document.getElementById("agentFullAccessLabel").textContent,
+            "Allow all Agent operations"
+        );
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+});
+console.log("Sidebar layout: peer MCU/Agent cards, confirmed permissions and shared flash notices");

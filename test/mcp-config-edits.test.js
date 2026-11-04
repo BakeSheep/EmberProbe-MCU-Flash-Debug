@@ -4,11 +4,11 @@ const jsonc = require("jsonc-parser");
 const YAML = require("yaml");
 const { parseForESLint, getStaticTOMLValue } = require("toml-eslint-parser");
 const { scenario } = require("./helpers/scenario");
-const { editConfig, yamlTargets } = require("../src/services/mcpConfigEdits");
+const { editConfig, readEntry, removeConfig, yamlTargets } = require("../src/services/mcpConfigEdits");
 const { configSnippet } = require("../src/services/mcpClientConfig");
 
 const spec = { command: "C:\\Program Files\\Code.exe", args: ["C:\\用户\\mcp.js"], env: { ELECTRON_RUN_AS_NODE: "1" } };
-const snippet = (client, workspace = "/project") => configSnippet(client, spec, "win32", workspace);
+const snippet = (client) => configSnippet(client, spec);
 const parseToml = (text) => getStaticTOMLValue(parseForESLint(text).ast);
 
 scenario("Merge JSON server fields without replacing user settings or custom options", () => {
@@ -23,8 +23,7 @@ scenario("Merge JSON server fields without replacing user settings or custom opt
         assert.deepStrictEqual(value.mcpServers.emberprobe.disabledTools, ["flash_program"]);
         assert.deepStrictEqual(value.mcpServers.emberprobe.env, {
             CUSTOM: "keep",
-            ...spec.env,
-            EMBERPROBE_WORKSPACE: "/project"
+            ...spec.env
         });
         assert.strictEqual(editConfig(client, next, snippet(client)), next, "reinstallation is byte-idempotent");
     }
@@ -41,12 +40,11 @@ scenario("Preserve OpenCode JSONC comments and CRLF while switching a remote ent
     assert.deepStrictEqual(value.mcp.emberprobe.command, [spec.command, ...spec.args]);
     assert.ok(!Object.hasOwn(value.mcp.emberprobe, "url"));
     assert.ok(!Object.hasOwn(value.mcp.emberprobe, "headers"));
-    assert.strictEqual(value.mcp.emberprobe.environment.EMBERPROBE_WORKSPACE, "/project");
 });
 
-scenario("Do not retain a stale manual workspace binding when exporting without an open folder", () => {
+scenario("Remove the workspace binding earlier releases wrote into user-level configuration", () => {
     const original = '{"mcpServers":{"emberprobe":{"env":{"EMBERPROBE_WORKSPACE":"/old","CUSTOM":"keep"}}}}';
-    const value = JSON.parse(editConfig("claude", original, snippet("claude", "")));
+    const value = JSON.parse(editConfig("claude", original, snippet("claude")));
     assert.ok(!Object.hasOwn(value.mcpServers.emberprobe.env, "EMBERPROBE_WORKSPACE"));
     assert.strictEqual(value.mcpServers.emberprobe.env.CUSTOM, "keep");
 });
@@ -102,14 +100,14 @@ scenario("Support Codex inline tables, dotted keys and empty configuration", () 
         '[mcp_servers.emberprobe]\ncommand="old"',
         'mcp_servers.emberprobe = { command="old", url="old" }\n'
     ]) {
-        const next = editConfig("codex", original, snippet("codex", ""));
+        const next = editConfig("codex", original, snippet("codex"));
         const value = parseToml(next);
         assert.strictEqual(value.mcp_servers.emberprobe.command, spec.command);
         assert.deepStrictEqual(value.mcp_servers.emberprobe.args, spec.args);
         assert.strictEqual(value.mcp_servers.emberprobe.tool_timeout_sec, 1800);
         assert.ok(!Object.hasOwn(value.mcp_servers.emberprobe.env, "EMBERPROBE_WORKSPACE"));
         if (value.mcp_servers.other) assert.strictEqual(value.mcp_servers.other.command, "keep");
-        assert.strictEqual(editConfig("codex", next, snippet("codex", "")), next);
+        assert.strictEqual(editConfig("codex", next, snippet("codex")), next);
     }
 });
 
@@ -158,8 +156,8 @@ scenario("Update an existing DSH server by name, retaining its id and custom opt
     const prefix = '- id: native\n  config: !!js "() => 1"\n';
     const original =
         prefix +
-        '- insert:\n    - id: custom-id\n      name: "@deepseek-ai/dsh-mcp-client"\n      disabled: true\n      config:\n        serverName: emberprobe\n        transport: streamable-http\n        url: https://old\n        custom: 123\n        env: {CUSTOM: keep}\n';
-    const next = editConfig("dsh", original, snippet("dsh", "/project\u0085one\u2028two\u2029three"));
+        '- insert:\n    - id: custom-id\n      name: "@deepseek-ai/dsh-mcp-client"\n      disabled: true\n      config:\n        serverName: emberprobe\n        transport: streamable-http\n        url: https://old\n        custom: 123\n        env: {CUSTOM: keep, EMBERPROBE_WORKSPACE: /old}\n';
+    const next = editConfig("dsh", original, snippet("dsh"));
     assert.ok(next.startsWith(prefix));
     const entry = yamlTargets(next).targets[0].toJSON();
     assert.strictEqual(entry.id, "custom-id");
@@ -167,10 +165,74 @@ scenario("Update an existing DSH server by name, retaining its id and custom opt
     assert.strictEqual(entry.config.transport, "stdio");
     assert.strictEqual(entry.config.custom, 123);
     assert.strictEqual(entry.config.env.CUSTOM, "keep");
-    assert.strictEqual(entry.config.env.EMBERPROBE_WORKSPACE, "/project\u0085one\u2028two\u2029three");
+    assert.ok(!Object.hasOwn(entry.config.env, "EMBERPROBE_WORKSPACE"));
     assert.ok(!Object.hasOwn(entry.config, "url"));
-    const noWorkspace = editConfig("dsh", next, snippet("dsh", ""));
-    assert.ok(!Object.hasOwn(yamlTargets(noWorkspace).targets[0].toJSON().config.env, "EMBERPROBE_WORKSPACE"));
+});
+
+scenario("Read the EmberProbe entry and nothing else", () => {
+    for (const client of ["claude", "cursor", "gemini", "antigravity", "opencode", "codex", "dsh"]) {
+        assert.strictEqual(readEntry(client, ""), undefined, client);
+        const source = snippet(client === "cursor" ? "json" : client);
+        assert.ok(readEntry(client, editConfig(client, "", source)), client);
+    }
+    assert.strictEqual(readEntry("claude", '{"mcpServers":{"other":{}}}'), undefined);
+    assert.throws(() => readEntry("json", ""), /No configuration file adapter/);
+    assert.throws(
+        () => readEntry("claude", '{"secret":"DO_NOT_ECHO",broken}'),
+        (error) => {
+            assert.ok(!error.message.includes("DO_NOT_ECHO"));
+            return true;
+        }
+    );
+});
+
+scenario("Remove only the JSON entry, keeping comments, settings and other servers", () => {
+    const original = '{"token":"kept","mcpServers":{"other":{"command":"keep"},"emberprobe":{"command":"old"}}}';
+    assert.deepStrictEqual(JSON.parse(removeConfig("claude", original)), {
+        token: "kept",
+        mcpServers: { other: { command: "keep" } }
+    });
+    const commented = '{\r\n\t// keep me\r\n\t"mcp": {"emberprobe": {"type":"local"}, "other": {}},\r\n}\r\n';
+    const next = removeConfig("opencode", commented);
+    assert.ok(next.includes("// keep me") && next.includes("\r\n"));
+    assert.deepStrictEqual(jsonc.parse(next).mcp, { other: {} });
+    assert.strictEqual(removeConfig("gemini", ""), "");
+    assert.strictEqual(removeConfig("gemini", '{"mcpServers":{}}'), '{"mcpServers":{}}');
+});
+
+scenario("Remove Codex tables, dotted keys and inline entries", () => {
+    for (const original of [
+        '# head\nmodel="keep"\n\n[mcp_servers.emberprobe]\ncommand="old"\n\n[mcp_servers.emberprobe.env]\nA="1"\n\n[mcp_servers.other]\ncommand="keep"\n',
+        '[mcp_servers]\nemberprobe.command="old"\nemberprobe.env.X="/old"\nother.command="keep"\n',
+        'mcp_servers = { emberprobe = { url="old" }, other={command="keep"} }\n',
+        'mcp_servers.emberprobe = { command="old" }\nmcp_servers.other.command = "keep"\n'
+    ]) {
+        const value = parseToml(removeConfig("codex", original));
+        assert.deepStrictEqual(Object.keys(value.mcp_servers), ["other"], original);
+        assert.strictEqual(value.mcp_servers.other.command, "keep");
+    }
+    assert.ok(
+        removeConfig("codex", editConfig("codex", '# head\nmodel="keep"\n', snippet("codex"))).includes("# head")
+    );
+    assert.strictEqual(removeConfig("codex", 'model="keep"\n'), 'model="keep"\n');
+});
+
+scenario("Remove the DSH plugin and leave every other plugin's source text", () => {
+    const other = '- insert:\n    - id: other\n      name: "x" # keep\n';
+    const installed = editConfig("dsh", other, snippet("dsh"));
+    assert.strictEqual(removeConfig("dsh", installed), other);
+    const merged = editConfig("dsh", installed, snippet("dsh").replace("Code.exe", "New.exe"));
+    assert.ok(merged.includes('{"id":"mcp-emberprobe"'), "an upgraded entry is a flow mapping");
+    assert.strictEqual(removeConfig("dsh", merged), other);
+    const shared =
+        '- insert:\n    - id: other\n      name: "x"\n    - id: mcp-emberprobe\n      name: "@deepseek-ai/dsh-mcp-client"\n      config:\n        serverName: emberprobe\n';
+    assert.strictEqual(removeConfig("dsh", shared), '- insert:\n    - id: other\n      name: "x"\n');
+    assert.strictEqual(removeConfig("dsh", editConfig("dsh", "", snippet("dsh"))), "");
+    assert.strictEqual(removeConfig("dsh", other), other);
+    assert.throws(
+        () => removeConfig("dsh", `[${JSON.stringify({ insert: [YAML.parse(snippet("dsh"))[0].insert[0]] })}]`),
+        /DSH YAML/
+    );
 });
 
 scenario("Refuse DSH duplicate servers, id collisions, aliases and tagged managed nodes", () => {

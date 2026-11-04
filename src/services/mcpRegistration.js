@@ -6,7 +6,7 @@ const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 const { execFile } = require("child_process");
-const { prepareClientInstall, commitClientInstall } = require("./mcpConfigFiles");
+const { clientStatus, commitClientInstall, prepareClientInstall, prepareClientUninstall } = require("./mcpConfigFiles");
 
 const PROVIDER_ID = "emberprobe";
 const {
@@ -19,6 +19,16 @@ const {
 } = require("./mcpClientConfig");
 const CLI_TIMEOUT_MS = 30000;
 const ERROR_TAIL = 300;
+// The buttons each client state offers in the sidebar card. A file that cannot be read can only be merged by hand.
+const STATE_ACTIONS = Object.freeze({
+    notInstalled: ["install"],
+    installed: ["uninstall"],
+    outdated: ["upgrade", "uninstall"],
+    invalid: ["copy"],
+    manual: ["copy"],
+    builtin: []
+});
+const CLIENT_ACTIONS = new Set(Object.values(STATE_ACTIONS).flat());
 
 // The launcher path is stable (globalStorage/mcp); its content is rewritten on every activation to the current
 // extension install path.
@@ -147,11 +157,13 @@ class McpRegistration {
      * @param {{
      *   vscode: any, context: any, t: (key: string, params?: Record<string, any>) => string,
      *   isAvailable: () => boolean, isEnabled?: () => boolean, instanceId: () => string, toolsets: () => string,
-     *   onResolve: () => Promise<void>, onConfigured?: () => void,
+     *   onResolve: () => Promise<void>, onConfigured?: () => void, post?: (message: any) => void,
      *   platform?: string, runtime?: string, findExecutable?: (name: string) => string,
      *   runCli?: (file: string, args: string[]) => ReturnType<typeof runCli>,
-     *   prepareInstall?: (client: string, snippet: string, workspace?: string) => Promise<any>,
-     *   commitInstall?: (plan: any) => Promise<any>
+     *   prepareInstall?: (client: string, snippet: string) => Promise<any>,
+     *   prepareUninstall?: (client: string) => Promise<any>,
+     *   commitInstall?: (plan: any) => Promise<any>,
+     *   readStatus?: (client: string, snippet: string) => ReturnType<typeof clientStatus>
      * }} options
      */
     constructor(options) {
@@ -164,14 +176,16 @@ class McpRegistration {
         this.toolsets = options.toolsets;
         this.onResolve = options.onResolve;
         this.onConfigured = options.onConfigured || (() => {});
+        this.post = options.post || (() => {});
         this.platform = options.platform || process.platform;
         this.runtime = options.runtime || process.execPath;
         this.findExecutable = options.findExecutable || ((name) => findExecutable(name, process.env, this.platform));
         this.runCli = options.runCli || ((file, args) => runCli(file, args, { platform: this.platform }));
-        this.prepareInstall =
-            options.prepareInstall ||
-            ((client, snippet, workspace) => prepareClientInstall(client, snippet, { workspace }));
+        this.prepareInstall = options.prepareInstall || prepareClientInstall;
+        this.prepareUninstall = options.prepareUninstall || prepareClientUninstall;
         this.commitInstall = options.commitInstall || commitClientInstall;
+        this.readStatus = options.readStatus || clientStatus;
+        this.busyClient = "";
         this.emitter = null;
         this.registered = false;
         this.host = "";
@@ -299,22 +313,110 @@ class McpRegistration {
         return CLIENTS.filter((client) => client !== "cursor" || (this.host !== "cursor" && !this.isRemote()));
     }
 
+    async readClient(client, spec) {
+        if (client === "json") return { client, state: "manual", actions: STATE_ACTIONS.manual, files: [] };
+        try {
+            // Cursor's snippet is an install link; its file holds the plain mcpServers shape.
+            const snippet = configSnippet(client === "cursor" ? "json" : client, spec);
+            const status = await this.readStatus(client, snippet);
+            return { client, ...status, actions: STATE_ACTIONS[status.state] };
+        } catch (error) {
+            // Cursor merges its own file from the install link, so that stays available.
+            const actions = client === "cursor" ? ["install"] : STATE_ACTIONS.invalid;
+            return { client, state: "invalid", actions, files: [], error: errorTail({ error: error.message }) };
+        }
+    }
+
+    // The sidebar card's view of every client. Copilot uses the server VS Code gets from the provider, so it has nothing
+    // to install; Cursor's own row is absent inside Cursor for the same reason.
+    async clientStatuses(error) {
+        const spec = this.serverSpec();
+        const builtin = { client: "copilot", state: "builtin", actions: STATE_ACTIONS.builtin, files: [] };
+        return {
+            type: "mcpClients",
+            clients: [
+                ...(this.host === "vscode" ? [builtin] : []),
+                ...(await Promise.all(this.clients().map((client) => this.readClient(client, spec))))
+            ],
+            busy: this.busyClient,
+            ...(error ? { error } : {})
+        };
+    }
+
+    async publishClients() {
+        try {
+            this.post(await this.clientStatuses());
+        } catch (error) {
+            console.warn("MCP client status:", error.message);
+        }
+    }
+
+    pick(client) {
+        const executable = CLI_CLIENTS[client] ? this.findExecutable(CLI_CLIENTS[client]) : "";
+        const description =
+            client === "cursor" || client === "json" ? this.t(`mcp.method.${client}`) : this.t("mcp.method.native");
+        return { label: this.t(`mcp.client.${client}`), description, client, executable };
+    }
+
     // Every named external client has a native file adapter, except Cursor which uses its own install API/link.
-    // User configuration is never changed on activation: this command previews the files and requires a user action.
+    // User configuration is never changed on activation: this command previews the files, and the sidebar writes when
+    // its button is pressed.
     async installClient() {
-        const window = this.vscode.window;
-        const picks = this.clients().map((client) => {
-            const executable = CLI_CLIENTS[client] ? this.findExecutable(CLI_CLIENTS[client]) : "";
-            const description =
-                client === "cursor" || client === "json" ? this.t(`mcp.method.${client}`) : this.t("mcp.method.native");
-            return { label: this.t(`mcp.client.${client}`), description, client, executable };
-        });
-        const choice = await window.showQuickPick(picks, { placeHolder: this.t("mcp.pickClient") });
+        const picks = this.clients().map((client) => this.pick(client));
+        const choice = await this.vscode.window.showQuickPick(picks, { placeHolder: this.t("mcp.pickClient") });
         if (!choice) return null;
+        const result = await this.install(choice);
+        await this.publishClients();
+        return result;
+    }
+
+    // One sidebar action on one client. The button already names the client and the action, so installing and upgrading
+    // write at once; removing still asks. A CLI's `mcp add` refuses a name that already exists, so the file is merged.
+    async runClientAction(client, action) {
+        if (!this.clients().includes(client) || !CLIENT_ACTIONS.has(action))
+            throw Object.assign(new Error("Unknown MCP client action"), { code: "INVALID_PARAMS" });
+        if (this.busyClient)
+            throw Object.assign(new Error("Another MCP client is being changed"), { code: "MCP_BUSY" });
+        this.busyClient = client;
+        try {
+            const choice = this.pick(client);
+            if (action === "uninstall") return await this.uninstall(choice);
+            if (action === "copy") return await this.copy(choice);
+            return await this.install({ ...choice, executable: "", direct: true });
+        } finally {
+            this.busyClient = "";
+        }
+    }
+
+    async copy(choice) {
+        await this.writeLauncher();
+        await this.vscode.env.clipboard.writeText(configSnippet(choice.client, this.serverSpec()));
+        this.onConfigured();
+        const key = choice.client === "json" ? "mcp.configCopied" : `mcp.configCopied.${choice.client}`;
+        this.vscode.window.showInformationMessage(this.t(key, { client: choice.label }));
+        return { client: choice.client, method: "clipboard" };
+    }
+
+    async uninstall(choice) {
+        const window = this.vscode.window;
+        const plan = await this.prepareUninstall(choice.client);
+        const remove = this.t("mcp.uninstall");
+        const answer = await window.showWarningMessage(
+            this.t("mcp.uninstallConfirm", { client: choice.label }),
+            { modal: true, detail: plan.files.map((entry) => entry.file).join("\n") },
+            remove
+        );
+        if (answer !== remove) return null;
+        const result = await this.commitInstall(plan);
+        window.showInformationMessage(this.t("mcp.uninstalled", { client: choice.label }));
+        return { client: choice.client, method: "file", ok: true, files: result.files };
+    }
+
+    async install(choice) {
+        const window = this.vscode.window;
         await this.writeLauncher();
         const spec = this.serverSpec();
-        const workspace = this.vscode.workspace?.workspaceFolders?.[0]?.uri.fsPath;
-        const snippet = configSnippet(choice.client, spec, this.platform, workspace);
+        const snippet = configSnippet(choice.client, spec);
         const label = choice.label;
         if (choice.client === "cursor") {
             const opened = await this.vscode.env.openExternal(this.vscode.Uri.parse(snippet));
@@ -333,14 +435,14 @@ class McpRegistration {
             window.showInformationMessage(this.t("mcp.configCopied", { client: label }));
             return { client: choice.client, method: "clipboard", snippet };
         }
-        return this.installNative(choice, spec, snippet, workspace);
+        return this.installNative(choice, spec, snippet);
     }
 
-    async installNative(choice, spec, snippet, workspace) {
+    async installNative(choice, spec, snippet) {
         const window = this.vscode.window;
         let plan;
         try {
-            plan = await this.prepareInstall(choice.client, snippet, workspace);
+            plan = await this.prepareInstall(choice.client, snippet);
         } catch (error) {
             return this.installFailure(choice, snippet, "file", error.message);
         }
@@ -353,13 +455,15 @@ class McpRegistration {
                   .join(" ")
             : "";
         const detail = `${plan.files.map((entry) => entry.file).join("\n")}\n\n${snippet}${command ? `\n\nCLI: ${command}` : ""}`;
-        const answer = await window.showInformationMessage(
-            this.t("mcp.nativeConfirm", { client: choice.label }),
-            { modal: true, detail },
-            install,
-            ...(choice.executable ? [useCli] : []),
-            copy
-        );
+        const answer = choice.direct
+            ? install
+            : await window.showInformationMessage(
+                  this.t("mcp.nativeConfirm", { client: choice.label }),
+                  { modal: true, detail },
+                  install,
+                  ...(choice.executable ? [useCli] : []),
+                  copy
+              );
         if (answer === copy) {
             await this.vscode.env.clipboard.writeText(snippet);
             this.onConfigured();

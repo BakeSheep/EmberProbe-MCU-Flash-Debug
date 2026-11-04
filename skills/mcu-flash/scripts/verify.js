@@ -48,10 +48,13 @@ async function main() {
         return;
     }
     emit(result);
-    if (!options["confirmation-id"])
-        fail(
-            "Verification confirmation is required. Show the preflight plan in the Agent conversation, then rerun with --execute --confirmation-id <id> only after explicit approval."
-        );
+    if (!options["confirmation-id"]) {
+        const authorization = await authorizeFlash(result, undefined, "flash.verify");
+        if (authorization?.authorized !== true)
+            fail(
+                "Verification confirmation is required. Show the preflight plan in the Agent conversation, then rerun with --execute --confirmation-id <id> only after explicit approval."
+            );
+    }
     if (!result.openocdCompatible) {
         fail(
             `Incompatible OpenOCD ${result.openocdVersion || "(unknown version)"}; EmberProbe requires ${result.minimumOpenocdVersion} or newer. Upgrade OpenOCD${process.platform === "win32" ? " or select EmberProbe's bundled xPack build" : ""}.`

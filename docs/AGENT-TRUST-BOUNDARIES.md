@@ -1,13 +1,24 @@
 # Agent approval and local trust boundaries
 
 Agent Bridge calls require a trusted VS Code workspace. Sensitive operations are confirmed
-in the Agent conversation: the Agent shows the returned plan, waits for the human's answer,
+in the Agent conversation by default: the Agent shows the returned plan, waits for the human's answer,
 then resubmits its one-time confirmation ID. There is no second VS Code operation approval
 dialog. The Bridge checks plan identity and ID expiry/reuse; it does not independently
 attest that the Agent obtained a human answer. A returned ID alone never authorizes an
 Agent to execute.
 
-Flash verification and peripheral writes use one-time confirmation. Flash programming,
+The sidebar now groups Agent Skills, MCP installation and **Allow all Agent operations** in a separate
+collapsible Agent Configuration card beside MCU Configuration. Full access is off by default and stored
+only in VS Code workspace state (`emberprobe.agentFullAccess`). Only a sidebar interaction can set it;
+there is no Bridge method or configuration field that lets an Agent grant it to itself. Enabling also
+opens the Agent channel. While active in a trusted workspace with Agent access enabled, supported
+operations report `mode: "full"` and skip the operation confirmation exchange. Disabling affects future
+authorizations and keeps ordinary Agent access enabled; it does not cancel an operation already running.
+Hardware/identity guards, register side-effect restrictions, file boundaries and firmware mismatch
+checks stay in place. Anonymous probes still require one-time Flash and variable-write confirmation.
+Existing skill-content approval and MCP client trust settings remain independent.
+
+Without full access, Flash verification and peripheral writes use one-time confirmation. Flash programming,
 variable writes and CubeMX can remember an explicitly requested chat choice for up to
 24 hours. Variable writes bind it to the ELF digest and connection, CubeMX to the
 project/tool identity. Flash programming binds it to the ELF path, target, probe identity,

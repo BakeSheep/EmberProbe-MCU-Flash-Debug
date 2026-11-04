@@ -62,21 +62,16 @@ function dshConfig(config) {
 }
 
 /**
- * Native configuration for clipboard/manual merging, or Cursor's install link. Exports bind to the current main
- * workspace when available; no ephemeral Bridge instance, token or port is added.
+ * Native configuration for clipboard/manual merging, or Cursor's install link. It lands in user-level configuration
+ * shared by every project, so the server locates the Bridge through MCP roots or its working directory: neither a
+ * workspace binding nor an ephemeral Bridge instance, token or port is added.
  * @param {string} client
  * @param {{ command: string, args: string[], env: Record<string, string> }} spec
- * @param {string} [platform]
- * @param {string} [workspace]
  */
-function configSnippet(client, spec, platform = process.platform, workspace) {
+function configSnippet(client, spec) {
     if (!CLIENTS.includes(client)) throw new Error(`Unsupported MCP client: ${client}`);
-    // Cursor's global installation continues to follow roots/cwd, just like its automatic registration.
     if (client === "cursor") return cursorInstallLink(spec);
-    const config = stdioConfig({
-        ...spec,
-        env: { ...spec.env, ...(workspace ? { EMBERPROBE_WORKSPACE: workspace } : {}) }
-    });
+    const config = stdioConfig(spec);
     if (client === "codex") return codexConfig(config);
     if (client === "dsh") return dshConfig(config);
     if (client === "opencode") {

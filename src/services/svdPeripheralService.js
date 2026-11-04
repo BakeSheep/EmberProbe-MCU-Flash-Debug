@@ -999,9 +999,13 @@ class SvdPeripheralService {
         const guard = this._guard(true);
         const plan = await this._writePlan(model, params.writes, guard);
         guard();
+        let permissionMode = fromUi ? "direct-ui" : "once";
         if (!fromUi) {
-            if (!params.confirmationId) return this.authorization.request(plan);
-            this.authorization.authorize(plan, params.confirmationId);
+            if (!params.confirmationId) {
+                const permission = this.authorization.request(plan);
+                if (permission.confirmationRequired) return permission;
+            }
+            permissionMode = this.authorization.authorize(plan, params.confirmationId).mode;
         }
         const results = [];
         let attempted = null;
@@ -1061,7 +1065,7 @@ class SvdPeripheralService {
         return {
             svd: model.svd,
             session: this.debugBridge.agentStatus(),
-            permission: { mode: fromUi ? "direct-ui" : "once" },
+            permission: { mode: permissionMode },
             results
         };
     }

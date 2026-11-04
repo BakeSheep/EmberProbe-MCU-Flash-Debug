@@ -46,6 +46,12 @@ const COMPAT_LAYERS = Object.freeze([
         ]
     },
     {
+        id: "mcp-workspace-binding-cleanup",
+        purpose: "Removes EMBERPROBE_WORKSPACE that earlier releases wrote into user-level MCP client configuration",
+        removeIn: "1.0.0",
+        sites: [{ file: "src/services/mcpConfigEdits.js", marker: "STALE_BINDING" }]
+    },
+    {
         id: "write-trust-fail-closed",
         purpose: "Treats a write trust stored by older releases as a boolean or timestamp as untrusted",
         removeIn: null,

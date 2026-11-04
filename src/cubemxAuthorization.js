@@ -5,6 +5,7 @@ const KEY = "agent.cubemxTrusted";
 class CubeMxAuthorization {
     constructor(storage, options = {}) {
         this.storage = storage;
+        this.fullAccess = options.fullAccess || (() => false);
         this.confirmations = new ConfirmationStore(options);
         this.now = this.confirmations.now;
     }
@@ -18,6 +19,7 @@ class CubeMxAuthorization {
         };
     }
     request(plan) {
+        if (this.fullAccess()) return { confirmationRequired: false, mode: "full" };
         if (this.status(plan.trust).trusted) return { confirmationRequired: false, mode: "workspace" };
         return {
             confirmationRequired: true,
@@ -27,6 +29,7 @@ class CubeMxAuthorization {
         };
     }
     authorize(plan, id, remember) {
+        if (!id && !remember && this.fullAccess()) return;
         if (!id && !remember && this.status(plan.trust).trusted) return;
         if (!this.confirmations.consume(id, plan.identity))
             throw Object.assign(new Error("CubeMX confirmation expired or the project changed; prepare again"), {

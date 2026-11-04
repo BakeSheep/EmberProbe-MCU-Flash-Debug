@@ -9,23 +9,22 @@ const spec = Object.freeze({
     args: Object.freeze(["C:\\用户\\Ember Probe\\mcp.js"]),
     env: Object.freeze({ ELECTRON_RUN_AS_NODE: "1", EMBERPROBE_MCP_TOOLSETS: "core,cubemx" })
 });
-const workspace = "C:\\工作区\\MCU #1: 'demo' & firmware";
-const env = { ...spec.env, EMBERPROBE_WORKSPACE: workspace };
+const env = spec.env;
 
 scenario("Export harness-specific JSON without changing the shared launch spec", () => {
     for (const client of ["claude", "gemini", "antigravity", "json"]) {
-        const config = JSON.parse(configSnippet(client, spec, "win32", workspace)).mcpServers.emberprobe;
+        const config = JSON.parse(configSnippet(client, spec)).mcpServers.emberprobe;
         const timeout =
             client === "gemini" ? { timeout: 1800000 } : client === "antigravity" ? { timeoutSeconds: 1800 } : {};
         assert.deepStrictEqual(config, { command: spec.command, args: spec.args, env, ...timeout });
         assert.ok(!Object.hasOwn(config, "trust"), "export must not disable client confirmations");
     }
-    assert.ok(!Object.hasOwn(spec.env, "EMBERPROBE_WORKSPACE"));
+    assert.ok(!Object.hasOwn(env, "EMBERPROBE_WORKSPACE"), "user-level configuration serves every project");
     assert.ok(!Object.hasOwn(env, "EMBERPROBE_BRIDGE_INSTANCE"));
 });
 
 scenario("Export OpenCode local command arrays and environment rather than mcpServers", () => {
-    const config = JSON.parse(configSnippet("opencode", spec, "win32", workspace));
+    const config = JSON.parse(configSnippet("opencode", spec));
     assert.deepStrictEqual(config, {
         mcp: {
             emberprobe: {
@@ -37,13 +36,13 @@ scenario("Export OpenCode local command arrays and environment rather than mcpSe
             }
         }
     });
-    const empty = JSON.parse(configSnippet("opencode", { command: "/s/mcp", args: [], env: {} }, "linux"));
+    const empty = JSON.parse(configSnippet("opencode", { command: "/s/mcp", args: [], env: {} }));
     assert.deepStrictEqual(empty.mcp.emberprobe.command, ["/s/mcp"]);
     assert.ok(!Object.hasOwn(empty.mcp.emberprobe, "environment"));
 });
 
 scenario("Export Codex native TOML with escaped paths, quoted keys and second-based timeout", () => {
-    const value = configSnippet("codex", spec, "win32", workspace);
+    const value = configSnippet("codex", spec);
     assert.strictEqual(
         value,
         "[mcp_servers.emberprobe]\n" +
@@ -52,10 +51,9 @@ scenario("Export Codex native TOML with escaped paths, quoted keys and second-ba
             "tool_timeout_sec = 1800\n\n" +
             "[mcp_servers.emberprobe.env]\n" +
             '"ELECTRON_RUN_AS_NODE" = "1"\n' +
-            '"EMBERPROBE_MCP_TOOLSETS" = "core,cubemx"\n' +
-            '"EMBERPROBE_WORKSPACE" = "C:\\\\工作区\\\\MCU #1: \'demo\' & firmware"\n'
+            '"EMBERPROBE_MCP_TOOLSETS" = "core,cubemx"\n'
     );
-    const empty = configSnippet("codex", { command: "/s/mcp", args: [], env: {} }, "linux");
+    const empty = configSnippet("codex", { command: "/s/mcp", args: [], env: {} });
     assert.strictEqual(empty, '[mcp_servers.emberprobe]\ncommand = "/s/mcp"\nargs = []\ntool_timeout_sec = 1800\n');
     const escaped = configSnippet("codex", {
         command: '/home/o\'neil/"MCU"/mcp',
@@ -68,7 +66,7 @@ scenario("Export Codex native TOML with escaped paths, quoted keys and second-ba
 });
 
 scenario("Preserve DSH YAML and Cursor install-link formats", () => {
-    const patch = YAML.parse(configSnippet("dsh", spec, "win32", workspace));
+    const patch = YAML.parse(configSnippet("dsh", spec));
     assert.deepStrictEqual(patch[0].insert[0].config, {
         serverName: "emberprobe",
         transport: "stdio",
@@ -77,7 +75,7 @@ scenario("Preserve DSH YAML and Cursor install-link formats", () => {
         env,
         toolCallTimeoutMs: 1800000
     });
-    const link = new URL(configSnippet("cursor", spec, "win32", workspace));
+    const link = new URL(configSnippet("cursor", spec));
     const config = JSON.parse(Buffer.from(link.searchParams.get("config"), "base64").toString());
     assert.deepStrictEqual(config, { command: spec.command, args: spec.args, env: spec.env });
 });

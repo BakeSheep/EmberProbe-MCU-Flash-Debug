@@ -12,7 +12,9 @@ const { yamlTargets } = require("../src/services/mcpConfigEdits");
 const {
     FILE_CLIENTS,
     MAX_CONFIG_BYTES,
+    clientStatus,
     configTargets,
+    prepareClientUninstall,
     prepareClientInstall,
     commitClientInstall
 } = require("../src/services/mcpConfigFiles");
@@ -23,7 +25,7 @@ let fixtureNumber = 0;
 function fixture() {
     const home = path.join(base, `home-${++fixtureNumber}`);
     fs.mkdirSync(home);
-    return { home, env: {}, workspace: path.join(base, "project") };
+    return { home, env: {} };
 }
 async function write(file, text) {
     await fsp.mkdir(path.dirname(file), { recursive: true });
@@ -46,7 +48,7 @@ function assertClean(home) {
         await scenario("Automatically install every named file-based client without needing its CLI", async () => {
             for (const client of FILE_CLIENTS) {
                 const options = fixture();
-                const snippet = configSnippet(client, spec, process.platform, options.workspace);
+                const snippet = configSnippet(client, spec);
                 const plan = await prepareClientInstall(client, snippet, options);
                 assert.ok(
                     plan.files.every((entry) => !fs.existsSync(entry.file)),
@@ -56,7 +58,7 @@ function assertClean(home) {
                 assert.strictEqual(result.changed, client === "dsh" ? 2 : 1);
                 for (const file of result.files) {
                     const server = readServer(client, fs.readFileSync(file, "utf8"));
-                    assert.strictEqual((server.env || server.environment).EMBERPROBE_WORKSPACE, options.workspace);
+                    assert.ok(!Object.hasOwn(server.env || server.environment, "EMBERPROBE_WORKSPACE"));
                     assert.strictEqual(client === "opencode" ? server.command[0] : server.command, spec.command);
                     if (process.platform !== "win32") assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
                 }
@@ -102,22 +104,108 @@ function assertClean(home) {
             await assert.rejects(configTargets("toString", options), /No configuration file adapter/);
         });
 
-        await scenario("Update existing project overrides and prefer OpenCode JSONC over JSON", async () => {
+        await scenario("Stay in user-level files and prefer OpenCode JSONC over JSON", async () => {
             const options = fixture();
-            options.workspace = path.join(options.home, "project");
+            const project = path.join(options.home, "project");
             const dir = path.join(options.home, ".config", "opencode");
             await write(path.join(dir, "opencode.json"), "{}");
             await write(path.join(dir, "opencode.jsonc"), "{} // global");
             assert.deepStrictEqual((await configTargets("opencode", options)).targets, [
                 path.join(dir, "opencode.jsonc")
             ]);
-            await write(path.join(options.workspace, "opencode.json"), "{}");
-            assert.deepStrictEqual((await configTargets("opencode", options)).targets, [
-                path.join(options.workspace, "opencode.json")
-            ]);
-            const anti = path.join(options.workspace, ".agents", "mcp_config.json");
-            await write(anti, "{}");
-            assert.deepStrictEqual((await configTargets("antigravity", options)).targets, [anti]);
+            await write(path.join(project, "opencode.json"), "{}");
+            await write(path.join(project, ".agents", "mcp_config.json"), "{}");
+            const cwd = process.cwd();
+            process.chdir(project);
+            try {
+                assert.deepStrictEqual((await configTargets("opencode", options)).targets, [
+                    path.join(dir, "opencode.jsonc")
+                ]);
+                assert.deepStrictEqual((await configTargets("antigravity", options)).targets, [
+                    path.join(options.home, ".gemini", "config", "mcp_config.json")
+                ]);
+            } finally {
+                process.chdir(cwd);
+            }
+        });
+
+        await scenario("Report each client as absent, current or outdated without writing", async () => {
+            for (const client of FILE_CLIENTS) {
+                const options = fixture();
+                const snippet = configSnippet(client, spec);
+                const { targets } = await configTargets(client, options);
+                assert.deepStrictEqual(await clientStatus(client, snippet, options), {
+                    state: "notInstalled",
+                    files: targets
+                });
+                assert.deepStrictEqual(fs.readdirSync(options.home), [], "reading the status writes nothing");
+                await commitClientInstall(await prepareClientInstall(client, snippet, options));
+                assert.strictEqual((await clientStatus(client, snippet, options)).state, "installed", client);
+                const moved = { ...spec, command: `${spec.command}-moved` };
+                assert.strictEqual(
+                    (await clientStatus(client, configSnippet(client, moved), options)).state,
+                    "outdated",
+                    client
+                );
+            }
+        });
+
+        await scenario("Treat a stale workspace binding and a partial install as outdated", async () => {
+            const options = fixture();
+            const snippet = configSnippet("claude", spec);
+            const file = (await configTargets("claude", options)).targets[0];
+            await commitClientInstall(await prepareClientInstall("claude", snippet, options));
+            const value = JSON.parse(fs.readFileSync(file, "utf8"));
+            value.mcpServers.emberprobe.env.EMBERPROBE_WORKSPACE = "/old";
+            value.mcpServers.emberprobe.custom = "kept";
+            await write(file, JSON.stringify(value));
+            assert.strictEqual((await clientStatus("claude", snippet, options)).state, "outdated");
+            await commitClientInstall(await prepareClientInstall("claude", snippet, options));
+            assert.strictEqual((await clientStatus("claude", snippet, options)).state, "installed");
+            assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.emberprobe.custom, "kept");
+
+            const dsh = fixture();
+            const dshSnippet = configSnippet("dsh", spec);
+            await commitClientInstall(await prepareClientInstall("dsh", dshSnippet, dsh));
+            fs.rmSync((await configTargets("dsh", dsh)).targets[1]);
+            assert.strictEqual((await clientStatus("dsh", dshSnippet, dsh)).state, "outdated");
+        });
+
+        await scenario("Read Cursor's own file and surface unreadable configuration", async () => {
+            const options = fixture();
+            const snippet = configSnippet("json", spec);
+            const file = path.join(options.home, ".cursor", "mcp.json");
+            assert.strictEqual((await clientStatus("cursor", snippet, options)).state, "notInstalled");
+            await write(file, JSON.stringify(JSON.parse(snippet)));
+            assert.strictEqual((await clientStatus("cursor", snippet, options)).state, "installed");
+            await write(file, "{broken");
+            await assert.rejects(clientStatus("cursor", snippet, options), /Invalid or unsupported JSON/);
+        });
+
+        await scenario("Uninstall every client and leave missing files absent", async () => {
+            for (const client of FILE_CLIENTS) {
+                const options = fixture();
+                const snippet = configSnippet(client, spec);
+                const empty = await prepareClientUninstall(client, options);
+                assert.deepStrictEqual(empty.files, [], "nothing to remove from files that do not exist");
+                assert.strictEqual((await commitClientInstall(empty)).changed, 0);
+                assert.deepStrictEqual(fs.readdirSync(options.home), []);
+                await commitClientInstall(await prepareClientInstall(client, snippet, options));
+                const result = await commitClientInstall(await prepareClientUninstall(client, options));
+                assert.strictEqual(result.changed, client === "dsh" ? 2 : 1);
+                assert.strictEqual((await clientStatus(client, snippet, options)).state, "notInstalled", client);
+                assertClean(options.home);
+            }
+        });
+
+        await scenario("Refuse to uninstall through a file changed after the preview", async () => {
+            const options = fixture();
+            const snippet = configSnippet("gemini", spec);
+            await commitClientInstall(await prepareClientInstall("gemini", snippet, options));
+            const plan = await prepareClientUninstall("gemini", options);
+            await write(plan.files[0].file, '{"mcpServers":{"emberprobe":{},"added":{}}}');
+            await assert.rejects(commitClientInstall(plan), /changed during installation/);
+            assert.ok(fs.readFileSync(plan.files[0].file, "utf8").includes("added"));
         });
 
         await scenario("Write DSH Web/Desktop and initialized Headless/ACP profiles without touching SDK", async () => {

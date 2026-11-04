@@ -168,6 +168,7 @@ class MainViewProvider {
         this._samplingArchive = services.samplingArchive;
         this._chartHistory = services.chartHistory;
         this._writeAuthorization = services.writeAuthorization;
+        this._agentPermissions = services.agentPermissions;
         this._peripheralWriteAuthorization = services.peripheralWriteAuthorization;
         this._flashAuthorization = services.flashAuthorization;
         this._firmwareRecord = services.firmwareRecord;
@@ -608,6 +609,7 @@ class MainViewProvider {
     }
     mcpConfigurationChanged() {
         this._mcpRegistration.changed();
+        this._mcpRegistration.publishClients();
     }
     // Cleans up unmaintained global skill copies, deleting only entries in the EmberProbe manifest.
     async cleanupGlobalSkills() {
