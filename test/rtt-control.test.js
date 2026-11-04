@@ -167,6 +167,40 @@ async function fixture(options = {}) {
         }
     });
 
+    await scenario("a start that fails without a Tcl message is reported as a search miss", async () => {
+        const f = await fixture();
+        f.fake.rttBlockPresent = false;
+        try {
+            await assert.rejects(f.session.rttControl({ operation: "start", block }), (error) => {
+                assert.strictEqual(error.retryable, true);
+                assert.strictEqual(error.code, "OPENOCD_TCL_ERROR");
+                assert.match(error.message, /no control block found/);
+                return true;
+            });
+        } finally {
+            await f.close();
+        }
+    });
+
+    await scenario("a channel listing cut short by an unreadable name still starts RTT", async () => {
+        const f = await fixture();
+        f.fake.rttChannelsTruncated = true;
+        f.fake.rttChannels = ["Channels: up=1, down=2", "Up-channels:", "0: Terminal 4096 0"].join(
+            String.fromCharCode(10)
+        );
+        try {
+            const result = await f.session.rttControl({ operation: "start", block });
+            assert.deepStrictEqual(
+                result.channels.up.map((channel) => channel.name),
+                ["Terminal"]
+            );
+            f.fake.rttChannels = "rtt: some other failure";
+            await assert.rejects(f.session.rttControl({ operation: "channels" }), { code: "OPENOCD_TCL_ERROR" });
+        } finally {
+            await f.close();
+        }
+    });
+
     await scenario("an OpenOCD without the rtt commands is not retryable", async () => {
         const f = await fixture();
         try {

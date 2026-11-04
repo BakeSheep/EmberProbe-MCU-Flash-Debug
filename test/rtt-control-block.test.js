@@ -88,11 +88,43 @@ scenario("writable ELF sections next to .bss are scanned as one range", () => {
         source: "sections",
         address: 0x20000000,
         size: 0x2700,
-        exact: false
+        exact: false,
+        more: [{ address: 0x38000000, size: 0x8000 }]
     });
     // Without .bss the largest writable span is taken
     const noBss = sections.filter((s) => !s.name.startsWith(".bss") && !s.name.startsWith(".data"));
     assert.strictEqual(resolveControlBlock({ sections: noBss }).address, 0x38000000);
+});
+
+scenario("a control block in its own RAM section is reached after the .bss span", () => {
+    // H750_RttTest's axi profiles without the symbol: .bss in DTCM, .rtt_cb in AXI SRAM.
+    const block = resolveControlBlock({
+        sections: [
+            { name: ".bss", addr: 0x20000064, size: 0x248, flags: 0x3 },
+            { name: ".rtt_cb", addr: 0x24000000, size: 0x5128, flags: 0x3 }
+        ]
+    });
+    assert.deepStrictEqual(
+        scanSlices(block).map((slice) => [slice.address, slice.size]),
+        [
+            [0x20000064, 0x248],
+            [0x24000000, 0x5128]
+        ]
+    );
+    assert.ok(scanSlices(block).every((slice) => !("more" in slice) && slice.source === "sections"));
+});
+
+scenario("later section spans join the scan only within the automatic limit", () => {
+    const span = (name, addr, size) => ({ name, addr, size, flags: 0x3 });
+    const block = resolveControlBlock({
+        sections: [
+            span(".bss", 0x20000000, 0x1000),
+            span(".big", 0x24000000, AUTO_SCAN_MAX_BYTES),
+            span(".small", 0x30000000, 0x1000)
+        ]
+    });
+    assert.strictEqual(block.address, 0x20000000);
+    assert.deepStrictEqual(block.more, [{ address: 0x30000000, size: 0x1000 }], "the oversized span is left out");
 });
 
 scenario("linker RAM region is the last fallback and the automatic scan is bounded", () => {
@@ -174,6 +206,19 @@ scenario("channel names come from the firmware and may be empty or contain space
 scenario("an unexpected channel listing is a parse error", () => {
     assert.throws(() => parseChannelList(""), code("RTT_PARSE_ERROR"));
     assert.throws(() => parseChannelList("{\n}\n{\n}\n"), code("RTT_PARSE_ERROR"));
+});
+
+scenario("unconfigured channels holding random values are left out of the list", () => {
+    const list = parseChannelList(
+        "Channels: up=3, down=3\nUp-channels:\n0: Terminal 4096 0\n1: Stream 16384 2\n2:  3039476351 983066642\n" +
+            "Down-channels:\n0: Terminal 64 0\n1: StreamIn 64 0"
+    );
+    assert.deepStrictEqual(
+        list.up.map((channel) => channel.name),
+        ["Terminal", "Stream"]
+    );
+    assert.strictEqual(list.down.length, 2);
+    assert.strictEqual(parseChannelList("Up-channels:\n0: Small 64 983066642\n").up.length, 0);
 });
 
 scenario("scan ranges are searched in overlapping slices that cover the range", () => {

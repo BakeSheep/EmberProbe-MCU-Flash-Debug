@@ -380,7 +380,8 @@ class RttController {
         for (const block of scanSlices(this._block)) {
             if (this._interrupts !== interrupts) return null;
             const request = { operation: "start", block };
-            if (settings.pollingIntervalMs !== undefined) request.pollingIntervalMs = settings.pollingIntervalMs;
+            // 0 is the setting's "OpenOCD default"; anything else is checked with the rest of the request.
+            if (settings.pollingIntervalMs) request.pollingIntervalMs = settings.pollingIntervalMs;
             try {
                 return await this._session().rttControl(request);
             } catch (error) {

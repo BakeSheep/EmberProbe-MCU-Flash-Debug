@@ -402,9 +402,10 @@
           },
           "emberprobe.rtt.pollingIntervalMs": {
             "type": "integer",
-            "minimum": 1,
+            "default": 0,
+            "minimum": 0,
             "maximum": 60000,
-            "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒）。未设置时使用 OpenOCD 默认值；仅影响 OpenOCD 侧轮询，终端读取不受此设置限制。 / How often OpenOCD polls the RTT ring buffers (ms). Uses the OpenOCD default when unset; this only affects OpenOCD's polling, not terminal reads.",
+            "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒）。0 表示使用 OpenOCD 默认值；仅影响 OpenOCD 侧轮询，终端读取不受此设置限制。 / How often OpenOCD polls the RTT ring buffers (ms). 0 uses the OpenOCD default; this only affects OpenOCD's polling, not terminal reads.",
             "order": 4
           },
           "emberprobe.rtt.timestamps": {

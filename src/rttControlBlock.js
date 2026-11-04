@@ -71,7 +71,9 @@ function symbolBlock(symbols) {
     return { source: "symbol", address, size, exact: true };
 }
 
-function writableSectionRange(sections) {
+// Every writable span, best guess first: SEGGER places the control block in .bss, but a project may give it its own
+// RAM section (`.rtt_cb` in AXI SRAM while .bss stays in DTCM). Without .bss the largest span leads.
+function writableSectionRanges(sections) {
     const writable = (Array.isArray(sections) ? sections : [])
         .filter((s) => (s.flags & (SHF_WRITE | SHF_ALLOC)) === (SHF_WRITE | SHF_ALLOC) && s.size > 0 && s.addr > 0)
         .sort((a, b) => a.addr - b.addr);
@@ -84,12 +86,22 @@ function writableSectionRange(sections) {
             last.names.push(section.name);
         } else ranges.push({ start: section.addr, end, names: [section.name] });
     }
-    if (!ranges.length) return null;
-    // SEGGER places the control block in .bss (or a named RAM section next to it); otherwise take the largest span.
-    const chosen =
-        ranges.find((range) => range.names.includes(".bss")) ||
-        ranges.reduce((best, range) => (range.end - range.start > best.end - best.start ? range : best));
-    return { address: chosen.start, size: chosen.end - chosen.start };
+    const rank = (range) => (range.names.includes(".bss") ? Infinity : range.end - range.start);
+    return ranges
+        .sort((a, b) => rank(b) - rank(a))
+        .map((range) => ({ address: range.start, size: range.end - range.start }));
+}
+
+// The first span is checked as a search range; later ones join while the whole scan stays within the automatic limit.
+function sectionBlock(ranges) {
+    const block = checkedRange(ranges[0].address, ranges[0].size, AUTO_SCAN_MAX_BYTES, "sections");
+    let total = block.size;
+    const more = ranges.slice(1).filter((range) => {
+        if (total + range.size > AUTO_SCAN_MAX_BYTES) return false;
+        total += range.size;
+        return true;
+    });
+    return more.length ? { ...block, more } : block;
 }
 
 function regionRange(regions) {
@@ -120,8 +132,8 @@ function resolveControlBlock({ settings = {}, symbols, sections, regions } = {})
         const size = parseAddress(range.size, "searchRange.size");
         return checkedRange(rangeAddress, size ?? 0, MANUAL_SCAN_MAX_BYTES, "range");
     }
-    const fromSections = writableSectionRange(sections);
-    if (fromSections) return checkedRange(fromSections.address, fromSections.size, AUTO_SCAN_MAX_BYTES, "sections");
+    const fromSections = writableSectionRanges(sections);
+    if (fromSections.length) return sectionBlock(fromSections);
     const fromRegion = regionRange(regions);
     if (fromRegion) return checkedRange(fromRegion.address, fromRegion.size, AUTO_SCAN_MAX_BYTES, "region");
     throw rttError(
@@ -132,12 +144,17 @@ function resolveControlBlock({ settings = {}, symbols, sections, regions } = {})
 
 // The `rtt setup` ranges to try in order for a resolved block; an exact block is one range.
 function scanSlices(block) {
-    if (block.exact || block.size <= SCAN_SLICE_BYTES + SCAN_SLICE_OVERLAP) return [block];
+    const { more = [], ...first } = block;
+    return [first, ...more.map((range) => ({ ...first, ...range }))].flatMap(rangeSlices);
+}
+
+function rangeSlices(range) {
+    if (range.exact || range.size <= SCAN_SLICE_BYTES + SCAN_SLICE_OVERLAP) return [range];
     const slices = [];
     for (let offset = 0; ; offset += SCAN_SLICE_BYTES) {
-        const size = Math.min(SCAN_SLICE_BYTES + SCAN_SLICE_OVERLAP, block.size - offset);
-        slices.push({ ...block, address: block.address + offset, size });
-        if (offset + size >= block.size) return slices;
+        const size = Math.min(SCAN_SLICE_BYTES + SCAN_SLICE_OVERLAP, range.size - offset);
+        slices.push({ ...range, address: range.address + offset, size });
+        if (offset + size >= range.size) return slices;
     }
 }
 
@@ -176,6 +193,11 @@ const CHANNEL_LINE = /^(\d+): (.*) (\d+) (\d+)$/;
 //   0: Terminal 16 0
 // OpenOCD omits unconfigured channels (size 0), so only this listing gives the channel number; `rtt channellist`
 // has none. The firmware owns the name, which may be empty or contain spaces, hence the anchored numeric fields.
+// A control block in a section the startup code leaves uninitialized holds random values in its unconfigured channels.
+// SEGGER's flags use only the low bits, so those channels are recognized by their flags or size.
+const MAX_CHANNEL_SIZE = 0x10000000;
+const MAX_CHANNEL_FLAGS = 0xff;
+
 function parseChannelList(text) {
     const result = { up: [], down: [] };
     let direction = null;
@@ -185,11 +207,13 @@ function parseChannelList(text) {
         else {
             const match = direction && CHANNEL_LINE.exec(line);
             if (!match) continue;
+            const size = Number(match[3]);
             const flags = Number(match[4]);
+            if (size > MAX_CHANNEL_SIZE || flags > MAX_CHANNEL_FLAGS) continue;
             result[direction].push({
                 index: Number(match[1]),
                 name: match[2],
-                size: Number(match[3]),
+                size,
                 flags,
                 mode: CHANNEL_MODES[flags & 3] || "unknown"
             });

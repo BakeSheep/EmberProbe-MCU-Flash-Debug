@@ -7,6 +7,7 @@ const { scenario } = require("./helpers/scenario");
 const { RttController } = require("../src/services/rttController");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { CACHE_KEYS } = require("../src/cacheKeys");
+const pkg = require("../package.json");
 const { FakeClock } = require("./helpers/fake-clock");
 const { waitFor } = require("./helpers/wait");
 
@@ -120,10 +121,10 @@ const flushQueue = (controller) => controller._queue;
 function makeController(host, options = {}) {
     const statuses = [];
     const controller = new RttController(host, {
-        vscode: fakeVscode,
+        vscode: options.vscode || fakeVscode,
         clock: options.clock || new FakeClock(),
         findFreePort: options.findFreePort || (async () => 19021),
-        rttSettings: options.rttSettings || (() => ({ controlBlockAddress: "0x24000000" })),
+        rttSettings: "rttSettings" in options ? options.rttSettings : () => ({ controlBlockAddress: "0x24000000" }),
         ramRegions: options.ramRegions,
         net: options.net,
         onStatus: (status) => statuses.push(status),
@@ -779,6 +780,39 @@ function makeController(host, options = {}) {
         assert.strictEqual(controller.status().state, "running");
         assert.strictEqual(controller.status().block.size, 0x20000, "the status shows the configured range");
         await controller.stop();
+    });
+
+    await scenario("the polling interval setting left alone starts RTT with OpenOCD's default", async () => {
+        const properties = Object.assign({}, ...pkg.contributes.configuration.map((group) => group.properties));
+        const rttKeys = Object.keys(properties).filter((key) => key.startsWith("emberprobe.rtt."));
+        // VS Code answers a setting without a default with its type's empty value, such as 0 for an integer.
+        assert.deepStrictEqual(
+            rttKeys.filter((key) => !("default" in properties[key])),
+            [],
+            "every RTT setting names the value an unset setting reads as"
+        );
+        const user = { "rtt.controlBlockAddress": "0x24000000" };
+        const read = (name) => (name in user ? user[name] : properties[`emberprobe.${name}`].default);
+        const vscode = { workspace: { getConfiguration: () => ({ get: read }) } };
+
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const { controller } = makeController(host, { vscode, rttSettings: undefined });
+        await controller.start();
+        const start = managed.calls.find((call) => call.operation === "start");
+        assert.ok(!("pollingIntervalMs" in start), "0 sends no polling command");
+        assert.strictEqual(controller.status().state, "running");
+        await controller.stop();
+
+        user["rtt.pollingIntervalMs"] = 20;
+        const set = fakeHost();
+        const configured = fakeHostSession();
+        set.debugLaunch.managedServer = configured.session;
+        const { controller: tuned } = makeController(set, { vscode, rttSettings: undefined });
+        await tuned.start();
+        assert.strictEqual(configured.calls.find((call) => call.operation === "start").pollingIntervalMs, 20);
+        await tuned.stop();
     });
 
     await scenario("a stop ends a scan between slices", async () => {
