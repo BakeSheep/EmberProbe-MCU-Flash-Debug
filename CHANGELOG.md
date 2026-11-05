@@ -6,6 +6,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 外设访问 / Peripheral access
+
+- 未调试时，外设寄存器读写必须复用已开启并连接成功的采样会话，不再临时连接探针；停止或更换采样连接会使旧请求失效。同步侧栏提示和控件状态，保留调试运行及暂停下的访问。
+- Require an active sampling connection for peripheral register reads and writes outside debugging, and remove temporary probe connections for these operations. Invalidate requests when sampling stops or reconnects, update sidebar hints and controls, and retain running/paused debug access.
+
+### 烧录行为 / Flash programming
+
+- 撤回固件相同时跳过烧录的优化：侧栏下载、Agent 烧录及内置调试器默认 launch 即使固件相同也正常擦写、校验并复位；保留烧录时钟提速及失败后降速重试。见 `docs/FLASH-PERFORMANCE.md`。
+- Remove the identical-firmware download shortcut: sidebar downloads, Agent flashing and the built-in debugger's default launch now program and reset even when the image already matches. Keep programming-clock boosts and the slow retry on failure. See `docs/FLASH-PERFORMANCE.md`.
+
 ### 设置整理 / Settings cleanup
 
 - 移除 `memory.regionKinds` 和 `mcp.toolsets` 设置：内存区域按名称自动分类；MCP 固定暴露全部工具和工作流提示（包括 CubeMX），旧 `EMBERPROBE_MCP_TOOLSETS` 环境变量不再生效。

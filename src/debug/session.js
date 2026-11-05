@@ -718,12 +718,9 @@ class EmberDebugSession extends DebugSession {
             trace?.phase("reset");
             const download = await this.debugImages.download();
             trace?.phase("download", download);
-            // Reload the reset vector after downloading a different firmware. An unchanged image wrote
-            // nothing, so the target is still halted at the reset vector from the reset above.
-            if (download.firmware !== "unchanged") {
-                await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
-                trace?.phase("postDownloadReset");
-            }
+            // Reload the reset vector after downloading the firmware.
+            await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+            trace?.phase("postDownloadReset");
             await this.reportFirmware(download, executableStamp);
         }
         await this.debugImages.hooks(attach ? "postAttachCommands" : "postLaunchCommands");

@@ -395,6 +395,14 @@ function createServices(host, context, { vscode }) {
     const flashAuthorization = new FlashAuthorization({ storage: context.workspaceState, fullAccess });
     const peripheralAccessService = new PeripheralAccessService({
         debugBridge,
+        samplingSession: () =>
+            host._sampling.intent &&
+            host._sampling.running &&
+            !host._sampling.closing &&
+            !host._sampling.exitUnconfirmed &&
+            !host._sampling.session?.stopped
+                ? host._sampling.session
+                : null,
         configurationKey: () =>
             peripheralConfigurationKey(
                 host._probeConnectionService.getConfig(),

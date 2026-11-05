@@ -1,40 +1,41 @@
 # Peripheral register access / 外设寄存器访问
 
 The sidebar, Agent skill and MCP tools use the same SVD-bound service. Reads and ordinary register/field writes
-work without a debug session, during managed single-core OpenOCD debugging, and while debugging is paused.
-Access itself never sends halt, reset or resume. Variable sampling need not be enabled; no ELF is required.
+work through an active sampling connection, during managed single-core OpenOCD debugging, and while debugging
+is paused. Without debugging, sampling must already be enabled and connected. Access itself never sends halt,
+reset or resume and never starts a temporary probe connection. Debug access does not require variable sampling.
 
-侧栏、Agent skill 与 MCP 共用 SVD 服务，可在非调试、托管单核调试运行及调试暂停时读取和修改普通寄存器与位域。
-访问本身不发送 halt、reset 或 resume，不要求开启变量采样，也不需要 ELF。自定义 OpenOCD 脚本的初始化行为
-由脚本决定；不承诺所有目标或低功耗状态都支持运行中访问。
+侧栏、Agent skill 与 MCP 共用 SVD 服务，可在仅采样、托管单核调试运行及调试暂停时读取和修改普通寄存器与位域。
+未调试时必须先开启采样并成功连接；未采样、正在连接或正在断开时不允许访问，不会临时启动探针连接。
+访问本身不发送 halt、reset 或 resume。调试中的外设访问不要求开启变量采样；不承诺所有目标或低功耗状态都支持运行中访问。
 
 ## Connection and widths / 连接与宽度
 
 Reuse an active sampling connection or the selected debug session's managed OpenOCD connection. Without either,
-obtain an exclusive lease, initialize a temporary connection and confirm exit before releasing ownership.
+reject register reads and writes with `PERIPHERAL_SAMPLING_REQUIRED`; SVD browsing remains available.
 Paused access retains the selected session's DAP path. Multicore groups and external GDB servers remain paused-only.
-Without debugging, the sidebar reads only after a click (register, peripheral expansion or refresh), because each
-read starts a temporary OpenOCD that holds the probe; flash and debug start are refused while it runs.
+The sidebar disables hardware controls until a supported connection is available and refreshes expanded registers
+when sampling connects. Stopping or replacing the sampling connection invalidates pending requests and cached values.
 
 Running Tcl access uses aligned 8/16/32-bit transfers at the SVD width, never widened RAM reads or write fallbacks.
 64-bit access remains paused DAP only. Read-side-effect, write-only, write-once and special modified-write
 restrictions remain in place. Missing SVD side-effect annotations cannot guarantee a harmless read.
 
-已有连接会被复用；否则申请独占租约并临时连接，确认退出后释放，不抢占其他任务。
-非调试时侧栏只在点击寄存器、展开外设或刷新后读取：每次读取都会临时启动 OpenOCD 并占用探针，期间烧录与调试启动会被拒绝。
+只复用已有采样或调试连接；无可用连接时返回 `PERIPHERAL_SAMPLING_REQUIRED`，仍可浏览 SVD 定义。
+侧栏在连接可用前禁用硬件读写控件；采样连接成功后刷新已展开的寄存器，停止或更换采样连接会使待处理请求与缓存值失效。
 运行中按 SVD 的 8/16/32 位自然宽度访问，不扩大范围；64 位、多核共享组及外部服务器仍要求暂停。
 保留读清零等副作用和特殊写入语义限制。SVD 没有标注副作用，不等于硬件一定没有副作用。
 
 ## Approval and readback / 确认与回读
 
 Agent/MCP writes require single-use approval bound to the workspace, SVD, physical connection, selected debug
-session/stop (when present), original values and requested writes. Reconnecting a temporary process alone does
-not invalidate approval; a changed probe/attachment/target or original value does. Check original values again
+session/stop (when present), sampling connection generation, original values and requested writes. Stopping or
+replacing the sampling connection invalidates approval, as does a changed probe/attachment/target or original value. Check original values again
 immediately before writing; cancel when they changed. Bitfield updates are not atomic against firmware, DMA or
 peripheral hardware, even when the CPU is halted.
 
 Agent/MCP 写入仍需逐次确认，绑定工作区、SVD、物理连接、调试会话/停止代次、原值及请求。
-只重建临时进程不使确认失效，更换探针、USB 附着、目标或原值则失效。写前再次检查原值，变化则取消。
+停止或更换采样连接、更换探针、USB 附着、目标或原值均使确认失效。写前再次检查原值，变化则取消。
 位域读改写无法与固件、DMA 或外设硬件更新保持原子性，暂停 CPU 也不能消除所有竞争。
 
 Responses add access mode and generation. Write results retain previous/written/readBack/verified and add

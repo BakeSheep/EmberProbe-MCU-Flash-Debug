@@ -35,14 +35,6 @@ function parseLine(line) {
     if (!clean) return null;
     const phase = flashPhaseFromLine(clean, "");
     let match;
-    if (phase === "unchanged")
-        return {
-            stage: "program",
-            level: "success",
-            message: "固件与目标 Flash 一致，跳过擦写",
-            key: "run.unchanged",
-            unchanged: true
-        };
     if (phase === "speed_fallback")
         return {
             stage: "adapter",
@@ -59,10 +51,7 @@ function parseLine(line) {
             params: { clock: `${match[1]} kHz` },
             flashClock: `${match[1]} kHz`
         };
-    if (
-        ["preverify", "program", "program_boost", "verify", "verify_boost"].includes(phase) &&
-        /EP_FLASH_STAGE=/.test(clean)
-    )
+    if (["program", "program_boost", "verify", "verify_boost"].includes(phase) && /EP_FLASH_STAGE=/.test(clean))
         return null;
     if (phase && (/EP_FLASH_STAGE=/.test(clean) || /verify started|resetting target/i.test(clean)))
         return { stage: phase, level: "info", message: clean };
@@ -319,7 +308,6 @@ function runOpenOcd(vscode, options, onProgress) {
             flashSize: "",
             clock: "",
             flashClock: "",
-            unchanged: false,
             fallback: false
         };
         const rawTail = [];
@@ -358,7 +346,6 @@ function runOpenOcd(vscode, options, onProgress) {
             if (event.stage === "adapter" && event.clock && !stats.clock) stats.clock = event.clock;
             if (event.flashClock) stats.flashClock = event.flashClock;
             if (event.key === "run.speedFallback") stats.fallback = true;
-            if (event.unchanged) stats.unchanged = true;
             if (event.stage === "program" && event.bytes) stats.wrote = event;
             if (event.stage === "verify" && event.bytes) stats.verified = event;
             onProgress(event);
@@ -434,11 +421,7 @@ function runOpenOcd(vscode, options, onProgress) {
             }
             if (code === 0) {
                 const elfName = elfPath.split("/").pop() || elfPath;
-                print(
-                    stats.unchanged
-                        ? "\r\n\x1b[1;32m✓ 固件与目标一致，已跳过擦写，校验通过并复位\x1b[0m"
-                        : "\r\n\x1b[1;32m✓ 固件下载并校验成功\x1b[0m"
-                );
+                print("\r\n\x1b[1;32m✓ 固件下载并校验成功\x1b[0m");
                 print(`  固件 ${elfName}`);
                 const chipLine = [stats.chip, stats.deviceId].filter(Boolean).join(" · ");
                 if (chipLine) print(`  芯片 ${chipLine}`);
@@ -456,19 +439,10 @@ function runOpenOcd(vscode, options, onProgress) {
                         `  校验 ${stats.verified.bytes} bytes，耗时 ${stats.verified.seconds}s${stats.verified.speed ? `（${stats.verified.speed}）` : ""}`
                     );
                 print(`  目标 ${options.target} · 探针配置 ${options.probe}`);
-                onProgress(
-                    stats.unchanged
-                        ? {
-                              stage: "done",
-                              level: "success",
-                              key: "run.downloadUnchanged",
-                              message: "固件未变化，已校验并复位"
-                          }
-                        : { stage: "done", level: "success", key: "run.downloadSuccess", message: "下载成功" }
-                );
+                onProgress({ stage: "done", level: "success", key: "run.downloadSuccess", message: "下载成功" });
                 resolve({
                     code,
-                    unchanged: stats.unchanged,
+                    unchanged: false,
                     flashClock: stats.flashClock,
                     speedFallback: stats.fallback
                 });

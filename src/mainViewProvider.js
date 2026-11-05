@@ -905,6 +905,7 @@ class MainViewProvider {
             frequencyHz: 20,
             actualHz: message.consumers?.sidebarHz ?? message.actualHz
         });
+        if (this._peripheralAccessService) this._postPeripheralDebugStatus();
     }
     // Watch lists resolve against DWARF types; before they load, the empty list means "not known yet".
     _watchListsReady() {

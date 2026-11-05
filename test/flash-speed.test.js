@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const { loadModule } = require("./helpers/load-module");
+const { scenario } = require("./helpers/scenario");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const {
@@ -34,7 +35,8 @@ function command() {
     // OpenOCD's own program flow, events and verification stay in charge.
     assert(boosted.includes("program $file verify reset exit"));
     assert(boosted.includes("upcall reset") && boosted.includes("upcall flash"));
-    assert(boosted.includes("verify_image_checksum [lindex $args 2]") && boosted.includes("EP_FLASH_STAGE=unchanged"));
+    assert(!boosted.includes("verify_image_checksum"), "flashing must not pre-check to skip an identical image");
+    assert(!boosted.includes("EP_FLASH_STAGE=unchanged"));
     assert(boosted.includes("set ::_ep_flash_khz 24000;"));
     assert(boosted.includes("set ::_ep_flash_base [_ep_flash_boost $::_ep_flash_khz]"));
     // A fast write is checked once, by OpenOCD's verify_image; its failure triggers the slow retry.
@@ -47,25 +49,16 @@ function command() {
     for (const value of [-1, 1.5, "8000; shutdown", "[exit]"])
         assert.throws(() => buildFlashProgramCommand(word, value), { code: "ADAPTER_SPEED_INVALID" });
 
-    for (const phase of [
-        "preverify",
-        "unchanged",
-        "program",
-        "program_boost",
-        "verify",
-        "verify_boost",
-        "speed_fallback"
-    ])
+    for (const phase of ["program", "program_boost", "verify", "verify_boost", "speed_fallback"])
         assert.strictEqual(flashPhaseFromLine(`EP_FLASH_STAGE=${phase}`), phase);
     assert.strictEqual(flashPhaseFromLine("EP_FLASH_STAGE=other", "init"), "init");
-    assert(["preverify", "program_boost", "verify_boost"].every(isTentativeFlashPhase));
+    assert(["program_boost", "verify_boost"].every(isTentativeFlashPhase));
     assert(!isTentativeFlashPhase("program") && !isTentativeFlashPhase("speed_fallback"));
 
     assert.deepStrictEqual(
-        [parseLine("EP_FLASH_STAGE=preverify"), parseLine("EP_FLASH_STAGE=program_boost")],
+        [parseLine("EP_FLASH_STAGE=program"), parseLine("EP_FLASH_STAGE=program_boost")],
         [null, null]
     );
-    assert.strictEqual(parseLine("EP_FLASH_STAGE=unchanged").key, "run.unchanged");
     assert.strictEqual(parseLine("EP_FLASH_STAGE=speed_fallback").key, "run.speedFallback");
     assert.deepStrictEqual(parseLine("EP_FLASH_SPEED=24000").params, { clock: "24000 kHz" });
 
@@ -125,14 +118,14 @@ function loadRunner(output, exitCode) {
 
 const options = { executable: "fake", elf: "/fw.elf", probe: "stlink.cfg", target: "stm32h7x.cfg" };
 
-async function unchangedRun() {
+async function normalRun() {
     const runner = loadRunner(
         [
             "EP_FLASH_STAGE=init",
             "EP_FLASH_STAGE=reset_init",
             "** Programming Started **",
-            "EP_FLASH_STAGE=preverify",
-            "EP_FLASH_STAGE=unchanged",
+            "EP_FLASH_STAGE=program",
+            "wrote 1024 bytes from file /fw.elf in 0.100s (10.000 KiB/s)",
             "** Programming Finished **",
             "** Verify Started **",
             "** Verified OK **",
@@ -142,11 +135,11 @@ async function unchangedRun() {
     );
     const events = [];
     const result = await runner.run(runner.vscode, options, (event) => events.push(event));
-    assert.strictEqual(result.unchanged, true);
+    assert.strictEqual(result.unchanged, false);
     assert(runner.spawned[0].some((arg) => arg.includes("set ::_ep_flash_khz 24000;")));
-    assert(events.some((event) => event.key === "run.unchanged"));
-    assert.strictEqual(events.at(-1).key, "run.downloadUnchanged");
-    assert(runner.written.some((text) => text.includes("已跳过擦写")));
+    assert(events.some((event) => event.stage === "program" && event.bytes === 1024));
+    assert.strictEqual(events.at(-1).key, "run.downloadSuccess");
+    assert(runner.written.some((text) => text.includes("固件下载并校验成功")));
 }
 
 async function fallbackRun() {
@@ -155,8 +148,6 @@ async function fallbackRun() {
             "Info : clock speed 4000 kHz",
             "EP_FLASH_STAGE=reset_init",
             "** Programming Started **",
-            "EP_FLASH_STAGE=preverify",
-            "Error: checksum mismatch",
             "Info : Reduced speed from 24000 kHz to 12000 kHz (maximum).",
             "EP_FLASH_SPEED=24000",
             "EP_FLASH_STAGE=program_boost",
@@ -174,7 +165,7 @@ async function fallbackRun() {
     );
     const events = [];
     const result = await runner.run(runner.vscode, options, (event) => events.push(event));
-    // Expected mismatches and failures at the raised clock are not reported as errors.
+    // Failures at the raised clock are not reported as errors after a successful retry.
     assert(!events.some((event) => event.level === "error"));
     assert.deepStrictEqual(
         { unchanged: result.unchanged, flashClock: result.flashClock, speedFallback: result.speedFallback },
@@ -211,11 +202,11 @@ async function failedFallbackRun() {
 
 (async () => {
     speedPolicy();
-    command();
-    await unchangedRun();
+    await scenario("Always generate a normal erase, write, verify and reset command", command);
+    await scenario("Report a completed firmware write through the sidebar runner", normalRun);
     await fallbackRun();
     await failedFallbackRun();
-    console.log("Flash clock policy, unchanged-image skip and speed fallback tests passed");
+    console.log("Flash clock policy, mandatory programming and speed fallback tests passed");
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

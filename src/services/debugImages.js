@@ -2,7 +2,6 @@
 
 const fs = require("fs");
 const path = require("path");
-const { performance } = require("perf_hooks");
 const { quote } = require("../debug/mi");
 const { readElf32Header } = require("../elfFormat");
 const { buildDownloadBoostCommand, DOWNLOAD_CLOCK_RESTORE } = require("../../skills/_emberprobe/openocd-flash");
@@ -235,11 +234,8 @@ class DebugImages {
         if (!address || BigInt(address[1]) !== BigInt(matches[0].symbolAddress))
             throw new Error("GDB RTOS symbol lookup does not select the primary image");
     }
-    // GDB's compare-sections checks exactly what -target-download writes: every loadable section at its
-    // load address, by the server's CRC (qCRC, computed on the target by OpenOCD). A segment-wide image
-    // checksum is not equivalent: a GDB download leaves the alignment gaps between sections at the erased
-    // value, which never matches the zero fill in the ELF. Any mismatch, error or unrecognized output
-    // means "changed", so the worst case is the normal download plus one CRC pass.
+    // Verify a raised-clock download section by section using the server's CRC (qCRC). A segment-wide
+    // checksum is not equivalent: GDB leaves alignment gaps at the erased value instead of ELF zero fill.
     // "matched", "mismatched", or "unknown" when the check failed or its output was not recognized.
     async compareSections() {
         const { mi } = this.session;
@@ -282,20 +278,12 @@ class DebugImages {
             if (this.session.mi.closed) throw error;
         }
     }
-    /** @returns {Promise<{firmware: "none" | "unchanged" | "programmed", checkMs?: number, downloadClockKhz?: number, speedFallback?: boolean}>} */
+    /** @returns {Promise<{firmware: "none" | "programmed", downloadClockKhz?: number, speedFallback?: boolean}>} */
     async download() {
         const { config, mi } = this.session;
         if (config.attach) return { firmware: "none" };
         if (config.loadFiles === undefined) {
-            const startedAt = performance.now();
-            const verdict = await this.compareSections();
-            const checkMs = Math.round(performance.now() - startedAt);
-            if (verdict === "matched") {
-                this.session.variableDiagnostic("Firmware matches the target; download skipped\n");
-                return { firmware: "unchanged", checkMs };
-            }
-            // Only a check whose output is recognized can verify a fast write afterwards.
-            const clockKhz = verdict === "mismatched" ? await this.raiseDownloadClock() : 0;
+            const clockKhz = await this.raiseDownloadClock();
             let speedFallback = false;
             try {
                 await mi.command("-target-download", 60000);
@@ -313,7 +301,6 @@ class DebugImages {
             }
             return {
                 firmware: "programmed",
-                checkMs,
                 ...(clockKhz ? { downloadClockKhz: clockKhz, speedFallback } : {})
             };
         }

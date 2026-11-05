@@ -7,6 +7,7 @@ const { PeripheralWriteAuthorization } = require("../src/peripheralWriteAuthoriz
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 
 const { FakeClock } = require("./helpers/fake-clock");
+const { scenario } = require("./helpers/scenario");
 
 const base = 0x40020000;
 const SVD =
@@ -58,8 +59,10 @@ async function fixture(state) {
     let probes = 0;
     let identity = "probe-A";
     let bound = { path: "test.svd", buffer: Buffer.from(SVD) };
+    let sampling = state === "none" ? session : null;
     const access = new PeripheralAccessService({
         debugBridge: bridge,
+        samplingSession: () => sampling,
         configurationKey: () => config,
         supportsRunning: () => supported,
         assertCurrent: () => {},
@@ -81,6 +84,9 @@ async function fixture(state) {
         bridge,
         access,
         service,
+        setSampling: (next) => {
+            sampling = next;
+        },
         probes: () => probes,
         changeConfig: () => {
             config += "changed";
@@ -102,6 +108,66 @@ async function fixture(state) {
 }
 
 (async () => {
+    await scenario("Require active sampling for peripheral reads and writes without debugging", async () => {
+        const f = await fixture("none");
+        try {
+            f.setSampling(null);
+            const stopped = f.access.status();
+            assert.strictEqual(stopped.canRead, false);
+            assert.strictEqual(stopped.canWrite, false);
+            assert.strictEqual(stopped.reason, "PERIPHERAL_SAMPLING_REQUIRED");
+            assert.strictEqual((await f.service.list({ peripheral: "P" })).peripherals.length, 1);
+            for (const operation of [
+                () => f.service.read({ targets: ["P.R"] }),
+                () => f.service.readForView(["P.R"]),
+                () => f.service.write({ writes: [{ target: "P.R", value: "1" }] }),
+                () => f.service.writeFromUi({ writes: [{ target: "P.R", value: "1" }] })
+            ])
+                await assert.rejects(operation(), { code: "PERIPHERAL_SAMPLING_REQUIRED" });
+            assert.strictEqual(f.probes(), 0, "rejected requests do not acquire a probe connection");
+            assert.strictEqual(f.fake.commands.length, 0);
+
+            f.setSampling(f.session);
+            const active = f.access.status();
+            assert(active.canRead && active.canWrite);
+            assert.notStrictEqual(active.generation, stopped.generation);
+            await f.service.read({ targets: ["P.R"] });
+            const plan = await f.service.write({ writes: [{ target: "P.R", value: "1" }] });
+            f.setSampling(null);
+            assert.notStrictEqual(f.access.status().generation, active.generation);
+            await assert.rejects(
+                f.service.write({ writes: [{ target: "P.R", value: "1" }], confirmationId: plan.confirmationId }),
+                { code: "PERIPHERAL_SAMPLING_REQUIRED" }
+            );
+            f.setSampling(f.session);
+            await assert.rejects(
+                f.service.write({ writes: [{ target: "P.R", value: "1" }], confirmationId: plan.confirmationId }),
+                { code: "PERIPHERAL_WRITE_CONFIRMATION_INVALID" }
+            );
+            f.setSampling({});
+            await assert.rejects(f.service.read({ targets: ["P.R"], accessGeneration: active.generation }), {
+                code: "DEBUG_STATE_CHANGED"
+            });
+            assert(!f.fake.commands.some((command) => /^(?:ocd_)?write_memory /.test(command)));
+        } finally {
+            await f.close();
+        }
+    });
+    await scenario("Reject a peripheral request when sampling stops before the connection is reused", async () => {
+        const f = await fixture("none");
+        try {
+            const original = f.access.withProbe;
+            f.access.withProbe = (handler) => {
+                f.setSampling(null);
+                return original(handler);
+            };
+            await assert.rejects(f.service.read({ targets: ["P.R"] }), { code: "DEBUG_STATE_CHANGED" });
+            assert.strictEqual(f.fake.commands.length, 0);
+            assert.strictEqual(f.bridge.peripheralBusy, false);
+        } finally {
+            await f.close();
+        }
+    });
     {
         const f = await fixture("running");
         try {

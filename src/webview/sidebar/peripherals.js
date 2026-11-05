@@ -78,8 +78,6 @@
             warning: "",
             svdPath: "",
             pending: new Set(),
-            // Peripherals the user expanded before their registers arrived; read once they do.
-            readOnLoad: new Set(),
             drafts: new Map()
         };
         let rendering = false;
@@ -134,12 +132,8 @@
         function readableNow(register) {
             return safeToRead(register) && widthAccessible(register.size);
         }
-        // A standalone read starts a temporary OpenOCD that holds the probe, so it only follows a click.
-        function automaticReads() {
-            return state.debug.mode !== "standalone";
-        }
-        function refreshExpanded(explicit = false) {
-            if (!section.open || !state.debug.canRead || (!explicit && !automaticReads())) return;
+        function refreshExpanded() {
+            if (!section.open || !state.debug.canRead) return;
             const targets = [];
             for (const [name, registers] of state.children) {
                 if (!state.expanded.has(name)) continue;
@@ -319,9 +313,8 @@
                 else {
                     state.expanded.add(peripheral.name);
                     if (!state.children.has(peripheral.name)) {
-                        state.readOnLoad.add(peripheral.name);
                         requestRegisters(peripheral.name);
-                    } else if (state.debug.canRead) refreshExpanded(true);
+                    } else if (state.debug.canRead) refreshExpanded();
                 }
                 save();
                 render();
@@ -362,10 +355,11 @@
                 if (state.error) note(state.error, "error");
                 else if (!state.catalog) note(t("peripheral.loading"), "info", true);
                 else if (state.warning) note(state.warning, "warning");
+                else if (state.debug.reason === "PERIPHERAL_SAMPLING_REQUIRED") note(t("peripheral.needSampling"));
                 else if (!state.debug.canRead) note(t("peripheral.unavailable"));
                 else if (state.debug.state === "running") note(t("peripheral.running"));
                 else if (state.debug.state === "paused") note(t("peripheral.paused"));
-                else note(t("peripheral.noSession"));
+                else note(t("peripheral.sampling"));
                 if (!state.catalog) return;
                 const query = state.query.toLowerCase();
                 const shown = state.catalog.peripherals.filter(
@@ -421,13 +415,7 @@
             state.pending.delete(message.name);
             state.children.set(message.name, message.registers || []);
             render();
-            const requested = state.readOnLoad.delete(message.name);
-            if (
-                section.open &&
-                state.expanded.has(message.name) &&
-                state.debug.canRead &&
-                (requested || automaticReads())
-            )
+            if (section.open && state.expanded.has(message.name) && state.debug.canRead)
                 requestReads(
                     (message.registers || [])
                         .filter(readableNow)
@@ -487,7 +475,6 @@
                 state.drafts.clear();
                 state.readings.clear();
                 state.pending.clear();
-                state.readOnLoad.clear();
                 state.warning = "";
             }
             render();
@@ -500,7 +487,6 @@
             if (!write && !currentResponse(message)) return;
             if (message.operation === "peripheralRegistersRequest") {
                 state.pending.clear();
-                state.readOnLoad.clear();
             }
             if (write) {
                 for (const [target, draft] of state.drafts) {
@@ -525,7 +511,6 @@
                 state.children.clear();
                 state.readings.clear();
                 state.pending.clear();
-                state.readOnLoad.clear();
                 state.drafts.clear();
                 state.error = "";
                 render();
@@ -536,7 +521,6 @@
                 state.children.clear();
                 state.readings.clear();
                 state.pending.clear();
-                state.readOnLoad.clear();
                 state.drafts.clear();
                 state.error = "";
                 render();
@@ -547,7 +531,7 @@
             state.query = filter.value.trim();
             render();
         };
-        refresh.onclick = () => refreshExpanded(true);
+        refresh.onclick = refreshExpanded;
         format.onclick = () => {
             state.mode = { hex: "dec", dec: "bin", bin: "hex" }[state.mode];
             save();

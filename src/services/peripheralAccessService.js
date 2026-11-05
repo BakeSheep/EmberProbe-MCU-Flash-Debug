@@ -41,6 +41,7 @@ class PeripheralAccessService {
     constructor(options) {
         this.clock = { ...SYSTEM_CLOCK, ...options.clock };
         this.debugBridge = options.debugBridge;
+        this.samplingSession = options.samplingSession || (() => null);
         this.configurationKey = options.configurationKey;
         this.supportsRunning = options.supportsRunning;
         this.assertCurrent = options.assertCurrent;
@@ -53,14 +54,16 @@ class PeripheralAccessService {
 
     status() {
         const debug = this.debugBridge.agentStatus();
+        const standalone = debug.state === "none";
+        const sampling = standalone ? this.samplingSession() : null;
         const key = JSON.stringify([this.configurationKey(), debug.state, debug.epoch, debug.session?.id]);
-        if (key !== this.key) {
+        if (key !== this.key || sampling !== this.lastSamplingSession) {
             this.key = key;
+            this.lastSamplingSession = sampling;
             this.generation++;
         }
         const paused = debug.state === "paused";
-        const standalone = debug.state === "none";
-        const supported = paused || standalone || (debug.state === "running" && this.supportsRunning());
+        const supported = paused || (standalone && !!sampling) || (debug.state === "running" && this.supportsRunning());
         const busy =
             this.debugBridge.replBusy ||
             this.debugBridge.transitionKind ||
@@ -73,7 +76,13 @@ class PeripheralAccessService {
             generation: this.generation,
             canRead: !!(supported && !busy && (!paused || debug.capabilities?.read)),
             canWrite: !!(supported && !busy && (!paused || debug.capabilities?.write)),
-            reason: busy ? "DEBUG_CONTROL_BUSY" : supported ? "" : "PERIPHERAL_ACCESS_UNSUPPORTED"
+            reason: busy
+                ? "DEBUG_CONTROL_BUSY"
+                : standalone && !sampling
+                  ? "PERIPHERAL_SAMPLING_REQUIRED"
+                  : supported
+                    ? ""
+                    : "PERIPHERAL_ACCESS_UNSUPPORTED"
         };
     }
 
@@ -93,7 +102,9 @@ class PeripheralAccessService {
                 if (!(write ? current.canWrite : current.canRead))
                     throw failure(
                         current.reason || "PERIPHERAL_ACCESS_UNSUPPORTED",
-                        "Peripheral access is unavailable for the current target"
+                        current.reason === "PERIPHERAL_SAMPLING_REQUIRED"
+                            ? "Start sampling before accessing peripheral registers without a debug session"
+                            : "Peripheral access is unavailable for the current target"
                     );
             };
             guard();
@@ -112,7 +123,12 @@ class PeripheralAccessService {
                         this.assertCurrent(physical, write);
                     };
                     check();
-                    const connection = write ? this.connectionIdentity(physical) : null;
+                    const connection = write
+                        ? {
+                              ...this.connectionIdentity(physical),
+                              ...(initial.mode === "standalone" ? { samplingGeneration: initial.generation } : {})
+                          }
+                        : null;
                     const access = { mode: initial.mode, generation: initial.generation, source };
                     const transport = {
                         access,
