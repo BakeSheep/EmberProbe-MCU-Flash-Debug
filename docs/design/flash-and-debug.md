@@ -1,6 +1,6 @@
 # 烧录与调试启动设计
 
-用户行为见[烧录与下载](../guide/flash-debug/flash.md)。
+用户行为见[烧录与下载](../guide/flash-debug.md#烧录与下载)。
 
 ## 烧录命令
 

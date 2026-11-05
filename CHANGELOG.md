@@ -133,8 +133,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 文档 / Documentation
 
-- 按读者重组 `docs/`：用户指南提供中英两版并附索引，设计说明和历史记录单独存放。
-- Reorganize `docs/` by reader: user guides come in Chinese and English with an index, while design notes and records live apart.
+- 按读者重组 `docs/`：用户指南汇总为 `docs/guide/` 下的 7 篇中文文档，设计说明和历史记录单独存放。
+- Reorganize `docs/` by reader: user guides are consolidated into seven Chinese pages under `docs/guide/`, while design notes and records live apart.
 
 ## [0.9.0] - 2026-10-29
 

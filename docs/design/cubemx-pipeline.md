@@ -1,6 +1,6 @@
 # CubeMX generation design
 
-User steps are in [CubeMX generation](../guide/agent/cubemx.en.md).
+User steps are in [CubeMX generation](../guide/agent.md#cubemx-代码生成).
 
 EmberProbe chooses the generator from the selected project file: `.ioc` uses STM32CubeMX, `.ioc2` uses STM32CubeMX2. There is no
 setting for this choice. Both share the same safety pipeline: prepare a candidate, confirm it in

@@ -72,7 +72,7 @@ Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变�
 | CubeMX 路径 | 指定 STM32CubeMX，供 Agent 代码生成使用（Windows / Linux） |
 | .ioc 路径 | 指定 CubeMX 工程；缺少固件包时可通过 **在 CubeMX 中安装** 补齐 |
 
-配置按工作区保存。更多目标与探针说明见 [OpenOCD 目标配置](docs/guide/getting-started/openocd-targets.md)和[探针连接与选择](docs/guide/getting-started/probe-connections.md)。
+配置按工作区保存。更多目标与探针说明见 [OpenOCD 目标配置](docs/guide/getting-started.md#openocd-与目标配置)和[探针连接与选择](docs/guide/getting-started.md#探针连接)。
 
 #### 4. J-Link 配置
 
@@ -82,7 +82,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 2. 出现驱动不匹配诊断时，在“已连接调试器”中该 J-Link 卡片的驱动下拉框选择 **WinUSB**，按提示完成 Windows 管理员授权。多台 J-Link 可逐台切换。
 3. 需要使用 J-Flash、Ozone 等工具时，在同一下拉框选择 **SEGGER** 恢复驱动。
 
-先关闭占用探针的其他软件。不同 J-Link 硬件与固件的兼容性可能不同，详细要求见 [J-Link 兼容性说明](docs/guide/getting-started/jlink.md)。
+先关闭占用探针的其他软件。不同 J-Link 硬件与固件的兼容性可能不同，详细要求见 [J-Link 兼容性说明](docs/guide/getting-started.md#j-link)。
 
 多台探针连接时在“已连接调试器”中点选设备；所选设备拔出后显示“未连接”，不会改用其他探针。序列号、协议与速度可在第三章“探针高级设置”中调整。
 
@@ -90,7 +90,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 烧录与独立实时采样只需要 OpenOCD；**断点调试**还需要 ARM GDB 工具链，可使用 [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)。
 
-插件依次查找 `emberprobe.armToolchainPath` / `emberprobe.gdbPath` 等设置、之前选定的目录、PATH，以及 ST bundles、STM32CubeCLT 与 STM32CubeIDE 自带的工具链；均未找到时，再提示选择工具链根目录或 `bin` 目录。见 [调试工具链查找](docs/guide/getting-started/toolchain.md)。
+插件依次查找 `emberprobe.armToolchainPath` / `emberprobe.gdbPath` 等设置、之前选定的目录、PATH，以及 ST bundles、STM32CubeCLT 与 STM32CubeIDE 自带的工具链；均未找到时，再提示选择工具链根目录或 `bin` 目录。见 [调试工具链查找](docs/guide/getting-started.md#调试工具链)。
 
 ### 二、功能使用
 
@@ -114,7 +114,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 进入调试后，使用 VS Code 原生界面：
 
 - 继续/暂停、单步、重启与停止；
-- 断点、条件断点、调用栈与监视表达式；调试控制台可直接输入 GDB 命令（如 `bt`、`x/16wx 0x20000000`），见 [GDB 控制台](docs/guide/flash-debug/gdb-console.md)；
+- 断点、条件断点、调用栈与监视表达式；调试控制台可直接输入 GDB 命令（如 `bt`、`x/16wx 0x20000000`），见 [GDB 控制台](docs/guide/flash-debug.md#gdb-控制台)；
 - 展开结构体、数组、枚举，以及 `std::vector`、`std::string` 等常见 STL 容器；
 - 侧边栏实时读写、外设与 RTOS 面板跟随当前调试会话，暂停时查看快照。
 
@@ -189,9 +189,9 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 - 拖动底部时间轴的高亮区域或两端，调整查看范围；
 - 右键数值栏中的变量（或按 Shift+F10），修改类型、进制（DEC/HEX/BIN）、颜色与线型，进制只影响显示，不影响 CSV。
 
-**不限速**按探针吞吐连续读取，仅在独立采样时生效，调试会话中按有限频率采样；高频会更快消耗内存与磁盘归档，见 [不限速采样](docs/guide/variables/sampling.md)。
+**不限速**按探针吞吐连续读取，仅在独立采样时生效，调试会话中按有限频率采样；高频会更快消耗内存与磁盘归档，见 [不限速采样](docs/guide/variables.md#实时采样与历史)。
 
-时间轴与“全部”窗口覆盖从开始采样（或上次清空历史）以来的整段会话：最近数据保存在内存中，更早的数据从临时磁盘归档读取。冻结不改变 CSV 导出范围。归档在扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。图表背景可显示自定义淡色图标，见 [波形图背景图标](docs/guide/variables/chart-background.md)。
+时间轴与“全部”窗口覆盖从开始采样（或上次清空历史）以来的整段会话：最近数据保存在内存中，更早的数据从临时磁盘归档读取。冻结不改变 CSV 导出范围。归档在扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。图表背景可显示自定义淡色图标，见 [波形图背景图标](docs/guide/waveform.md#波形图背景图标)。
 
 #### 6. 外设寄存器
 
@@ -241,13 +241,13 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 栈填充也可由 `configUSE_TRACE_FACILITY` 或 `INCLUDE_uxTaskGetStackHighWaterMark` 启用，按工程需要选择。显示运行计数器还需 `configGENERATE_RUN_TIME_STATS` 与相应统计定时器。
 
-使用 CubeMX 时，在 FreeRTOS 配置中调整对应选项，重新生成、以 Debug 预设构建并更新目标固件。缺少栈范围时栈使用显示不可用；更多要求见 [RTOS 感知调试](docs/guide/flash-debug/rtos.md)。
+使用 CubeMX 时，在 FreeRTOS 配置中调整对应选项，重新生成、以 Debug 预设构建并更新目标固件。缺少栈范围时栈使用显示不可用；更多要求见 [RTOS 感知调试](docs/guide/flash-debug.md#rtos-调试)。
 
 #### 2. 调用栈中的 RTOS 任务
 
 将 `emberprobe.rtos` 设为 `FreeRTOS`，重新启动调试后，调用栈可按任务列出，切换任务查看各自的栈帧与局部变量。
 
-该设置默认关闭，名称区分大小写，也支持 OpenOCD 提供的其他 RTOS。固件需保留相关内核符号，配置与限制见 [RTOS 感知调试](docs/guide/flash-debug/rtos.md)。
+该设置默认关闭，名称区分大小写，也支持 OpenOCD 提供的其他 RTOS。固件需保留相关内核符号，配置与限制见 [RTOS 感知调试](docs/guide/flash-debug.md#rtos-调试)。
 
 #### 3. 使用 launch.json 自定义调试
 
@@ -287,7 +287,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 | `emberprobe.openocdPath` | 指定 OpenOCD 可执行文件 |
 | `emberprobe.tclPort` | 采样连接端口，默认自动分配，一般无需修改 |
 
-详细连接规则见 [探针连接与选择](docs/guide/getting-started/probe-connections.md)。
+详细连接规则见 [探针连接与选择](docs/guide/getting-started.md#探针连接)。
 
 #### 5. 采样频率与历史容量
 
@@ -297,7 +297,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 | `emberprobe.chartHistoryMaxMiB` | 512 | 内存历史预算；不足时缩短内存保留范围，更早的数据仍可从磁盘归档查看 |
 | `emberprobe.samplingArchiveMaxMiB` | 1024 | 临时磁盘归档上限，扩展退出后删除 |
 
-隐藏曲线仍会采样和记录。磁盘归档达到上限或写入失败时会暂停采样。详细规则见 [实时变量采样说明](docs/guide/variables/sampling.md)。
+隐藏曲线仍会采样和记录。磁盘归档达到上限或写入失败时会暂停采样。详细规则见 [实时变量采样说明](docs/guide/variables.md#实时采样与历史)。
 
 #### 6. 内存区域类型
 
@@ -311,7 +311,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 #### 7. C++ 变量显示
 
-支持 C++ 类与常见 STL 容器的语义展开，默认隐藏编译器与标准库内部成员，每个变量可切换“显示原始成员”。指针显示目标名称，支持按需只读展开，见 [指针显示](docs/guide/variables/pointers.md)。
+支持 C++ 类与常见 STL 容器的语义展开，默认隐藏编译器与标准库内部成员，每个变量可切换“显示原始成员”。指针显示目标名称，支持按需只读展开，见 [指针显示](docs/guide/variables.md#指针与-c-成员)。
 
 暂停调试时，`emberprobe.prettyPrintingMode` 可选 `builtin`（默认，内置显示）、`gdb`（加载 `emberprobe.prettyPrinterFiles` 指定的 Python 脚本）或 `raw`（原始成员）。
 
@@ -319,11 +319,11 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 在侧边栏 **Agent 配置** 卡片中打开 **Agent Skills** 开关，选择安装到当前项目、全局安装或卸载。安装后，兼容的 AI 编程助手可协助烧录、变量读写、调试与分析，能力列表见下方 [Agent Skills](#agent-skills)。
 
-同一卡片的 **MCP 服务器** 区域列出各客户端（Claude Code、Codex、Cursor 等）的未安装、已安装、可升级状态，可直接安装、升级、移除或复制配置。配置只写入用户级文件，工程由 Agent 的 MCP roots 或工作目录决定，从工程目录启动客户端即可，多个工作区可同时使用。见 [MCP 说明](docs/guide/agent/mcp.md)。
+同一卡片的 **MCP 服务器** 区域列出各客户端（Claude Code、Codex、Cursor 等）的未安装、已安装、可升级状态，可直接安装、升级、移除或复制配置。配置只写入用户级文件，工程由 Agent 的 MCP roots 或工作目录决定，从工程目录启动客户端即可，多个工作区可同时使用。见 [MCP 说明](docs/guide/agent.md#mcp-服务器)。
 
-烧录、变量/外设写入、CubeMX 生成等操作由 Agent 先展示计划，在对话中确认后执行。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 权限](docs/guide/agent/permissions.md)。
+烧录、变量/外设写入、CubeMX 生成等操作由 Agent 先展示计划，在对话中确认后执行。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 权限](docs/guide/agent.md#agent-权限)。
 
-CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在隔离副本中生成、比对，保留 `USER CODE` 后写回。见 [CubeMX 代码生成说明](docs/guide/agent/cubemx.md)。
+CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在隔离副本中生成、比对，保留 `USER CODE` 后写回。见 [CubeMX 代码生成说明](docs/guide/agent.md#cubemx-代码生成)。
 
 ### 四、实验性功能
 
@@ -333,17 +333,17 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 可用内置调试器附加到已启动的 J-Link GDB Server、pyOCD 或 ST-LINK GDB Server。
 
-在工作区设置启用 `emberprobe.experimental.externalGdb.enabled`，配置服务器地址，再通过 `launch.json` 的外部 attach 配置启动。完整示例见 [外部 GDB Server](docs/guide/flash-debug/external-gdb-server.md)。
+在工作区设置启用 `emberprobe.experimental.externalGdb.enabled`，配置服务器地址，再通过 `launch.json` 的外部 attach 配置启动。完整示例见 [外部 GDB Server](docs/guide/flash-debug.md#外部-gdb-server)。
 
 支持断点、单步、变量与暂停时内存访问，不支持下载、复位、重启及运行期采样。结束后需自行停止服务器，并关闭实验开关以解除探针占用保护。
 
 #### 2. 多核共享调试组
 
-双核芯片可在 `launch.json` 中通过 `serverGroup`、`numberOfProcessors`、`targetProcessor` 让多个调试会话共用一个 OpenOCD 与探针：先启动一个核，初始化成功后再 attach 其他核。配置示例见 [多核共享 OpenOCD](docs/guide/flash-debug/multicore.md)。
+双核芯片可在 `launch.json` 中通过 `serverGroup`、`numberOfProcessors`、`targetProcessor` 让多个调试会话共用一个 OpenOCD 与探针：先启动一个核，初始化成功后再 attach 其他核。配置示例见 [多核共享 OpenOCD](docs/guide/flash-debug.md#多核调试)。
 
 #### 3. STM32C5 支持
 
-内置 OpenOCD 包含 STM32C5 的 Flash 驱动与 `stm32c5x.cfg`（来自 ST 尚在上游评审中的补丁），`stm32c5` 工程自动选用。仅支持 Flash 擦写与读取，不含选项字节/RDP 命令，尚未经实板验证。见 [OpenOCD 目标配置](docs/guide/getting-started/openocd-targets.md)。
+内置 OpenOCD 包含 STM32C5 的 Flash 驱动与 `stm32c5x.cfg`（来自 ST 尚在上游评审中的补丁），`stm32c5` 工程自动选用。仅支持 Flash 擦写与读取，不含选项字节/RDP 命令，尚未经实板验证。见 [OpenOCD 目标配置](docs/guide/getting-started.md#openocd-与目标配置)。
 
 ### 常见问题
 
@@ -371,7 +371,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 - [更新记录](CHANGELOG.md)
 - [Agent Skills](skills/)
-- [完整文档索引](docs/README.md)
+- 使用指南：[开始使用](docs/guide/getting-started.md)、[烧录与调试](docs/guide/flash-debug.md)、[变量与采样](docs/guide/variables.md)、[波形](docs/guide/waveform.md)、[外设寄存器](docs/guide/peripherals.md)、[Agent](docs/guide/agent.md)、[设置与界面](docs/guide/settings.md)
 
 ## 许可证与归属
 

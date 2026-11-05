@@ -1,6 +1,6 @@
 # 变量身份与来源分类设计
 
-用户行为见[同名变量](../guide/variables/variable-names.md)和[变量来源筛选](../guide/variables/origin-filter.md)。
+用户行为见[同名变量](../guide/variables.md#同名变量)和[变量来源筛选](../guide/variables.md#变量来源筛选)。
 
 ## 同名变量的身份
 

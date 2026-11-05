@@ -1,6 +1,6 @@
 # Variable display design
 
-User behavior is in [Pointers and C++ members](../guide/variables/pointers.en.md) and [Enum variables](../guide/variables/enums.en.md).
+User behavior is in [Pointers and C++ members](../guide/variables.md#指针与-c-成员) and [Enum variables](../guide/variables.md#枚举变量).
 
 ## Default member view
 

@@ -49,4 +49,4 @@ Plain CommonJS JavaScript (no TypeScript build; types are checked via JSDoc/`tsc
 
 **Other**: `native/` (Windows driver helper, vendored libwdi), `resources/` (bundled tools), `docs/records/` (past audits, plans and board validation, useful for rationale), `docs/development/releasing.md` (release flow: `npm run release:prepare`, bilingual CHANGELOG, tag-triggered CI publish).
 
-Supporting docs to read when relevant: `docs/design/` (index in `docs/README.md`), notably `cubemx-pipeline.md`, `probe-selection.md`, `chart-history.md`.
+Supporting docs to read when relevant: `docs/design/`, notably `cubemx-pipeline.md`, `probe-selection.md`, `chart-history.md`.

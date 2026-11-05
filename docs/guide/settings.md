@@ -1,6 +1,4 @@
-# VS Code 设置
-
-[English](settings.en.md)
+# 设置与界面
 
 EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 21 项，按 4 个大类排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
 
@@ -28,7 +26,7 @@ EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberpr
 | | `experimental.externalGdb.target` | 外部服务器地址和端口 |
 | | `experimental.externalGdb.connectionMode` | 外部 GDB 连接模式 |
 
-探针不在设置中选择，而是在侧栏“已连接调试器”一行点选，见[探针连接](getting-started/probe-connections.md)。
+探针不在设置中选择，而是在侧栏“已连接调试器”一行点选，见[探针连接](getting-started.md#探针连接)。
 
 ## 已移除的设置
 
@@ -43,3 +41,16 @@ EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberpr
 | `mcp.toolsets` | MCP 固定提供全部工具，不再筛选 |
 
 旧配置不会被自动改写，留在设置文件里不起作用，可以手动删除。
+
+## 页面滚轮缩放
+
+单独放大或缩小 EmberProbe 的侧栏和波形窗口，不影响 VS Code 其他部分。
+
+1. 在 VS Code 设置中开启 **Editor: Mouse Wheel Zoom**（`editor.mouseWheelZoom`）。
+2. 把鼠标移到侧栏或波形窗口上，按住 Ctrl 滚动滚轮：向上放大，向下缩小。macOS 也支持 Command＋滚轮。
+
+- 缩放范围是 50%～200%，只影响鼠标所在的页面。
+- 侧栏和每个波形窗口分别保存比例，重新打开时继续使用。
+- 关闭设置后保留当前比例，但不再响应缩放手势。
+- 普通滚轮的作用不变，仍用于滚动页面、调整写入滑块和缩放波形坐标轴。
+- VS Code 的 Ctrl＋+/- 快捷键仍然缩放整个窗口。

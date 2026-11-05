@@ -1,6 +1,6 @@
 # 调试会话设计
 
-用户行为见 [GDB 控制台](../guide/flash-debug/gdb-console.md)、[RTOS 调试](../guide/flash-debug/rtos.md)、[多核调试](../guide/flash-debug/multicore.md)和[外部 GDB Server](../guide/flash-debug/external-gdb-server.md)。
+用户行为见 [GDB 控制台](../guide/flash-debug.md#gdb-控制台)、[RTOS 调试](../guide/flash-debug.md#rtos-调试)、[多核调试](../guide/flash-debug.md#多核调试)和[外部 GDB Server](../guide/flash-debug.md#外部-gdb-server)。
 
 ## GDB 控制台
 

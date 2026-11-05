@@ -1018,7 +1018,7 @@
     "skills/**/*",
     "README.md",
     "README_EN.md",
-    "docs/guide/**/*.md",
+    "docs/guide/*.md",
     "docs/design/openocd-build.md",
     "CHANGELOG.md",
     "LICENSE",

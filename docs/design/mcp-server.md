@@ -1,6 +1,6 @@
 # MCP 服务器设计
 
-用户配置见 [MCP 服务器](../guide/agent/mcp.md)，确认与信任边界见 [Agent 信任边界](agent-trust-boundaries.md)。
+用户配置见 [MCP 服务器](../guide/agent.md#mcp-服务器)，确认与信任边界见 [Agent 信任边界](agent-trust-boundaries.md)。
 
 EmberProbe 随扩展提供一个 MCP（Model Context Protocol）stdio 服务器 `dist/mcp-server.js`，让支持 MCP 的客户端以结构化工具调用 EmberProbe。它与 Agent Skills 的脚本地位对等，都是本地 Agent Bridge 的客户端：鉴权、确认 ID 校验、输入校验与探针互斥全部留在扩展进程内，MCP 服务器只做 schema 校验、确认交互映射和结果/诊断转换，不包含硬件逻辑，也不绕过确认。
 
@@ -100,7 +100,7 @@ MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cu
 
 敏感工具（`flash_program`、`flash_verify`、`variables_write`、`peripherals_write`、`cubemx_start`、`cubemx_execute`）收到 Bridge 的确认响应后：
 
-- 侧栏“Agent 配置”中开启“完全允许 Agent 操作”后，Bridge 对适用操作返回 `mode: "full"`，MCP 直接执行烧录、Flash 校验、写入和 CubeMX 生成，不再发起操作确认。关闭后恢复原有授权流程；探针、目标、数据与工作区校验仍保留，匿名探针和 ELF 不匹配等限制仍生效。见 [Agent 权限](../guide/agent/permissions.md)。
+- 侧栏“Agent 配置”中开启“完全允许 Agent 操作”后，Bridge 对适用操作返回 `mode: "full"`，MCP 直接执行烧录、Flash 校验、写入和 CubeMX 生成，不再发起操作确认。关闭后恢复原有授权流程；探针、目标、数据与工作区校验仍保留，匿名探针和 ELF 不匹配等限制仍生效。见 [Agent 权限](../guide/agent.md#agent-权限)。
 - 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与按 Bridge 实际响应渲染的计划摘要——烧录的 ELF 路径与 SHA-256、target、probe 与 serial、transport、速度；变量写入的 ELF 路径与 SHA-256、连接（target、probe、serial 或调试会话）及每个写入项的名称、地址、类型与新值；外设写入的 SVD 路径与 SHA-256、寄存器地址、新旧寄存器值与所请求的字段；CubeMX 的 `.ioc`、候选文件、CubeMX 版本与配置变更（最多 16 项，其余给出数量与完整 diff 路径）。表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
 - 客户端不支持 elicitation 时，返回计划、确认 ID 与 `nextStep` 说明：agent 必须把计划展示给用户、等待明确回答，再带 `confirmationId`（以及用户明确选择的 `remember`）重调，与 skill 流程一致。
 - 确认 ID 过期或已使用时透传 `*_CONFIRMATION_INVALID`，服务器不会自动重新申请。

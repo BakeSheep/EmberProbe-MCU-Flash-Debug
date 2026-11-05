@@ -1,6 +1,6 @@
 # Peripheral access design
 
-User behavior is in [Peripheral registers](../guide/peripherals.en.md).
+User behavior is in [Peripheral registers](../guide/peripherals.md).
 
 The sidebar, Agent skill and MCP tools use the same SVD-bound service. Reads and ordinary register/field writes
 work through an active sampling connection, during managed single-core OpenOCD debugging, and while debugging

@@ -1,6 +1,6 @@
 # 波形历史与归档设计
 
-用户行为见[实时采样与历史](../guide/variables/sampling.md)，读取与调度见[采样链路设计](sampling-pipeline.md)。
+用户行为见[实时采样与历史](../guide/variables.md#实时采样与历史)，读取与调度见[采样链路设计](sampling-pipeline.md)。
 
 ## 消费者分层
 

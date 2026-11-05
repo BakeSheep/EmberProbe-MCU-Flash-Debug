@@ -1,6 +1,6 @@
 # Agent approval and local trust boundaries
 
-User behavior is in [Agent permissions](../guide/agent/permissions.en.md).
+User behavior is in [Agent permissions](../guide/agent.md#agent-权限).
 
 Agent Bridge calls require a trusted VS Code workspace. Sensitive operations are confirmed
 in the Agent conversation by default: the Agent shows the returned plan, waits for the human's answer,

@@ -1,6 +1,6 @@
 # Webview UI design
 
-User behavior is in [Waveform panels](../guide/variables/waveform.en.md) and [Webview wheel zoom](../guide/webview-zoom.en.md).
+User behavior is in [Waveform panels](../guide/waveform.md#波形窗口) and [Webview wheel zoom](../guide/settings.md#页面滚轮缩放).
 
 ## Waveform panel persistence
 

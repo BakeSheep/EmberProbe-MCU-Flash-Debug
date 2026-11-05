@@ -1,6 +1,6 @@
 # Bundled OpenOCD target configurations
 
-用户须知见 [OpenOCD 与目标配置](../guide/getting-started/openocd-targets.md)。本页记录内置运行时的构建、校验和兼容性边界。
+用户须知见 [OpenOCD 与目标配置](../guide/getting-started.md#openocd-与目标配置)。本页记录内置运行时的构建、校验和兼容性边界。
 
 Both `resources/openocd-win32-x64.tar.gz` and `resources/openocd-linux-x64.tar.gz`
 contain six EmberProbe compatibility configurations alongside the reviewed EmberProbe
