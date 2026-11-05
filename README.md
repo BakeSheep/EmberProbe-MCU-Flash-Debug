@@ -21,7 +21,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 - Visual Studio Code 1.85 或更高版本
 - ARM GDB 工具链（可选，将自动探测）
 
-当前扩展版本为 `0.9.0`。
+当前扩展版本为 `0.9.1`。
 
 ## 使用教程
 

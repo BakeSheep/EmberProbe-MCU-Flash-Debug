@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-05
+
 ### 查看列表 / Watch list
 
 - 侧边栏查看列表的结构体、数组与运行时对象仅在展开时采样：折叠的树及其内部的变量不再占用读取，也不再显示上一次的数值；展开后恢复采样。全部折叠时保持探针连接并提示展开变量，波形窗口仍按自身列表采样。
