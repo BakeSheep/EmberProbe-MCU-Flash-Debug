@@ -86,7 +86,7 @@ MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cu
 
 | 工具集 | 工具 |
 |---|---|
-| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `peripherals_list` `peripherals_read` `peripherals_write` |
+| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `rtt_status` `rtt_read` `rtt_control` `peripherals_list` `peripherals_read` `peripherals_write` |
 | `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
 | `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
 
@@ -120,7 +120,7 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 ## Prompts
 
-服务器提供 `flash`、`fault_triage`、`variable_debug`、`rtos_inspect`（`core` / `debug`）与 `cubemx_generate`（`cubemx`）五个 prompt，可选参数 `goal`。内容在调用时直接读取随扩展分发的 `skills/<name>/SKILL.md` 与 `agent-workflow.md` 的 “Failure handling” 段落，并附上脚本到 MCP 工具的对照表，唯一来源仍是 `skills/`；`test/mcp-prompts.test.js` 检查对照表中的脚本与工具都真实存在。各 `SKILL.md` 也注明：会话提供 EmberProbe MCP 工具时优先使用，脚本是回退方式。
+服务器提供 `flash`、`fault_triage`、`variable_debug`、`rtos_inspect`、`rtt_logging`（`core` / `debug`）与 `cubemx_generate`（`cubemx`）六个 prompt，可选参数 `goal`。内容在调用时直接读取随扩展分发的 `skills/<name>/SKILL.md` 与 `agent-workflow.md` 的 “Failure handling” 段落，并附上脚本到 MCP 工具的对照表，唯一来源仍是 `skills/`；`test/mcp-prompts.test.js` 检查对照表中的脚本与工具都真实存在。各 `SKILL.md` 也注明：会话提供 EmberProbe MCP 工具时优先使用，脚本是回退方式。
 
 每次 Bridge 调用都会在输出面板 “EmberProbe Agent Bridge” 中记录通道（`skill` / `mcp` / `legacy`）、客户端、方法与结果码，不记录参数值。
 
@@ -131,10 +131,10 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 | 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
 |---|---|---|---|---|---|
 | VS Code Copilot | provider | — | — | — | 待实测 |
-| Claude Code | 原生 JSON / 可选 CLI | 39 个工具；注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-claude-2026-11-05.md)；确认路径待实测 |
-| Codex | 原生 TOML / 可选 CLI | 39 个工具；注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-codex-2026-11-05.md)；确认路径待实测 |
+| Claude Code | 原生 JSON / 可选 CLI | 工具注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-claude-2026-11-05.md)；确认路径待实测 |
+| Codex | 原生 TOML / 可选 CLI | 工具注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-codex-2026-11-05.md)；确认路径待实测 |
 | Gemini CLI | 原生 JSON / 可选 CLI | — | 按客户端能力选择 | — | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测 |
-| OpenCode | 原生 local JSON/JSONC 写入 | 39 个工具；注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-opencode-2026-11-05.md)；确认路径待实测 |
+| OpenCode | 原生 local JSON/JSONC 写入 | 工具注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-opencode-2026-11-05.md)；确认路径待实测 |
 | Cursor | 扩展 API / 安装链接 | — | — | — | 待实测 |
 | Antigravity | 原生 JSON 写入 | — | 按客户端能力选择 | — | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测 |
 | DeepSeek Harness (DSH) | 原生 profile YAML 写入 | — | 未声明时使用聊天确认 | — | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持 |

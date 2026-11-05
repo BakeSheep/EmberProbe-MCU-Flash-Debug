@@ -1,6 +1,6 @@
 # 烧录与调试
 
-烧录固件，使用内置调试器，查看 RTOS，调试多核芯片，连接外部 GDB 服务器。
+烧录固件，使用内置调试器，查看 RTOS，调试多核芯片，连接外部 GDB 服务器，查看 RTT 日志。
 
 ## 烧录与下载
 
@@ -278,11 +278,82 @@ RTOS 线程由服务器提供，EmberProbe 不配置服务器的 RTOS。
 
 ### 限制
 
-不支持下载、自动复位、Restart、多核共享、运行时采样、SWO/RTT，也不管理服务器和驱动。
+不支持下载、自动复位、Restart、多核共享、运行时采样、SWO 和 [RTT](#rtt-日志)，也不管理服务器和驱动。
 
 EmberProbe 不主动发送 OpenOCD `monitor` 命令。你在配置里写的 attach hooks 会照常执行，请自行确认服务器兼容性。
+
+## RTT 日志
+
+通过 SEGGER RTT 查看固件输出，向固件发送一行输入，并把日志保存到文件。J-Link 和 CMSIS-DAP 用法相同。
+
+### 固件要求
+
+固件需要集成 SEGGER RTT（`SEGGER_RTT.c`），例如用 `SEGGER_RTT_printf(0, ...)` 输出，或把 `printf` 重定向到通道 0。
+
+### 启动和停止
+
+- **启动**：在侧栏“RTT 日志”卡片点击启动，或执行命令 `EmberProbe: 启动 RTT 日志`。
+- **停止**：执行 `EmberProbe: 停止 RTT 日志`。终端保留已有输出和结束原因，下次启动继续使用。
+- **找回终端**：运行中关闭终端不会停止 RTT 或日志，执行 `EmberProbe: 显示 RTT 终端` 重新打开。
+
+RTT 手动启动，之后跟随会话变化：调试或采样开始后继续输出，烧录期间暂停，并清除未发送的输入。启动失败、重试耗尽和连接中断都显示在 RTT 卡片的提示框里，卡片折叠时自动展开。
+
+### 选择通道
+
+默认读取 up 通道 0。用 `emberprobe.rtt.channels` 选择其他通道，例如 `[0, 2]`，最多 16 个，修改后重新启动生效。
+
+每个已配置的通道有一个 `EmberProbe RTT #N <名称>` 终端。固件尚未配置所选通道时会继续重试；只缺其中一部分时照常启动，并提示缺少的通道。
+
+### 找不到控制块
+
+EmberProbe 依次尝试：
+
+1. 设置 `emberprobe.rtt.controlBlockAddress`（如 `0x24000000`）。
+2. ELF 中的 `_SEGGER_RTT` 符号。
+3. 设置 `emberprobe.rtt.searchRange`（如 `{ "address": "0x20000000", "size": "0x20000" }`），最大 16 MiB。
+4. ELF 中可写的 RAM 段。
+5. 链接脚本中的第一个 RAM 区。
+
+第 4、5 步最多自动搜索 1 MiB，超出时报 `RTT_SCAN_RANGE_TOO_LARGE`，需要设置地址或搜索范围。搜索期间采样和调试可以继续。适配器速度很低时直接设置地址。
+
+搜索时探针无响应会报 `RTT_SCAN_TIMEOUT`。个别 CMSIS-DAP 探针在某些时钟下读取大块内存会卡住，这时设置控制块地址，或用 `emberprobe.samplingAdapterSpeedKhz` 换一个时钟。
+
+ELF 中有多个 `_SEGGER_RTT` 时报 `RTT_CONTROL_BLOCK_AMBIGUOUS`，这时也要设置地址。修改地址、范围、通道或轮询间隔后需要重新启动 RTT。
+
+### 向固件发送输入
+
+在终端输入一行并回车，发送到同号 down 通道，退格可以编辑。
+
+- 每行最多 1023 个 UTF-8 字节，且不能超过 down 缓冲容量，超出时整行不发送。
+- 没有 down 缓冲、超长和发送失败的提示显示在该终端，不写入日志。
+- 输入发送成功不代表固件已处理。缓冲中还有未读数据时，输入可能被丢弃。
+
+### 时间戳和日志文件
+
+- **时间戳**：`EmberProbe: 切换 RTT 时间戳`，或设置 `emberprobe.rtt.timestamps`。在一行的第一个字节到达时记录，格式 `[HH:MM:SS.mmm]`。
+- **保存日志**：`EmberProbe: 保存/停止保存 RTT 日志`，选择已有目录开始保存，再次执行停止。也可以设置 `emberprobe.rtt.logFile.enabled` 和 `directory`。
+
+目录留空时使用工作区根目录，相对路径从根目录解析，没有工作区时要写绝对路径。单通道写入 `rtt.log`，多通道写入 `rtt-chN.log`，已有文件继续追加。
+
+单个文件默认 8 MiB（`emberprobe.rtt.logFile.maxBytes`），写满后轮转为 `.1`，只保留一个备份。默认去除 ANSI 颜色序列，关闭 `emberprobe.rtt.logFile.stripAnsi` 可以保留。
+
+日志写入失败时会提示并停止该文件的记录，终端继续输出。修改日志设置或重新启动 RTT 后再次尝试。时间戳和日志设置立即生效。
+
+### 通道模式
+
+固件为每个通道设置模式：skip（缓冲满时丢弃）、trim（截断）、block（等待主机读取）。
+
+**block 模式下主机没有读取时，目标会阻塞**。调试暂停时尤其要注意，排查时序问题建议用 skip 或 trim。
+
+### 限制
+
+- 只支持单核目标，多核共享调试组中不可用。
+- 外部 GDB Server 模式下不可用。
+- 不支持 SWO、半主机和 defmt 解码。
+- 重新挂载时终端和日志会标记输出边界；缓冲溢出时显示数据丢失提示。
 
 ## 相关文档
 
 - [烧录与调试启动设计](../design/flash-and-debug.md)
 - [调试会话设计](../design/debug-sessions.md)
+- [RTT 设计](../design/rtt.md)

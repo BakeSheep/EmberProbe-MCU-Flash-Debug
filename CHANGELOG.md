@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### RTT 日志 / RTT logging
+
+- 新增 SEGGER RTT 日志：侧栏“RTT 日志”卡片和命令可启动、停止，J-Link 与 CMSIS-DAP 用法相同，调试或采样时也能查看。每个 up 通道一个终端，回车把一行发送到同号 down 通道，可选主机时间戳，可保存为按大小轮转的日志文件。控制块从设置的地址、ELF `_SEGGER_RTT` 或 RAM 范围定位。只支持单核目标，外部 GDB Server 模式下不可用。
+- 新增 `mcu-rtt` skill 和 MCP 工具 `rtt_status`、`rtt_read`、`rtt_control`，Agent 可以启动、停止 RTT 并按游标读取日志，但不能向固件发送输入。
+- Add SEGGER RTT logging: the sidebar's RTT Log card and commands start and stop it, J-Link and CMSIS-DAP work the same way, and it runs alongside debugging or sampling. Each up channel has a terminal, Enter sends a line to the matching down channel, and host timestamps and size-rotated log files are optional. The control block is located from a configured address, the ELF `_SEGGER_RTT` symbol or a RAM range. Single-core targets only; unavailable with an external GDB server.
+- Add the `mcu-rtt` skill and the MCP tools `rtt_status`, `rtt_read` and `rtt_control`, so Agents can start and stop RTT and read its output through a cursor. Agents cannot send input to the firmware.
+
 ## [0.9.1] - 2026-11-05
 
 ### 查看列表 / Watch list
