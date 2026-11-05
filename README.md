@@ -19,8 +19,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 ## 环境要求
 
 - Visual Studio Code 1.85 或更高版本
-- OpenOCD 0.12.0 或更高版本
-- ARM GDB 工具链（断点调试必需）
+- ARM GDB 工具链（可选，将自动探测）
 
 当前扩展版本为 `0.9.0`。
 
@@ -38,7 +37,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 
 #### 1. 一键配置
 
-1. **准备 OpenOCD**：Windows x64 可在“OpenOCD 环境”卡片中一键离线安装；Linux x64 使用默认路径时会自动准备内置版本。其他平台或自定义版本可点击 **选择路径** 指定已安装的 OpenOCD，修改后点击 **重新检测**。
+1. **准备 OpenOCD**：Windows x64 与 Linux x64 使用默认路径时会自动准备内置版本。其他平台或自定义版本可点击 **选择路径** 指定已安装的 OpenOCD，修改后点击 **重新检测**。
 2. **自动检测配置**：展开“MCU 配置”，点击 **自动检测配置**，确认以下结果：
    - **ELF 固件**：工作区内最新的 `*.elf`；
    - **MCU 目标**：根据工程中的芯片型号匹配目标配置；
@@ -47,13 +46,9 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 
 ![一键配置：自动检测、手动配置项与官方 SVD 下载](docs/images/tutorial/01-config.gif)
 
-#### 2. 注意：使用 Debug 预设构建
+> **请使用 Debug 预设构建固件**，保留变量、类型与源码调试信息。Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变量显示 `optimized out`、RTOS 任务缺失等问题。
 
-**请使用 Debug 预设构建固件**，保留变量、类型与源码调试信息。
-
-Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变量显示 `optimized out`、RTOS 任务缺失等问题。重新编译后，确认选中正确的 ELF，并刷新变量列表。
-
-#### 3. 单独配置（手动配置）
+#### 2. 单独配置（手动配置）
 
 在“MCU 配置 → 手动配置”中选择：
 
@@ -69,14 +64,13 @@ Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变�
 | 配置项 | 说明 |
 | --- | --- |
 | SVD 文件 | 外设寄存器视图需要，可选择本地文件或 **下载官方 SVD**；下载前按提示确认来源许可 |
-| CubeMX 路径 | 指定 STM32CubeMX，供 Agent 代码生成使用（Windows / Linux） |
 | .ioc 路径 | 指定 CubeMX 工程；缺少固件包时可通过 **在 CubeMX 中安装** 补齐 |
 
 配置按工作区保存。更多目标与探针说明见 [OpenOCD 目标配置](docs/guide/getting-started.md#openocd-与目标配置)和[探针连接与选择](docs/guide/getting-started.md#探针连接)。
 
-#### 4. J-Link 配置
+#### 3. J-Link 配置
 
-Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工具时通常需要恢复 SEGGER 驱动。
+Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 1. 选择 `jlink.cfg`，或使用自动检测。
 2. 出现驱动不匹配诊断时，在“已连接调试器”中该 J-Link 卡片的驱动下拉框选择 **WinUSB**，按提示完成 Windows 管理员授权。多台 J-Link 可逐台切换。
@@ -86,7 +80,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 多台探针连接时在“已连接调试器”中点选设备；所选设备拔出后显示“未连接”，不会改用其他探针。序列号、协议与速度可在第三章“探针高级设置”中调整。
 
-#### 5. ARM 工具链
+#### 4. ARM 工具链
 
 烧录与独立实时采样只需要 OpenOCD；**断点调试**还需要 ARM GDB 工具链，可使用 [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)。
 
@@ -117,8 +111,6 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 - 断点、条件断点、调用栈与监视表达式；调试控制台可直接输入 GDB 命令（如 `bt`、`x/16wx 0x20000000`），见 [GDB 控制台](docs/guide/flash-debug.md#gdb-控制台)；
 - 展开结构体、数组、枚举，以及 `std::vector`、`std::string` 等常见 STL 容器；
 - 侧边栏实时读写、外设与 RTOS 面板跟随当前调试会话，暂停时查看快照。
-
-工程文件夹右键菜单也提供这两个入口；自定义调试可使用 `launch.json`，见第三章。
 
 ![复位调试：进入调试界面并单步](docs/images/tutorial/03-debug.gif)
 
@@ -191,7 +183,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 **不限速**按探针吞吐连续读取，仅在独立采样时生效，调试会话中按有限频率采样；高频会更快消耗内存与磁盘归档，见 [不限速采样](docs/guide/variables.md#实时采样与历史)。
 
-时间轴与“全部”窗口覆盖从开始采样（或上次清空历史）以来的整段会话：最近数据保存在内存中，更早的数据从临时磁盘归档读取。冻结不改变 CSV 导出范围。归档在扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。图表背景可显示自定义淡色图标，见 [波形图背景图标](docs/guide/waveform.md#波形图背景图标)。
+时间轴与“全部”窗口覆盖从开始采样（或上次清空历史）以来的整段会话。归档在扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。图表背景可显示自定义淡色图标，见 [波形图背景图标](docs/guide/waveform.md#波形图背景图标)。
 
 #### 6. 外设寄存器
 
