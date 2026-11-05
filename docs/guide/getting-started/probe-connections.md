@@ -22,13 +22,13 @@ A Windows instance-ID tail is an OS selection hint, not proof of the USB descrip
 
 Windows 设备实例尾串只是系统选择线索，不证明 USB 描述符原文。若真实序列号为 `ATK 20190528`，自动识别不能将 `ATK_20190528` 原样传给 OpenOCD。Windows 会把空格转为 `_`。唯一设备自动连接时省略序列号过滤；不含 `_` 的尾串按精确序列号用于点选的探针、侧栏列表及写入许可。用户显式配置的真实序列号可匹配其 Windows 别名，保留内部空格，作为单个 Tcl 参数传递。控制字符及 Tcl 元字符会被拒绝，J-Link 数字身份沿用原规则。
 
-If multiple matching devices are present, selection must be enforceable by OpenOCD. Devices with usable serial selectors, including Windows aliases without `_`, can be picked in the sidebar list; an operation that cannot choose stops with `PROBE_SELECTION_REQUIRED`, and one started from the UI opens that list instead of prompting. Anonymous devices or aliases containing `_` cannot distinguish several probes safely; disconnect the others or configure the exact USB serial in the interface script. A missing picked probe is never silently replaced. Records are written as version 3; older records are read without the probe they name (see [J-Link compatibility](JLINK-COMPATIBILITY.md)). Records without a pick save only the interface script and never bind the next attached probe as the previous device.
+If multiple matching devices are present, selection must be enforceable by OpenOCD. Devices with usable serial selectors, including Windows aliases without `_`, can be picked in the sidebar list; an operation that cannot choose stops with `PROBE_SELECTION_REQUIRED`, and one started from the UI opens that list instead of prompting. Anonymous devices or aliases containing `_` cannot distinguish several probes safely; disconnect the others or configure the exact USB serial in the interface script. A missing picked probe is never silently replaced. Records are written as version 3; older records are read without the probe they name (see [J-Link compatibility](jlink.md)). Records without a pick save only the interface script and never bind the next attached probe as the previous device.
 
-多台匹配设备并存时，OpenOCD 必须能够执行选择。具有可用序列号（含不带 `_` 的 Windows 别名）的设备可在侧栏列表中点选；无法确定时操作以 `PROBE_SELECTION_REQUIRED` 停止，从界面发起的操作会展开该列表，而不是弹出选择框。无序列号设备或含 `_` 的 Windows 别名不能安全区分多台探针，应断开其他设备或在接口脚本中显式填写真实 USB 序列号。点选的设备缺席时不自动替换。记录按第三版写入；旧记录读取时忽略其中的探针（见 [J-Link 兼容性](JLINK-COMPATIBILITY.md)）。未点选时只记录接口脚本，下次重新解析物理设备。
+多台匹配设备并存时，OpenOCD 必须能够执行选择。具有可用序列号（含不带 `_` 的 Windows 别名）的设备可在侧栏列表中点选；无法确定时操作以 `PROBE_SELECTION_REQUIRED` 停止，从界面发起的操作会展开该列表，而不是弹出选择框。无序列号设备或含 `_` 的 Windows 别名不能安全区分多台探针，应断开其他设备或在接口脚本中显式填写真实 USB 序列号。点选的设备缺席时不自动替换。记录按第三版写入；旧记录读取时忽略其中的探针（见 [J-Link 兼容性](jlink.md)）。未点选时只记录接口脚本，下次重新解析物理设备。
 
-The sidebar's **Connected probe** row lists every attached probe, shows which one this order selects and lets the user choose another; a device of another type also switches the interface script to that type's default. See [J-Link compatibility](JLINK-COMPATIBILITY.md) for its behavior and the per-device J-Link driver switch.
+The sidebar's **Connected probe** row lists every attached probe, shows which one this order selects and lets the user choose another; a device of another type also switches the interface script to that type's default. See [J-Link compatibility](jlink.md) for its behavior and the per-device J-Link driver switch.
 
-侧栏“已连接调试器”一行列出所有已连接的探针，标出按上述顺序选中的设备，并可改选其他设备；选择不同类型的设备时，接口脚本会同时改为该类型的默认脚本。具体行为及按设备切换 J-Link 驱动见 [J-Link 兼容性](JLINK-COMPATIBILITY.md)。
+侧栏“已连接调试器”一行列出所有已连接的探针，标出按上述顺序选中的设备，并可改选其他设备；选择不同类型的设备时，接口脚本会同时改为该类型的默认脚本。具体行为及按设备切换 J-Link 驱动见 [J-Link 兼容性](jlink.md)。
 
 ## Automatic mode and the target chip / 自动模式与目标芯片
 
@@ -73,6 +73,6 @@ The UI uses the sidebar's **Connected probe** list, localized error notification
 
 前端使用侧栏“已连接调试器”列表、中文/英文错误通知和连接诊断，不弹出探针选择框。普通唯一设备连接不增加操作步骤；选择机制不受支持、身份歧义、TCP 配置无效时，在初始化硬件前停止并提示修正方法。
 
-Software tests cover OS inventory fixtures, profile resolution, selection and authorization invalidation. Interface-only checks with bundled OpenOCD validate Tcl command compatibility. They do not establish real-board support; hardware validation must be recorded separately under the [HIL procedure](../test/hil/README.md).
+Software tests cover OS inventory fixtures, profile resolution, selection and authorization invalidation. Interface-only checks with bundled OpenOCD validate Tcl command compatibility. They do not establish real-board support; hardware validation must be recorded separately under the [HIL procedure](../../../test/hil/README.md).
 
-软件测试覆盖各系统枚举样例、接口解析、设备选择及授权失效；随包 OpenOCD 的接口检查验证 Tcl 命令兼容性。这些检查不证明真机支持，硬件结果须按 [HIL 流程](../test/hil/README.md) 单独记录。
+软件测试覆盖各系统枚举样例、接口解析、设备选择及授权失效；随包 OpenOCD 的接口检查验证 Tcl 命令兼容性。这些检查不证明真机支持，硬件结果须按 [HIL 流程](../../../test/hil/README.md) 单独记录。

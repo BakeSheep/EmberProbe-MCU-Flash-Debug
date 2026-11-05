@@ -46,7 +46,7 @@ Use `require`/`module.exports`, four-space indentation, double quotes, semicolon
 
 Keep hardware operations behind services and preserve Bridge authentication, input validation, and flash/write/CubeMX authorization. Respect `probeCoordinator` ownership and shared-group leases; preserve cleanup on failures. Bind debug handles and writes to the selected session and stop generation, invalidating stale results after execution or session changes. Preserve byte, traversal, paging, and time budgets for ELF/DWARF, SVD, and runtime objects, including read-only restrictions where type or address identity is uncertain.
 
-Read supporting documents when relevant: `docs/RTOS-AWARENESS.md` and `docs/SHARED-DEBUG-GROUPS.md` for session changes, `docs/CUBEMX-GENERATION.md` for generation, and `docs/JLINK-COMPATIBILITY.md` for probe/driver work. Use `skills/_emberprobe/agent-workflow.md` when changing shared skill behavior; preserve skill-specific authorization requirements.
+Read supporting documents when relevant: `docs/guide/flash-debug/rtos.md` and `docs/guide/flash-debug/multicore.md` for session changes, `docs/guide/agent/cubemx.md` for generation, and `docs/guide/getting-started/jlink.md` for probe/driver work. Use `skills/_emberprobe/agent-workflow.md` when changing shared skill behavior; preserve skill-specific authorization requirements.
 
 ## Testing Guidelines
 
@@ -58,7 +58,9 @@ The normal runner defaults to at most four test processes; use `npm run test:uni
 
 ## Working Scope and Completion
 
-Do not modify `README.md` unless the user explicitly requests changes to that file. Keep it focused on key capabilities; place detailed usage, implementation, and development documentation in `docs/` or the relevant skill documentation.
+Do not modify `README.md` unless the user explicitly requests changes to that file. Keep it focused on key capabilities; place detailed documentation in `docs/` or the relevant skill documentation.
+
+Organize `docs/` by reader; `docs/README.md` is the index. `docs/guide/` is for users: what a feature does, how to use it, limits, and troubleshooting. It never covers internal modules, data formats, or how a behavior was tested. Each page has a Chinese `name.md` and an English `name.en.md`. `docs/design/` explains architecture, invariants, and why. `docs/development/` covers contributor workflows. `docs/records/` keeps dated audits, plans, diagnostics, and board validation; records are history and are not updated as behavior changes.
 
 Preserve existing uncommitted work. Continue the requested change through implementation, relevant validation, and necessary documentation updates; fix failures caused by the change. Report the resulting behavior, checks performed, and any unavailable toolchain or unverified platform/hardware. A development change does not by itself authorize HIL, driver switching, firmware programming, or publishing a release.
 
@@ -68,6 +70,6 @@ Use short, imperative subjects, such as `Fix debug session routing`. Reserve `Re
 
 ## Release Process
 
-When preparing a requested release, follow `docs/RELEASING.md`. Start with a non-empty `CHANGELOG.md` Unreleased section; use `release:prepare` to synchronize the five version files and validate them before the release commit. Stable `vX.Y.Z` tags and prerelease `vX.Y.Z-alpha.N`/`-beta.N`/`-rc.N` tags trigger CI to build and publish the VSIX (prereleases as GitHub Pre-releases); never re-point a published tag or substitute a locally packaged release artifact. Preserve the bilingual release-note format documented in the release guide.
+When preparing a requested release, follow `docs/development/releasing.md`. Start with a non-empty `CHANGELOG.md` Unreleased section; use `release:prepare` to synchronize the five version files and validate them before the release commit. Stable `vX.Y.Z` tags and prerelease `vX.Y.Z-alpha.N`/`-beta.N`/`-rc.N` tags trigger CI to build and publish the VSIX (prereleases as GitHub Pre-releases); never re-point a published tag or substitute a locally packaged release artifact. Preserve the bilingual release-note format documented in the release guide.
 
 Compatibility layers kept for upgrades are registered in `scripts/compat-layers.js` with the release that removes them. Register any new one; remove the code and its entry before that release, or the release consistency test fails.

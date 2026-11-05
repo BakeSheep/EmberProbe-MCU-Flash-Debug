@@ -1,6 +1,6 @@
 # EmberProbe 发布指南
 
-推送稳定版本标签后，[Release 工作流](../.github/workflows/release.yml)会验证版本、运行质量门禁、生成 VSIX，并自动创建 GitHub Release 和上传附件。
+推送稳定版本标签后，[Release 工作流](../../.github/workflows/release.yml)会验证版本、运行质量门禁、生成 VSIX，并自动创建 GitHub Release 和上传附件。
 
 ## 权限与安全
 
@@ -15,7 +15,7 @@ npm run release:prepare -- 0.8.1 --date 2026-10-04
 node scripts/validate-release.js v0.8.1
 npm run check
 npm run quality
-git add -A docs package.json package-lock.json README.md README_EN.md CHANGELOG.md
+git add package.json package-lock.json README.md README_EN.md CHANGELOG.md
 git commit -m "Release EmberProbe v0.8.1"
 git tag -a v0.8.1 -m "EmberProbe v0.8.1"
 git push origin master
@@ -23,11 +23,9 @@ git push origin v0.8.1
 gh run watch
 ```
 
-`release:prepare` 同步五个版本文件，并清理 `docs/` 中未列入 `scripts/docs-cleanup.js` `MAIN_DOCS` 的 Markdown 和 JSON 文档；图片等资源全部保留。新增长期文档时加入该名单。
+`release:prepare` 同步五个版本文件；`--dry-run` 不修改文件。发布不再清理 `docs/`，方案、审计和验收记录长期保存在 `docs/records/`。
 
-用 `npm run docs:clean` 预览，`npm run docs:clean -- --write` 执行；`release:prepare --no-clean-docs` 可跳过清理，`--dry-run` 不修改文件。
-
-确认验证与质量检查通过后，提交五个版本文件及文档删除；创建标签前检查暂存区。两个 push 都须成功，再用 `gh run watch` 等待对应 Release 工作流完成。
+确认验证与质量检查通过后，提交五个版本文件；创建标签前检查暂存区。两个 push 都须成功，再用 `gh run watch` 等待对应 Release 工作流完成。
 
 标签必须使用 `vX.Y.Z`，或下文的预发布格式 `vX.Y.Z-alpha.N` / `-beta.N` / `-rc.N`（N 从 1 开始），并与五个文件的版本引用一致；其他后缀（如 `-preview.1`、`-beta`、`+build.1`）会被拒绝。发布时不要在本地运行 `npm run package`；CI 构建并上传正式 VSIX，本地打包仅用于开发验证。
 
@@ -41,7 +39,7 @@ gh run watch
 ### 内置 OpenOCD 资源
 
 Windows/Linux x64 随包使用 EmberProbe scatter 补丁构建。更新补丁、构建锁或构建配方后，按
-[`native/openocd/README.md`](../native/openocd/README.md) 在固定 Debian 10 XBB 镜像中重新生成双平台资源和对应源码；
+[`native/openocd/README.md`](../../native/openocd/README.md) 在固定 Debian 10 XBB 镜像中重新生成双平台资源和对应源码；
 用 `npm run openocd:package -- --input test-results/openocd-scatter-release` 暂存校验后整体更新并审查提交。
 普通发布不重新编译 OpenOCD。CI 在 Windows/Linux 执行 `npm run check:openocd-bundle` 的无硬件检查，
 打包后用 `node scripts/verify-openocd-vsix.js dist/emberprobe.vsix` 检查包内实际资源字节。
@@ -61,7 +59,7 @@ npm run release:prepare -- 0.9.0-beta.1 --date 2026-10-22
 node scripts/validate-release.js v0.9.0-beta.1
 npm run check
 npm run quality
-git add -A docs package.json package-lock.json README.md README_EN.md CHANGELOG.md
+git add package.json package-lock.json README.md README_EN.md CHANGELOG.md
 git commit -m "Release EmberProbe v0.9.0-beta.1"
 git tag -a v0.9.0-beta.1 -m "EmberProbe v0.9.0-beta.1"
 git push origin master
@@ -77,7 +75,7 @@ gh run watch
 
 ## 兼容层退出
 
-为 v0.8+ 升级保留的兼容层登记在 [`scripts/compat-layers.js`](../scripts/compat-layers.js)，每项写明用途、代码位置和计划移除的版本 `removeIn`；永久保留的安全检查写明理由。
+为 v0.8+ 升级保留的兼容层登记在 [`scripts/compat-layers.js`](../../scripts/compat-layers.js)，每项写明用途、代码位置和计划移除的版本 `removeIn`；永久保留的安全检查写明理由。
 
 - `test/compat-layers.test.js` 检查登记的位置仍然存在，删除兼容代码时必须同时删除登记项。
 - `npm run check:release` 中的 `release-consistency` 在 `package.json` 版本达到 `removeIn`（含该版本的 alpha/beta/rc）时失败。发布该版本前，先删除登记列出的代码、测试和文档，再删除登记项。

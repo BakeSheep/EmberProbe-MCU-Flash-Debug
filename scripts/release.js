@@ -1,7 +1,6 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const { cleanDocs } = require("./docs-cleanup");
 const { RELEASE_VERSION_RE } = require("./validate-release");
 
 function validateVersion(value) {
@@ -107,13 +106,11 @@ function prepareRelease(root, nextVersion, options = {}) {
         changed.push(file);
         if (!options.dryRun) fs.writeFileSync(path.join(root, file), content);
     }
-    const docsRemoved = options.cleanDocs === false ? [] : cleanDocs(root, { dryRun: !!options.dryRun });
     return {
         version,
         date,
         dryRun: !!options.dryRun,
         changed,
-        docsRemoved,
         mergedPrereleases: prereleases.map((entry) => entry.name)
     };
 }
@@ -123,15 +120,13 @@ function parseCli(argv) {
     const version = args.shift();
     let date;
     let dryRun = false;
-    let cleanDocs = true;
     while (args.length) {
         const arg = args.shift();
         if (arg === "--dry-run") dryRun = true;
-        else if (arg === "--no-clean-docs") cleanDocs = false;
         else if (arg === "--date") date = args.shift();
         else throw Object.assign(new Error(`Unknown argument: ${arg}`), { code: "UNKNOWN_ARGUMENT" });
     }
-    return { version, date, dryRun, cleanDocs };
+    return { version, date, dryRun };
 }
 
 if (require.main === module) {
@@ -143,9 +138,6 @@ if (require.main === module) {
         );
         if (result.mergedPrereleases.length) {
             console.log(`Merged CHANGELOG sections: ${result.mergedPrereleases.join(", ")}`);
-        }
-        if (result.docsRemoved.length) {
-            console.log(`${result.dryRun ? "Would remove" : "Removed"} docs: ${result.docsRemoved.join(", ")}`);
         }
     } catch (error) {
         console.error(`${error.code || "RELEASE_ERROR"}: ${error.message}`);

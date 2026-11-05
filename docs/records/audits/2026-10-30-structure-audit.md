@@ -118,7 +118,7 @@
             - 偏差：`dwarf-partial` 测的是全局预算耗尽后的部分解析结果，归入预算而不是解析。
         - 分组：
             - 合并文件都在 `integration`。原来属于 `fast` 的 `chart-transport`、`chart-viewport` 和 6 个 `dwarf-*`，并进了同一文件里更慢的测试。
-            - `docs/WAVEFORM-PANELS.md`、`docs/LAYERED-SAMPLING.md` 和 `test/perf/parse-bench.js` 中的旧文件名已更新。
+            - `docs/guide/variables/waveform-panels.md`、`docs/design/chart-history.md` 和 `test/perf/parse-bench.js` 中的旧文件名已更新。
         - 覆盖率：合并前后各跑一次 c8，逐个源文件对比，没有任何文件的未覆盖行、分支、函数或语句数增加。V8 合并更少进程时重复的块区间变少，部分文件的分支总数和已覆盖数同步减少 1–9 个，未覆盖数不变。
         - 效果：测试文件减少 20 个。`npm run check` 43 s（合并前 45 s），各测试文件耗时之和 193 s → 170 s。
 
@@ -178,7 +178,7 @@
 | `emberprobe.maxSamples`（已弃用，`mcu-config` 仍暴露） | 公开设置，值不再生效           |
 | `writeAuthorization` 把布尔值 `true` 视为未信任        | fail-closed 安全检查，长期保留 |
 
-**方案**：在 `docs/RELEASING.md` 或代码中维护一张“兼容层 → 计划移除版本”表（例如 1.0）。在 `release-consistency` 测试里，当 `package.json` 版本达到或超过移除版本时报错，让兼容层不能在无人注意时永久留存。`maxSamples` 同时需要从 `mcu-config` skill 的可写键中移除。
+**方案**：在 `docs/development/releasing.md` 或代码中维护一张“兼容层 → 计划移除版本”表（例如 1.0）。在 `release-consistency` 测试里，当 `package.json` 版本达到或超过移除版本时报错，让兼容层不能在无人注意时永久留存。`maxSamples` 同时需要从 `mcu-config` skill 的可写键中移除。
 
 ## P2：测试按“一次修复一个文件”增长
 

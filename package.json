@@ -392,7 +392,7 @@
               "core",
               "debug"
             ],
-            "markdownDescription": "MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义占用 Agent 上下文，按需开启。参见 docs/MCP.md。 / Toolsets exposed by the MCP server: `core` (configuration, flashing, variables, peripherals), `debug` (debug control, breakpoints, RTOS), `cubemx` (STM32CubeMX generation). Tool definitions occupy Agent context; enable as needed. See docs/MCP.md.",
+            "markdownDescription": "MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义占用 Agent 上下文，按需开启。参见 docs/guide/agent/mcp.md。 / Toolsets exposed by the MCP server: `core` (configuration, flashing, variables, peripherals), `debug` (debug control, breakpoints, RTOS), `cubemx` (STM32CubeMX generation). Tool definitions occupy Agent context; enable as needed. See docs/guide/agent/mcp.md.",
             "order": 1
           }
         }
@@ -1078,13 +1078,9 @@
     "skills/**/*",
     "README.md",
     "README_EN.md",
-    "docs/EXTERNAL-GDB-SERVER.md",
-    "docs/MCP.md",
-    "docs/RTOS-AWARENESS.md",
-    "docs/GDB-CONSOLE.md",
+    "docs/guide/**/*.md",
+    "docs/design/openocd-build.md",
     "docs/images/gdb-console-busy.png",
-    "docs/SHARED-DEBUG-GROUPS.md",
-    "docs/OPENOCD-TARGETS.md",
     "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
@@ -1118,7 +1114,6 @@
     "test:hil:smoke": "node test/hil/run-smoke.js",
     "test:hil:matrix": "node scripts/hil-matrix.js",
     "release:prepare": "node scripts/release.js",
-    "docs:clean": "node scripts/docs-cleanup.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
     "package": "npx --yes @vscode/vsce@3.9.1 package --allow-unused-files-pattern --out dist/emberprobe.vsix",

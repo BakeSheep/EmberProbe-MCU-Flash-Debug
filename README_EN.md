@@ -14,7 +14,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: adjusts writable variables with sliders, inputs, and step buttons, with automatic read-back verification. Aligned 32-bit writes can keep the target running; other widths or unaligned writes need a brief halt. Pause first for these writes during debugging.
 - Built-in debugging: breakpoints, stepping, stack frames, locals/globals/file statics/registers, expression assignment and memory access.
-- [Experimental external GDB server attach](docs/EXTERNAL-GDB-SERVER.md): opt in through native VS Code settings and an explicit F5 configuration; existing debug entry points keep using OpenOCD.
+- [Experimental external GDB server attach](docs/guide/flash-debug/external-gdb-server.md): opt in through native VS Code settings and an explicit F5 configuration; existing debug entry points keep using OpenOCD.
 - Optionally installs Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements
@@ -40,10 +40,10 @@ The sidebar lists global/static variables of the selected ELF. Search by variabl
 - Freeze: sampling and current values continue updating. Resume live releases the snapshot and follows new data. New variables appear after resuming; clearing history clears the snapshot.
 - CSV export always uses original archived samples, defaulting to the selected variables since sampling began or history was last cleared. Freezing does not change the export range. Clear History affects the current panel and debug session; other panels are unaffected. Archives are deleted when the extension exits, so export data you want to keep.
 - Layered sampling: every waveform watch, including hidden curves, follows the waveform target and is archived. Sidebar-only watches and write cards target a fixed 20 Hz without history. Global pause stops both consumers; probe throughput determines the actual rates.
-- The timeline and the All window cover the whole session since sampling started (or history was last cleared): recent data stays in memory and older data is read from the temporary disk archive. Memory pressure only shortens what stays in memory. A full archive or disk-write failure pauses sampling. Set `emberprobe.chartHistoryMaxMiB` and `emberprobe.samplingArchiveMaxMiB` to adjust capacities; see [live sampling](docs/LAYERED-SAMPLING.md).
+- The timeline and the All window cover the whole session since sampling started (or history was last cleared): recent data stays in memory and older data is read from the temporary disk archive. Memory pressure only shortens what stays in memory. A full archive or disk-write failure pauses sampling. Set `emberprobe.chartHistoryMaxMiB` and `emberprobe.samplingArchiveMaxMiB` to adjust capacities; see [live sampling](docs/design/chart-history.md).
 
 - Chart navigation: wheel to zoom, left-drag to pan both axes, middle-drag to pan time only, and click a curve to freeze. Use Auto Y to restore automatic vertical scaling.
-- Sampling frequency: enter 0.1–200 Hz or choose a preset. The preset slider also offers [Max rate](docs/UNLIMITED-SAMPLING.md), which applies to standalone sampling only.
+- Sampling frequency: enter 0.1–200 Hz or choose a preset. The preset slider also offers [Max rate](docs/design/sampling-pipeline.md), which applies to standalone sampling only.
 
 ## Agent Skills
 
@@ -51,7 +51,7 @@ The sidebar lists global/static variables of the selected ELF. Search by variabl
 - `mcu-variables`: reads live values, analyzes trends, exports chart history CSV, or safely writes scalar and composite-leaf variables through two-stage confirmation.
 - `mcu-chip-info`: reads chip info by the `identity`, `debug`, and `runtime` groups, or by specific fields.
 - `mcu-config`: reads or changes ELF, debugger, MCU, SVD, OpenOCD, and sampling parameters.
-- `mcu-cubemx`: updates an existing `.ioc` on Windows/Linux and generates code in an isolated copy, comparing changes and preserving user code before writing back; see [CubeMX generation](docs/CUBEMX-GENERATION.md).
+- `mcu-cubemx`: updates an existing `.ioc` on Windows/Linux and generates code in an isolated copy, comparing changes and preserving user code before writing back; see [CubeMX generation](docs/guide/agent/cubemx.md).
 - `mcu-fault-analyzer`: reads and decodes Cortex-M fault registers and symbolizes PC/LR with the current ELF.
 - `mcu-elf-analyze`: analyzes Flash/RAM usage, per-region capacities and percentages, section layout, and large symbols offline without occupying the debug probe; it prefers the matching `.map` and supports linker scripts.
 - `mcu-peripheral-debug`: parses the workspace SVD, reads and decodes paused peripheral registers/fields, and performs safe writes after a fresh one-time confirmation for every request.
@@ -59,7 +59,7 @@ The sidebar lists global/static variables of the selected ELF. Search by variabl
 - `mcu-debug-control`'s `inspect.js`: reads paused native task stacks, scopes and C++ class/STL objects with paging and stale-handle protection.
 - `mcu-rtos`: reads paused FreeRTOS task states, priorities and stack fill estimates, and inspects a selected task's stack and C/C++ locals. Structured snapshots currently require single-core little-endian Cortex-M ARM32.
 
-Sensitive operations require the Agent to present a plan and get confirmation in the conversation. Some operations can remember an explicitly selected permission for up to 24 hours; Flash verification and peripheral writes require confirmation each time. See [Agent trust boundaries](docs/AGENT-TRUST-BOUNDARIES.md).
+Sensitive operations require the Agent to present a plan and get confirmation in the conversation. Some operations can remember an explicitly selected permission for up to 24 hours; Flash verification and peripheral writes require confirmation each time. See [Agent trust boundaries](docs/design/agent-trust-boundaries.md).
 
 On Linux, select `STM32CubeMX` (without an extension) in the standalone installation and keep its bundled `jre/bin/java`. Discovery checks CubeMX updater records, PATH, and common installation directories. The installed version must match the `.ioc`; interactive firmware installation requires a graphical desktop. If debug tools are missing, EmberProbe refreshes PATH from the user’s login/interactive shell, with a timeout and manual directory selection as fallback.
 
@@ -76,7 +76,7 @@ npm run package
 
 Normal tests are explicitly grouped in `scripts/test-groups.js`: `npm run test:fast` runs pure logic tests, while `npm run test:integration` runs filesystem, service, and asynchronous integration tests. `npm run test:unit` still runs both groups. The runner uses up to four isolated child processes; use `npm run test:unit -- --jobs 1` for serial debugging and `--keep-logs` to retain passing logs. Summaries are written to `test-results/`. GDB, E2E, HIL, and release consistency tests retain separate entry points.
 
-Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.9.0`.
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/development/releasing.md](docs/development/releasing.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.9.0`.
 
 ## Project Structure
 

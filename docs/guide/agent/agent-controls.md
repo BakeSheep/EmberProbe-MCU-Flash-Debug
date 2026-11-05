@@ -18,4 +18,4 @@ MCP 服务器安装入口和“完全允许 Agent 操作”开关。
 权限从主机读取，不从 Webview 缓存恢复。
 
 软件测试使用模拟目标，不执行实板烧录、写入或代码生成。信任边界详见
-[AGENT-TRUST-BOUNDARIES.md](AGENT-TRUST-BOUNDARIES.md)。
+[AGENT-TRUST-BOUNDARIES.md](../../design/agent-trust-boundaries.md)。

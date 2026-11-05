@@ -39,6 +39,6 @@ CLI-created breakpoints remain GDB-owned. Existing VS Code mappings follow GDB m
 
 模拟 REPL 忙状态：会话选择与 RTOS 刷新禁用，旧任务快照标为过期。Simulated REPL busy state: session selection and refresh are disabled, and the previous task snapshot is stale.
 
-![Simulated RTOS controls during a GDB console command](images/gdb-console-busy.png)
+![Simulated RTOS controls during a GDB console command](../../images/gdb-console-busy.png)
 
 `test/debug-console.test.js` covers forwarding, validation, state races, invalidation, breakpoint reconciliation and Bridge isolation. `test/e2e/suite/debug.test.js` uses the actual adapter with a subprocess simulated GDB. `test/gdb/cpp-paused.test.js` and `test/gdb/external-debug.test.js` exercise real GDB, respectively against a native program and a memory-only ARM RSP server. Normal tests and these simulated targets do not establish board compatibility. No hardware operations are required for these tests.

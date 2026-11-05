@@ -49,7 +49,7 @@ It streams the original tar entries without extracting them on the build host, p
 Linux executable permissions and links when rebuilding on Windows. The installer already
 uses archive hashes in its cache key, so the default runtime receives a new cache
 directory without replacing a runtime used by another window. See the
-[build and source distribution guide](../native/openocd/README.md).
+[build and source distribution guide](../../native/openocd/README.md).
 
 ## STM32C0 and STM32C5
 

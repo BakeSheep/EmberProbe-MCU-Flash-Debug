@@ -176,13 +176,13 @@ DSH 加载后工具名形如 `mcp__emberprobe__config_get`。当前 DSH 不消�
 
 敏感工具（`flash_program`、`flash_verify`、`variables_write`、`peripherals_write`、`cubemx_start`、`cubemx_execute`）收到 Bridge 的确认响应后：
 
-- 侧栏“Agent 配置”中开启“完全允许 Agent 操作”后，Bridge 对适用操作返回 `mode: "full"`，MCP 直接执行烧录、Flash 校验、写入和 CubeMX 生成，不再发起操作确认。关闭后恢复原有授权流程；探针、目标、数据与工作区校验仍保留，匿名探针和 ELF 不匹配等限制仍生效。见 [Agent 权限说明](AGENT-CONTROLS.md)。
+- 侧栏“Agent 配置”中开启“完全允许 Agent 操作”后，Bridge 对适用操作返回 `mode: "full"`，MCP 直接执行烧录、Flash 校验、写入和 CubeMX 生成，不再发起操作确认。关闭后恢复原有授权流程；探针、目标、数据与工作区校验仍保留，匿名探针和 ELF 不匹配等限制仍生效。见 [Agent 权限说明](agent-controls.md)。
 - 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与按 Bridge 实际响应渲染的计划摘要——烧录的 ELF 路径与 SHA-256、target、probe 与 serial、transport、速度；变量写入的 ELF 路径与 SHA-256、连接（target、probe、serial 或调试会话）及每个写入项的名称、地址、类型与新值；外设写入的 SVD 路径与 SHA-256、寄存器地址、新旧寄存器值与所请求的字段；CubeMX 的 `.ioc`、候选文件、CubeMX 版本与配置变更（最多 16 项，其余给出数量与完整 diff 路径）。表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
 - 客户端不支持 elicitation 时，返回计划、确认 ID 与 `nextStep` 说明：agent 必须把计划展示给用户、等待明确回答，再带 `confirmationId`（以及用户明确选择的 `remember`）重调，与 skill 流程一致。
 - 确认 ID 过期或已使用时透传 `*_CONFIRMATION_INVALID`，服务器不会自动重新申请。
 - CubeMX 生成方法 `cubemx.start` / `cubemx.execute` 只消费确认，计划由 `cubemx.prepare` 签发。因此 `cubemx_start` / `cubemx_execute` 未带确认 ID 时，服务器先以相同候选文件及其内容哈希调用 `cubemx.prepare`，再按上述方式确认；已有 24 小时项目授权时直接执行。`cubemx_prepare` 只返回计划与 `nextStep`，不返回确认 ID，agent 无法用它绕过 `cubemx_execute` / `cubemx_start` 的确认。
 
-MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会自动接受确认。elicitation 由客户端渲染，比聊天文本更接近人的操作证据，但 Bridge 仍不对此做认证（客户端可以被配置为自动应答），确认 ID 的计划绑定与一次性校验保持不变，见 [AGENT-TRUST-BOUNDARIES.md](AGENT-TRUST-BOUNDARIES.md)。
+MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会自动接受确认。elicitation 由客户端渲染，比聊天文本更接近人的操作证据，但 Bridge 仍不对此做认证（客户端可以被配置为自动应答），确认 ID 的计划绑定与一次性校验保持不变，见 [AGENT-TRUST-BOUNDARIES.md](../../design/agent-trust-boundaries.md)。
 
 ## 长任务、超时与取消 / Long calls
 

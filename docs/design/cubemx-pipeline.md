@@ -1,7 +1,7 @@
 # CubeMX2 (.ioc2) generation
 
 EmberProbe chooses the generator from the selected project file: `.ioc` uses STM32CubeMX
-(see [CUBEMX-GENERATION.md](CUBEMX-GENERATION.md)), `.ioc2` uses STM32CubeMX2. There is no
+(see [CUBEMX-GENERATION.md](../guide/agent/cubemx.md)), `.ioc2` uses STM32CubeMX2. There is no
 setting for this choice. Both share the same safety pipeline: prepare a candidate, confirm it in
 the Agent conversation, regenerate a baseline and a candidate in staging directories, refuse drift,
 write back with a backup, record a manifest and offer `--check`.

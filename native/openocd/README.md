@@ -7,7 +7,7 @@ used by xPack 0.12.0-7, plus four patches applied in order: the scatter patch
 upstream reviews 9697/9699 (`0002`, `0003`, pinned by commit and hash in
 `build-lock.json`), and the EmberProbe change that loads bundled STM32C5 flash loaders
 instead of downloading them (`0004`; see
-[`docs/OPENOCD-TARGETS.md`](../../docs/OPENOCD-TARGETS.md#stm32c0-and-stm32c5)). When
+[`docs/design/openocd-build.md`](../../docs/design/openocd-build.md#stm32c0-and-stm32c5)). When
 the reviews merge upstream, replace `0002`/`0003` with the merged revision or drop them on
 a base update. These are modified builds, not official xPack binaries. Default `openocd` configuration uses the bundled runtime
 on both platforms. Explicit paths, including older manually installed paths,
@@ -113,7 +113,7 @@ writes, halts, resets or programming were performed. Other probes, wireless
 CMSIS-DAP and Linux hosts have not been measured.
 A wider matrix (clustered fields, 32 variables, 1 KB blocks, fixed target rates and
 a higher sampling clock, compared with the pre-P0 baseline) is in
-[`docs/UNLIMITED-SAMPLING.md`](../../docs/UNLIMITED-SAMPLING.md).
+[`docs/design/sampling-pipeline.md`](../../docs/design/sampling-pipeline.md).
 
 ## Default selection and fallback
 

@@ -54,7 +54,7 @@ and, when the ELF symbols resolve it, `pointerText` such as `→ &rxBuf[12]` wit
 `pointerInfo`; `char *` into read-only ELF data may add `pointerString` such as `"hello"`. Report
 the address and annotation instead of the decimal value. Composite results keep every raw member;
 `memberRole: "artificial" | "internal"` marks compiler and standard-library internals that the
-EmberProbe UI hides by default. See `docs/POINTER-DISPLAY.md` in the extension repository.
+EmberProbe UI hides by default. See `docs/guide/variables/pointers.md` in the extension repository.
 Running multi-read observations are not atomic snapshots. For task-local variables or
 GDB's paused object presentation and paging, read
 [../../mcu-debug-control/references/paused-inspection.md](../../mcu-debug-control/references/paused-inspection.md).

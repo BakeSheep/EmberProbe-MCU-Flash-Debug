@@ -15,7 +15,7 @@ hidden. Only removing a variable releases its slot. Style lookups and context me
    Preserve existing stored overrides because older records cannot distinguish automatic and manual choices.
 3. Cover large structure imports, hidden watches, menu previews, slot reuse, explicit overrides, multiple panels,
    restored visibility, validation and the expanded pool in the existing chart tests.
-4. Document the behavior in `docs/WAVEFORM-PANELS.md`. Run focused tests, `npm run check`, `npm run quality`,
+4. Document the behavior in `docs/guide/variables/waveform-panels.md`. Run focused tests, `npm run check`, `npm run quality`,
    `npm run bundle` and `npm run test:e2e`; report environment limitations separately.
 
 No README, hardware operations, release publishing, or unrelated pending changes are part of this work.

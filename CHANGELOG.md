@@ -10,10 +10,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - VS Code 设置缩减为 23 项，按 8 个分组排列，全部提供中英双语描述。删除 `probeSerial`、
   `sampleIntervalMs`、`maxSamples`、`enablePrettyPrinting` 和 `prettyPrinterPath`；探针改由侧栏选择，
-  采样与 C++ 显示统一使用频率和显示模式设置。见 docs/SETTINGS.md。
+  采样与 C++ 显示统一使用频率和显示模式设置。见 docs/guide/settings.md。
 - Organize 23 VS Code settings into eight groups with Chinese and English descriptions. Remove `probeSerial`,
   `sampleIntervalMs`, `maxSamples`, `enablePrettyPrinting` and `prettyPrinterPath`; select probes in the sidebar
-  and use frequency/display-mode settings for sampling and C++ variables. See docs/SETTINGS.md.
+  and use frequency/display-mode settings for sampling and C++ variables. See docs/guide/settings.md.
 
 ### 新增 / Added
 
@@ -42,12 +42,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 外设寄存器支持非调试、托管单核调试运行及调试暂停三种状态读写，访问本身不主动暂停、复位或恢复目标。
   运行中按 SVD 的 8/16/32 位宽访问；保留逐次写入确认和特殊寄存器限制，回读变化与写命令完成分开报告。
-  64 位、多核共享组及外部服务器保留暂停访问；软件回归不代表实板验证。见 docs/PERIPHERAL-ACCESS.md。
+  64 位、多核共享组及外部服务器保留暂停访问；软件回归不代表实板验证。见 docs/guide/peripherals.md。
 - Read/write SVD peripherals without a debug session, during managed single-core debugging or while paused,
   without halting/resetting/resuming for access. Running transfers use natural 8/16/32-bit widths, retain one-time
   write approval and special-register restrictions, and report readback separately from write completion.
   64-bit, shared-group and external-server access remains paused-only; see the board-specific acceptance record.
-  See docs/PERIPHERAL-ACCESS.md.
+  See docs/guide/peripherals.md.
 - 非调试状态下，外设视图只在点击寄存器、展开外设或刷新时读取，不再在打开或恢复视图时自动启动临时 OpenOCD；
   临时读取占用探针时的提示不再误报为 Agent 读取变量。调试状态变化后，侧栏仍显示写入已完成、回读不同或结果未知。
 - Without debugging, the peripheral view reads only after a register click, peripheral expansion or refresh,
@@ -103,8 +103,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - CubeMX 和 CubeMX2 路径统一放到 VS Code 用户设置，在本机所有工作区共享，移除侧栏路径入口；CubeMX2 优先通过 ST 官方安装登记和 Cube CLI 只读解析检测，目录、PATH 与 Windows 快捷方式作为兜底。保留已有配置，原有 CubeMX 生成流程继续使用独立路径。
 - Move CubeMX and CubeMX2 paths to machine-wide VS Code User settings and remove their sidebar entries. CubeMX2 discovery prefers ST's official bundle registration and read-only Cube CLI resolution, with directory, PATH and Windows shortcut fallbacks. Preserve saved paths and the existing CubeMX generation flow.
 
-- MCP 安装新增原生配置自动合并：DSH 自动写入 Web/Desktop 和已初始化的 Headless/ACP profile，不再要求另存 patch；Claude、Codex、Gemini CLI、OpenCode 和 Antigravity 均可在预览路径后直接写入，不依赖客户端 CLI。保留其他设置、注释和自定义字段，支持环境路径覆盖、并发变更检测、锁、原子替换及 DSH 多文件失败回滚；Cursor 保持 API/安装链接，复制配置作为可选或失败回退。见 `docs/MCP.md`。
-- MCP installation now merges native configuration automatically: DSH updates Web/Desktop and initialized Headless/ACP profiles without a separate patch file; Claude, Codex, Gemini CLI, OpenCode and Antigravity write directly after a path preview, without requiring a client CLI. Preserves unrelated settings, comments and custom fields, with path overrides, change detection, locks, atomic replacement and DSH multi-file rollback. Cursor keeps its API/install link; configuration export remains available as an option or failure fallback. See `docs/MCP.md`.
+- MCP 安装新增原生配置自动合并：DSH 自动写入 Web/Desktop 和已初始化的 Headless/ACP profile，不再要求另存 patch；Claude、Codex、Gemini CLI、OpenCode 和 Antigravity 均可在预览路径后直接写入，不依赖客户端 CLI。保留其他设置、注释和自定义字段，支持环境路径覆盖、并发变更检测、锁、原子替换及 DSH 多文件失败回滚；Cursor 保持 API/安装链接，复制配置作为可选或失败回退。见 `docs/guide/agent/mcp.md`。
+- MCP installation now merges native configuration automatically: DSH updates Web/Desktop and initialized Headless/ACP profiles without a separate patch file; Claude, Codex, Gemini CLI, OpenCode and Antigravity write directly after a path preview, without requiring a client CLI. Preserves unrelated settings, comments and custom fields, with path overrides, change detection, locks, atomic replacement and DSH multi-file rollback. Cursor keeps its API/install link; configuration export remains available as an option or failure fallback. See `docs/guide/agent/mcp.md`.
 
 - 内存占用自动查找链接脚本时，只采用内存区域能放下当前 ELF 所有节（含装载映像）的 .ld；工作区中只有一个匹配脚本时自动选用，没有匹配时提示选择，不再用不相干的脚本计算容量和占比。手动选择的脚本不匹配时仍会使用，并给出提示。
 - Memory usage now only auto-selects a linker script whose regions hold every section of the current ELF, including load images. A single matching script is used even when others exist; when none match, the view asks for the right one instead of computing capacities from an unrelated script. A manually chosen script that does not match is still used, with a warning.

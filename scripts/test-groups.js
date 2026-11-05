@@ -173,7 +173,7 @@ const TEST_GROUPS = Object.freeze({
         "debug-lifecycle-races.test.js",
         "debug-stop-release.test.js",
         "debug-tool-preflight.test.js",
-        "docs-cleanup.test.js",
+        "docs-links.test.js",
         "debug-server-controller.test.js",
         "external-debug.test.js",
         "dwarf-budget.test.js",

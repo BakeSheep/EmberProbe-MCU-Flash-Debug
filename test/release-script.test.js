@@ -34,21 +34,18 @@ try {
     );
 
     fs.mkdirSync(path.join(temp, "docs"));
-    const audit = path.join(temp, "docs", "WAVEFORM-AUDIT.md");
-    fs.writeFileSync(audit, "# audit\n");
-    assert.strictEqual(parseCli(["1.3.0", "--no-clean-docs"]).cleanDocs, false);
-    const dryRun = prepareRelease(temp, "1.3.0", { date: "2026-07-30", dryRun: true });
-    assert.deepStrictEqual(dryRun.docsRemoved, ["WAVEFORM-AUDIT.md"]);
-    assert.ok(fs.existsSync(audit), "dry run keeps docs");
-    assert.deepStrictEqual(
-        prepareRelease(temp, "1.3.0", { date: "2026-07-30", dryRun: true, cleanDocs: false }).docsRemoved,
-        []
+    const record = path.join(temp, "docs", "record.md");
+    fs.writeFileSync(record, "# record\n");
+    assert.throws(
+        () => parseCli(["1.3.0", "--no-clean-docs"]),
+        (error) => error.code === "UNKNOWN_ARGUMENT"
     );
+    const dryRun = prepareRelease(temp, "1.3.0", { date: "2026-07-30", dryRun: true });
     assert.ok(dryRun.changed.includes("package.json"));
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(temp, "package.json"), "utf8")).version, "1.2.3");
 
     const result = prepareRelease(temp, "1.3.0", { date: "2026-07-30" });
-    assert.ok(!fs.existsSync(audit), "release preparation cleans docs");
+    assert.ok(fs.existsSync(record), "release preparation keeps docs");
     assert.strictEqual(result.version, "1.3.0");
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(temp, "package.json"), "utf8")).version, "1.3.0");
     const lock = JSON.parse(fs.readFileSync(path.join(temp, "package-lock.json"), "utf8"));
@@ -64,14 +61,11 @@ try {
         () => prepareRelease(temp, "1.3.0", { date: "2026-07-30" }),
         (error) => error.code === "VERSION_EXISTS"
     );
-    fs.writeFileSync(audit, "# audit\n");
     fs.writeFileSync(
         path.join(temp, "CHANGELOG.md"),
         changelog.replace("## [Unreleased]", "## [Unreleased]\n\n- pending")
     );
-    const skipped = prepareRelease(temp, "1.4.0", { date: "2026-07-31", cleanDocs: false });
-    assert.deepStrictEqual(skipped.docsRemoved, []);
-    assert.ok(fs.existsSync(audit), "--no-clean-docs keeps docs");
+    prepareRelease(temp, "1.4.0", { date: "2026-07-31" });
     require("../scripts/validate-release").validateRelease(temp, "v1.4.0");
 
     const readChangelog = () => fs.readFileSync(path.join(temp, "CHANGELOG.md"), "utf8");
@@ -81,13 +75,13 @@ try {
             readChangelog().replace("## [Unreleased]", `## [Unreleased]\n\n${line}`)
         );
     addUnreleased("- beta one");
-    prepareRelease(temp, "1.5.0-beta.1", { date: "2026-08-01", cleanDocs: false });
+    prepareRelease(temp, "1.5.0-beta.1", { date: "2026-08-01" });
     addUnreleased("- beta two");
-    prepareRelease(temp, "1.5.0-beta.2", { date: "2026-08-02", cleanDocs: false });
+    prepareRelease(temp, "1.5.0-beta.2", { date: "2026-08-02" });
     assert.ok(fs.readFileSync(path.join(temp, "README.md"), "utf8").includes("`1.5.0-beta.2`"));
     require("../scripts/validate-release").validateRelease(temp, "v1.5.0-beta.2");
 
-    const stable = prepareRelease(temp, "1.5.0", { date: "2026-08-03", cleanDocs: false });
+    const stable = prepareRelease(temp, "1.5.0", { date: "2026-08-03" });
     assert.deepStrictEqual(stable.mergedPrereleases, ["1.5.0-beta.2", "1.5.0-beta.1"]);
     const merged = readChangelog();
     assert.ok(!merged.includes("1.5.0-beta"), "stable release absorbs its prerelease sections");
@@ -96,7 +90,7 @@ try {
     require("../scripts/validate-release").validateRelease(temp, "v1.5.0");
 
     assert.throws(
-        () => prepareRelease(temp, "1.6.0", { date: "2026-08-04", cleanDocs: false }),
+        () => prepareRelease(temp, "1.6.0", { date: "2026-08-04" }),
         (error) => error.code === "UNRELEASED_EMPTY"
     );
     for (const version of ["2.0.0-preview.1", "2.0.0-beta", "2.0.0+build.1"]) {

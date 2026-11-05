@@ -25,7 +25,7 @@ an executable `stm32cubemx2` or `stm32cubemx2-<version>` launcher; macOS detecti
 
 The selected project file chooses the tool: `.ioc` projects use `emberprobe.cubemxPath`, and `.ioc2` projects use
 `emberprobe.cubemx2Path` for inspection, CLI queries, configuration changes and generation (see
-[CUBEMX2-GENERATION.md](CUBEMX2-GENERATION.md)). Firmware package checks in the sidebar apply to `.ioc` projects only.
+[CUBEMX2-GENERATION.md](../../design/cubemx-pipeline.md)). Firmware package checks in the sidebar apply to `.ioc` projects only.
 Agent configuration reads include both paths, but Agents cannot change either executable path.
 
 ## Generation safety
