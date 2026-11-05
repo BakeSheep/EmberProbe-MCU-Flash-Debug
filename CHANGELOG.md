@@ -109,6 +109,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 内存占用自动查找链接脚本时，只采用内存区域能放下当前 ELF 所有节（含装载映像）的 .ld；工作区中只有一个匹配脚本时自动选用，没有匹配时提示选择，不再用不相干的脚本计算容量和占比。手动选择的脚本不匹配时仍会使用，并给出提示。
 - Memory usage now only auto-selects a linker script whose regions hold every section of the current ELF, including load images. A single matching script is used even when others exist; when none match, the view asks for the right one instead of computing capacities from an unrelated script. A manually chosen script that does not match is still used, with a warning.
 
+### 文档 / Documentation
+
+- 按读者重组 `docs/`：用户指南提供中英两版并附索引，设计说明和历史记录单独存放；扩展包只附带用户指南。
+- Reorganize `docs/` by reader: user guides come in Chinese and English with an index, while design notes and records live apart. The extension package ships only the guides.
+
 ## [0.9.0] - 2026-10-29
 
 ### 新增 / Added

@@ -90,6 +90,12 @@ MCP 固定暴露全部工具和工作流提示，不支持更改暴露范围；�
 - `flash_program` / `flash_verify` 先在服务器进程内运行与 skill 相同的预检（`flash-common.preflight`）；`ready === false` 时直接返回 `diagnostics` 与 `notes`，不进入确认。已有 24 小时工作区授权时直接执行，并在结果的 `authorization.trustedExpiresAt` 中报告到期时间。
 - `debug_inspect` 的 `frame` 与 `reference` 是 Bridge 在上一次列表中返回的字符串句柄（`stackFrames[].frame`、`scopes[].reference`、`variables[].reference`），不是 DAP 整数；整数在 schema 校验时即被拒绝。句柄在恢复运行、写入、控制台命令或切换会话后失效，需要重新列出。
 
+| 工具集 | 工具 |
+| --- | --- |
+| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `peripherals_list` `peripherals_read` `peripherals_write` |
+| `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
+| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
+
 ## 确认
 
 敏感工具（`flash_program`、`flash_verify`、`variables_write`、`peripherals_write`、`cubemx_start`、`cubemx_execute`）收到 Bridge 的确认响应后：

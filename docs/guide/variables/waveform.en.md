@@ -22,6 +22,18 @@ Right-click a variable row, or press Shift+F10 on it, to change its type, number
 - The base does not change sampling, curve positions, shared curve styles, or CSV exports.
 - Composite rows have no base option.
 
+## Temporary gain
+
+Right-click a numeric variable, enter a factor under **Gain**, or step by 0.1 with `−` / `+`. The default is 1, and decimals, 0 and negative values are allowed.
+
+- It only affects values, curves and hover readings in the current waveform panel.
+- Sampling records, frozen data and CSV keep the original values.
+- A negative gain flips the curve, 0 gives a flat line, and manual Y limits stay as they are.
+- With a gain other than 1, enum names disappear and very large integers may round.
+- Closing the panel, reloading or quitting the IDE resets it to 1. Removing the variable clears it.
+
+Pointer addresses, strings and composite objects have no gain.
+
 ## Curve colors and line styles
 
 A curve receives a style the first time it is enabled. Unused solid styles come first, followed by dashed and dotted ones. There are 144 preset combinations, and new colors are generated after that.
