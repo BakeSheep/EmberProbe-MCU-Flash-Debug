@@ -200,7 +200,7 @@ class DebugLaunch {
             Object.assign(debugConfig, cortexTools);
             Object.assign(debugConfig, pretty);
             Object.assign(debugConfig, images);
-            // A changed image downloads at the sidebar's programming clock (see docs/guide/flash-debug/flash.md).
+            // Debug downloads use the sidebar's programming clock (see docs/design/flash-and-debug.md).
             if (debugConfig.request === "launch" && this.managedServer?.options)
                 debugConfig.__emberprobeDownloadSpeedKhz = flashSpeedKhz(this.managedServer.options);
             if (startup)

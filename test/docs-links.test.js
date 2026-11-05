@@ -62,9 +62,19 @@ for (const file of plainText) {
 }
 
 // Pages stay grouped by reader.
-const allowedRoots = new Set(["README.md", "design", "development", "guide", "images", "records"]);
+const allowedRoots = new Set(["README.en.md", "README.md", "design", "development", "guide", "images", "records"]);
 for (const entry of fs.readdirSync(path.join(root, "docs"))) {
     assert.ok(allowedRoots.has(entry), `docs/${entry} belongs in a reader directory`);
+}
+
+// Every user page exists in both languages.
+const guide = path.join(root, "docs", "guide");
+for (const entry of fs.readdirSync(guide, { recursive: true })) {
+    const name = String(entry);
+    if (!name.endsWith(".md")) continue;
+    const page = path.join(guide, name);
+    const counterpart = name.endsWith(".en.md") ? page.replace(/\.en\.md$/, ".md") : page.replace(/\.md$/, ".en.md");
+    assert.ok(fs.existsSync(counterpart), `docs/guide/${name} has no counterpart in the other language`);
 }
 
 console.log("Docs link tests passed");

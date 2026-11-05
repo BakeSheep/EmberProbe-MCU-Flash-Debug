@@ -321,7 +321,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 同一卡片的 **MCP 服务器** 区域列出各客户端（Claude Code、Codex、Cursor 等）的未安装、已安装、可升级状态，可直接安装、升级、移除或复制配置。配置只写入用户级文件，工程由 Agent 的 MCP roots 或工作目录决定，从工程目录启动客户端即可，多个工作区可同时使用。见 [MCP 说明](docs/guide/agent/mcp.md)。
 
-烧录、变量/外设写入、CubeMX 生成等操作由 Agent 先展示计划，在对话中确认后执行。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 信任边界](docs/design/agent-trust-boundaries.md)。
+烧录、变量/外设写入、CubeMX 生成等操作由 Agent 先展示计划，在对话中确认后执行。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 权限](docs/guide/agent/permissions.md)。
 
 CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在隔离副本中生成、比对，保留 `USER CODE` 后写回。见 [CubeMX 代码生成说明](docs/guide/agent/cubemx.md)。
 
@@ -371,21 +371,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 - [更新记录](CHANGELOG.md)
 - [Agent Skills](skills/)
-- [实时变量采样说明](docs/guide/variables/sampling.md)
-- [FreeRTOS 调试说明](docs/guide/flash-debug/rtos.md)
-- [J-Link 兼容性说明](docs/guide/getting-started/jlink.md)
-- [探针连接与选择](docs/guide/getting-started/probe-connections.md)
-- [调试工具链查找](docs/guide/getting-started/toolchain.md)
-- [GDB 控制台](docs/guide/flash-debug/gdb-console.md)
-- [MCP 服务器](docs/guide/agent/mcp.md)
-- [枚举变量显示](docs/guide/variables/enums.md)
-- [ELF 变量来源筛选](docs/guide/variables/origin-filter.md)
-- [外部 GDB Server（实验性）](docs/guide/flash-debug/external-gdb-server.md)
-- [不限速采样](docs/guide/variables/sampling.md)
-- [多核共享调试组（实验性）](docs/guide/flash-debug/multicore.md)
-- [CubeMX 代码生成说明](docs/guide/agent/cubemx.md)
-- [Agent 信任边界](docs/design/agent-trust-boundaries.md)
-- [发布指南](docs/development/releasing.md)
+- [完整文档索引](docs/README.md)
 
 ## 许可证与归属
 

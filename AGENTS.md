@@ -46,7 +46,7 @@ Use `require`/`module.exports`, four-space indentation, double quotes, semicolon
 
 Keep hardware operations behind services and preserve Bridge authentication, input validation, and flash/write/CubeMX authorization. Respect `probeCoordinator` ownership and shared-group leases; preserve cleanup on failures. Bind debug handles and writes to the selected session and stop generation, invalidating stale results after execution or session changes. Preserve byte, traversal, paging, and time budgets for ELF/DWARF, SVD, and runtime objects, including read-only restrictions where type or address identity is uncertain.
 
-Read supporting documents when relevant: `docs/guide/flash-debug/rtos.md` and `docs/guide/flash-debug/multicore.md` for session changes, `docs/guide/agent/cubemx.md` for generation, and `docs/guide/getting-started/jlink.md` for probe/driver work. Use `skills/_emberprobe/agent-workflow.md` when changing shared skill behavior; preserve skill-specific authorization requirements.
+Read supporting documents when relevant: `docs/design/debug-sessions.md` for session changes, `docs/design/cubemx-pipeline.md` for generation, and `docs/design/probe-selection.md` for probe/driver work. Use `skills/_emberprobe/agent-workflow.md` when changing shared skill behavior; preserve skill-specific authorization requirements.
 
 ## Testing Guidelines
 
