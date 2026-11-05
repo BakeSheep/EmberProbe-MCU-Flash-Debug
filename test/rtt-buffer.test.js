@@ -83,6 +83,15 @@ scenario("utf8Boundary only trims incomplete trailing sequences", () => {
     assert.strictEqual(utf8Boundary(Buffer.from("😀"), 3), 0);
 });
 
+scenario("base64 reads keep exact bytes at the limit", () => {
+    const buffer = new RttBuffer();
+    buffer.append("a温度");
+    const read = buffer.read({ maxBytes: 3, encoding: "base64" });
+    assert.deepStrictEqual(read.data, Buffer.from("a温度").subarray(0, 3));
+    assert.strictEqual(read.nextCursor, 3);
+    assert.strictEqual(read.more, true);
+});
+
 scenario("buffer size is validated", () => {
     assert.throws(
         () => new RttBuffer({ maxBytes: 0 }),

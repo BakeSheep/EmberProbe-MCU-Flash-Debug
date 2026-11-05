@@ -14,7 +14,13 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
     assert.ok(Array.isArray(groups));
     assert.deepStrictEqual(
         groups.map((group) => group.id),
-        ["emberprobe.tools", "emberprobe.connection", "emberprobe.sampling", "emberprobe.rtt", "emberprobe.experimental"]
+        [
+            "emberprobe.tools",
+            "emberprobe.connection",
+            "emberprobe.sampling",
+            "emberprobe.rtt",
+            "emberprobe.experimental"
+        ]
     );
     assert.deepStrictEqual(
         groups.map((group) => Object.keys(group.properties).length),

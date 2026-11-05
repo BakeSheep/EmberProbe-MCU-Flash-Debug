@@ -49,7 +49,7 @@ const { inspectSkill, installSkill, uninstallSkill, inspectSkills, readManifest 
     try {
         const installed = await installSkill(vscode, context, "en");
         assert.strictEqual(installed.state, "installed");
-        assert.strictEqual(installed.installed, 10);
+        assert.strictEqual(installed.installed, 11);
         const pointer = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
         fs.writeFileSync(pointer, JSON.stringify({ descriptorPath: "existing-bridge" }));
         await installSkill(vscode, context, "en");

@@ -243,6 +243,22 @@ function makeController(host, options = {}) {
         assert.strictEqual(order.at(-1).type, "ownStop");
     });
 
+    await scenario("a search that stalls the connection names the search, not the sampling connection", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        managed.session.rttControl = async () => {
+            throw Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
+                code: "OPENOCD_RPC_TIMEOUT"
+            });
+        };
+        host.debugLaunch.managedServer = managed.session;
+        const { controller } = makeController(host, {
+            rttSettings: () => ({ searchRange: { address: "0x20000000", size: "0x8000" } })
+        });
+        await assert.rejects(controller.start(), (error) => error.code === "RTT_SCAN_TIMEOUT");
+        assert.strictEqual(controller.status().error.code, "RTT_SCAN_TIMEOUT");
+    });
+
     await scenario("the retry ladder gives up after its attempt budget", async () => {
         const host = fakeHost();
         const managed = fakeHostSession({ channels: emptyChannels });

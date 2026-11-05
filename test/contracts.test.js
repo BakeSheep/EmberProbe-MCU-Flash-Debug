@@ -54,7 +54,7 @@ runContract("skill-contract", () => {
     );
 
     // Every skill must reference the shared workflow document so agents load the common conventions.
-    assert.strictEqual(manifest.skills.length, 10, "the extension ships ten agent skills");
+    assert.strictEqual(manifest.skills.length, 11, "the extension ships eleven agent skills");
     for (const skill of manifest.skills) {
         const skillMd = fs.readFileSync(path.join(skillsRoot, skill.name, "SKILL.md"), "utf8");
         assert.ok(

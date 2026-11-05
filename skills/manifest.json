@@ -124,6 +124,16 @@
       ]
     },
     {
+      "name": "mcu-rtt",
+      "version": "1.0.0",
+      "runtime": true,
+      "required": [
+        "SKILL.md",
+        "scripts/rtt.js",
+        "agents/openai.yaml"
+      ]
+    },
+    {
       "name": "mcu-cubemx",
       "version": "1.0.0",
       "runtime": true,

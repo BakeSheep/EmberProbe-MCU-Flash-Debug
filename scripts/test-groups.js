@@ -110,6 +110,7 @@ const TEST_GROUPS = Object.freeze({
         "release-workflow.test.js",
         "repl-focus.test.js",
         "rtos-snapshot.test.js",
+        "rtt-agent.test.js",
         "rtt-buffer.test.js",
         "rtt-control-block.test.js",
         "rtt-control.test.js",

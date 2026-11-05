@@ -350,6 +350,24 @@ const firedOf = (terminal) => {
         assert.strictEqual(notice.error.i18nKey, "rtt.err.configIncomplete");
     });
 
+    await scenario("Agent starts reveal the same terminals and propagate noticed failures once", async () => {
+        const { service, controller, notices, vscode } = makeService();
+        const status = await service.startAgentCommand();
+        assert.strictEqual(status.state, "running");
+        assert.ok(vscode.terminals[0].shown > 0);
+        await service.stopCommand();
+        const failure = Object.assign(new Error("start timed out"), { code: "RTT_START_TIMEOUT" });
+        controller.start = async () => {
+            controller.setState("starting");
+            controller.setState("stopped", { reason: "start-failed", error: failure });
+            throw failure;
+        };
+        const before = notices.length;
+        await assert.rejects(service.startAgentCommand(), (error) => error === failure);
+        assert.strictEqual(notices.length, before + 1, "the catch does not duplicate the status notice");
+        service.dispose();
+    });
+
     await scenario("a restart reuses the stopped terminal and marks the boundary", async () => {
         const { service, controller, clock, posted, vscode } = makeService();
         await service.startCommand();

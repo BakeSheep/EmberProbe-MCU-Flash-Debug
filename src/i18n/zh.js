@@ -293,6 +293,7 @@ module.exports = Object.freeze({
     "rtt.err.startTimeout": "RTT 未找到控制块：固件尚未初始化 RTT，或控制块不在搜索范围内；可设置控制块地址或搜索范围",
     "rtt.err.portUnavailable": "没有可用的本地端口",
     "rtt.err.scanTooLarge": "自动扫描范围超过上限，请设置控制块地址或搜索范围",
+    "rtt.err.scanTimeout": "搜索控制块时探针无响应，请设置控制块地址，或修改 samplingAdapterSpeedKhz",
     "rtt.err.ambiguous": "ELF 中存在多个 _SEGGER_RTT 符号",
     "rtt.err.channelDisconnected": "RTT 通道数据连接不可用",
     "rtt.err.writeTooLarge": "单行输入超过长度上限",

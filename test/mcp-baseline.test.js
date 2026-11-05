@@ -132,6 +132,11 @@ function board(bugs = {}) {
         },
         "probe.list": () => ({ probes: [{ serial: "1234", selected: true }] }),
         "rtos.status": () => ({ configured: false }),
+        "rtt.status": () => ({ state: "stopped" }),
+        "rtt.read": () => {
+            throw fail("RTT_NOT_RUNNING");
+        },
+        "rtt.stop": () => ({ state: "stopped" }),
         "elf.analyze": () => ({ regions: [] }),
         "peripherals.list": () => ({ peripherals: [] }),
         "cubemx.detect": () => {

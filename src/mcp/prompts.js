@@ -34,6 +34,14 @@ const PROMPTS = Object.freeze([
         }
     },
     {
+        name: "rtt_logging",
+        title: "Read firmware RTT logs",
+        description: "Start RTT logging and read firmware output through a bounded cursor.",
+        toolset: "core",
+        skill: "mcu-rtt",
+        scripts: { "scripts/rtt.js": "rtt_status, rtt_read and rtt_control" }
+    },
+    {
         name: "rtos_inspect",
         title: "Inspect RTOS tasks",
         description: "Snapshot FreeRTOS tasks and inspect a task's stack and locals in a paused session.",

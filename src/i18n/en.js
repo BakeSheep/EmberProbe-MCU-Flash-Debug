@@ -319,6 +319,8 @@ module.exports = Object.freeze({
         "RTT did not find the control block: the firmware has not initialized RTT, or the block is outside the searched memory; set its address or a search range",
     "rtt.err.portUnavailable": "No free local port",
     "rtt.err.scanTooLarge": "The automatic scan range is too large; set the control-block address or a search range",
+    "rtt.err.scanTimeout":
+        "The control-block search stalled on the probe; set the control-block address or change samplingAdapterSpeedKhz",
     "rtt.err.ambiguous": "Several _SEGGER_RTT symbols in the ELF",
     "rtt.err.channelDisconnected": "The RTT channel data connection is unavailable",
     "rtt.err.writeTooLarge": "The input line exceeds the length limit",

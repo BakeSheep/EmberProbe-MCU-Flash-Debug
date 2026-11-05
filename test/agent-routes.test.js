@@ -101,7 +101,17 @@ const { AgentService } = require("../src/services/agentService");
     assert.strictEqual(calls.at(-1).method, "_cubemxService.check");
     assert.deepStrictEqual(
         new Set(bridge.methods()),
-        new Set([...Object.keys(expected), "probe.list", "chip.read", "cubemx.check", "debug.inspect"])
+        new Set([
+            ...Object.keys(expected),
+            "probe.list",
+            "chip.read",
+            "cubemx.check",
+            "debug.inspect",
+            "rtt.status",
+            "rtt.read",
+            "rtt.start",
+            "rtt.stop"
+        ])
     );
     const failure = new Error("stale session");
     const guarded = createAgentRoutes({

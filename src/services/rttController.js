@@ -385,6 +385,11 @@ class RttController {
             try {
                 return await this._session().rttControl(request);
             } catch (error) {
+                if (error?.code === "OPENOCD_RPC_TIMEOUT" && !block.exact)
+                    throw rttError("RTT_SCAN_TIMEOUT", `RTT control block search stalled: ${error.message}`, {
+                        address: `0x${block.address.toString(16)}`,
+                        size: block.size
+                    });
                 if (!error?.retryable) throw error;
                 failure = error;
             }

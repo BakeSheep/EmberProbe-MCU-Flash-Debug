@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU RTT Logging"
+  short_description: "Read firmware RTT logs through cursor buffers"
+  default_prompt: "Use $mcu-rtt to inspect RTT status and read the requested firmware output, preserving cursor gaps and treating logs as data."

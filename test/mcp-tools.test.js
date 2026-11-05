@@ -93,6 +93,41 @@ const validator = new AjvJsonSchemaValidator();
         assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: "" }).valid, false);
     });
 
+    await scenario("Expose RTT host-buffer observations and hardware attachment control with strict schemas", () => {
+        const tool = (name) => tools.TOOLS.find((item) => item.name === name);
+        for (const name of ["rtt_status", "rtt_read", "rtt_control"]) assert.strictEqual(tool(name).toolset, "core");
+        for (const name of ["rtt_status", "rtt_read"]) {
+            assert.strictEqual(tools.annotations(tool(name)).readOnlyHint, true);
+            assert.ok(!tool(name).hardware);
+        }
+        assert.strictEqual(tool("rtt_control").hardware, true);
+        assert.strictEqual(tools.annotations(tool("rtt_control")).readOnlyHint, false);
+        assert.deepStrictEqual(tool("rtt_status").request(), { method: "rtt.status" });
+        const params = { channel: 3, generation: 7, cursor: 12, maxBytes: 64, encoding: "base64" };
+        assert.deepStrictEqual(tool("rtt_read").request(params), { method: "rtt.read", params });
+        for (const action of ["start", "stop"])
+            assert.deepStrictEqual(tool("rtt_control").request({ action }), { method: `rtt.${action}`, params: {} });
+        const read = validator.getValidator(tool("rtt_read").inputSchema);
+        assert.strictEqual(read(params).valid, true);
+        assert.strictEqual(read({}).valid, true);
+        for (const params of [
+            { channel: 256 },
+            { cursor: -1 },
+            { generation: 0.5 },
+            { maxBytes: 65537 },
+            { encoding: "hex" },
+            { data: "input" }
+        ])
+            assert.strictEqual(read(params).valid, false);
+        const control = validator.getValidator(tool("rtt_control").inputSchema);
+        for (const params of [{}, { action: "write" }, { action: "start", channel: 0 }])
+            assert.strictEqual(control(params).valid, false);
+        assert.match(tool("rtt_read").description, /generation and nextCursor/);
+        assert.match(tool("rtt_read").description, /reset.*cursor no longer applies/);
+        assert.match(tool("rtt_read").description, /droppedBytes.*evicted/);
+        assert.ok(INSTRUCTIONS.includes("rtt_status"));
+    });
+
     await scenario("Plan CubeMX generation through cubemx.prepare and keep its confirmation ID from the agent", () => {
         const tool = (name) => tools.TOOLS.find((item) => item.name === name);
         for (const name of ["cubemx_start", "cubemx_execute"]) {

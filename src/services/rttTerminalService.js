@@ -34,6 +34,7 @@ const RTT_ERROR_KEYS = Object.freeze({
     RTT_START_TIMEOUT: "rtt.err.startTimeout",
     RTT_PORT_UNAVAILABLE: "rtt.err.portUnavailable",
     RTT_SCAN_RANGE_TOO_LARGE: "rtt.err.scanTooLarge",
+    RTT_SCAN_TIMEOUT: "rtt.err.scanTimeout",
     RTT_CONTROL_BLOCK_AMBIGUOUS: "rtt.err.ambiguous",
     RTT_CONTROL_BLOCK_UNKNOWN: "rtt.err.blockUnknown",
     RTT_INVALID_ADDRESS: "rtt.err.invalidAddress",
@@ -121,6 +122,15 @@ class RttTerminalService {
     // Starts RTT and reveals the terminals; starting an already running attachment only reveals them. A failure is
     // reported here, once, whichever path it arrived on, so callers get false and report nothing further.
     async startCommand() {
+        return this._startCommand(false);
+    }
+
+    // Agent callers share terminal/card/notice updates but must receive the original failure.
+    async startAgentCommand() {
+        return this._startCommand(true);
+    }
+
+    async _startCommand(rethrow) {
         this._failureNoticed = null;
         for (const id of ["rtt", "rtt-channels", "rtt-log"]) this._clearNotice(id);
         let status;
@@ -129,6 +139,7 @@ class RttTerminalService {
         } catch (error) {
             if (this._failureNoticed !== error?.code)
                 this._notice({ level: "error", titleKey: "notice.rttStartFailed", error: this._withErrorKey(error) });
+            if (rethrow) throw error;
             return false;
         }
         this.sync(status, true);

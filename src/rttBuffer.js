@@ -62,8 +62,8 @@ class RttBuffer {
 
     // { generation, cursor } from a previous read, or nothing to start at the oldest retained byte. Returns
     // { generation, cursor (where data starts), nextCursor, data: Buffer, droppedBytes, reset, more }.
-    /** @param {{ generation?: number, cursor?: number, maxBytes?: number }} [request] */
-    read({ generation, cursor, maxBytes } = {}) {
+    /** @param {{ generation?: number, cursor?: number, maxBytes?: number, encoding?: string }} [request] */
+    read({ generation, cursor, maxBytes, encoding = "utf8" } = {}) {
         const limit = clampBytes(maxBytes, DEFAULT_READ_BYTES, MAX_READ_BYTES);
         const valid =
             generation === this.generation && Number.isSafeInteger(cursor) && cursor >= 0 && cursor <= this.end;
@@ -79,7 +79,7 @@ class RttBuffer {
             if (offset >= to) break;
         }
         let data = Buffer.concat(parts);
-        if (to < this.end) {
+        if (encoding !== "base64" && to < this.end) {
             const cut = utf8Boundary(data, data.length);
             if (cut > 0) data = data.subarray(0, cut);
             to = from + data.length;
