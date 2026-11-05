@@ -21,10 +21,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 移除 `memory.regionKinds` 和 `mcp.toolsets` 设置：内存区域按名称自动分类；MCP 固定暴露全部工具和工作流提示（包括 CubeMX），旧 `EMBERPROBE_MCP_TOOLSETS` 环境变量不再生效。
 - Remove `memory.regionKinds` and `mcp.toolsets`: classify memory regions automatically by name and always expose all MCP tools and workflow prompts, including CubeMX. Ignore the legacy `EMBERPROBE_MCP_TOOLSETS` environment variable.
 
-- VS Code 设置缩减为 21 项，按 6 个分组排列，全部提供中英双语描述。删除 `probeSerial`、
+- VS Code 设置缩减为 21 项，归入工具与路径、连接与调试、采样与波形、实验功能 4 个大类，全部提供中英双语描述。删除 `probeSerial`、
   `sampleIntervalMs`、`maxSamples`、`enablePrettyPrinting` 和 `prettyPrinterPath`；探针改由侧栏选择，
   采样与 C++ 显示统一使用频率和显示模式设置。见 docs/SETTINGS.md。
-- Organize 21 VS Code settings into six groups with Chinese and English descriptions. Remove `probeSerial`,
+- Organize 21 VS Code settings into four bilingual groups: Tools & Paths, Connection & Debugging,
+  Sampling & Waveforms, and Experimental. Remove `probeSerial`,
   `sampleIntervalMs`, `maxSamples`, `enablePrettyPrinting` and `prettyPrinterPath`; select probes in the sidebar
   and use frequency/display-mode settings for sampling and C++ variables. See docs/SETTINGS.md.
 
