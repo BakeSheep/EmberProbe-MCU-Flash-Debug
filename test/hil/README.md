@@ -150,6 +150,7 @@ Copy `test/hil/smoke.example.json` to `test/hil/smoke.local.json` (git-ignored) 
     - `rtosTasks`: FreeRTOS task names that must appear in the snapshot.
     - `peripherals`: `read` register paths; optional `write` `{ "target", "value" }` restored afterwards; optional `reject` entries `{ "target", "value", "code" }` that must fail with that error code. Do not configure writes to registers that drive actuators.
     - `negative`: `readOnly` (a const/Flash variable) and `outOfBounds` (an out-of-range array element) names that must be rejected.
+    - `rtt`: settings of the RTT suite: `nosymElf` (a stripped build for the scan fallbacks), `controlBlockAddress`, `searchRange` (`{ "address", "size" }`), `scanSpeedKhz` (adapter speed for the scans, for probes that stall at the target script's default), `sectionScan` (`false` when the control block lies outside the ELF's writable sections).
 - `usb.hardwareId` (`VID:PID`, for example `1366:0101` for J-Link) or `usb.busid` (from `usbipd list`): the probe handed to WSL. Use `busid` when two connected probes share a VID:PID.
 
 Run `node scripts/hil-matrix.js --doctor` first. It checks the executables and ELF for each platform, the usbipd share state and the WSL tools, without opening a probe.
@@ -171,6 +172,15 @@ npm run test:hil:matrix -- --platforms linux --profile f407-jlink
 npm run test:hil:matrix -- --pause
 npm run test:hil:matrix -- --repeat 5
 ```
+
+### RTT suite
+
+```powershell
+$env:EMBERPROBE_HIL_CONFIRM = 'YES'
+node test/hil/run-smoke.js --suite rtt --config <file> --profile <name>
+```
+
+`--suite rtt` runs `rtt-smoke.test.js` instead of the smoke test. It needs firmware with the output and down-channel commands of `H750_RttTest`. `EMBERPROBE_RTT_ONLY` limits a run to steps whose names match. The report is `test-results/hil-rtt-<platform>-<profile>.json`. The suite flashes the board and leaves it running the profile's firmware.
 
 `--pause` waits for Enter before each profile so the board or probe can be swapped. `--repeat N` (1-50) repeats the debug round. `--platforms win32` or `linux` runs one side; `--distro` selects a non-default WSL distribution; `--skip-bundle` reuses the existing Windows bundle. On a native Linux machine run `EMBERPROBE_HIL_CONFIRM=YES xvfb-run -a npm run test:hil:smoke -- --profile <name>` directly.
 

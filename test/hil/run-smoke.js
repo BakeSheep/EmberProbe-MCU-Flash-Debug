@@ -10,6 +10,7 @@ const { loadConfig, parseArgs, profileNames, resolveProfile } = require("./smoke
 
 const root = path.resolve(__dirname, "../..");
 const VSCODE_VERSION = "1.136.1";
+const SUITES = { smoke: "smoke.test.js", rtt: "rtt-smoke.test.js" };
 
 function configPath(options) {
     return path.resolve(
@@ -55,7 +56,7 @@ function doctor(config, names) {
     return problems;
 }
 
-async function runProfile(profile, repeat = 1) {
+async function runProfile(profile, repeat = 1, suite = "smoke") {
     const { runTests } = require("@vscode/test-electron");
     const temporary = path.join(root, ".vscode-test", `smoke-${profile.name}-${process.pid}`);
     if (!path.resolve(temporary).startsWith(path.join(root, ".vscode-test") + path.sep))
@@ -70,12 +71,17 @@ async function runProfile(profile, repeat = 1) {
     await fsp.copyFile(profile.elf, path.join(workspace, elfRelative));
     const svdRelative = profile.svd ? path.basename(profile.svd) : "";
     if (svdRelative) await fsp.copyFile(profile.svd, path.join(workspace, svdRelative));
+    const nosymElf = profile.checks.rtt?.nosymElf;
+    if (nosymElf) {
+        profile.checks.rtt.nosymRelative = path.basename(nosymElf);
+        await fsp.copyFile(nosymElf, path.join(workspace, profile.checks.rtt.nosymRelative));
+    }
     const started = Date.now();
     try {
         await runTests({
             version: VSCODE_VERSION,
             extensionDevelopmentPath: root,
-            extensionTestsPath: path.resolve(__dirname, "smoke.test.js"),
+            extensionTestsPath: path.resolve(__dirname, SUITES[suite]),
             extensionTestsEnv: {
                 EMBERPROBE_E2E: "1",
                 TEMP: tmp,
@@ -108,6 +114,8 @@ async function runProfile(profile, repeat = 1) {
 
 async function main() {
     const options = parseArgs(process.argv.slice(2));
+    const suite = options.suite || "smoke";
+    if (!Object.hasOwn(SUITES, suite)) throw new Error(`Unknown suite: ${suite}`);
     const config = loadConfig(configPath(options));
     const names = profileNames(config, options.profiles);
     if (options.doctor) {
@@ -124,7 +132,7 @@ async function main() {
     const results = [];
     for (const profile of profiles) {
         console.log(`\n== ${process.platform} ${profile.name} (${profile.probe} / ${profile.target})`);
-        results.push(await runProfile(profile, options.repeat || 1));
+        results.push(await runProfile(profile, options.repeat || 1, suite));
     }
     const summary = { platform: process.platform, finishedAt: new Date().toISOString(), results };
     fs.mkdirSync(path.join(root, "test-results"), { recursive: true });
