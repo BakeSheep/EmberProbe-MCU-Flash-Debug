@@ -541,8 +541,8 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(recoverySamples.length, 3);
     assert.deepStrictEqual(recoveryStatuses, [{ key: "sb.sampling" }]);
 
-    // Sampling ticks that arrive while a write transaction holds the Tcl connection are requeued: the sampling chain
-    // schedules itself, so dropping a tick would freeze the watch list after one write.
+    // A sampling tick that arrives while a transaction holds the Tcl connection runs at its release: the chain schedules
+    // itself, so dropping a tick would freeze the watch list, and waiting an interval would let frequent reads starve it.
     const busySamples = [];
     const busySession = new ManagedOpenOcdSession(
         { intervalMs: 100 },
@@ -560,9 +560,11 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     busySession._clearSamplingTimer();
     busySession._tryAcquireExclusive();
     await busySession._sampleTick(true);
-    assert.ok(busySession.timer, "a tick skipped for an in-flight write must re-arm the sampling chain");
+    assert.strictEqual(busySession.timer, null, "the tick waits for the release, not a whole interval");
+    assert.strictEqual(busySession._samplingTickDeferred, true);
     assert.deepStrictEqual(busySamples, [], "no sample may be read while the write owns the connection");
     busySession._releaseExclusive();
+    assert.ok(busySession.timer, "the release re-arms the sampling chain at once");
     busySession._clearSamplingTimer();
     await busySession._sampleTick(true);
     assert.strictEqual(busySamples.length, 1, "sampling must resume once the write transaction releases the link");

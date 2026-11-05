@@ -283,6 +283,48 @@ async function fixture(state) {
         session.invalidateTarget();
         await assert.rejects(pending, { code: "LIVE_READ_CANCELLED" });
         assert.strictEqual(fake.commands.length, before);
+        fake.seed(base, [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0x34, 0x12, 0, 0, 5, 0, 0, 0]);
+        const merged = await session.peripheralTransaction({
+            reads: [
+                { address: base, size: 4 },
+                { address: base + 4, size: 4 },
+                { address: base + 8, size: 4 },
+                { address: base + 12, size: 2 },
+                { address: base + 16, size: 4 }
+            ]
+        });
+        assert.deepStrictEqual(
+            merged.reads,
+            [
+                [1, 0, 0, 0],
+                [2, 0, 0, 0],
+                [3, 0, 0, 0],
+                [0x34, 0x12],
+                [5, 0, 0, 0]
+            ],
+            "merged reads answer every item in request order"
+        );
+        assert.deepStrictEqual(
+            fake.commands
+                .slice(before)
+                .filter((cmd) => /^(?:ocd_)?read_memory /.test(cmd))
+                .map((cmd) => cmd.split(" ").slice(1).join(" ")),
+            [`0x${base.toString(16)} 32 3`, `0x${(base + 12).toString(16)} 16 1`, `0x${(base + 16).toString(16)} 32 1`],
+            "only adjacent items of one width share a command"
+        );
+        const reply = session.tcl.sendChecked;
+        session.tcl.sendChecked = async () => "0x1 0x2";
+        await assert.rejects(
+            session.peripheralTransaction({
+                reads: [
+                    { address: base, size: 4 },
+                    { address: base + 4, size: 4 },
+                    { address: base + 8, size: 4 }
+                ]
+            }),
+            /Incomplete peripheral register read/u
+        );
+        session.tcl.sendChecked = reply;
         for (const item of [
             { address: base + 1, size: 4 },
             { address: base, size: 8 },

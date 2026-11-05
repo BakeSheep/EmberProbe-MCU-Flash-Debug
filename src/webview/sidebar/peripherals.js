@@ -4,6 +4,17 @@
     else root.EmberProbePeripheralView = factory();
 })(globalThis, function () {
     const AUTO_READ_LIMIT = 64;
+    const POLL_INTERVAL_MS = 50;
+    const POLL_RETRY_MS = 1000;
+    const CHANGE_HOLD_MS = 1000;
+    // Expected while the connection or debug state moves; the next round settles them.
+    const TRANSIENT_POLL_ERRORS = new Set([
+        "DEBUG_CONTROL_BUSY",
+        "DEBUG_STATE_CHANGED",
+        "PERIPHERAL_ACCESS_BUSY",
+        "PERIPHERAL_SAMPLING_REQUIRED",
+        "PROBE_BUSY"
+    ]);
 
     function formatValue(value, bits, mode) {
         if (value === undefined || value === null || value === "") return "—";
@@ -82,6 +93,16 @@
         };
         let rendering = false;
         let refreshTimer;
+        let pollTimer = null;
+        let pollOutstanding = 0;
+        let pollStartedAt = 0;
+        let pollError = "";
+        // Rendered value, editor and enum nodes by target, so a poll updates them without rebuilding the tree.
+        const liveNodes = new Map();
+        function liveNode(target) {
+            if (!liveNodes.has(target)) liveNodes.set(target, {});
+            return liveNodes.get(target);
+        }
         function deferRefresh() {
             clearTimeout(refreshTimer);
             if (!section.open || !state.debug.canRead) return;
@@ -120,10 +141,34 @@
             state.pending.add(name);
             request("peripheralRegistersRequest", { name });
         }
-        function requestReads(targets, automatic = false) {
+        function requestReads(targets, automatic = false, poll = false) {
             if ((automatic && !section.open) || !state.debug.canRead || !api) return;
-            for (let offset = 0; offset < targets.length; offset += 32)
-                request("peripheralReadRequest", { targets: targets.slice(offset, offset + 32) });
+            for (let offset = 0; offset < targets.length; offset += 32) {
+                if (poll) pollOutstanding++;
+                request("peripheralReadRequest", {
+                    targets: targets.slice(offset, offset + 32),
+                    ...(poll ? { poll: true } : {})
+                });
+            }
+        }
+        // Registers refresh only on the sampling connection, where the target runs and nothing else is arbitrating.
+        function polling() {
+            return section.open && state.debug.canRead && state.debug.mode === "standalone" && !document.hidden;
+        }
+        function schedulePoll(delay = POLL_INTERVAL_MS) {
+            if (pollTimer !== null || pollOutstanding || !polling()) return;
+            pollTimer = setTimeout(() => {
+                pollTimer = null;
+                if (!polling()) return;
+                pollStartedAt = Date.now();
+                requestReads(expandedTargets(), true, true);
+            }, delay);
+        }
+        // One round at a time: a slow probe lowers the rate instead of queueing reads.
+        function settlePoll(failed = false) {
+            pollOutstanding = Math.max(0, pollOutstanding - 1);
+            if (pollOutstanding) return;
+            schedulePoll(failed ? POLL_RETRY_MS : Math.max(0, POLL_INTERVAL_MS - (Date.now() - pollStartedAt)));
         }
         // Without a paused DAP session, registers are accessed only at natural 8/16/32-bit widths.
         function widthAccessible(bits) {
@@ -132,8 +177,7 @@
         function readableNow(register) {
             return safeToRead(register) && widthAccessible(register.size);
         }
-        function refreshExpanded() {
-            if (!section.open || !state.debug.canRead) return;
+        function expandedTargets() {
             const targets = [];
             for (const [name, registers] of state.children) {
                 if (!state.expanded.has(name)) continue;
@@ -145,7 +189,12 @@
                         targets.push(register.path);
                 }
             }
-            requestReads([...new Set(targets)], true);
+            return [...new Set(targets)];
+        }
+        function refreshExpanded() {
+            if (!section.open || !state.debug.canRead) return;
+            if (polling()) schedulePoll(0);
+            else requestReads(expandedTargets(), true);
         }
         function button(className, label, title, onClick) {
             const element = document.createElement("button");
@@ -157,8 +206,9 @@
             element.onclick = onClick;
             return element;
         }
-        function addValue(row, value, bits, changed) {
+        function addValue(row, target, value, bits, changed) {
             const span = document.createElement("span");
+            Object.assign(liveNode(target), { span, bits });
             span.className = `peripheral-value${changed ? " changed" : ""}`;
             span.textContent = formatValue(value, bits, state.mode);
             row.appendChild(span);
@@ -240,6 +290,7 @@
             };
             input.disabled = !state.debug.canWrite || draft.pending || !widthAccessible(registerBits);
             validation();
+            Object.assign(liveNode(target), { control: { input, draft, validation }, bits });
             controls.append(minus, input, plus);
             row.appendChild(controls);
         }
@@ -256,12 +307,14 @@
             label.textContent = `${field.name} [${range}]`;
             row.appendChild(label);
             const value = reading?.fields?.find((item) => item.path === field.path);
-            if (!safeToWrite(register, field)) addValue(row, value?.value, field.bitWidth, !!reading?.changed);
+            if (!safeToWrite(register, field))
+                addValue(row, field.path, value?.value, field.bitWidth, !!reading?.changed);
             if (value?.enum) {
                 const detail = document.createElement("small");
                 detail.className = "peripheral-enum";
                 detail.textContent = value.enum;
                 detail.title = value.enumDescription || value.enum;
+                liveNode(field.path).enum = detail;
                 row.appendChild(detail);
             }
             if (safeToWrite(register, field))
@@ -292,7 +345,7 @@
                 if (state.debug.canRead && readableNow(register)) requestReads([register.path]);
             });
             row.appendChild(name);
-            if (!safeToWrite(register)) addValue(row, reading?.value, register.size, !!reading?.changed);
+            if (!safeToWrite(register)) addValue(row, register.path, reading?.value, register.size, !!reading?.changed);
             if (reading?.error || !safeToRead(register)) {
                 const reason = reading?.error || t("peripheral.readSideEffect");
                 row.title = reason;
@@ -343,6 +396,7 @@
             const focusedTarget = active?.classList?.contains("peripheral-editor-input") ? active.dataset.target : null;
             const selection = focusedTarget ? [active.selectionStart, active.selectionEnd] : null;
             rendering = true;
+            liveNodes.clear();
             try {
                 format.textContent = state.mode.toUpperCase();
                 refresh.disabled = !state.debug.canRead || !state.svdPath;
@@ -422,28 +476,75 @@
                         .slice(0, AUTO_READ_LIMIT)
                         .map((item) => item.path)
                 );
+            schedulePoll();
+        }
+        // Updates rendered values in place, so a click or an edit survives; false when the rows must be rebuilt.
+        function updateLive(item, reading) {
+            let current = true;
+            for (const value of [item, ...(item.fields || [])]) {
+                const node = liveNodes.get(value.path);
+                if (!node) continue;
+                const text = formatValue(value.value, node.bits, state.mode);
+                if (node.span) {
+                    node.span.textContent = text;
+                    node.span.classList.toggle("changed", reading.changed);
+                }
+                const control = node.control;
+                if (
+                    control &&
+                    document.activeElement !== control.input &&
+                    !control.draft.dirty &&
+                    !control.draft.pending &&
+                    !control.draft.awaitingRead
+                ) {
+                    control.draft.value = control.input.value = text;
+                    control.validation();
+                }
+                if (value !== item && !!value.enum !== !!node.enum) current = false;
+                else if (node.enum) {
+                    node.enum.textContent = value.enum;
+                    node.enum.title = value.enumDescription || value.enum;
+                }
+            }
+            return current;
         }
         function onRead(message) {
+            if (message.requestPoll) settlePoll();
             if (!currentResponse(message)) return;
             if (message.session?.epoch !== undefined && message.session.epoch !== state.debug.epoch) return;
+            const error = state.error;
+            if (message.requestPoll && pollError) {
+                if (state.error === pollError) state.error = "";
+                pollError = "";
+            }
+            const now = Date.now();
+            let rebuild = !message.requestPoll;
             for (const item of message.registers || []) {
                 const previous = state.readings.get(item.path);
-                state.readings.set(item.path, {
+                const differs = !!(previous?.value && item.value && previous.value !== item.value);
+                const changedAt = differs ? now : previous?.changedAt;
+                const reading = {
                     ...item,
-                    changed: !!(previous?.value && item.value && previous.value !== item.value)
-                });
+                    changedAt,
+                    // A poll would clear the mark within one round, so it holds long enough to be seen.
+                    changed: differs || !!(message.requestPoll && previous?.changed && now - changedAt < CHANGE_HOLD_MS)
+                };
+                state.readings.set(item.path, reading);
+                if (!!item.error !== !!previous?.error) rebuild = true;
+                if (!rebuild && !updateLive(item, reading)) rebuild = true;
                 for (const [target, draft] of state.drafts) {
                     if (!draft.awaitingRead || (target !== item.path && !target.startsWith(`${item.path}.`))) continue;
                     const value =
                         target === item.path ? item.value : item.fields?.find((entry) => entry.path === target)?.value;
                     draft.awaitingRead = false;
+                    rebuild = true;
                     if (value !== undefined) {
                         draft.value = formatValue(value, draft.bits, state.mode);
                         draft.dirty = false;
                     } else if (item.error) state.error = item.error;
                 }
             }
-            render();
+            if (rebuild || state.error !== error) render();
         }
         // A write's outcome is shown even after the target or state changed: the register may already be written.
         function onWrite(message) {
@@ -467,6 +568,7 @@
             if (register && current) requestReads([register]);
         }
         function onDebug(message) {
+            if (JSON.stringify(message) === JSON.stringify(state.debug)) return;
             const wasPaused = state.debug.canRead;
             const oldEpoch = state.debug.epoch;
             const changed = oldEpoch !== message.epoch || state.debug.generation !== message.generation;
@@ -476,13 +578,19 @@
                 state.readings.clear();
                 state.pending.clear();
                 state.warning = "";
+                pollOutstanding = 0;
             }
             render();
             if (!message.canRead || changed) clearTimeout(refreshTimer);
             if (message.canRead && (!wasPaused || changed)) deferRefresh();
             if (changed && !state.catalog && state.svdPath) requestCatalog();
+            schedulePoll();
         }
         function onError(message) {
+            if (message.requestPoll) {
+                settlePoll(true);
+                if (TRANSIENT_POLL_ERRORS.has(message.code)) return;
+            }
             const write = message.operation === "peripheralWriteRequest";
             if (!write && !currentResponse(message)) return;
             if (message.operation === "peripheralRegistersRequest") {
@@ -502,6 +610,7 @@
                     : write && message.resultUnknown
                       ? t("peripheral.writeResultUnknown", { error })
                       : error;
+            if (message.requestPoll) pollError = state.error;
             render();
         }
         function onSvdStatus(message) {
@@ -531,12 +640,13 @@
             state.query = filter.value.trim();
             render();
         };
-        refresh.onclick = refreshExpanded;
+        refresh.onclick = () => requestReads(expandedTargets(), true);
         format.onclick = () => {
             state.mode = { hex: "dec", dec: "bin", bin: "hex" }[state.mode];
             save();
             render();
         };
+        document.addEventListener("visibilitychange", refreshExpanded);
         section.addEventListener("toggle", () => {
             clearTimeout(refreshTimer);
             if (section.open && state.svdPath && !state.catalog) requestCatalog();

@@ -514,6 +514,187 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
             restored.close();
         }
     });
+    await scenario("Refresh open peripheral registers at 20 Hz on the sampling connection", async () => {
+        const clock = new FakeClock();
+        const view = render(
+            getModernWebviewContent({}, "en"),
+            { peripheralExpanded: ["GPIOA", "GPIOA.MODER"] },
+            { clock }
+        );
+        const { document } = view;
+        const section = document.getElementById("peripheralSection");
+        let hidden = false;
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+        try {
+            section.open = true;
+            const status = (mode = "standalone", canRead = true, generation = 1) =>
+                view.send({
+                    type: "peripheralDebugStatus",
+                    state: "none",
+                    mode,
+                    generation,
+                    epoch: 1,
+                    canRead,
+                    canWrite: canRead
+                });
+            const polls = () => view.messages.filter((item) => item.type === "peripheralReadRequest" && item.poll);
+            const reply = (value, enumName) =>
+                view.send({
+                    type: "peripheralReadResult",
+                    requestPoll: true,
+                    requestGeneration: 1,
+                    requestSvdPath: "/device.svd",
+                    registers: [
+                        {
+                            path: "GPIOA.MODER",
+                            value: "0x1",
+                            fields: [{ path: "GPIOA.MODER.MODE0", value: "0x1", enum: enumName }]
+                        },
+                        { path: "GPIOA.IDR", value, fields: [] }
+                    ]
+                });
+            const fail = (code, message = "read failed") =>
+                view.send({
+                    type: "peripheralError",
+                    operation: "peripheralReadRequest",
+                    requestPoll: true,
+                    requestGeneration: 1,
+                    requestSvdPath: "/device.svd",
+                    code,
+                    message
+                });
+            // Answers every round a few milliseconds later, as a fast probe would.
+            const run = async (ms) => {
+                let answered = polls().length;
+                for (let elapsed = 0; elapsed < ms; elapsed += 5) {
+                    await clock.advance(5);
+                    while (answered < polls().length) {
+                        answered++;
+                        reply("0x10");
+                    }
+                }
+            };
+            status("standalone", false);
+            view.send({ type: "svdStatus", state: "configured", path: "/device.svd" });
+            view.send({ type: "peripheralCatalog", ...catalog, requestGeneration: 1, requestSvdPath: "/device.svd" });
+            view.send({
+                type: "peripheralRegisters",
+                name: "GPIOA",
+                registers: [register, { ...register, name: "IDR", path: "GPIOA.IDR", access: "read-only", fields: [] }],
+                requestGeneration: 1,
+                requestSvdPath: "/device.svd"
+            });
+            await clock.advance(1000);
+            assert.strictEqual(polls().length, 0, "no connection, no polling");
+
+            status();
+            await clock.advance(200);
+            assert.strictEqual(polls().length, 1, "sampling starts the first round");
+            await clock.advance(1000);
+            assert.strictEqual(polls().length, 1, "an unanswered round holds the next one");
+            reply("0x10");
+            await clock.advance(50);
+            assert.strictEqual(polls().length, 2, "a slow round is followed at once");
+            reply("0x10");
+
+            const before = polls().length;
+            const value = document.querySelector(".peripheral-register .peripheral-value");
+            const row = document.querySelector(".peripheral-register");
+            await run(1000);
+            const rounds = polls().length - before;
+            assert(rounds >= 19 && rounds <= 21, `${rounds} rounds in one second`);
+            assert.strictEqual(document.querySelector(".peripheral-register"), row, "polling keeps the rows");
+
+            await clock.advance(60);
+            reply("0x20");
+            assert.strictEqual(document.querySelector(".peripheral-register .peripheral-value"), value);
+            assert.strictEqual(value.textContent, "0x00000020", "a poll updates the shown value");
+            assert(value.classList.contains("changed"));
+            await clock.advance(60);
+            reply("0x20");
+            assert(value.classList.contains("changed"), "the mark outlasts one round");
+            await clock.advance(1000);
+            reply("0x20");
+            assert(!value.classList.contains("changed"), "the mark fades");
+
+            const selector = '.peripheral-editor-input[data-target="GPIOA.MODER.MODE0"]';
+            const input = document.querySelector(selector);
+            input.focus();
+            input.value = "2";
+            input.dispatchEvent(new view.window.Event("input", { bubbles: true }));
+            await clock.advance(60);
+            reply("0x30", "OUTPUT");
+            assert.strictEqual(document.activeElement.dataset.target, "GPIOA.MODER.MODE0", "an edit keeps focus");
+            assert.strictEqual(document.querySelector(selector).value, "2", "a poll leaves an edit alone");
+            assert(document.querySelector(".peripheral-enum").textContent.includes("OUTPUT"), "a new enum is shown");
+
+            await clock.advance(1000);
+            const held = polls().length;
+            fail("PERIPHERAL_ACCESS_BUSY");
+            assert.strictEqual(document.getElementById("peripheralError")?.hidden ?? true, true);
+            assert(!document.getElementById("peripheralStatus").textContent.includes("read failed"));
+            await clock.advance(900);
+            assert.strictEqual(polls().length, held, "a failed round backs off");
+            await clock.advance(100);
+            assert.strictEqual(polls().length, held + 1, "and then retries");
+            fail("PERIPHERAL_READ_FAILED");
+            assert(document.getElementById("peripheralStatus").textContent.includes("read failed"), "real errors show");
+            await clock.advance(1000);
+            reply("0x30");
+            assert(!document.getElementById("peripheralStatus").textContent.includes("read failed"), "and clear");
+
+            await clock.advance(60);
+            reply("0x30");
+            const quiet = async (label, restore) => {
+                await clock.advance(60);
+                reply("0x30");
+                await clock.advance(1000);
+                const count = polls().length;
+                await clock.advance(1000);
+                assert.strictEqual(polls().length, count, label);
+                restore();
+                await clock.advance(300);
+                assert(polls().length > count, `${label}: resumes`);
+            };
+            section.open = false;
+            section.dispatchEvent(new view.window.Event("toggle"));
+            await quiet("a closed section is not polled", () => {
+                section.open = true;
+                section.dispatchEvent(new view.window.Event("toggle"));
+            });
+            hidden = true;
+            await quiet("a hidden view is not polled", () => {
+                hidden = false;
+                document.dispatchEvent(new view.window.Event("visibilitychange"));
+            });
+            status("debug-paused");
+            await quiet("a paused target is not polled", () => status());
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+
+        const replies = [];
+        let statusPosts = 0;
+        const route = createSidebarHandler(
+            {
+                _svdManager: { currentPath: async () => "/device.svd" },
+                _peripheralAccessService: { status: () => ({ generation: 1 }) },
+                _peripheralViewService: { read: async () => ({ registers: [] }) },
+                _postPeripheralDebugStatus: () => statusPosts++,
+                _t: (key) => key
+            },
+            { webview: { postMessage: (message) => replies.push(message) } },
+            { window: {} }
+        );
+        const read = { type: "peripheralReadRequest", targets: ["GPIOA.MODER"], accessGeneration: 1 };
+        await route({ ...read, poll: true });
+        assert.strictEqual(replies.at(-1).requestPoll, true, "a poll reply is marked");
+        assert.strictEqual(statusPosts, 0, "a poll posts no status");
+        await route(read);
+        assert.strictEqual(replies.at(-1).requestPoll, undefined);
+        assert.strictEqual(statusPosts, 1, "other reads still post the status");
+    });
     console.log("Native peripheral tree, DAP read guards and value controls passed");
 })().catch((error) => {
     console.error(error);

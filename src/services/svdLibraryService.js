@@ -89,6 +89,7 @@ class SvdLibraryService {
     constructor(options) {
         this.context = options.context;
         this.validationCache = new Map();
+        this.hashedFile = null;
         const { SvdModelService } = require("./svdModelService");
         this.validator = new SvdModelService({
             workerPath: options.workerPath || path.join(__dirname, "../svdWorker.js")
@@ -104,8 +105,23 @@ class SvdLibraryService {
             throw Object.assign(new Error("SVD file exceeds the size budget"), { code: "INVALID_SVD_SIZE" });
         return buffer;
     }
-    validate(buffer, identity = null) {
-        const digest = crypto.createHash("sha256").update(buffer).digest("hex");
+    // Peripheral polling resolves the binding several times per round; only a changed file is read and hashed again.
+    async readHashed(file) {
+        const stat = await fs.promises.stat(file);
+        const known = this.hashedFile;
+        if (
+            known?.file === file &&
+            known.size === stat.size &&
+            known.mtimeMs === stat.mtimeMs &&
+            known.ctimeMs === stat.ctimeMs
+        )
+            return known;
+        const buffer = await this.read(file);
+        const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+        this.hashedFile = { file, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, buffer, sha256 };
+        return this.hashedFile;
+    }
+    validate(buffer, identity = null, digest = crypto.createHash("sha256").update(buffer).digest("hex")) {
         const key = digest + JSON.stringify(identity);
         if (!this.validationCache.has(key)) {
             const pending = this.validator.validate(buffer, identity, digest);
@@ -121,6 +137,7 @@ class SvdLibraryService {
     dispose() {
         this.validator.dispose();
         this.validationCache.clear();
+        this.hashedFile = null;
     }
 
     async init() {
@@ -254,9 +271,8 @@ class SvdLibraryService {
         if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) return null;
         const file = path.join(this.root, hash, "device.svd");
         try {
-            const buffer = await this.read(file);
-            const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-            const svd = await this.validate(buffer, identity);
+            const { buffer, sha256 } = await this.readHashed(file);
+            const svd = await this.validate(buffer, identity, sha256);
             return { hash, path: file, metadata: await this.metadata(hash), svd, source: "binding", buffer, sha256 };
         } catch {
             if (!options.readOnly) await this.bind(folderUri, "");

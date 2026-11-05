@@ -137,6 +137,15 @@ function zipBuffer(entries) {
 
     const cached = await library.resolveBound(folderA, null, { readOnly: true });
     assert.strictEqual((await library.resolveBound(folderA, null, { readOnly: true })).svd, cached.svd);
+    const readFile = fs.promises.readFile;
+    let svdReads = 0;
+    fs.promises.readFile = (file, ...rest) => {
+        if (file === first.path) svdReads++;
+        return readFile(file, ...rest);
+    };
+    await library.resolveBound(folderA, null, { readOnly: true });
+    assert.strictEqual(svdReads, 0, "an unchanged SVD is not read and hashed again");
+    fs.promises.readFile = readFile;
     await fs.promises.writeFile(first.path, "broken XML");
     assert.strictEqual(await library.resolveBound(folderA, null, { readOnly: true }), null);
     assert.strictEqual(library.bindings()[folderA.toString()], first.hash);

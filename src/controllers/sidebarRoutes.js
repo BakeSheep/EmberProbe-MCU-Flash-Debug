@@ -90,9 +90,15 @@ const PERIPHERAL_REQUESTS = {
 // Any failure, including a missing SVD, goes back to the peripheral view as peripheralError.
 async function peripheralRequest({ host, post: send }, message) {
     const post = (payload) =>
-        send({ ...payload, requestGeneration: message.accessGeneration, requestSvdPath: message.svdPath });
+        send({
+            ...payload,
+            requestGeneration: message.accessGeneration,
+            requestSvdPath: message.svdPath,
+            ...(message.poll === true ? { requestPoll: true } : {})
+        });
     const operation = message.type;
-    if (host._peripheralAccessService) host._postPeripheralDebugStatus(send);
+    // Polls run at 20 Hz; state changes already reach the view from the sampling status.
+    if (host._peripheralAccessService && message.poll !== true) host._postPeripheralDebugStatus(send);
     try {
         const svdPath = await host._svdManager.currentPath();
         if (!svdPath) throw new Error(host._t("peripheral.configureSvdFirst"));

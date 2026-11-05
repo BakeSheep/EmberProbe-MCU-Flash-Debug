@@ -1441,12 +1441,9 @@ class ManagedOpenOcdSession {
         if (!this.samplingEnabled || this.stopped || this._hostHold || !this.tcl.connected) return;
         if (!this.watch.length) return;
         if (!this._tryAcquireExclusive()) {
-            // A read/write transaction owns the Tcl connection. Dropping the tick here would
-            // break the self-rescheduling chain, freezing the watch list until sampling restarts.
-            if (fromScheduler) {
-                if (this.unlimitedActive) this._samplingTickDeferred = true;
-                else this._scheduleNext(this.effectiveIntervalMs);
-            }
+            // A read/write transaction owns the Tcl connection. The tick runs at its release: dropping it would
+            // freeze the watch list, and waiting a whole interval lets frequent peripheral reads starve sampling.
+            if (fromScheduler) this._samplingTickDeferred = true;
             return;
         }
         const epoch = this.sampleEpoch;

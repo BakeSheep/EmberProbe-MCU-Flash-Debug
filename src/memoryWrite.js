@@ -195,19 +195,24 @@ async function peripheralTransaction(session, request, timeoutMs = 5000) {
             });
         if (session.stopped || !session.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
     };
-    const read = async (item) => {
+    // One command for adjacent same-width items: OpenOCD keeps the element width, and a round trip costs milliseconds.
+    const readRun = async (run) => {
+        const { address, size } = run[0];
         check();
         const response = await session.tcl.sendChecked(
-            session._peripheralReadCmd + " 0x" + item.address.toString(16) + " " + item.size * 8 + " 1"
+            session._peripheralReadCmd + " 0x" + address.toString(16) + " " + size * 8 + " " + run.length
         );
         check();
-        const values = parseMemoryElements(response, item.size * 8);
-        if (values.length !== 1) throw new Error("Incomplete peripheral register read");
-        const bytes = Buffer.alloc(item.size);
-        if (endian === "big") bytes.writeUIntBE(values[0], 0, item.size);
-        else bytes.writeUIntLE(values[0], 0, item.size);
-        return Array.from(bytes);
+        const values = parseMemoryElements(response, size * 8);
+        if (values.length !== run.length) throw new Error("Incomplete peripheral register read");
+        return values.map((value) => {
+            const bytes = Buffer.alloc(size);
+            if (endian === "big") bytes.writeUIntBE(value, 0, size);
+            else bytes.writeUIntLE(value, 0, size);
+            return Array.from(bytes);
+        });
     };
+    const read = async (item) => (await readRun([item]))[0];
     try {
         check();
         // xPack exposes read_memory/write_memory without the historical ocd_ aliases.
@@ -229,7 +234,16 @@ async function peripheralTransaction(session, request, timeoutMs = 5000) {
         if ((reads.length || writes.length) && !session._peripheralReadCmd)
             session._peripheralReadCmd = await command("read_memory");
         if (writes.length && !session._peripheralWriteCmd) session._peripheralWriteCmd = await command("write_memory");
-        for (const item of reads) output.reads.push(await read(item));
+        for (let index = 0; index < reads.length;) {
+            const run = [reads[index++]];
+            while (
+                index < reads.length &&
+                reads[index].size === run[0].size &&
+                reads[index].address === run[run.length - 1].address + run[0].size
+            )
+                run.push(reads[index++]);
+            output.reads.push(...(await readRun(run)));
+        }
         for (const item of writes) {
             const before = await read(item);
             if (before.some((byte, index) => byte !== item.expected[index]))

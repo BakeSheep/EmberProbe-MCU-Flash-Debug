@@ -11,6 +11,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 侧边栏查看列表的结构体、数组与运行时对象仅在展开时采样：折叠的树及其内部的变量不再占用读取，也不再显示上一次的数值；展开后恢复采样。全部折叠时保持探针连接并提示展开变量，波形窗口仍按自身列表采样。
 - Sample structs, arrays and runtime objects in the sidebar watch list only while expanded: a closed tree and the variables inside it cost no reads and no longer show their last values, and expanding one resumes sampling. With everything closed the probe connection stays open and a hint asks to expand a variable; waveform windows keep sampling their own lists.
 
+### 外设寄存器 / Peripheral registers
+
+- 采样连接时，侧边栏已展开的外设寄存器持续刷新，最高 20 Hz，寄存器很多时自动降速；刷新不打断点击和输入，变化的数值保持高亮约 1 秒。
+- 相邻的同宽度外设寄存器合并为一条 OpenOCD 读取命令；SVD 文件未变化时不再重复读取和计算哈希，外设访问不再占用扩展主线程；采样与寄存器访问撞车时，在访问结束后立即补采，不再整周期跳过。
+- While sampling is connected, open peripheral registers in the sidebar refresh continuously at up to 20 Hz, slowing down with very many registers; refreshing does not interrupt clicks or edits, and changed values stay highlighted for about a second.
+- Read adjacent peripheral registers of one width with a single OpenOCD command, and stop re-reading and re-hashing an unchanged SVD file, which kept the extension host busy during peripheral access. A sampling tick that collides with a register access now runs as soon as the access ends instead of skipping a whole interval.
+
 ### 侧边栏 / Sidebar
 
 - Agent 配置卡片标题右侧增加“可选”标记，所有“可选”标记统一为圆角矩形；MCP 服务器改为可折叠的下拉栏。
