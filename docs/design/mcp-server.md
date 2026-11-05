@@ -131,10 +131,10 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 | 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
 |---|---|---|---|---|---|
 | VS Code Copilot | provider | — | — | — | 待实测 |
-| Claude Code | 原生 JSON / 可选 CLI | — | — | — | 待实测 |
-| Codex | 原生 TOML / 可选 CLI | — | — | — | 待实测 |
+| Claude Code | 原生 JSON / 可选 CLI | 39 个工具；注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-claude-2026-11-05.md)；确认路径待实测 |
+| Codex | 原生 TOML / 可选 CLI | 39 个工具；注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-codex-2026-11-05.md)；确认路径待实测 |
 | Gemini CLI | 原生 JSON / 可选 CLI | — | 按客户端能力选择 | — | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测 |
-| OpenCode | 原生 local JSON/JSONC 写入 | — | 按客户端能力选择 | — | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测 |
+| OpenCode | 原生 local JSON/JSONC 写入 | 39 个工具；注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-opencode-2026-11-05.md)；确认路径待实测 |
 | Cursor | 扩展 API / 安装链接 | — | — | — | 待实测 |
 | Antigravity | 原生 JSON 写入 | — | 按客户端能力选择 | — | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测 |
 | DeepSeek Harness (DSH) | 原生 profile YAML 写入 | — | 未声明时使用聊天确认 | — | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持 |

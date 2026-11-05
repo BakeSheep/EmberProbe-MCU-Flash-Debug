@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### MCP 工具 / MCP tools
+
+- `variables_sample` 的间隔改为从本次采样开始算起，读取耗时不再叠加到间隔上；工具说明补充外设访问的采样前置条件和 `sampling_control` 间隔的含义。
+- Measure the `variables_sample` interval from sample start to sample start so read time no longer stretches it. Tool descriptions now state the sampling prerequisite for peripheral access and what the `sampling_control` interval controls.
+
 ### 外设访问 / Peripheral access
 
 - 未调试时，外设寄存器读写必须复用已开启并连接成功的采样会话，不再临时连接探针；停止或更换采样连接会使旧请求失效。同步侧栏提示和控件状态，保留调试运行及暂停下的访问。

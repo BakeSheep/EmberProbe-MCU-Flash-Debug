@@ -315,6 +315,7 @@ class AgentOperations {
                             throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
                                 code: "AGENT_READ_CANCELLED"
                             });
+                        const sampleStart = Date.now();
                         result.push(
                             agentPlans.decodeSample(
                                 plan,
@@ -324,7 +325,12 @@ class AgentOperations {
                         );
                         if (temporary && syncStatus)
                             this._postSampling(true, "live.agentSampling", { current: index + 1, total: count });
-                        if (index + 1 < count) await this._waitInterval(effectiveIntervalMs, run);
+                        // The interval runs from sample start to sample start, so read time does not stretch it.
+                        if (index + 1 < count)
+                            await this._waitInterval(
+                                Math.max(0, effectiveIntervalMs - (Date.now() - sampleStart)),
+                                run
+                            );
                     }
                 } finally {
                     this._sampleRuns.delete(run);

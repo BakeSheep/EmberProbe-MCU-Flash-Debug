@@ -274,7 +274,7 @@ const TOOLS = [
             {
                 variables,
                 count: int("Samples", 2, 1000, { default: 10 }),
-                intervalMs: int("Interval in ms", 5, 60000, { default: 200 })
+                intervalMs: int("Target time between sample starts in ms", 5, 60000, { default: 200 })
             },
             ["variables"]
         ),
@@ -383,11 +383,15 @@ const TOOLS = [
         name: "sampling_control",
         toolset: "core",
         title: "Start or stop live sampling",
-        description: "Start persistent sampling of the watch list, or stop it (also cancels temporary Agent reads).",
+        description:
+            "Start persistent sampling of the watch list, or stop it (also cancels temporary Agent reads). intervalMs sets the sidebar rate; while the user's unlimited mode is on, acquisition runs as fast as the probe allows and sampling_status reports that actualHz.",
         methods: ["sampling.start", "sampling.stop"],
         hardware: true,
         inputSchema: object(
-            { action: str("Action", { enum: ["start", "stop"] }), intervalMs: int("Interval for start", 5, 10000) },
+            {
+                action: str("Action", { enum: ["start", "stop"] }),
+                intervalMs: int("Sidebar interval for start", 5, 10000)
+            },
             ["action"]
         ),
         request: (args) => ({
@@ -409,7 +413,7 @@ const TOOLS = [
         toolset: "core",
         title: "Read peripheral registers",
         description:
-            "Read SVD registers without halting in standalone or managed single-core debug mode; paused DAP is also supported. Read-side-effect registers are refused.",
+            "Read SVD registers without halting during live sampling (sampling_control) or managed single-core debug; paused DAP is also supported. Without either it fails with PERIPHERAL_SAMPLING_REQUIRED. Read-side-effect registers are refused.",
         methods: ["peripherals.read"],
         hardware: true,
         inputSchema: object({ targets: strings("Paths such as GPIOA.ODR or RCC.CR.HSEON", { minItems: 1 }) }, [
@@ -422,7 +426,7 @@ const TOOLS = [
         toolset: "core",
         title: "Write peripheral registers",
         description:
-            "Write ordinary SVD registers or fields without halting, then report readback separately. Running bitfield updates are not atomic. Always one-time approval of the returned plan.",
+            "Write ordinary SVD registers or fields without halting, then report readback separately. Needs live sampling or a debug session, like peripherals_read. Running bitfield updates are not atomic. Always one-time approval of the returned plan.",
         methods: ["peripherals.write"],
         confirm: true,
         destructive: true,

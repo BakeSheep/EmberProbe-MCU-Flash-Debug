@@ -288,6 +288,19 @@ class Baseline {
         });
     }
 
+    // Without a debug session, peripheral registers are reached through the sampling session.
+    async startSampling() {
+        this.cleanups.push(() => this.ok("sampling_control", { action: "stop" }));
+        await this.ok("watch_add", { variables: [this.profile.variables.read[0]], destination: "sidebar" });
+        await this.ok("sampling_control", { action: "start", intervalMs: 50 });
+        await this.poll("sampling_status", (status) => status.running === true, "sampling did not start");
+    }
+
+    async stopSampling() {
+        await this.ok("sampling_control", { action: "stop" });
+        await this.poll("sampling_status", (status) => status.running !== true, "sampling did not stop");
+    }
+
     async read() {
         const { profile } = this;
         const names = profile.variables.read;
@@ -314,6 +327,7 @@ class Baseline {
                 assert(values.at(-1) > values[0], `${variable} did not increase`);
             }
         });
+        await this.step("live sampling starts", () => this.startSampling());
         if (profile.checks.peripherals) {
             await this.step("peripherals_read", async () => {
                 const { read } = profile.checks.peripherals;
@@ -321,14 +335,7 @@ class Baseline {
                 assert.strictEqual(result.registers?.length, read.length);
             });
         } else this.skip("peripherals_read", "the profile has no checks.peripherals");
-        this.cleanups.push(() => this.ok("sampling_control", { action: "stop" }));
-        await this.step("live sampling starts, reports and stops", async () => {
-            await this.ok("watch_add", { variables: [names[0]], destination: "sidebar" });
-            await this.ok("sampling_control", { action: "start", intervalMs: 50 });
-            await this.poll("sampling_status", (status) => status.running === true, "sampling did not start");
-            await this.ok("sampling_control", { action: "stop" });
-            await this.poll("sampling_status", (status) => status.running !== true, "sampling did not stop");
-        });
+        await this.step("live sampling stops", () => this.stopSampling());
         await this.step("variables_export_csv answers", async () => {
             const result = await this.call("variables_export_csv", { lastSeconds: 5 });
             if (result.isError) assert.strictEqual(result.code, "LIVE_PANEL_NOT_OPEN");
@@ -444,8 +451,15 @@ class Baseline {
                     this.prompted(0);
                 }
             });
-        if (checks.peripherals) await this.peripheralWrites();
-        else this.skip("peripherals_write", "the profile has no checks.peripherals");
+        if (checks.peripherals) {
+            await this.step("live sampling starts for peripheral access", () => this.startSampling());
+            await this.peripheralWrites();
+            // Register restores need the sampling session, so they run here, before its own stop cleanup.
+            await this.runCleanups();
+            await this.step("live sampling stops after peripheral access", () =>
+                this.poll("sampling_status", (status) => status.running !== true, "sampling did not stop")
+            );
+        } else this.skip("peripherals_write", "the profile has no checks.peripherals");
     }
 
     paused(label = "the target did not pause") {

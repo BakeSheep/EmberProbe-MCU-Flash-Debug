@@ -334,6 +334,49 @@ function fixture() {
         assert.strictEqual(temporaryRun.wake, null, "settled waits are not retained");
     });
 
+    await scenario("Count read time inside the variables.sample interval", async () => {
+        const Provider = loadProvider({ debug: {}, workspace: {} });
+        const host = Object.create(Provider.prototype);
+        const waits = [];
+        const realNow = Date.now;
+        let now = 1000;
+        let readMs = 0;
+        Date.now = () => now;
+        try {
+            Object.assign(host, {
+                readElfSymbols: () => ({
+                    elf: {},
+                    symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
+                })
+            });
+            Object.assign(host._agentOps, {
+                withProbe: (handler) =>
+                    handler({
+                        session: {
+                            readOnce: async () => {
+                                now += readMs;
+                                readMs = readMs ? 80 : 13;
+                                return [];
+                            }
+                        },
+                        source: "live-sampling",
+                        temporary: false
+                    }),
+                _waitInterval: async (ms) => {
+                    waits.push(ms);
+                    now += ms;
+                }
+            });
+            Object.assign(host._writes, { firmwareConsistency: () => ({}) });
+            Object.assign(host._elfView, { prepareLayouts: async () => {} });
+            Object.assign(host._sampling, { runtimeReadRanges: () => [] });
+            await host._agentOps.sampleVariables({ variables: [{ name: "tick" }], count: 4, intervalMs: 50 });
+            assert.deepStrictEqual(waits, [50, 37, 0], "a read longer than the interval does not wait");
+        } finally {
+            Date.now = realNow;
+        }
+    });
+
     await scenario("Stop a variables.sample running on a borrowed connection", async () => {
         const Provider = loadProvider({ debug: {}, workspace: {} });
         const host = Object.create(Provider.prototype);

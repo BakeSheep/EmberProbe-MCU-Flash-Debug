@@ -30,6 +30,8 @@ npm run test:hil:mcp -- --profile <profile> --workspace <absolute-path> --phases
 - 清除 24 小时授权：确认 `permission_get` 对 `flash`、`variables`、`cubemx` 都没有有效授权。
 - 关闭客户端的自动批准（例如 auto-approve、bypass、yolo 模式，或 Gemini 的 `trust: true`），并记录实际设置。
   客户端自带的工具审批与 EmberProbe 的操作确认是两层，后者不能由 Agent 或脚本代答。
+- OpenCode：`opencode run` 默认连接后台服务，服务可能仍是更新前的版本，也读不到本次运行的环境变量配置。验收时加 `--standalone`，
+  并确认 Bridge 日志中的客户端版本与 CLI 一致。
 - 记录被测构建：VSIX 哈希或 `dist/mcp-server.js` 的 SHA-256，要与基线一致。
 - 打开输出面板 “EmberProbe Agent Bridge” 并清空或记下起始时间，用于第 4 节的核对。
 
@@ -63,13 +65,15 @@ Bridge 输出面板每次调用一行，格式为 `<时间> mcp <客户端>/<版
 
 ### 5. 判定
 
-| 结论         | 条件                                                            |
-| ------------ | --------------------------------------------------------------- |
-| 通过         | 步骤完成，回报与日志和板卡状态一致                              |
-| 失败：服务器 | 工具行为与基线不一致，或违反 [MCP 服务器设计](../design/mcp-server.md)的约定         |
-| 失败：客户端 | 连接、elicitation、roots、超时、进度或取消由客户端造成异常      |
-| 失败：模型   | 客户端能力正常，但 Agent 代答确认、擅自重试、绕过工具或虚报结果 |
-| 未验证       | 未执行、回报缺证据，或回报与日志对不上                          |
+| 结论         | 条件                                                                         |
+| ------------ | ---------------------------------------------------------------------------- |
+| 通过         | 步骤完成，回报与日志和板卡状态一致                                           |
+| 失败：服务器 | 工具行为与基线不一致，或违反 [MCP 服务器设计](../design/mcp-server.md)的约定 |
+| 失败：客户端 | 连接、elicitation、roots、超时、进度或取消由客户端造成异常                   |
+| 失败：模型   | 客户端能力正常，但 Agent 代答确认、擅自重试、绕过工具或虚报结果              |
+| 未验证       | 未执行、回报缺证据，或回报与日志对不上                                       |
+
+脚本基线已确认服务器发送工具注解、说明和 prompts。C1、C2 回报看不到它们时，只记录客户端能力，不判为服务器失败。
 
 Agent 虚报时整轮记为未验证，不采用其余自述结果，只保留能被日志证实的部分。“未执行”不算通过。
 “失败：模型”只对记录的模型版本成立，更换模型后要重测。
@@ -111,8 +115,9 @@ Agent 虚报时整轮记为未验证，不采用其余自述结果，只保留�
 - **R2** `chip_read`，`sections` 为 `["identity", "debug"]`
 - **R3** `variables_read` 读取 `READ_VARS`
 - **R4** `variables_sample` 采样 `READ_VARS` 中持续变化的变量，`count` 为 20，`intervalMs` 为 50
-- **R5** `peripherals_read` 读取 `REGISTERS`
-- **R6** `variables_read` 读取不存在的变量 `__emberprobe_missing_symbol`，记录它如何报告
+- **R5** `peripherals_read` 读取 `REGISTERS`。没有调试会话时外设访问依赖实时采样：先用 `watch_add` 把 `READ_VARS` 的第一个变量加到
+  `sidebar`，再用 `sampling_control` 以 `intervalMs` 50 启动，用 `sampling_status` 确认运行后读取；读完停止采样并确认已停止
+- **R6** `variables_read` 读取不存在的变量 `__emberprobe_missing_symbol`，记录它如何报告。这是负向步骤：明确报告符号不存在时记 PASS
 
 ### 阶段 3：确认路径（写入内存，需要操作者回答）
 

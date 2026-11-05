@@ -87,6 +87,9 @@ function board(bugs = {}) {
             choices: bugs.onceOnly ? ["once"] : ["once", "workspace"]
         });
     };
+    const needsAccessSession = () => {
+        if (!state.sampling) throw fail("PERIPHERAL_SAMPLING_REQUIRED");
+    };
     const peripheralWrite = (params) => {
         const [{ target, value }] = params.writes;
         if (target === "TIM7.EGR") throw fail("PERIPHERAL_WRITE_NOT_ALLOWED");
@@ -157,10 +160,14 @@ function board(bugs = {}) {
             }))
         }),
         "variables.write": write,
-        "peripherals.read": (params) => ({
-            registers: params.targets.map((item) => ({ path: item, value: state.psc }))
-        }),
-        "peripherals.write": peripheralWrite,
+        "peripherals.read": (params) => {
+            needsAccessSession();
+            return { registers: params.targets.map((item) => ({ path: item, value: state.psc })) };
+        },
+        "peripherals.write": (params) => {
+            needsAccessSession();
+            return peripheralWrite(params);
+        },
         "debug.start": () => {
             state.debug = "paused";
             return { mode: "attach" };
