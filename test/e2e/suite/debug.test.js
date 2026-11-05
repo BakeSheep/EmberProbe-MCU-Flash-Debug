@@ -128,9 +128,35 @@ async function run() {
             frameId: stack.stackFrames[0].id
         });
         assert.strictEqual(result.result, "3");
+        const scopes = await session.customRequest("scopes", { frameId: stack.stackFrames[0].id });
+        const localScope = scopes.scopes.find((scope) => scope.name === "Locals & Arguments");
+        await session.customRequest("variables", { variablesReference: localScope.variablesReference });
+        const dataInfo = await session.customRequest("dataBreakpointInfo", {
+            variablesReference: localScope.variablesReference,
+            name: "counter"
+        });
+        assert(dataInfo.dataId, dataInfo.description);
+        assert.deepStrictEqual(dataInfo.accessTypes, ["write", "read", "readWrite"]);
+        assert.strictEqual(dataInfo.canPersist, false);
+        const dataPoints = await session.customRequest("setDataBreakpoints", {
+            breakpoints: [{ dataId: dataInfo.dataId, accessType: "write" }]
+        });
+        assert(dataPoints.breakpoints[0].verified, dataPoints.breakpoints[0].message);
+        const beforeDataStop = stopped;
+        await session.customRequest("continue", { threadId: 1 });
+        await wait(() => stopped > beforeDataStop);
+        const dataStop = dapEvents.findLast((event) => event.event === "stopped");
+        assert.strictEqual(dataStop.body.reason, "data breakpoint");
+        assert.deepStrictEqual(dataStop.body.hitBreakpointIds, [dataPoints.breakpoints[0].id]);
+        assert.match(dataStop.body.text, /3/);
+        assert.match(dataStop.body.text, /4/);
+        assert.deepStrictEqual(await session.customRequest("setDataBreakpoints", { breakpoints: [] }), {
+            breakpoints: []
+        });
+        const afterDataStack = await session.customRequest("stackTrace", { threadId: 1 });
         const vector = await session.customRequest("evaluate", {
             expression: "numbers",
-            frameId: stack.stackFrames[0].id
+            frameId: afterDataStack.stackFrames[0].id
         });
         assert.match(vector.result, /vector length 205/);
         assert.strictEqual(vector.indexedVariables, 205);

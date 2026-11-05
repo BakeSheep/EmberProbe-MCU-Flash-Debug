@@ -24,6 +24,18 @@ GDB 的 `enable`／`disable` 无法直接映射到 VS Code 的断点勾选状态
 
 `test/debug-console.test.js` 覆盖转发、校验、状态竞争、失效、断点校准和 Bridge 隔离。`test/e2e/suite/debug.test.js` 用子进程模拟 GDB 驱动真实适配器。`test/gdb/cpp-paused.test.js` 和 `test/gdb/external-debug.test.js` 分别对原生程序和仅内存的 ARM RSP 服务器运行真实 GDB。这些测试不需要硬件，也不证明板卡兼容性。
 
+## 数据断点
+
+`src/debug/dataBreakpoints.js` 实现 DAP `dataBreakpointInfo` / `setDataBreakpoints`，适配器声明 `supportsDataBreakpoints`，由 VS Code 提供变量菜单及断点列表，无独立 Webview 状态。
+
+信息查询使用当前停止代次的变量容器、成员映射和真实节点身份，复用变量元数据及线程／栈帧绑定；表达式查询限制为无副作用的可寻址路径。仅发布已确认地址、自然对齐且宽度为 1/2/4 字节的存储身份。会话内不透明 ID 有数量上限，`canPersist: false`；带变量／栈帧引用但尚未激活的 ID 在继续执行后失效。已激活的监视点绑定固定地址，可跨停止代次启停，不追踪局部变量寿命、容器搬迁或指针重定向。
+
+监视点经 `-break-watch` 建立，写入、读取和访问分别对应默认、`-r`、`-a`。固定地址使用匹配宽度的基础整数解引用，不在继续运行时重新求值原始路径。创建响应或 `-break-info` 必须确认硬件类型；发现软件监视点时立即清理，清理未确认则阻止适配器继续执行。硬件资源在下一次继续时才报告不足的情况，经现有执行错误路径标记断点失败。
+
+替换请求只管理本模块持有的 GDB 编号，不删除源码断点或用户控制台建立的其他监视点。运行中设置复用现有内部中断流程，只在 SIGINT 确认为内部暂停时自动恢复，真实断点命中保持停止。MI 监视点停止原因映射为 DAP `data breakpoint`，附带拥有的 DAP 断点编号及 GDB 提供的旧值／新值；控制台修改与删除通过异步记录及停止后的 `-break-list` 校准。
+
+`test/data-breakpoints.test.js` 覆盖信息查询、身份与时序、硬件限制、替换、错误清理及命中事件；Extension Host 测试通过真实 DAP 验证设置、命中与删除。`test/gdb/data-breakpoints.test.js` 使用真实 ARM GDB 和内存 RSP 目标，验证 GDB/MI 与远程监视点包，不执行真实 MCU 指令，也不证明板卡兼容性。
+
 ## RTOS 感知
 
 ### 取值

@@ -43,6 +43,7 @@ const TEST_GROUPS = Object.freeze({
         "cubemx2-cli.test.js",
         "cubemx2-commands.test.js",
         "cubemx2-project.test.js",
+        "data-breakpoints.test.js",
         "debug-console.test.js",
         "debug-control.test.js",
         "debug-errors.test.js",

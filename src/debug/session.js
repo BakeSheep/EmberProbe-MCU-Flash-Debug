@@ -16,6 +16,7 @@ const {
 } = require("@vscode/debugadapter");
 const { MiClient, quote } = require("./mi");
 const { DebugVariables } = require("./variables");
+const { DebugDataBreakpoints } = require("./dataBreakpoints");
 const { debugError, adapterLanguage, localizeError } = require("./errors");
 const { SymbolDirectory } = require("./symbolDirectory");
 const { FreeRtosSnapshot } = require("../services/freeRtosSnapshot");
@@ -75,6 +76,7 @@ class EmberDebugSession extends DebugSession {
         this.clientCapabilities = {};
         this.breakpoints = new Map();
         this.nextBreakpoint = 1;
+        this.dataBreakpoints = new DebugDataBreakpoints(this);
         this.entryBreakpoint = null;
         this.breakpointSyncPending = false;
         this.breakpointSyncScheduled = false;
@@ -156,9 +158,15 @@ class EmberDebugSession extends DebugSession {
     }
     dispatchRequest(request) {
         const read =
-            ["threads", "stackTrace", "scopes", "variables", "readMemory", "emberprobe.rtosSnapshot"].includes(
-                request.command
-            ) ||
+            [
+                "threads",
+                "stackTrace",
+                "scopes",
+                "variables",
+                "readMemory",
+                "dataBreakpointInfo",
+                "emberprobe.rtosSnapshot"
+            ].includes(request.command) ||
             (request.command === "evaluate" && request.arguments?.context === "hover");
         const control = ["continue", "next", "stepIn", "stepOut", "restart"].includes(request.command);
         const terminating = ["disconnect", "terminate"].includes(request.command);
@@ -256,6 +264,7 @@ class EmberDebugSession extends DebugSession {
             this.hoverEvaluations.clear();
             this.variableStore.reset();
             this.handles.clear();
+            this.dataBreakpoints.clear();
         }
         // Capabilities are local metadata. Even a pipelined initialize/disconnect handshake
         // must receive its initialize response; target operations are cancelled immediately.
@@ -359,8 +368,9 @@ class EmberDebugSession extends DebugSession {
                     : ["end-stepping-range", "function-finished"].includes(reason)
                       ? "step"
                       : "pause";
-            const event = new StoppedEvent(dapReason, this.stopThreadId());
-            Object.assign(event.body, { allThreadsStopped: true });
+            const dataStop = this.dataBreakpoints.stop(record.data);
+            const event = new StoppedEvent(dataStop?.reason || dapReason, this.stopThreadId());
+            Object.assign(event.body, { allThreadsStopped: true }, dataStop);
             this.sendEvent(event);
         }
     }
@@ -393,6 +403,7 @@ class EmberDebugSession extends DebugSession {
         this.sendEvent(new Event("breakpoint", { reason: "removed", breakpoint: { ...item.dap, verified: false } }));
     }
     onBreakpointRecord(record) {
+        this.dataBreakpoints.onRecord(record);
         if (!["breakpoint-modified", "breakpoint-deleted"].includes(record.class)) return;
         const number = String(record.data.bkpt?.number ?? record.data.id);
         if (record.class === "breakpoint-deleted" && number === this.entryBreakpoint) this.entryBreakpoint = null;
@@ -405,7 +416,7 @@ class EmberDebugSession extends DebugSession {
         }
     }
     scheduleBreakpointSync() {
-        if (!this.breakpoints.size || this.ended) return;
+        if ((!this.breakpoints.size && !this.dataBreakpoints.size) || this.ended) return;
         this.breakpointSyncPending = true;
         if (this.breakpointSyncScheduled) return;
         this.breakpointSyncScheduled = true;
@@ -447,6 +458,7 @@ class EmberDebugSession extends DebugSession {
                     else this.removeBreakpoint(group, identity, item);
                 }
             }
+            this.dataBreakpoints.reconcile(listed);
             this.breakpointSyncPending = false;
         } catch {
             // Running targets can reject -break-list. Retry only after the next stop or console command.
@@ -887,6 +899,8 @@ class EmberDebugSession extends DebugSession {
     }
     async execute(command) {
         this.checkRequest();
+        if (this.dataBreakpoints.unsafe)
+            throw debugError("dataBreakpointUnsafe", "Remove the unconfirmed software watchpoint before continuing");
         const epoch = ++this.executionEpoch;
         const wasRunning = this.running;
         // ^running may arrive before *running. Block stopped reads before the MI write, and
@@ -897,6 +911,7 @@ class EmberDebugSession extends DebugSession {
             return await this.mi.command(command);
         } catch (error) {
             if (epoch === this.executionEpoch) this.running = wasRunning;
+            this.dataBreakpoints.executionFailed(error);
             if (/breakpoint|hardware resource/i.test(error.message)) {
                 for (const group of this.breakpoints.values())
                     for (const item of group.values()) {
@@ -1084,9 +1099,9 @@ class EmberDebugSession extends DebugSession {
                 } catch {
                     // No stack (or a running target) is legitimate; a transport failure uses the MI closed path.
                 }
-                if (this.breakpoints.size) this.breakpointSyncPending = true;
+                if (this.breakpoints.size || this.dataBreakpoints.size) this.breakpointSyncPending = true;
                 await this.reconcileBreakpoints();
-            } else if (this.breakpoints.size) this.breakpointSyncPending = true;
+            } else if (this.breakpoints.size || this.dataBreakpoints.size) this.breakpointSyncPending = true;
             this.invalidateVariables();
         }
     }
@@ -1123,6 +1138,7 @@ class EmberDebugSession extends DebugSession {
                     supportsConfigurationDoneRequest: true,
                     supportsFunctionBreakpoints: true,
                     supportsConditionalBreakpoints: true,
+                    supportsDataBreakpoints: true,
                     supportsSetVariable: true,
                     supportsSetExpression: true,
                     supportsEvaluateForHovers: true,
@@ -1146,6 +1162,10 @@ class EmberDebugSession extends DebugSession {
                 return this.setBreakpoints(args, false);
             case "setFunctionBreakpoints":
                 return this.setBreakpoints(args, true);
+            case "dataBreakpointInfo":
+                return this.dataBreakpoints.info(args);
+            case "setDataBreakpoints":
+                return this.dataBreakpoints.set(args);
             case "threads": {
                 const result = await this.mi.command("-thread-info");
                 this.checkRequest();

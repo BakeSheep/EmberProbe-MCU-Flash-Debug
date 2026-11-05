@@ -3,6 +3,7 @@
 const readline = require("readline");
 let breakpoint = 0;
 let autoLoadDisabled = false;
+const watchpoints = new Map();
 const numbers = new Map();
 const vectorFields = {
     "numbers._M_impl._M_start": "0x20001000",
@@ -30,6 +31,24 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         );
     }
     if (command.startsWith("-break-insert")) body = `,bkpt={number="${++breakpoint}",addr="0x08000000",line="12"}`;
+    if (command.startsWith("-break-watch")) {
+        const number = String(++breakpoint);
+        const type = command.includes(" -r ")
+            ? "read watchpoint"
+            : command.includes(" -a ")
+              ? "acc watchpoint"
+              : "hw watchpoint";
+        const item = `number="${number}",type="${type}",enabled="y"`;
+        watchpoints.set(number, item);
+        body = `,wpt={${item}}`;
+    }
+    if (command.startsWith("-break-info")) {
+        const number = command.split(" ").at(-1);
+        body = `,BreakpointTable={body=[bkpt={${watchpoints.get(number)}}]}`;
+    }
+    if (command === "-break-list")
+        body = `,BreakpointTable={body=[${[...watchpoints.values()].map((item) => `bkpt={${item}}`).join(",")}]}`;
+    if (command.startsWith("-break-delete")) watchpoints.delete(command.split(" ").at(-1));
     if (command === "-thread-info") body = ',threads=[{id="1",name="Cortex-M",state="stopped"}],current-thread-id="1"';
     if (command.startsWith("-stack-list-frames"))
         body = ',stack=[frame={level="0",func="main",line="12",file="main.c",addr="0x08000000"}]';
@@ -40,6 +59,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     if (command.startsWith("-var-create") && command.endsWith('"numbers"'))
         body = ',name="numbers",value="{...}",numchild="1",type="std::vector<int, std::allocator<int> >"';
     if (command === "-list-features") body = ",features=[]";
+    if (command === "-gdb-show may-call-functions") body = ',value="on"';
     if (command.startsWith("-var-info-path-expression")) {
         const name = JSON.parse(command.slice(command.indexOf('"')));
         body = `,path_expr=${JSON.stringify(name)}`;
@@ -67,7 +87,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
             process.stdout.write('*stopped,reason="end-stepping-range",thread-id="1"\n');
         }
     }
-    if (command.startsWith("-data-evaluate-expression")) body = ',value="4"';
+    if (command.startsWith("-data-evaluate-expression")) {
+        body = ',value="4"';
+        if (command.includes("&(counter)")) body = ',value="0x20002000"';
+    }
     const page = /^-var-list-children --all-values "numbers" (\d+) (\d+)$/.exec(command);
     if (page) {
         body =
@@ -99,7 +122,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     process.stdout.write(`${token}^done${body}\n`);
     if (command.startsWith("-exec-") && !command.includes("interrupt")) {
         process.stdout.write('*running,thread-id="all"\n');
-        setTimeout(() => process.stdout.write('*stopped,reason="breakpoint-hit",thread-id="1"\n'), 30);
+        const watchpoint = watchpoints.keys().next().value;
+        setTimeout(
+            () =>
+                process.stdout.write(
+                    watchpoint
+                        ? `*stopped,reason="watchpoint-trigger",wpt={number="${watchpoint}",exp="counter"},value={old="3",new="4"},thread-id="1"\n`
+                        : '*stopped,reason="breakpoint-hit",thread-id="1"\n'
+                ),
+            30
+        );
     }
     if (command.includes("interrupt"))
         process.stdout.write('*stopped,reason="signal-received",signal-name="SIGINT",thread-id="1"\n');

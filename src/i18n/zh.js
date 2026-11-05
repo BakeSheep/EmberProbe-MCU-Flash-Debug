@@ -1,6 +1,23 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "dbg.dataBreakpointUnsafe":
+        "未确认的监视点仍处于启用状态，无法继续运行。请先在 GDB 控制台删除或禁用此监视点，再重试。",
+    "debug.dataBreakpointInvalid": "数据断点目标无效、已过期、存在歧义或不可用。",
+    "debug.dataBreakpointSize": "硬件数据断点要求存储可寻址、自然对齐，且大小为 1、2 或 4 字节。",
+    "debug.dataBreakpointLimit": "当前会话已达到 1024 个数据断点标识的上限。",
+    "debug.dataBreakpointStorage":
+        "{name}：固定存储地址 {address}，{bytes} 字节（仅当前会话；首次启用后，重新启用仍监视此地址）。",
+    "debug.dataBreakpointUnavailable": "数据断点不可用：{error}",
+    "debug.dataBreakpointHitCondition": "数据断点暂不支持命中次数条件。",
+    "debug.dataBreakpointHardware": "GDB 未确认此监视点为硬件监视点，不支持软件监视点。",
+    "debug.dataBreakpointResources":
+        "无法启用硬件数据断点：目标的硬件监视资源可能不足，或不支持此访问类型。GDB：{error}",
+    "debug.dataBreakpointRemove": "无法删除之前的数据断点，仍保留其跟踪信息。GDB：{error}",
+    "debug.dataBreakpointChanged": "GDB 已更改或禁用此数据断点，请在 VS Code 中刷新或重新启用。",
+    "debug.dataBreakpointStopped": "数据断点：{name}",
+    "debug.dataBreakpointValues": "原值：{old}；新值：{new}",
+    "debug.dataBreakpointValue": "当前值：{value}",
     "common.diagnostics": "ELF 解析诊断",
     "oc.probeFailed": "OpenOCD 探测失败：{error}",
     "oc.errPermission": "无法执行 OpenOCD：{path}；请检查执行权限与系统策略（{error}）",

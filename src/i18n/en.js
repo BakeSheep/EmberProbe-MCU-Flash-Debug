@@ -1,6 +1,25 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "dbg.dataBreakpointUnsafe":
+        "Cannot continue while an unconfirmed software watchpoint remains enabled. Delete or disable it in the GDB console, then retry.",
+    "debug.dataBreakpointInvalid": "Invalid, stale, ambiguous, or unavailable data breakpoint target.",
+    "debug.dataBreakpointSize":
+        "Hardware data breakpoints require addressable, naturally aligned storage of 1, 2, or 4 bytes.",
+    "debug.dataBreakpointLimit": "This session has reached the limit of 1024 data breakpoint identities.",
+    "debug.dataBreakpointStorage":
+        "{name}: fixed storage at {address}, {bytes} bytes (this session; after activation, re-enabling keeps this address).",
+    "debug.dataBreakpointUnavailable": "Data breakpoint unavailable: {error}",
+    "debug.dataBreakpointHitCondition": "Data breakpoint hit conditions are not supported.",
+    "debug.dataBreakpointHardware":
+        "GDB did not confirm a hardware watchpoint. Software watchpoints are not supported.",
+    "debug.dataBreakpointResources":
+        "Cannot arm the hardware data breakpoint. The target may have too few watchpoint resources or may not support this access type. GDB: {error}",
+    "debug.dataBreakpointRemove": "Could not remove the previous data breakpoint; it remains tracked. GDB: {error}",
+    "debug.dataBreakpointChanged": "GDB changed or disabled this data breakpoint; refresh or re-enable it in VS Code.",
+    "debug.dataBreakpointStopped": "Data breakpoint: {name}",
+    "debug.dataBreakpointValues": "Old value: {old}; new value: {new}",
+    "debug.dataBreakpointValue": "Value: {value}",
     "common.diagnostics": "ELF parsing diagnostics",
     "oc.probeFailed": "OpenOCD probe failed: {error}",
     "oc.errPermission": "Cannot execute OpenOCD: {path}; check execution permissions and system policy ({error})",

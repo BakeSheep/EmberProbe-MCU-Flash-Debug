@@ -29,6 +29,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Add raw keystroke input, selectable line endings and a byte-exact `rtt.bin` log, plus `rtt.autoStart`, which attaches RTT when debugging or sampling starts and never opens the probe for it alone.
 - Add the `mcu-rtt` skill and the MCP tools `rtt_status`, `rtt_read` and `rtt_control`, so Agents can start and stop RTT and read its output through a cursor. Agents cannot send input to the firmware.
 
+### 数据断点 / Data breakpoints
+
+- 内置调试器接入 VS Code 原生数据断点：在变量或成员上右键设置值变化、读取或访问断点，在断点列表中启停、删除及设置条件；命中时显示数据断点原因及 GDB 提供的旧值、新值。
+- 支持地址明确、自然对齐的 1/2/4 字节存储，仅使用硬件监视点；资源不足和不支持的对象明确报错。监视固定地址，仅当前调试会话有效，见 `docs/guide/flash-debug.md`。
+- Add native VS Code data breakpoints to the built-in debugger: right-click a variable or member to break on value changes, reads or accesses; manage enablement, removal and conditions in the Breakpoints view. Stops identify data breakpoints and include old/new values when GDB supplies them.
+- Watch confirmed, naturally aligned 1/2/4-byte storage using hardware watchpoints only, with explicit unsupported-object and resource errors. Watchpoints track fixed addresses within the current debug session; see `docs/guide/flash-debug.md`.
+
 ## [0.9.1] - 2026-11-05
 
 ### 查看列表 / Watch list

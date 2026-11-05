@@ -45,6 +45,23 @@ const stopped = '*stopped,reason="breakpoint-hit",thread-id="1"';
 const running = '*running,thread-id="all"';
 
 (async () => {
+    await scenario("continue cancels queued data breakpoint metadata before touching GDB", async () => {
+        const { session, commands, responses } = setup((command) =>
+            command.startsWith("-exec-") ? "^running" : "^done"
+        );
+        try {
+            request(session, 1, "dataBreakpointInfo", { name: "counter" });
+            request(session, 2, "continue", { threadId: 1 });
+            await session.queue;
+            const metadata = responses.find((response) => response.request_seq === 1);
+            assert.strictEqual(metadata.success, false);
+            assert.strictEqual(metadata.error.showUser, false);
+            assert(!commands.some((command) => /data-evaluate-expression|var-create|may-call-functions/.test(command)));
+            assert(responses.find((response) => response.request_seq === 2).success);
+        } finally {
+            await session.close();
+        }
+    });
     for (const operation of ["continue", "next", "stepIn", "stepOut", "configurationDone", "restart"]) {
         const fixture = setup((command) => {
             if (command.startsWith("-break-insert")) return '^done,bkpt={number="1"}';

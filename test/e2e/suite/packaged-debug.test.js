@@ -49,7 +49,9 @@ async function run() {
         const responses = messages.filter((message) => message.type === "response");
         for (const seq of [1, 2, 3])
             assert.strictEqual(responses.filter((message) => message.request_seq === seq).length, 1);
-        assert(responses.find((message) => message.command === "initialize").body.supportsFunctionBreakpoints);
+        const capabilities = responses.find((message) => message.command === "initialize").body;
+        assert(capabilities.supportsFunctionBreakpoints);
+        assert(capabilities.supportsDataBreakpoints);
         assert.strictEqual(responses.find((message) => message.command === "unsupported").success, false);
         assert.strictEqual(messages.filter((message) => message.event === "terminated").length, 1);
         console.log("✓ packaged debug adapter speaks framed DAP and responds once per request");
