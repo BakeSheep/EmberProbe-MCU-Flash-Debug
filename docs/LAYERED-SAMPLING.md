@@ -76,6 +76,35 @@ Runtime writes keep execution running when every item is exactly four bytes at a
 - 平移绘图缓存使用相对坐标的 Float64 数组、原始点引用及 Uint32 包络索引，构建范围左右各多半屏；数据、归一化、画布/DPR、留白和 x/y 跨度不变且视口仍在构建范围内时，仅更新偏移。绘图只发出可见包络及两端相邻点，断点和精确整数标签保持原意。
 - 采样中的固定跨度跟随窗口在未冻结、未拖动且未要求减少动态效果时，按本地经过时间平滑推进；显示时钟不倒退、不超过已提交明细的边界，停更后停在该边界。平滑跟随时下方时间轴以显示时钟为终点，选区与右端点保持贴在最右侧；拖动曲线、滚轮缩放、拖动时间轴选区或端点（含键盘）开始前，先把视图平移到已提交数据的边界再判断吸附与跟随，因此右端吸附后拖动左端点不会脱离吸附。“全部”仍按原子提交推进。自动 Y 轴和归一化范围在明细提交之间保持，绘图最小间隔随耗时 EMA 在 16–80 ms 内调整；仅版本变化的跟随明细刷新至少等待 max(80 ms, 可见跨度 / 画布列数)，粗略底图规则不变。实现与软件基准见 [P1 说明](plans/2026-10-22-chart-smooth-render.md)。
 
+## 临时显示增益 / Temporary display gain
+
+波形侧栏中数值变量（含已加入曲线的数值成员）的右键菜单提供“增益”输入框及 `−` / `+` 按钮。
+默认为 1，按钮每次加减 0.1；允许有限小数、零及负数。有效输入立即更新，空值或非法输入不改变设置，
+失焦后恢复最近有效值。指针地址、字符串和复合对象不提供增益。
+增益输入框填满调节按钮之间的宽度；同一菜单中的实线、虚线和点线以三个按钮平铺，点击即可切换。
+
+侧栏、历史及新采样的曲线和悬浮值使用原值乘以增益；采样记录、冻结快照和 CSV 始终保留原始数值。
+显示变换发生在归一化之前，负数会翻转归一化波形，零产生水平线；手动 Y 轴范围保持不变。
+增益为 1 时保留原有精确整数和枚举显示；其他增益使用 JavaScript 数值乘积（超出精确整数范围可能舍入），
+不沿用原值文本或枚举名称。整数乘积遵循所选进制，小数使用十进制；乘积溢出显示为无读数并断开曲线。
+
+每张图的增益独立保存在页面内存中，不写入工作区设置或 Webview 恢复状态。隐藏或切换标签页保留，
+移除变量（含父项）会清除对应增益；关闭该图、重载或退出 IDE 后恢复为 1。
+
+Numeric waveform watches, including numeric members added to the chart, have a context-menu gain input with
+`−` / `+` buttons stepping by 0.1. Gains default to 1 and accept finite decimals, zero and negative values.
+Valid input applies immediately; invalid or empty input keeps the last valid gain and restores it on blur.
+Pointer addresses, strings and composite objects keep their existing display semantics.
+The gain input fills the space between its adjustment buttons. Solid, dashed and dotted line styles appear as
+three directly selectable buttons in the same menu.
+
+The sidebar, curves and hover values multiply raw readings before normalization. Negative gain flips a normalized
+curve, zero makes it flat, and manual Y limits remain fixed. Recording, frozen source data and CSV retain raw values.
+Unit gain preserves exact integer and enum labels; other gains use JavaScript number multiplication, with possible
+rounding outside the exact integer range. Integer products honor the selected base, fractions use decimal, and
+overflow becomes a missing reading and a curve gap. Each chart keeps gains only in memory: hiding preserves them,
+removing a watch or its parent clears them, and closing the chart, reloading or exiting the IDE resets them.
+
 ## 软件验证
 
 专项测试：`layered-sampling.test.js`、`chart-history-store.test.js`（Worker 与容量）、`chart-host.test.js`（记录）、`chart-webview.test.js`（远程历史）、`composite-history.test.js`，另保留此前清空及绘图预算回归。

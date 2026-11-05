@@ -30,6 +30,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 新增 / Added
 
+- 波形变量右键菜单新增临时增益输入框和 ±0.1 按钮，支持零和负数；仅缩放当前波形图的侧栏与绘图读数，
+  记录和 CSV 保留原值。各图独立，关闭波形图、重载或退出 IDE 后恢复为 1。
+- Add temporary per-variable waveform gain with an input and ±0.1 buttons, including zero and negative values.
+  Scale the current chart's sidebar and plotted readings while recording and exporting raw values. Charts are
+  independent; closing the chart, reloading or exiting the IDE resets gains to 1.
+- 增益输入框填满菜单调节行，三种曲线线型改为平铺按钮，可直接点击切换。
+- Fill the gain control row with its input and present all three line styles as directly selectable buttons.
+
 - Agent Skills 和 MCP 服务器移至与 MCU 配置并列的可折叠“Agent 配置”卡片，新增默认关闭的工作区
   “完全允许 Agent 操作”开关，对适用操作免除确认，保留身份、输入及固件一致性保护。
 - Move Agent Skills and MCP installation into a peer Agent Configuration card with independent collapse state.

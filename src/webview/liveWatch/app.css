@@ -1597,6 +1597,8 @@ input[type="number"]::-webkit-outer-spin-button {
     min-width: 0;
 }
 .series-radix,
+.series-line,
+.series-gain,
 .series-appearance,
 .series-menu-actions {
     display: flex;
@@ -1605,20 +1607,27 @@ input[type="number"]::-webkit-outer-spin-button {
     min-width: 0;
 }
 .series-radix button,
+.series-line button,
 .series-menu-actions button {
     flex: 1;
     min-width: 0;
 }
-.series-radix button {
+.series-line {
+    flex: 1;
+}
+.series-radix button,
+.series-line button {
     padding: 4px 2px;
     color: var(--vscode-foreground);
     background: transparent;
     border-color: var(--vscode-widget-border, #8884);
 }
-.series-radix button:hover {
+.series-radix button:hover,
+.series-line button:hover {
     background: var(--vscode-toolbar-hoverBackground, #8882);
 }
-.series-radix button[aria-pressed="true"] {
+.series-radix button[aria-pressed="true"],
+.series-line button[aria-pressed="true"] {
     color: var(--vscode-button-foreground, #fff);
     background: var(--vscode-button-background, #0078d4);
     border-color: var(--vscode-button-background, #0078d4);
@@ -1634,6 +1643,23 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .series-menu button {
     font-size: 12px;
+}
+.series-gain .series-gain-input {
+    flex: 1 1 0;
+    width: 0;
+    min-width: 0;
+    text-align: center;
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+.series-gain-input::-webkit-inner-spin-button,
+.series-gain-input::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+}
+.series-gain button {
+    flex: 0 0 28px;
+    padding: 4px;
 }
 .curve-readings {
     flex: none;

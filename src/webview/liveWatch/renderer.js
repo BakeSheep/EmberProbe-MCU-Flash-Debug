@@ -530,6 +530,7 @@ if (saved && saved.dispSpec) state.dispSpec = saved.dispSpec;
 if (saved && saved.arrayShown) state.arrayShown = saved.arrayShown;
 // State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
 var legacyPointerCurves = !!(saved && saved.hidden) && !saved.pointerCurveDefaults;
+const seriesGain = EmberProbeSeriesGain.create(state);
 const valueTree = EmberProbeValueTree.create({
     t: (key, params) => t(key, params),
     classes: {
@@ -547,6 +548,7 @@ const valueTree = EmberProbeValueTree.create({
     },
     state,
     radix: (name) => state.numberBases[name] || 10,
+    formatValue: seriesGain.format,
     savedPointers: saved && { pointers: saved.lastPointers, version: saved.lastPointersVersion },
     displayName: (path) => displayNameFor({ name: path }),
     save: () => saveUi(),
@@ -903,6 +905,7 @@ function removeVar(name) {
             if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete paths[path];
         });
     });
+    seriesGain.forget(name);
     delete state.dispSpec[name];
     delete state.rawMembers[name];
     valueTree.pointers.forget(name);
@@ -1719,81 +1722,25 @@ function updateChartEmpty(series, hasBounds) {
     };
     empty.appendChild(button);
 }
-function chartAction(action, value) {
-    if (action === "importSidebar") {
-        post({ type: "importSidebarWatch", items: state.watch });
-        return;
-    }
-    var names = state.watch.map(function (w) {
-        return w.name;
-    });
-    if (action === "showAll" || action === "hideAll") {
-        state.hidden = Object.fromEntries(
-            names.map(function (name) {
-                return [name, action === "hideAll"];
-            })
-        );
-        analysis.previousHidden = null;
-        analysis.focused = null;
-        renderVars();
-        saveUi();
-    }
-    if (action === "restore") {
-        state.hidden = Analysis.restore(analysis, names);
-        renderVars();
-        saveUi();
-    }
-    if (action === "focus") {
-        state.hidden = Analysis.focus(analysis, state.hidden, names, value);
-        renderVars();
-        saveUi();
-    }
-    if (action === "hover") {
-        chartState.hoverName = value;
-        chartState.pointer = null;
-        chartState.hits = [];
-    }
-    if (action === "style") {
-        state.seriesStyles[value.name] = value.style;
-        post({ type: "setSeriesStyle", ...value });
-        renderVars();
-    }
-    if (action === "type") {
-        var item = state.watch.find(function (entry) {
-            return entry.name === value.name;
-        });
-        if (item && !isComposite(item) && TYPES.includes(value.type)) {
-            item.type = value.type;
-            state.latest[item.name] = null;
-            state.latestText[item.name] = null;
-            state.latestEnum[item.name] = null;
-            updateValues();
-            saveWatch();
-        }
-    }
-    if (action === "radix") {
-        var selected = state.watch.find(function (entry) {
-            return entry.name === value.name;
-        });
-        if (!selected || isComposite(selected) || ![2, 10, 16].includes(value.radix)) return;
-        if (value.radix === 10) delete state.numberBases[value.name];
-        else state.numberBases[value.name] = value.radix;
-        updateValues();
-        saveUi();
-    }
-    if (action === "remove") removeVar(value);
-    if (action === "autoY") chartState.autoY = !chartState.autoY;
-    chartState.fastDirty = true;
-    state.dirty = true;
-}
+var chartAction = EmberProbeChartControls.createActions({
+    state,
+    chartState,
+    analysis,
+    gain: seriesGain,
+    post,
+    renderVars,
+    saveUi,
+    updateValues,
+    saveWatch,
+    removeVar,
+    types: TYPES
+});
 controls = window.EmberProbeChartControls.create({
     document: document,
     t: t,
     fmtNum: fmtNum,
     formatValue: function (name, point) {
-        return point
-            ? EmberProbeValueTree.fmtExact(point.v, point.valueText, null, state.numberBases[name] || 10)
-            : t("lw.noReading");
+        return point ? seriesGain.formatPoint(name, point, state.numberBases[name] || 10) : t("lw.noReading");
     },
     displayName: curveDisplayName,
     tooltipName: function (name) {
@@ -1812,6 +1759,7 @@ controls = window.EmberProbeChartControls.create({
             style: styleFor,
             watch: state.watch,
             types: TYPES,
+            gain: seriesGain,
             radix: function (name) {
                 return state.numberBases[name] || 10;
             },
@@ -2091,7 +2039,7 @@ function draw(now) {
         norm,
         jitterBands,
         backgroundIcon: chartBackground.bitmap(getComputedStyle(document.body)),
-        series,
+        series: seriesGain.project(series),
         hasBounds,
         pixelRatio: window.devicePixelRatio * EmberProbePageZoom.scale(document),
         style: getComputedStyle(document.body),
@@ -2397,6 +2345,7 @@ window.EmberProbeMessages.connect(window, {
             delete state.latestEnum[name];
             delete state.latestPointer[name];
             valueTree.pointers.forget(name);
+            seriesGain.forget(name);
         });
         // A view saved before pointer curves started hidden keeps the pointer curves it showed.
         if (legacyPointerCurves) {

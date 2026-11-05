@@ -35,6 +35,7 @@ const PAGE_PRELUDE = {
         "seriesStyles.js",
         "analysisState.js",
         "chartInspection.js",
+        "seriesGain.js",
         "chartControls.js",
         "chartTransport.js",
         "backgroundIcon.js",

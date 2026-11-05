@@ -10,6 +10,7 @@ const { LiveWatchService } = require("../src/services/liveWatchService");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { render } = require("./helpers/render-webview");
 const { chartHistoryHost } = require("./helpers/chart-history-host");
+const { scenario } = require("./helpers/scenario");
 const {
     SamplingArchive,
     csvField,
@@ -357,6 +358,59 @@ async function main() {
     });
 
     try {
+        await scenario("Waveform display gain leaves recorded samples and exported CSV unchanged", async () => {
+            const view = render(getLiveWatchContent({}, "en"));
+            const gainArchive = new SamplingArchive({ rootDir: path.join(temporaryRoot, "gain") });
+            try {
+                view.send({
+                    type: "watchList",
+                    items: [{ name: "signal", type: "f32", address: 0x20000000, size: 4 }]
+                });
+                const host = chartHistoryHost(view);
+                view.window.chartAction("gain", { name: "signal", gain: 2 });
+                for (const [t, value] of [
+                    [1000, 1.5],
+                    [2000, -2.5]
+                ]) {
+                    const samples = [{ name: "signal", value, t }];
+                    gainArchive.append(samples, t);
+                    host.samples(samples);
+                }
+                view.window.updateValues();
+                assert.equal(view.document.querySelector(".var-value").textContent, "-5");
+                host.draw();
+                view.window.freezeChart();
+                host.pump();
+                view.window.chartAction("gain", { name: "signal", gain: -3 });
+                host.draw();
+                view.window.eval("exportDialog").open();
+                view.send({
+                    type: "samplingArchiveInfo",
+                    openExport: true,
+                    historyRevision: 0,
+                    variables: ["signal"],
+                    firstTimestampMs: 1000,
+                    lastTimestampMs: 2000
+                });
+                view.window.eval("exportDialog").apply();
+                const request = view.messages.at(-1);
+                assert.equal(request.type, "exportCsv");
+                assert.equal(request.gain, undefined);
+                const outputPath = path.join(temporaryRoot, "gain.csv");
+                await gainArchive.exportCsv({ ...request, outputPath });
+                assert.equal(
+                    fs.readFileSync(outputPath, "utf8"),
+                    "\uFEFFtime,signal\r\n1970-01-01T00:00:01.000Z,1.5\r\n1970-01-01T00:00:02.000Z,-2.5\r\n"
+                );
+                assert.deepEqual(
+                    decodeRecords(fs.readFileSync(gainArchive.dataPath)).rows.map((row) => row.v.signal),
+                    ["1.5", "-2.5"]
+                );
+            } finally {
+                view.close();
+                await gainArchive.dispose();
+            }
+        });
         await testDraining(temporaryRoot);
         assert.strictEqual(csvField("a,b"), '"a,b"');
         assert.strictEqual(csvField('a"b'), '"a""b"');
