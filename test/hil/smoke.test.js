@@ -327,18 +327,25 @@ async function run() {
             // openocdPath is deliberately not settable through the Bridge; set it like a user would.
             await config.update("openocdPath", profile.openocd, vscode.ConfigurationTarget.Workspace);
             await config.update("armToolchainPath", profile.toolchain, vscode.ConfigurationTarget.Workspace);
-            return call("config.set", {
+            const configured = await call("config.set", {
                 values: {
                     elf: profile.elfRelative,
                     debugger: profile.probe,
                     mcu: profile.target,
                     transport: profile.transport,
-                    probeSerial: profile.probeSerial,
                     adapterSpeedKhz: profile.adapterSpeedKhz,
                     rtos: profile.rtos,
                     ...(profile.svdRelative ? { svd: profile.svdRelative } : {})
                 }
             });
+            // The serial is a workspace pick for this interface script, not a setting.
+            if (profile.probeSerial)
+                await provider._connectedProbes.selection().set({
+                    probe: profile.probe,
+                    probeSerial: profile.probeSerial,
+                    source: "user"
+                });
+            return configured;
         });
         await step("probe.list", () => call("probe.list"));
         await step("chip.read", async () => {
