@@ -31,7 +31,7 @@ const SLOW_PROC =
 
 // The file word is already quoted by quoteTclWord. Delegate to OpenOCD's program/reset implementations,
 // retaining target events, verification, RAM backup and final reset-run. Its flash write_image call is
-// wrapped: an image whose on-target CRC already matches is not erased or rewritten. A write or the final
+// wrapped to raise the programming clock while always erasing and writing the image. A write or the final
 // verification at the raised clock that fails is repeated once at the previous clock after reset-init,
 // so a successful fast write is still checked only once, by OpenOCD's own verify_image.
 function buildFlashProgramCommand(fileWord, speedKhz = 0) {
@@ -44,8 +44,6 @@ function buildFlashProgramCommand(fileWord, speedKhz = 0) {
         "local proc flash {args} { " +
         'if {[llength $args] != 3 || [lindex $args 0] ne "write_image" || [lindex $args 1] ne "erase"} { ' +
         "return [upcall flash {*}$args] }; " +
-        "echo EP_FLASH_STAGE=preverify; " +
-        "if {![catch {verify_image_checksum [lindex $args 2]}]} { echo EP_FLASH_STAGE=unchanged; return }; " +
         "set ::_ep_flash_base [_ep_flash_boost $::_ep_flash_khz]; " +
         "if {!$::_ep_flash_base} { echo EP_FLASH_STAGE=program; return [upcall flash {*}$args] }; " +
         "echo EP_FLASH_STAGE=program_boost; if {![catch {upcall flash {*}$args}]} { return }; " +
@@ -71,7 +69,7 @@ const DOWNLOAD_CLOCK_RESTORE =
     "set ::_ep_download_base 0";
 
 const FLASH_STAGE =
-    /^\s*EP_FLASH_STAGE=(init|reset_init|reset_halt|reset_run|preverify|unchanged|program|program_boost|verify|verify_boost|speed_fallback)\s*$/;
+    /^\s*EP_FLASH_STAGE=(init|reset_init|reset_halt|reset_run|program|program_boost|verify|verify_boost|speed_fallback)\s*$/;
 
 // J-Link logs its clamp before the marker; other drivers already report the effective clock in the marker.
 function flashClockTracker() {
@@ -95,9 +93,9 @@ function flashPhaseFromLine(line, previous = "openocd_start") {
     return previous;
 }
 
-// Errors logged while comparing the image or trying the raised clock are expected and handled in Tcl.
+// Errors logged while trying the raised clock are expected and handled in Tcl.
 function isTentativeFlashPhase(phase) {
-    return phase === "preverify" || phase === "program_boost" || phase === "verify_boost";
+    return phase === "program_boost" || phase === "verify_boost";
 }
 
 module.exports = {

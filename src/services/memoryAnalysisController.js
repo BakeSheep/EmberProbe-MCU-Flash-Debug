@@ -27,11 +27,7 @@ class MemoryAnalysisController {
                 );
                 return files.map((file) => file.fsPath);
             },
-            selection: (elf) => options.context.workspaceState.get("memoryAnalysis.sources", {})[elf] || {},
-            regionKinds: () => options.vscode.workspace.getConfiguration("emberprobe").get("memory.regionKinds", {})
-        });
-        this.configurationListener = options.vscode.workspace.onDidChangeConfiguration?.((event) => {
-            if (event.affectsConfiguration("emberprobe.memory.regionKinds")) this.refresh();
+            selection: (elf) => options.context.workspaceState.get("memoryAnalysis.sources", {})[elf] || {}
         });
     }
 
@@ -113,7 +109,6 @@ class MemoryAnalysisController {
         this.service.invalidate();
         for (const watcher of this.watchers) watcher.dispose();
         this.watchers = [];
-        this.configurationListener?.dispose();
     }
 }
 

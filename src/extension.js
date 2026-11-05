@@ -56,7 +56,6 @@ function activate(context) {
             if (event.affectsConfiguration("emberprobe.sampleFrequencyHz")) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.samplingArchiveMaxMiB")) provider.samplingArchiveConfigurationChanged();
             if (["cubemxPath", "cubemx2Path"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.refreshCubeMxStatus().catch(console.error);
-            if (event.affectsConfiguration("emberprobe.mcp.toolsets")) provider.mcpConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();
                 provider.refreshOpenOcdStatus(true);

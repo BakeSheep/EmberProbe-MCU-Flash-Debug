@@ -10,6 +10,7 @@ const { validateDebugConfiguration } = require("../src/services/debugConfigurati
 const { EmberDebugSession } = require("../src/debug/session");
 const { quote } = require("../src/debug/mi");
 const { buildDownloadBoostCommand, DOWNLOAD_CLOCK_RESTORE } = require("../skills/_emberprobe/openocd-flash");
+const { scenario } = require("./helpers/scenario");
 
 const SECTION_REPORTS = {
     unchanged: [
@@ -275,41 +276,40 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 return { adapter, mi, commands: mi.commands.map((item) => item.command), output, loaded };
             };
             const { size, mtimeMs } = fs.statSync(primary);
-            // Unchanged firmware: one reset, a CRC check, no transfer and no second reset.
-            const unchanged = await launch("unchanged", {
-                __emberprobeStartupTrace: {
-                    startedAt: Date.now() - 5000,
-                    phases: { tools: 1, openocd: 2, warmup: 3, prepare: -1, preflight: 3.5, server: 4, extra: 9 },
-                    gdbWarmup: { state: "ready", durationMs: 5300, executable: primary }
-                }
+            await scenario("Download identical firmware and reset again before starting debug", async () => {
+                const unchanged = await launch("unchanged", {
+                    __emberprobeStartupTrace: {
+                        startedAt: Date.now() - 5000,
+                        phases: { tools: 1, openocd: 2, warmup: 3, prepare: -1, preflight: 3.5, server: 4, extra: 9 },
+                        gdbWarmup: { state: "ready", durationMs: 5300, executable: primary }
+                    }
+                });
+                assert(!unchanged.commands.includes(consoleCommand("compare-sections")));
+                assert(unchanged.commands.includes("-target-download"));
+                assert.strictEqual(resets(unchanged.commands).length, 2);
+                assert(!unchanged.output.includes("download skipped"));
+                assert(!unchanged.output.includes("matched."), "per-section results stay out of the console");
+                const trace = JSON.parse(
+                    unchanged.output.match(/\[EmberProbe performance\] (\{"command":"launch".*\})\n/)[1]
+                );
+                assert.strictEqual(trace.firmware, "programmed");
+                assert(Number.isInteger(trace.totalMs));
+                for (const phase of ["gdbStart", "gdbSetup", "symbols", "connect", "preHooks", "reset", "download"])
+                    assert(Number.isInteger(trace.phases[phase]), phase);
+                assert(Number.isInteger(trace.phases.postDownloadReset));
+                // Extension-side phases arrive through the launch arguments; only known non-negative integers pass.
+                assert.deepStrictEqual(trace.startup, { tools: 1, openocd: 2, warmup: 3, server: 4 });
+                assert.strictEqual(trace.startupMs, 10);
+                assert.deepStrictEqual(trace.gdbWarmup, { state: "ready", durationMs: 5300 });
+                assert(!unchanged.output.includes(primary), "the trace carries no paths");
+                // The extension's firmware record follows the launch: a programmed image carries the stamp of the
+                // executable GDB read, so the record can tell it from a later rebuild.
+                assert.deepStrictEqual(
+                    unchanged.loaded.map((event) => event.body),
+                    [{ image: "executable", firmware: "programmed", size, mtimeMs }]
+                );
             });
-            const check = unchanged.commands.indexOf(consoleCommand("compare-sections"));
-            assert(check > unchanged.commands.indexOf(consoleCommand("monitor reset halt")));
-            assert.strictEqual(unchanged.mi.commands[check].timeout, 60000);
-            assert(!unchanged.commands.includes("-target-download"));
-            assert.strictEqual(resets(unchanged.commands).length, 1);
-            assert(unchanged.output.includes("download skipped"));
-            assert(!unchanged.output.includes("matched."), "per-section results stay out of the console");
-            const trace = JSON.parse(
-                unchanged.output.match(/\[EmberProbe performance\] (\{"command":"launch".*\})\n/)[1]
-            );
-            assert.strictEqual(trace.firmware, "unchanged");
-            assert(Number.isInteger(trace.checkMs) && Number.isInteger(trace.totalMs));
-            for (const phase of ["gdbStart", "gdbSetup", "symbols", "connect", "preHooks", "reset", "download"])
-                assert(Number.isInteger(trace.phases[phase]), phase);
-            assert(!("postDownloadReset" in trace.phases));
-            // Extension-side phases arrive through the launch arguments; only known non-negative integers pass.
-            assert.deepStrictEqual(trace.startup, { tools: 1, openocd: 2, warmup: 3, server: 4 });
-            assert.strictEqual(trace.startupMs, 10);
-            assert.deepStrictEqual(trace.gdbWarmup, { state: "ready", durationMs: 5300 });
-            assert(!unchanged.output.includes(primary), "the trace carries no paths");
-            // The extension's firmware record follows the launch: a confirmed image carries the stamp of the
-            // executable GDB read, so the record can tell it from a later rebuild.
-            assert.deepStrictEqual(
-                unchanged.loaded.map((event) => event.body),
-                [{ image: "executable", firmware: "unchanged", size, mtimeMs }]
-            );
-            // Changed, unknown or failed checks fall through to the normal download and second reset.
+            // All target contents use the normal download and second reset without a pre-check.
             for (const verdict of ["changed", "unknown", "localized", undefined]) {
                 const changed = await launch(verdict);
                 assert(changed.commands.includes("-target-download"));
@@ -349,18 +349,19 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             const attached = session({});
             await attached.adapter.handle("attach", { ...defaults });
             assert(!attached.events.some((event) => event.event === "emberprobe.firmwareLoaded"));
-            // A rejected check (target memory fault) downloads; a closed transport cannot recover and propagates.
+            // The default clock needs no CRC check; download errors still propagate.
             const failed = session({ ...defaults });
             failed.mi.fail = "compare-sections";
             assert.strictEqual((await failed.adapter.debugImages.download()).firmware, "programmed");
             assert(failed.mi.commands.some((item) => item.command === "-target-download"));
+            failed.mi.fail = "-target-download";
             failed.mi.closed = true;
             await assert.rejects(failed.adapter.debugImages.download(), /fixture failure/);
             const silent = session({ ...defaults });
             await silent.adapter.handle("launch", { ...defaults });
             assert(!silent.events.some((event) => event.body?.output?.includes("[EmberProbe performance]")));
             {
-                // A changed image downloads at the raised programming clock, is checked once by CRC and the
+                // Every image downloads at the raised programming clock, is checked once by CRC and the
                 // script clock is restored before the second reset.
                 const boost = consoleCommand(`monitor ${buildDownloadBoostCommand(15000)}`);
                 const restore = consoleCommand(`monitor ${DOWNLOAD_CLOCK_RESTORE}`);
@@ -368,6 +369,7 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                     const { adapter, mi, events } = session({});
                     mi.imageVerdicts = verdicts;
                     mi.boostReply = reply;
+                    if (extra.failCompare) mi.fail = "compare-sections";
                     const command = mi.command.bind(mi);
                     mi.command = async (text, timeout) => {
                         if (text === "-target-download" && extra.failFirstDownload) {
@@ -390,15 +392,10 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                     return { commands: mi.commands.map((item) => item.command), trace };
                 };
                 const accepted = ["EP_FLASH_SPEED=12000", "EP_DOWNLOAD_BASE=4000"];
-                const ok = await fast(["changed", "unchanged"], accepted);
-                const order = [
-                    consoleCommand("compare-sections"),
-                    boost,
-                    "-target-download",
-                    consoleCommand("compare-sections"),
-                    restore
-                ].map((command, index, all) =>
-                    ok.commands.indexOf(command, index ? ok.commands.indexOf(all[index - 1]) + 1 : 0)
+                const ok = await fast(["unchanged"], accepted);
+                const order = [boost, "-target-download", consoleCommand("compare-sections"), restore].map(
+                    (command, index, all) =>
+                        ok.commands.indexOf(command, index ? ok.commands.indexOf(all[index - 1]) + 1 : 0)
                 );
                 assert(
                     order.every((position, index) => position >= 0 && (!index || position > order[index - 1])),
@@ -409,9 +406,10 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 assert.strictEqual(ok.trace.downloadClockKhz, 12000);
                 assert.strictEqual(ok.trace.speedFallback, false);
                 assert.strictEqual(ok.trace.firmware, "programmed");
+                assert.strictEqual(ok.commands.filter((command) => command.includes("compare-sections")).length, 1);
 
                 // A CRC mismatch after the fast write restores the clock, resets and downloads once more.
-                const retried = await fast(["changed", "changed"], accepted);
+                const retried = await fast(["changed"], accepted);
                 assert.strictEqual(retried.commands.filter((command) => command === "-target-download").length, 2);
                 const second = retried.commands.lastIndexOf("-target-download");
                 assert(retried.commands.indexOf(restore) < second);
@@ -429,15 +427,21 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 assert(!refused.commands.includes(restore));
                 assert.strictEqual(
                     refused.commands.filter((command) => command.includes("compare-sections")).length,
-                    1
+                    0
                 );
                 assert(!("downloadClockKhz" in refused.trace));
-                // A pre-check whose output is not recognized cannot verify a fast write, so no raise is tried.
-                for (const verdict of ["unknown", "localized"]) {
+                // An unrecognized or failed post-write check also triggers the single slow retry.
+                for (const verdict of ["unknown", "localized", undefined]) {
                     const unverified = await fast([verdict], accepted);
-                    assert(!unverified.commands.includes(boost), verdict);
-                    assert(unverified.commands.includes("-target-download"));
+                    assert(unverified.commands.includes(boost));
+                    assert.strictEqual(
+                        unverified.commands.filter((command) => command === "-target-download").length,
+                        2
+                    );
+                    assert.strictEqual(unverified.trace.speedFallback, true);
                 }
+                const compareFailed = await fast([], accepted, { failCompare: true });
+                assert.strictEqual(compareFailed.trace.speedFallback, true);
                 const unset = await fast(["changed"], accepted, { args: { __emberprobeDownloadSpeedKhz: undefined } });
                 assert(!unset.commands.some((command) => command.includes("_ep_flash_boost")));
                 assert.throws(() => buildDownloadBoostCommand(-5), { code: "ADAPTER_SPEED_INVALID" });

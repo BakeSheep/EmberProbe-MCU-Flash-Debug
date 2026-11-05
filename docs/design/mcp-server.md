@@ -82,19 +82,19 @@ SDK 和自定义 profile 保持原状。条目使用 `@deepseek-ai/dsh-mcp-clien
 
 ## 工具
 
-MCP 固定暴露全部工具和工作流提示，不支持更改暴露范围；旧的 `emberprobe.mcp.toolsets` 和 `EMBERPROBE_MCP_TOOLSETS` 不再生效。
+MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cubemx`，不支持更改暴露范围。旧设置 `emberprobe.mcp.toolsets` 和环境变量 `EMBERPROBE_MCP_TOOLSETS` 不再生效。下表仅按功能分类：
+
+| 工具集 | 工具 |
+|---|---|
+| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `peripherals_list` `peripherals_read` `peripherals_write` |
+| `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
+| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
 
 - 注解：`readOnlyHint` 由 `agent-client.js` 的 `READ_ONLY_METHODS`（可重试的只读方法）与 `OBSERVATION_METHODS`（不改变状态但可能访问硬件的方法）派生；`flash_program`、写入、CubeMX 生成与 `debug_control` 标记为 `destructiveHint`；所有工具 `openWorldHint: false`。
 - schema 手写在 `src/mcp/tools.js`，全部 `additionalProperties: false`；`probeSerial` 保持字符串原样传递。最终校验仍由 Bridge 完成。
 - 漂移测试（`test/mcp-tools.test.js`）要求每个工具对应现有的 Bridge 路由，每个路由要么被映射，要么列入显式排除清单。
 - `flash_program` / `flash_verify` 先在服务器进程内运行与 skill 相同的预检（`flash-common.preflight`）；`ready === false` 时直接返回 `diagnostics` 与 `notes`，不进入确认。已有 24 小时工作区授权时直接执行，并在结果的 `authorization.trustedExpiresAt` 中报告到期时间。
 - `debug_inspect` 的 `frame` 与 `reference` 是 Bridge 在上一次列表中返回的字符串句柄（`stackFrames[].frame`、`scopes[].reference`、`variables[].reference`），不是 DAP 整数；整数在 schema 校验时即被拒绝。句柄在恢复运行、写入、控制台命令或切换会话后失效，需要重新列出。
-
-| 工具集 | 工具 |
-| --- | --- |
-| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `peripherals_list` `peripherals_read` `peripherals_write` |
-| `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
-| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
 
 ## 确认
 
@@ -126,7 +126,7 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 ## 客户端实测状态
 
-以下行为需要在各客户端中实测后记录；本表不预设结果：
+以下行为需要在各客户端中实测后记录；本表不预设结果。实测流程、发给客户端的步骤和回报模板见 [MCP harness 实机验收](../development/mcp-harness-acceptance.md)：
 
 | 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
 |---|---|---|---|---|---|

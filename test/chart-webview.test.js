@@ -97,9 +97,24 @@ async function controls() {
         color.value = "#aabbcc";
         color.dispatchEvent(new dom.window.Event("input"));
         assert.equal(actions.at(-1)[1].style.color, "#aabbcc");
-        doc.querySelector(".series-appearance select").value = "dotted";
-        doc.querySelector(".series-appearance select").dispatchEvent(new dom.window.Event("change"));
-        assert.equal(actions.at(-1)[1].style.line, "dotted");
+        const lineButtons = [...doc.querySelectorAll(".series-line button")];
+        assert.deepEqual(
+            lineButtons.map((b) => b.dataset.line),
+            ["solid", "dashed", "dotted"]
+        );
+        assert.equal(lineButtons[0].getAttribute("aria-pressed"), "true");
+        for (const selected of [lineButtons[1], lineButtons[0], lineButtons[2]]) {
+            selected.click();
+            assert.deepEqual(actions.at(-1), [
+                "style",
+                { name: "a", style: { color: "#aabbcc", line: selected.dataset.line } }
+            ]);
+            for (const option of lineButtons)
+                assert.equal(option.getAttribute("aria-pressed"), String(option === selected));
+        }
+        color.value = "#112233";
+        color.dispatchEvent(new dom.window.Event("input"));
+        assert.equal(actions.at(-1)[1].style.line, "dotted", "changing color preserves the selected line button");
         doc.getElementById("seriesOnly").click();
         assert.deepEqual(actions.at(-1), ["focus", "a"]);
         row.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true }));
@@ -1045,6 +1060,181 @@ async function numberBases() {
         nested.close();
     }
     console.log("Per-variable waveform number bases, exact values and persistence tests passed");
+}
+
+async function temporaryGain() {
+    const html = getLiveWatchContent({}, "en");
+    const graph = render(html);
+    const other = render(html);
+    try {
+        const w = graph.window;
+        const doc = graph.document;
+        const items = [
+            { name: "a", type: "f32", address: 0x20000000, size: 4 },
+            { name: "b", type: "u32", address: 0x20000004, size: 4 },
+            { name: "ptr", type: "u32", address: 0x20000008, size: 4, isPointer: true }
+        ];
+        graph.send({ type: "watchList", items });
+        other.send({ type: "watchList", items });
+        const host = chartHistoryHost(graph);
+        for (const [t, value] of [
+            [1000, 2],
+            [1100, 4],
+            [1200, 8]
+        ])
+            host.samples([{ name: "a", value, t }]);
+        w.chartAction("focus", "a");
+        host.draw();
+        const value = () => doc.querySelector('[data-series-name="a"] .var-value').textContent;
+        const open = (name = "a") =>
+            doc
+                .querySelector(`[data-series-name="${name}"]`)
+                .dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true }));
+        open();
+        const input = doc.querySelector(".series-gain-input");
+        const enter = (text) => {
+            input.value = text;
+            input.dispatchEvent(new w.Event("input", { bubbles: true }));
+        };
+        assert.equal(input.value, "1");
+        const step = (label) => doc.querySelector(`[aria-label="${label}"]`).click();
+        for (let i = 0; i < 10; i++) step("Increase gain");
+        assert.equal(input.value, "2", "decimal steps have no accumulated binary tail");
+        step("Decrease gain");
+        assert.equal(input.value, "1.9");
+        enter("2");
+        assert.equal(value(), "16", "valid input updates the sidebar immediately");
+        assert.equal(other.window.eval("seriesGain").get("a"), 1);
+        for (const invalid of ["", "NaN", "Infinity", "1e309", "-"]) {
+            enter(invalid);
+            assert.equal(value(), "16");
+            input.dispatchEvent(new w.Event("blur"));
+            assert.equal(input.value, "2");
+        }
+        const raw = JSON.stringify(w.chartData());
+        const requests = graph.messages.filter((m) => m.type === "chartViewport").length;
+        host.draw();
+        assert.deepEqual(
+            Array.from(w.chartState.curveGeometry.value[0].raw, (p) => p.v),
+            [4, 8, 16]
+        );
+        assert.equal(w.chartState.rangeStats.vMin, 4);
+        assert.equal(w.chartState.rangeStats.vMax, 16);
+        const geometry = w.chartState.curveGeometry;
+        const curve = geometry.value[0];
+        w.chartState.pointer = { x: curve.xs[1] + curve.dx, y: curve.ys[1] + curve.dy };
+        host.draw();
+        assert.ok(doc.getElementById("curveTooltip").textContent.includes("a: 8"), "hover multiplies only once");
+        assert.strictEqual(w.chartState.curveGeometry, geometry, "hover reuses the scaled geometry cache");
+        assert.equal(graph.messages.filter((m) => m.type === "chartViewport").length, requests);
+        assert.equal(JSON.stringify(w.chartData()), raw, "display changes never alter the raw viewport");
+        enter("0.125");
+        doc.querySelector('[data-radix="16"]').click();
+        assert.equal(value(), "0x1");
+        enter("0.3");
+        assert.equal(value(), "2.4", "fractional products use decimal even in HEX mode");
+        doc.querySelector('[data-radix="10"]').click();
+        input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        assert.equal(input.value, "0.3");
+        doc.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        assert.ok(doc.querySelector(".series-menu").classList.contains("hidden"));
+        assert.equal(doc.activeElement.dataset.seriesName, "a");
+        open("ptr");
+        assert.equal(doc.querySelector(".series-gain"), null, "pointer addresses have no gain control");
+        w.freezeChart();
+        host.pump();
+        host.draw();
+        const frozen = JSON.stringify(w.chartData());
+        w.chartAction("gain", { name: "a", gain: -2 });
+        host.draw();
+        assert.equal(w.eval("state").frozen, true);
+        assert.equal(w.chartState.rangeStats.vMin, -16);
+        assert.equal(w.chartState.rangeStats.vMax, -4);
+        assert.equal(JSON.stringify(w.chartData()), frozen);
+        w.chartState.autoY = false;
+        w.chartState.y = { min: -100, max: 100 };
+        w.chartAction("gain", { name: "a", gain: 3 });
+        host.draw();
+        assert.deepEqual({ ...w.chartState.y }, { min: -100, max: 100 }, "manual Y limits remain fixed");
+        doc.getElementById("norm").click();
+        host.draw();
+        const normal = Array.from(w.chartState.curveGeometry.value[0].ys);
+        w.chartAction("gain", { name: "a", gain: -3 });
+        host.draw();
+        const inverted = Array.from(w.chartState.curveGeometry.value[0].ys);
+        assert.ok(normal[0] > normal[2] && inverted[0] < inverted[2], "negative gain flips normalized geometry");
+        w.chartAction("gain", { name: "a", gain: 0 });
+        host.draw();
+        const flat = Array.from(w.chartState.curveGeometry.value[0].ys);
+        assert.ok(flat.every((y) => y === flat[0]));
+        doc.getElementById("norm").click();
+        w.chartAction("gain", { name: "a", gain: 2 });
+        w.resumeChart();
+        host.pump();
+        host.samples([{ name: "a", value: 5, t: 1300 }]);
+        w.updateValues();
+        host.draw();
+        assert.equal(value(), "10", "future samples use the current display gain");
+        assert.equal(w.eval("state").latest.a, 5);
+        w.chartState.smoothFollowing = true;
+        w.chartAction("gain", { name: "a", gain: 3 });
+        assert.equal(w.chartState.rangeStats, null, "gain invalidates held smooth-follow Y statistics");
+        w.chartState.smoothFollowing = false;
+        host.samples([{ name: "a", value: Number.MAX_VALUE, t: 1400 }]);
+        w.updateValues();
+        w.eval("state").remoteHistory.view.receivedAt = -Infinity;
+        host.draw();
+        assert.equal(value(), "—");
+        assert.equal(w.chartState.curveGeometry.value[0].raw.at(-1).v, null, "overflow is a curve gap");
+        assert.equal(w.eval("state").latest.a, Number.MAX_VALUE);
+        w.chartAction("gain", { name: "a", gain: 2 });
+        w.saveUi();
+        const saved = graph.getState();
+        assert.equal(saved.gain, undefined);
+        const restored = render(html, { ...saved, gain: { values: { a: 99 } } });
+        try {
+            restored.send({ type: "watchList", items });
+            assert.equal(restored.window.eval("seriesGain").get("a"), 1, "restoration ignores gain settings");
+        } finally {
+            restored.close();
+        }
+        w.chartAction("hideAll");
+        w.chartAction("showAll");
+        assert.equal(w.eval("seriesGain").get("a"), 2, "hiding preserves transient gain");
+        w.removeVar("a");
+        assert.equal(w.eval("seriesGain").get("a"), 1);
+        graph.assertHealthy();
+    } finally {
+        graph.close();
+        other.close();
+    }
+
+    const nested = render(html);
+    try {
+        const members = ["x", "y"].map((name, i) => ({ name, offset: i * 4, watchType: "f32", byteSize: 4, value: 2 }));
+        nested.send({
+            type: "watchList",
+            items: [
+                {
+                    name: "object",
+                    address: 0x20000000,
+                    isComposite: true,
+                    compositeLayout: { kind: "struct", byteSize: 8, members }
+                },
+                { name: "object.x", address: 0x20000000, type: "f32", size: 4 }
+            ]
+        });
+        nested.send({ type: "liveCompositeSample", samples: [{ name: "object", tree: { members }, t: 1000 }] });
+        nested.window.chartAction("gain", { name: "object.x", gain: 2 });
+        assert.deepEqual(
+            Array.from(nested.document.querySelectorAll(".member-value"), (cell) => cell.textContent),
+            ["4", "2"]
+        );
+        nested.window.removeVar("object");
+        assert.equal(nested.window.eval("seriesGain").get("object.x"), 1, "removing parents clears child gains");
+    } finally {
+        nested.close();
+    }
 }
 
 // Rendering, viewport and empty states
@@ -2641,6 +2831,7 @@ async function remoteHistory() {
     await scenario("Curve identity, inspection, snapshots and interaction", experience);
     await scenario("Jitter bands and envelopes", jitter);
     await scenario("Per-variable number bases, exact values and persistence", numberBases);
+    await scenario("Temporary display gain, controls, raw history, normalized geometry and lifecycle", temporaryGain);
     await scenario("Rendering, viewport and empty states", presentation);
     await scenario("Translation geometry, exact axes, gaps, smooth follow and adaptive frame cadence", smoothRender);
     await scenario("Viewport arithmetic", viewportArithmetic);

@@ -47,7 +47,7 @@
 
 ## 参与开发
 
-项目约定见仓库根目录的 `AGENTS.md`，发布流程见[发布指南](development/releasing.md)。
+项目约定见仓库根目录的 `AGENTS.md`。流程文档：[发布指南](development/releasing.md)、[MCP 客户端实机验收](development/mcp-harness-acceptance.md)。
 
 ### 设计说明
 

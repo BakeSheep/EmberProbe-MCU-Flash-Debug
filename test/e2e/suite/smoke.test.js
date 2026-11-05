@@ -51,14 +51,22 @@ async function run() {
     const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
         Object.entries(group.properties)
     );
-    assert.strictEqual(settings.length, 23);
+    assert.strictEqual(settings.length, 21);
     for (const [key, setting] of settings)
         assert.deepStrictEqual(
             vscode.workspace.getConfiguration().inspect(key)?.defaultValue,
             setting.default,
             `${key} must be registered from its settings group`
         );
-    for (const key of ["probeSerial", "sampleIntervalMs", "maxSamples", "enablePrettyPrinting", "prettyPrinterPath"])
+    for (const key of [
+        "probeSerial",
+        "sampleIntervalMs",
+        "maxSamples",
+        "enablePrettyPrinting",
+        "prettyPrinterPath",
+        "memory.regionKinds",
+        "mcp.toolsets"
+    ])
         assert.strictEqual(config.inspect(key)?.defaultValue, undefined, `${key} must no longer be registered`);
     assert.strictEqual(config.get("prettyPrintingMode"), "builtin");
     console.log("✓ contributes bounded live-watch defaults");

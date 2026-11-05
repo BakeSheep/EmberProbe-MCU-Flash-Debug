@@ -295,16 +295,40 @@ const inspection = new AgentDebugInspection(debugBridge);
     const other = await startBridge(path.join(base, "other"), { "config.get": () => ({ workspace: "other" }) });
     const callsSince = (before) => bridge.calls.slice(before).map((call) => call.method);
     try {
-        await scenario("List default toolsets with annotations", async () => {
+        await scenario("List every tool with annotations", async () => {
             const { client } = await connect();
             const { tools } = await client.listTools();
             const names = tools.map((tool) => tool.name);
-            assert.ok(names.includes("variables_write") && !names.some((name) => name.startsWith("cubemx_")));
+            assert.ok(names.includes("variables_write") && names.includes("cubemx_execute"));
             const write = tools.find((tool) => tool.name === "variables_write");
             assert.strictEqual(write.annotations.destructiveHint, true);
             assert.strictEqual(write.annotations.readOnlyHint, false);
             assert.ok(client.getInstructions().includes("Never guess"));
             await client.close();
+        });
+
+        await scenario("Ignore legacy toolset filters for tools, calls and workflow prompts", async () => {
+            for (const value of ["core", "cubemx", "unknown", "all", ""]) {
+                const { client } = await connect({
+                    env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: value }
+                });
+                try {
+                    assert.deepStrictEqual(
+                        (await client.listTools()).tools.map((tool) => tool.name),
+                        require("../src/mcp/tools").TOOLS.map((tool) => tool.name)
+                    );
+                    assert.deepStrictEqual(
+                        (await client.listPrompts()).prompts.map((prompt) => prompt.name),
+                        require("../src/mcp/prompts").PROMPTS.map((prompt) => prompt.name)
+                    );
+                    const result = await client.callTool({ name: "debug_status", arguments: {} });
+                    assert.strictEqual(result.isError, undefined);
+                    assert.deepStrictEqual(result.structuredContent, { state: "paused" });
+                    assert.ok((await client.getPrompt({ name: "cubemx_generate" })).messages.length);
+                } finally {
+                    await client.close();
+                }
+            }
         });
 
         await scenario("Call the Bridge as the MCP channel and resolve the workspace from roots", async () => {
@@ -370,9 +394,10 @@ const inspection = new AgentDebugInspection(debugBridge);
                     await client.connect(transport);
                     const tools = await client.listTools();
                     assert.ok(tools.tools.some((tool) => tool.name === "config_get"));
-                    assert.ok(
-                        !tools.tools.some((tool) => tool.name === "debug_start"),
-                        "toolset selection is preserved"
+                    assert.deepStrictEqual(
+                        tools.tools.map((tool) => tool.name),
+                        require("../src/mcp/tools").TOOLS.map((tool) => tool.name),
+                        "legacy client environments cannot restrict the catalog"
                     );
                     const result = await client.callTool({ name: "config_get", arguments: {} });
                     assert.ok(!result.isError, JSON.stringify(result));
@@ -558,7 +583,7 @@ const inspection = new AgentDebugInspection(debugBridge);
         });
 
         await scenario("Plan CubeMX generation with cubemx.prepare and ask before executing", async () => {
-            const env = { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" };
+            const env = { EMBERPROBE_WORKSPACE: workspace };
             const { client, elicitations } = await connect({
                 elicitation: true,
                 env,
@@ -601,7 +626,7 @@ const inspection = new AgentDebugInspection(debugBridge);
         await scenario("Leave the .ioc untouched when the user declines CubeMX generation", async () => {
             const { client } = await connect({
                 elicitation: true,
-                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" },
+                env: { EMBERPROBE_WORKSPACE: workspace },
                 answer: { action: "accept", content: { decision: "deny" } }
             });
             const before = bridge.calls.length;
@@ -616,7 +641,7 @@ const inspection = new AgentDebugInspection(debugBridge);
 
         await scenario("Return the CubeMX plan for chat confirmation without elicitation", async () => {
             const { client } = await connect({
-                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" }
+                env: { EMBERPROBE_WORKSPACE: workspace }
             });
             const candidatePath = candidate(57600);
             const before = bridge.calls.length;
@@ -642,7 +667,7 @@ const inspection = new AgentDebugInspection(debugBridge);
         await scenario("Resolve relative CubeMX paths against the workspace, not the server's cwd", async () => {
             // The client launched the server from `base`; the workspace is a different directory.
             const { client } = await connect({
-                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" }
+                env: { EMBERPROBE_WORKSPACE: workspace }
             });
             const relative = path.join("candidates", "relative.ioc");
             const absolute = path.join(candidates, "relative.ioc");
@@ -674,7 +699,7 @@ const inspection = new AgentDebugInspection(debugBridge);
             const decisions = ["workspace"];
             const { client, elicitations } = await connect({
                 elicitation: true,
-                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" },
+                env: { EMBERPROBE_WORKSPACE: workspace },
                 answer: () => ({ action: "accept", content: { decision: decisions.shift() || "deny" } })
             });
             const remembered = await client.callTool({
@@ -699,7 +724,7 @@ const inspection = new AgentDebugInspection(debugBridge);
 
         await scenario("Forward cancellation to the Bridge's cancel method", async () => {
             const { client } = await connect({
-                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" }
+                env: { EMBERPROBE_WORKSPACE: workspace }
             });
             let entered;
             const running = new Promise((resolve) => {
@@ -772,13 +797,18 @@ const inspection = new AgentDebugInspection(debugBridge);
             const { prompts } = await client.listPrompts();
             assert.deepStrictEqual(
                 prompts.map((prompt) => prompt.name),
-                ["flash", "fault_triage", "variable_debug", "rtos_inspect"]
+                ["flash", "fault_triage", "variable_debug", "rtos_inspect", "cubemx_generate"]
             );
             const flashPrompt = await client.getPrompt({ name: "flash", arguments: { goal: "Flash build/app.elf" } });
             const text = flashPrompt.messages[0].content.text;
             assert.ok(text.startsWith("Task: Flash build/app.elf"));
             assert.ok(text.includes("`scripts/program.js` → flash_program") && text.includes("# MCU Flash"));
-            await assert.rejects(client.getPrompt({ name: "cubemx_generate" }), /Unknown prompt/);
+            assert.ok(
+                (await client.getPrompt({ name: "cubemx_generate" })).messages[0].content.text.includes(
+                    "cubemx_execute"
+                )
+            );
+            await assert.rejects(client.getPrompt({ name: "missing_prompt" }), /Unknown prompt/);
             await client.close();
         });
 
@@ -788,7 +818,7 @@ const inspection = new AgentDebugInspection(debugBridge);
             const invalid = await client.callTool({ name: "debug_control", arguments: { action: "erase" } });
             assert.strictEqual(invalid.structuredContent.error.code, "INVALID_PARAMS");
             assert.strictEqual(bridge.calls.length, before);
-            await assert.rejects(client.callTool({ name: "cubemx_execute", arguments: {} }), /Unknown tool/);
+            await assert.rejects(client.callTool({ name: "missing_tool", arguments: {} }), /Unknown tool/);
             await client.close();
         });
 

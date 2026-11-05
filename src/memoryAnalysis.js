@@ -14,8 +14,7 @@ function unionBytes(ranges) {
     return total;
 }
 
-function regionKind(name, overrides) {
-    if (Object.hasOwn(overrides, name)) return overrides[name];
+function regionKind(name) {
     if (/ram|tcm|ccm|ddr/i.test(name)) return "ram";
     if (/flash|rom|xip|qspi|ospi/i.test(name)) return "flash";
     return "other";
@@ -72,12 +71,12 @@ function topSymbols(snapshot, top) {
         }));
 }
 
-function analyzeMemory(snapshot, definitions = [], overrides = {}, initialDiagnostics = []) {
+function analyzeMemory(snapshot, definitions = [], initialDiagnostics = []) {
     const diagnostics = [...initialDiagnostics];
     const warn = (code, message) => diagnostics.push({ code, message });
     const regions = definitions.map((region) => ({
         ...region,
-        type: regionKind(region.name, overrides),
+        type: regionKind(region.name),
         sections: [],
         ranges: [],
         complete: true
@@ -87,7 +86,7 @@ function analyzeMemory(snapshot, definitions = [], overrides = {}, initialDiagno
         ram: { total: 0, sections: [], estimated: !regions.length, ranges: [] }
     };
     for (const region of regions) {
-        if (region.type === "other") warn("REGION_KIND_UNKNOWN", `Specify memory.regionKinds for ${region.name}`);
+        if (region.type === "other") warn("REGION_KIND_UNKNOWN", `Unknown memory region type: ${region.name}`);
     }
     const find = (address, size, name) => {
         const hits = regions.filter((r) => address < r.origin + r.capacity && address + size > r.origin);

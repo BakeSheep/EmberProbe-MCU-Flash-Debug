@@ -99,7 +99,6 @@ function setup(vscodeExtra = {}, state = {}) {
         isAvailable: () => state.available !== false,
         isEnabled: () => state.enabled === true,
         instanceId: () => "a".repeat(32),
-        toolsets: () => state.toolsets || "",
         onResolve: async () => {
             events.resolved++;
         },
@@ -149,7 +148,7 @@ function cursorApi() {
 
         await scenario("Offer a VS Code stdio definition bound to this window's Bridge instance", async () => {
             let provider;
-            const state = { toolsets: "core,debug,cubemx" };
+            const state = {};
             const { registration, context, events } = setup(
                 {
                     McpStdioServerDefinition,
@@ -171,7 +170,6 @@ function cursorApi() {
             assert.deepStrictEqual(definition.args, [path.join(context.extensionPath, "dist", "mcp-server.js")]);
             assert.deepStrictEqual(definition.env, {
                 ELECTRON_RUN_AS_NODE: "1",
-                EMBERPROBE_MCP_TOOLSETS: "core,debug,cubemx",
                 EMBERPROBE_BRIDGE_INSTANCE: "a".repeat(32)
             });
             assert.strictEqual(definition.version, "0.9.0");
@@ -220,17 +218,9 @@ function cursorApi() {
             ]);
             registration.syncCursor();
             assert.strictEqual(cursor.calls.length, 1, "an unchanged registration is not repeated");
-            state.toolsets = "all";
             registration.changed();
-            assert.deepStrictEqual(
-                cursor.calls.slice(1).map(([kind]) => kind),
-                ["unregister", "register"]
-            );
-            assert.deepStrictEqual(cursor.calls[2][1].server.env, {
-                ELECTRON_RUN_AS_NODE: "1",
-                EMBERPROBE_MCP_TOOLSETS: "all"
-            });
-            assert.ok(!("EMBERPROBE_BRIDGE_INSTANCE" in cursor.calls[2][1].server.env), "not bound to one window");
+            assert.strictEqual(cursor.calls.length, 1, "configuration notifications keep the same complete catalog");
+            assert.ok(!("EMBERPROBE_BRIDGE_INSTANCE" in cursor.calls[0][1].server.env), "not bound to one window");
             state.enabled = false;
             registration.changed();
             assert.deepStrictEqual(cursor.calls.at(-1), ["unregister", "emberprobe"]);
@@ -312,10 +302,10 @@ function cursorApi() {
                 args: ["C:\\s\\mcp.js"],
                 env: { ELECTRON_RUN_AS_NODE: "1" }
             });
-            assert.deepStrictEqual(serverCommand({ platform: "darwin", ...common, toolsets: "core" }), {
+            assert.deepStrictEqual(serverCommand({ platform: "darwin", ...common }), {
                 command: "/s/mcp",
                 args: [],
-                env: { EMBERPROBE_MCP_TOOLSETS: "core" }
+                env: {}
             });
         });
 

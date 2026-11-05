@@ -39,14 +39,10 @@ const toolNames = new Set(TOOLS.map((tool) => tool.name));
         assert.ok(prompts.promptText(prompts.PROMPTS[0]).startsWith(`Task: ${prompts.PROMPTS[0].description}`));
     });
 
-    await scenario("List prompts only for enabled toolsets", () => {
+    await scenario("Include every workflow in the prompt catalog", () => {
         assert.deepStrictEqual(
-            prompts.promptsFor(["core", "debug"]).map((prompt) => prompt.name),
-            ["flash", "fault_triage", "variable_debug", "rtos_inspect"]
-        );
-        assert.deepStrictEqual(
-            prompts.promptsFor(["cubemx"]).map((prompt) => prompt.name),
-            ["cubemx_generate"]
+            prompts.PROMPTS.map((prompt) => prompt.name),
+            ["flash", "fault_triage", "variable_debug", "rtos_inspect", "cubemx_generate"]
         );
     });
 

@@ -60,9 +60,8 @@ function rootPath(uri) {
 function createServer(options = {}) {
     const env = options.env || process.env;
     const bridgeCall = options.call || callVia;
-    const toolsets = tools.parseToolsets(env.EMBERPROBE_MCP_TOOLSETS);
-    const enabled = tools.toolsFor(toolsets);
-    const enabledPrompts = prompts.promptsFor(toolsets);
+    const enabled = tools.TOOLS;
+    const enabledPrompts = prompts.PROMPTS;
     const byName = new Map(enabled.map((tool) => [tool.name, tool]));
     const validator = new AjvJsonSchemaValidator();
     const validators = new Map(enabled.map((tool) => [tool.name, validator.getValidator(tool.inputSchema)]));

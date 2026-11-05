@@ -41,6 +41,7 @@ A curve receives a style the first time it is enabled. Unused solid styles come 
 - Importing a struct, expanding members, or viewing hidden variables does not use up a style. A variable that has never been shown previews in gray.
 - A hidden curve keeps its style and shows it again when re-enabled. Removing the variable releases it.
 - Automatic styles are assigned per panel.
+- In the context menu, click solid, dashed or dotted to switch line style.
 - Colors and line styles you choose in the context menu are saved in the workspace and shared between panels.
 
 ## Related documents

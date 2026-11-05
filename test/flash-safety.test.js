@@ -313,6 +313,7 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
                 assert(commands.includes("program"));
                 // program does its own verify and reset; work-area backup protects the target RAM used as a buffer.
                 assert(commands.includes("verify reset exit"));
+                assert(!commands.includes("verify_image_checksum"), "Agent flashing must always erase and write");
                 assert(commands.includes("-work-area-backup 1"));
                 for (const line of [
                     "Info : Reduced speed from 15000 kHz to 12000 kHz (maximum).",

@@ -37,7 +37,6 @@ const { ChartHistoryFeed } = require("./services/chartHistoryFeed");
 const { createServices } = require("./composition");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
-const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { toUiError } = require("./services/errorEnvelope");
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
@@ -583,14 +582,6 @@ class MainViewProvider {
             !!this._bridgeRegistry
         );
     }
-    // emberprobe.mcp.toolsets -> EMBERPROBE_MCP_TOOLSETS; the default toolset yields an empty string and injects no
-    // variable.
-    _mcpToolsets() {
-        const configured = vscode.workspace.getConfiguration?.("emberprobe").get("mcp.toolsets");
-        const selected = TOOLSETS.filter((name) => Array.isArray(configured) && configured.includes(name));
-        if (!selected.length || selected.join(",") === DEFAULT_TOOLSETS.join(",")) return "";
-        return selected.join(",");
-    }
     // VS Code resolves the definition after the user accepts the MCP trust prompt; start the Bridge for this window
     // then (no workspace files are written).
     async _requestMcpBridge() {
@@ -914,6 +905,7 @@ class MainViewProvider {
             frequencyHz: 20,
             actualHz: message.consumers?.sidebarHz ?? message.actualHz
         });
+        if (this._peripheralAccessService) this._postPeripheralDebugStatus();
     }
     // Watch lists resolve against DWARF types; before they load, the empty list means "not known yet".
     _watchListsReady() {

@@ -12,11 +12,31 @@ const { createFixture } = require("./helpers/service-fixture");
 scenario("Expose grouped bilingual settings without removed configuration keys", () => {
     const groups = require("../package.json").contributes.configuration;
     assert.ok(Array.isArray(groups));
+    assert.deepStrictEqual(
+        groups.map((group) => group.id),
+        ["emberprobe.tools", "emberprobe.connection", "emberprobe.sampling", "emberprobe.experimental"]
+    );
+    assert.deepStrictEqual(
+        groups.map((group) => Object.keys(group.properties).length),
+        [7, 6, 5, 3]
+    );
+    for (const key of ["openocdPath", "gdbPath", "objdumpPath", "cubemxPath", "cubemx2Path"])
+        assert.ok(groups[0].properties[`emberprobe.${key}`], `${key} belongs with tools and paths`);
+    for (const key of ["transport", "rtos", "prettyPrintingMode", "prettyPrinterFiles"])
+        assert.ok(groups[1].properties[`emberprobe.${key}`], `${key} belongs with connection and debugging`);
     const entries = groups.flatMap((group) => Object.entries(group.properties));
     const keys = entries.map(([key]) => key);
-    assert.strictEqual(keys.length, 23);
+    assert.strictEqual(keys.length, 21);
     assert.strictEqual(new Set(keys).size, keys.length);
-    for (const key of ["probeSerial", "sampleIntervalMs", "maxSamples", "enablePrettyPrinting", "prettyPrinterPath"])
+    for (const key of [
+        "probeSerial",
+        "sampleIntervalMs",
+        "maxSamples",
+        "enablePrettyPrinting",
+        "prettyPrinterPath",
+        "memory.regionKinds",
+        "mcp.toolsets"
+    ])
         assert.ok(!keys.includes(`emberprobe.${key}`));
     for (const [key, setting] of entries) {
         const description = setting.markdownDescription || setting.description;

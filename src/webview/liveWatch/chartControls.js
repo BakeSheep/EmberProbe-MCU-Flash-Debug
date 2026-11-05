@@ -1,8 +1,96 @@
 "use strict";
 (function (root, factory) {
-    if (typeof module === "object" && module.exports) module.exports = factory(require("../pageZoom"));
-    else root.EmberProbeChartControls = factory(root.EmberProbePageZoom);
-})(globalThis, function (pageZoom) {
+    if (typeof module === "object" && module.exports)
+        module.exports = factory(
+            require("../pageZoom"),
+            require("./seriesGain"),
+            require("./analysisState"),
+            require("../valueTree")
+        );
+    else
+        root.EmberProbeChartControls = factory(
+            root.EmberProbePageZoom,
+            root.EmberProbeSeriesGain,
+            root.EmberProbeAnalysisState,
+            root.EmberProbeValueTree
+        );
+})(globalThis, function (pageZoom, Gain, Analysis, values) {
+    function createActions(env) {
+        const {
+            state,
+            chartState,
+            analysis,
+            gain,
+            post,
+            renderVars,
+            saveUi,
+            updateValues,
+            saveWatch,
+            removeVar,
+            types
+        } = env;
+        return function (action, value) {
+            if (action === "importSidebar") {
+                post({ type: "importSidebarWatch", items: state.watch });
+                return;
+            }
+            const names = state.watch.map((item) => item.name);
+            if (action === "showAll" || action === "hideAll") {
+                state.hidden = Object.fromEntries(names.map((name) => [name, action === "hideAll"]));
+                analysis.previousHidden = null;
+                analysis.focused = null;
+                renderVars();
+                saveUi();
+            }
+            if (action === "restore" || action === "focus") {
+                state.hidden =
+                    action === "restore"
+                        ? Analysis.restore(analysis, names)
+                        : Analysis.focus(analysis, state.hidden, names, value);
+                renderVars();
+                saveUi();
+            }
+            if (action === "hover") {
+                chartState.hoverName = value;
+                chartState.pointer = null;
+                chartState.hits = [];
+            }
+            if (action === "style") {
+                state.seriesStyles[value.name] = value.style;
+                post({ type: "setSeriesStyle", ...value });
+                renderVars();
+            }
+            if (action === "type") {
+                const item = state.watch.find((entry) => entry.name === value.name);
+                if (item && !values.isComposite(item) && types.includes(value.type)) {
+                    item.type = value.type;
+                    state.latest[item.name] = null;
+                    state.latestText[item.name] = null;
+                    state.latestEnum[item.name] = null;
+                    updateValues();
+                    saveWatch();
+                }
+            }
+            if (action === "radix") {
+                const item = state.watch.find((entry) => entry.name === value.name);
+                if (!item || values.isComposite(item) || ![2, 10, 16].includes(value.radix)) return;
+                if (value.radix === 10) delete state.numberBases[value.name];
+                else state.numberBases[value.name] = value.radix;
+                updateValues();
+                saveUi();
+            }
+            if (action === "gain") {
+                if (!gain.set(value.name, value.gain)) return;
+                chartState.prepared = chartState.curveGeometry = chartState.rangeStats = null;
+                chartState.hits = [];
+                updateValues();
+            }
+            if (action === "remove") removeVar(value);
+            if (action === "autoY") chartState.autoY = !chartState.autoY;
+            chartState.fastDirty = true;
+            state.dirty = true;
+        };
+    }
     function create(env) {
         const { document: doc, t, change, get } = env;
         const $ = (id) => doc.getElementById(id);
@@ -101,22 +189,43 @@
                     bases.append(b);
                 });
                 field("lw.numberBase", bases);
+                if (state.gain?.eligible(name))
+                    field(
+                        "lw.gain",
+                        Gain.input(
+                            doc,
+                            t,
+                            () => state.gain.get(name),
+                            (gain) => change("gain", { name, gain })
+                        )
+                    );
             }
             const color = doc.createElement("input");
             color.type = "color";
             color.value = style.color;
             color.setAttribute("aria-label", t("lw.curveColor"));
-            const line = doc.createElement("select");
+            const line = doc.createElement("div");
+            line.className = "series-line";
+            line.setAttribute("role", "group");
             line.setAttribute("aria-label", t("lw.curveLine"));
+            let selectedLine = style.line;
+            const updateStyle = () => change("style", { name, style: { color: color.value, line: selectedLine } });
             ["solid", "dashed", "dotted"].forEach((value) => {
-                const o = doc.createElement("option");
-                o.value = value;
-                o.textContent = t("lw.line." + value);
-                line.append(o);
+                const option = doc.createElement("button");
+                option.type = "button";
+                option.dataset.line = value;
+                option.textContent = t("lw.line." + value);
+                option.setAttribute("aria-pressed", String(selectedLine === value));
+                option.onclick = () => {
+                    selectedLine = value;
+                    line.querySelectorAll("button").forEach((b) =>
+                        b.setAttribute("aria-pressed", String(b === option))
+                    );
+                    updateStyle();
+                };
+                line.append(option);
             });
-            line.value = style.line;
-            color.oninput = line.onchange = () =>
-                change("style", { name, style: { color: color.value, line: line.value } });
+            color.oninput = updateStyle;
             const appearance = doc.createElement("div");
             appearance.className = "series-appearance";
             appearance.append(color, line);
@@ -251,5 +360,5 @@
         }
         return { decorate, refresh };
     }
-    return { create };
+    return { create, createActions };
 });

@@ -358,7 +358,11 @@ class AgentOperations {
         }
 
         let operationLease = null;
-        let session = this.host._sampling.running ? this.host._sampling.session : null;
+        let session =
+            this.host._sampling.running &&
+            (!options.peripheralAccess || (this.host._sampling.intent && !this.host._sampling.session?.stopped))
+                ? this.host._sampling.session
+                : null;
         let temporary = false;
         let source = "active-sampling";
         if (!session && options.allowPausedDebugRead) {
@@ -398,6 +402,10 @@ class AgentOperations {
                 source = "debug-running-openocd";
             }
         }
+        if (!session && options.peripheralAccess)
+            throw Object.assign(new Error("Start sampling or debugging before accessing peripheral registers"), {
+                code: "PERIPHERAL_SAMPLING_REQUIRED"
+            });
         if (!session) {
             if (this.readRunning)
                 throw Object.assign(new Error("Another Agent variable read is in progress"), {

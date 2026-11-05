@@ -2,28 +2,28 @@
 
 [English](settings.en.md)
 
-EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 21 项，按 6 个分组排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
+EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 21 项，按 4 个大类排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
 
 | 分组 | 设置 | 用途 |
 | --- | --- | --- |
-| 连接 | `openocdPath` | OpenOCD 路径 |
-| | `tclPort` | Tcl-RPC 端口；未设置时随机分配 |
+| 工具与路径 | `openocdPath` | OpenOCD 路径 |
+| | `gdbPath` | ARM GDB 路径 |
+| | `armToolchainPath` | 工具链 bin 目录 |
+| | `armToolchainPrefix` | 工具链前缀 |
+| | `objdumpPath` | ARM objdump 路径 |
+| | `cubemxPath` | STM32CubeMX 路径 |
+| | `cubemx2Path` | STM32CubeMX2 启动器路径 |
+| 连接与调试 | `tclPort` | Tcl-RPC 端口；未设置时随机分配 |
 | | `adapterSpeedKhz` | 调试和烧录的链路时钟 |
 | | `transport` | 传输协议 |
+| | `rtos` | 调试时的 RTOS 感知 |
+| | `prettyPrintingMode` | 内置、GDB 或原始字段显示 |
+| | `prettyPrinterFiles` | 明确指定的 GDB Python 打印脚本 |
 | 采样与波形 | `sampleFrequencyHz` | 波形目标采样频率 |
 | | `samplingAdapterSpeedKhz` | 独立采样的链路时钟 |
 | | `chartHistoryMaxMiB` | 波形历史的内存预算 |
 | | `samplingArchiveMaxMiB` | 采样归档的磁盘上限 |
 | | `chartBackgroundIcon.enabled` | 显示波形背景图标 |
-| 工具链与调试 | `gdbPath` | ARM GDB 路径 |
-| | `armToolchainPath` | 工具链 bin 目录 |
-| | `armToolchainPrefix` | 工具链前缀 |
-| | `objdumpPath` | ARM objdump 路径 |
-| | `rtos` | 调试时的 RTOS 感知 |
-| C++ 变量显示 | `prettyPrintingMode` | 内置、GDB 或原始字段显示 |
-| | `prettyPrinterFiles` | 明确指定的 GDB Python 打印脚本 |
-| CubeMX | `cubemxPath` | STM32CubeMX 路径 |
-| | `cubemx2Path` | STM32CubeMX2 启动器路径 |
 | 实验功能 | `experimental.externalGdb.enabled` | 启用外部 GDB 附加 |
 | | `experimental.externalGdb.target` | 外部服务器地址和端口 |
 | | `experimental.externalGdb.connectionMode` | 外部 GDB 连接模式 |

@@ -6,16 +6,38 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 外设访问 / Peripheral access
+
+- 未调试时，外设寄存器读写必须复用已开启并连接成功的采样会话，不再临时连接探针；停止或更换采样连接会使旧请求失效。同步侧栏提示和控件状态，保留调试运行及暂停下的访问。
+- Require an active sampling connection for peripheral register reads and writes outside debugging, and remove temporary probe connections for these operations. Invalidate requests when sampling stops or reconnects, update sidebar hints and controls, and retain running/paused debug access.
+
+### 烧录行为 / Flash programming
+
+- 撤回固件相同时跳过烧录的优化：侧栏下载、Agent 烧录及内置调试器默认 launch 即使固件相同也正常擦写、校验并复位；保留烧录时钟提速及失败后降速重试。见 `docs/design/flash-and-debug.md`。
+- Remove the identical-firmware download shortcut: sidebar downloads, Agent flashing and the built-in debugger's default launch now program and reset even when the image already matches. Keep programming-clock boosts and the slow retry on failure. See `docs/design/flash-and-debug.md`.
+
 ### 设置整理 / Settings cleanup
 
-- VS Code 设置缩减为 23 项，按 8 个分组排列，全部提供中英双语描述。删除 `probeSerial`、
+- 移除 `memory.regionKinds` 和 `mcp.toolsets` 设置：内存区域按名称自动分类；MCP 固定暴露全部工具和工作流提示（包括 CubeMX），旧 `EMBERPROBE_MCP_TOOLSETS` 环境变量不再生效。
+- Remove `memory.regionKinds` and `mcp.toolsets`: classify memory regions automatically by name and always expose all MCP tools and workflow prompts, including CubeMX. Ignore the legacy `EMBERPROBE_MCP_TOOLSETS` environment variable.
+
+- VS Code 设置缩减为 21 项，归入工具与路径、连接与调试、采样与波形、实验功能 4 个大类，全部提供中英双语描述。删除 `probeSerial`、
   `sampleIntervalMs`、`maxSamples`、`enablePrettyPrinting` 和 `prettyPrinterPath`；探针改由侧栏选择，
   采样与 C++ 显示统一使用频率和显示模式设置。见 docs/guide/settings.md。
-- Organize 23 VS Code settings into eight groups with Chinese and English descriptions. Remove `probeSerial`,
+- Organize 21 VS Code settings into four bilingual groups: Tools & Paths, Connection & Debugging,
+  Sampling & Waveforms, and Experimental. Remove `probeSerial`,
   `sampleIntervalMs`, `maxSamples`, `enablePrettyPrinting` and `prettyPrinterPath`; select probes in the sidebar
   and use frequency/display-mode settings for sampling and C++ variables. See docs/guide/settings.md.
 
 ### 新增 / Added
+
+- 波形变量右键菜单新增临时增益输入框和 ±0.1 按钮，支持零和负数；仅缩放当前波形图的侧栏与绘图读数，
+  记录和 CSV 保留原值。各图独立，关闭波形图、重载或退出 IDE 后恢复为 1。
+- Add temporary per-variable waveform gain with an input and ±0.1 buttons, including zero and negative values.
+  Scale the current chart's sidebar and plotted readings while recording and exporting raw values. Charts are
+  independent; closing the chart, reloading or exiting the IDE resets gains to 1.
+- 增益输入框填满菜单调节行，三种曲线线型改为平铺按钮，可直接点击切换。
+- Fill the gain control row with its input and present all three line styles as directly selectable buttons.
 
 - Agent Skills 和 MCP 服务器移至与 MCU 配置并列的可折叠“Agent 配置”卡片，新增默认关闭的工作区
   “完全允许 Agent 操作”开关，对适用操作免除确认，保留身份、输入及固件一致性保护。

@@ -365,7 +365,6 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
         isAvailable: () => host._mcpAvailable(),
         isEnabled: () => host._mcpAvailable() && host._agentAccessDecision(host._skillStatusService.lastStatus).enabled,
         instanceId: () => host._agentService.instanceId(),
-        toolsets: () => host._mcpToolsets(),
         onResolve: () => host._requestMcpBridge(),
         onConfigured: () => host._markMcpConfigured(),
         post: (message) => host._webviewView?.webview.postMessage(message)
@@ -396,6 +395,14 @@ function createServices(host, context, { vscode }) {
     const flashAuthorization = new FlashAuthorization({ storage: context.workspaceState, fullAccess });
     const peripheralAccessService = new PeripheralAccessService({
         debugBridge,
+        samplingSession: () =>
+            host._sampling.intent &&
+            host._sampling.running &&
+            !host._sampling.closing &&
+            !host._sampling.exitUnconfirmed &&
+            !host._sampling.session?.stopped
+                ? host._sampling.session
+                : null,
         configurationKey: () =>
             peripheralConfigurationKey(
                 host._probeConnectionService.getConfig(),

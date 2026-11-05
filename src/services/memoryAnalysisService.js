@@ -13,7 +13,6 @@ class MemoryAnalysisService {
         this.roots = options.roots || (() => []);
         this.findScripts = options.findScripts || (async () => []);
         this.selection = options.selection || (() => ({}));
-        this.regionKinds = options.regionKinds || (() => ({}));
         this.files = new Set();
         this.textCache = new Map();
         this.epoch = 0;
@@ -168,20 +167,11 @@ class MemoryAnalysisService {
                 warn("MEMORY_SOURCE_AMBIGUOUS", "Choose the linker script used by this ELF");
             }
         }
-        const kinds = this.regionKinds();
-        if (
-            !kinds ||
-            typeof kinds !== "object" ||
-            Array.isArray(kinds) ||
-            Object.values(kinds).some((kind) => !["flash", "ram", "other"].includes(kind))
-        ) {
-            throw Object.assign(new Error("Invalid memory.regionKinds"), { code: "INVALID_MEMORY_REGION_KINDS" });
-        }
         if (epoch !== this.epoch)
             throw Object.assign(new Error("Memory analysis changed"), { code: "MEMORY_ANALYSIS_CHANGED" });
         source.files = [...this.files];
         return {
-            ...analyzeMemory(snapshot, definitions, kinds, diagnostics),
+            ...analyzeMemory(snapshot, definitions, diagnostics),
             source,
             topSymbols: topSymbols(snapshot, params.top)
         };

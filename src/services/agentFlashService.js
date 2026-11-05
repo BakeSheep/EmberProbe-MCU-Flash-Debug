@@ -182,7 +182,6 @@ class AgentFlashService {
                     if (/^\s*EP_VERIFY (OK|FAIL)\b/.test(line)) verifyResult = line;
                     const clock = trackFlashClock(line);
                     if (clock) programming.flashClockKhz = clock;
-                    if (/^\s*EP_FLASH_STAGE=unchanged\s*$/.test(line)) programming.unchanged = true;
                     if (/^\s*EP_FLASH_STAGE=speed_fallback\s*$/.test(line)) programming.speedFallback = true;
                 }
             });

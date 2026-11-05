@@ -100,8 +100,10 @@ evidence that hardware is disconnected.
 
 ## Cross-skill calls
 
-- Peripheral reads/writes reuse the current owner's supported connection, or obtain a temporary exclusive lease.
-  Managed single-core and standalone accesses never halt/reset/resume. Multicore/external-server access remains
+- Peripheral reads/writes reuse an active sampling connection or the selected supported debug connection;
+  they never start a temporary connection. Without debugging, start sampling explicitly and wait for it to
+  connect before register access. `PERIPHERAL_SAMPLING_REQUIRED` means no usable sampling connection exists.
+  Managed single-core and sampling accesses never halt/reset/resume. Multicore/external-server access remains
   paused-only. Bitfield writes are not atomic against firmware/hardware. A completed write with different or
   unavailable readback does not prove that nothing was written; never automatically resend it.
 - The debug probe has a **single owner**. Do not start a second OpenOCD-backed operation

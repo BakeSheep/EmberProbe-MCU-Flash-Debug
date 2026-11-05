@@ -7,6 +7,67 @@ const { createProvider } = require("./helpers/load-provider");
 const { createServices } = require("../src/composition");
 
 (async () => {
+    await scenario("Reuse sampling for peripherals and never create a temporary peripheral connection", async () => {
+        const { provider, dispose } = createProvider();
+        let lease;
+        try {
+            const access = provider._peripheralAccessService;
+            assert.strictEqual(access.status().canRead, false);
+            await assert.rejects(
+                provider._agentOps.withProbe(() => assert.fail("must not connect"), {
+                    peripheralAccess: true,
+                    allowPausedDebugRead: true
+                }),
+                { code: "PERIPHERAL_SAMPLING_REQUIRED" }
+            );
+            assert.strictEqual(provider._probeCoordinator.anyActive(), false);
+            const messages = [];
+            provider._webviewView = { webview: { postMessage: (message) => messages.push(message) } };
+            const session = { setSamplingEnabled() {} };
+            provider._probeConnectionService.assertCurrent = (physical) => assert.strictEqual(physical, session);
+            provider._sampling.session = session;
+            provider._sampling.intent = true;
+            lease = provider._probeCoordinator.acquire("liveWatch");
+            provider._postConsumerStatuses({});
+            assert.strictEqual(messages.findLast((message) => message.type === "peripheralDebugStatus").canRead, true);
+            const result = await access.withAccess(() => ({ reused: true }));
+            assert.strictEqual(result.access.source, "active-sampling");
+            assert.strictEqual(result.reused, true);
+            for (const flag of ["closing", "exitUnconfirmed"]) {
+                provider._sampling[flag] = true;
+                assert.strictEqual(access.status().canRead, false, flag);
+                assert.strictEqual(access.status().canWrite, false, flag);
+                provider._sampling[flag] = false;
+                assert.strictEqual(access.status().canRead, true);
+            }
+            session.stopped = true;
+            assert.strictEqual(access.status().canRead, false, "a stopped Worker cannot provide peripheral access");
+            session.stopped = false;
+            const generation = access.status().generation;
+            provider._sampling.intent = false;
+            provider._postConsumerStatuses({});
+            const stopped = messages.findLast((message) => message.type === "peripheralDebugStatus");
+            assert.strictEqual(stopped.canRead, false);
+            assert.strictEqual(stopped.canWrite, false);
+            assert.notStrictEqual(stopped.generation, generation);
+            await assert.rejects(
+                access.withAccess(() => assert.fail("must not access")),
+                {
+                    code: "PERIPHERAL_SAMPLING_REQUIRED"
+                }
+            );
+            await assert.rejects(
+                provider._agentOps.withProbe(() => assert.fail("must not connect"), {
+                    peripheralAccess: true
+                }),
+                { code: "PERIPHERAL_SAMPLING_REQUIRED" }
+            );
+        } finally {
+            provider._sampling.session = null;
+            lease?.release();
+            await dispose();
+        }
+    });
     await scenario("Hold every service the composition root builds", async () => {
         const { provider, vscode, context, dispose } = createProvider();
         try {

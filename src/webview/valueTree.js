@@ -162,6 +162,7 @@
     //                               (readings by name; a runtime watch reads as its sampled tree), and
     //                               expanded, rawMembers, arrayShown (saved with the view)
     //   radix(name)                 optional number base for `name`
+    //   formatValue(name, node, radix) optional numeric display override (pointers keep their labels)
     //   savedPointers               { pointers, version } restored with the view
     //   displayName(path)           readable name for a path
     //   save()                      saves the view state
@@ -220,6 +221,7 @@
         function formatNode(node, name) {
             if (node?.functionEmpty) return t("lw.functionEmpty");
             if (node?.isPointer) return runtime.pointerLabel(node, t);
+            if (node && page.formatValue) return page.formatValue(name, node, radix(name));
             return node ? fmtExact(node.value, node.valueText, node.enumText, radix(name)) : "—";
         }
         function resolveDisplayInfo(item) {

@@ -8,7 +8,6 @@ const path = require("path");
 const { READ_ONLY_METHODS, OBSERVATION_METHODS } = require("../../skills/_emberprobe/agent-client");
 
 const TOOLSETS = Object.freeze(["core", "debug", "cubemx"]);
-const DEFAULT_TOOLSETS = Object.freeze(["core", "debug"]);
 
 const str = (description, extra = {}) => ({ type: "string", description, ...extra });
 const int = (description, minimum, maximum, extra = {}) => ({
@@ -802,21 +801,6 @@ function annotations(tool) {
     };
 }
 
-function parseToolsets(value) {
-    const names = String(value || "")
-        .split(",")
-        .map((item) => item.trim().toLowerCase())
-        .filter(Boolean);
-    const selected = names.length ? names : DEFAULT_TOOLSETS;
-    if (selected.includes("all")) return [...TOOLSETS];
-    return TOOLSETS.filter((name) => selected.includes(name));
-}
-
-function toolsFor(toolsets) {
-    const enabled = new Set(toolsets);
-    return TOOLS.filter((tool) => enabled.has(tool.toolset));
-}
-
 function listing(tool) {
     return {
         name: tool.name,
@@ -839,11 +823,8 @@ function toolForMethod(method) {
 module.exports = {
     TOOLS,
     TOOLSETS,
-    DEFAULT_TOOLSETS,
     EXCLUDED_METHODS,
     annotations,
     toolForMethod,
-    parseToolsets,
-    toolsFor,
     listing
 };

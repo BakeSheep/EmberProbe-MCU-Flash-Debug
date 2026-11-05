@@ -162,8 +162,8 @@
     },
     "configuration": [
       {
-        "id": "emberprobe.connection",
-        "title": "EmberProbe: 连接 / Connection",
+        "id": "emberprobe.tools",
+        "title": "EmberProbe: 工具与路径 / Tools & Paths",
         "order": 1,
         "properties": {
           "emberprobe.openocdPath": {
@@ -172,11 +172,56 @@
             "description": "OpenOCD 可执行文件路径。默认在 Windows/Linux x64 使用内置版本；使用外部版本时填写 OpenOCD ≥ 0.12.0 的绝对路径。 / OpenOCD executable path. Uses the bundled version on Windows/Linux x64 by default; enter an absolute path to use external OpenOCD ≥ 0.12.0.",
             "order": 1
           },
+          "emberprobe.gdbPath": {
+            "type": "string",
+            "default": "",
+            "description": "ARM GDB 可执行文件路径。 / ARM GDB executable path.",
+            "order": 2
+          },
+          "emberprobe.armToolchainPath": {
+            "type": "string",
+            "default": "",
+            "description": "ARM 工具链的 bin 目录。 / ARM toolchain bin directory.",
+            "order": 3
+          },
+          "emberprobe.armToolchainPrefix": {
+            "type": "string",
+            "default": "",
+            "description": "ARM 工具链前缀，留空使用 arm-none-eabi。 / ARM toolchain prefix; leave empty to use arm-none-eabi.",
+            "order": 4
+          },
+          "emberprobe.objdumpPath": {
+            "type": "string",
+            "default": "",
+            "description": "ARM objdump 可执行文件路径。 / ARM objdump executable path.",
+            "order": 5
+          },
+          "emberprobe.cubemxPath": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "description": "独立 STM32CubeMX 可执行文件路径（Windows：STM32CubeMX.exe；Linux：STM32CubeMX）。在用户设置中配置，本机所有工作区共享；留空自动检测。 / Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX). Configure in User settings for all workspaces on this machine; leave empty for automatic detection.",
+            "order": 6
+          },
+          "emberprobe.cubemx2Path": {
+            "type": "string",
+            "default": "",
+            "scope": "machine",
+            "description": "STM32CubeMX2 启动器路径。在用户设置中配置，本机所有工作区共享；留空时依次通过官方 Cube 注册信息或 Cube CLI、安装目录、PATH 和 Windows 快捷方式检测。 / STM32CubeMX2 launcher path. Configure in User settings for all workspaces on this machine; leave empty to detect via official Cube registration or Cube CLI, then installation directories, PATH and Windows shortcuts.",
+            "order": 7
+          }
+        }
+      },
+      {
+        "id": "emberprobe.connection",
+        "title": "EmberProbe: 连接与调试 / Connection & Debugging",
+        "order": 2,
+        "properties": {
           "emberprobe.tclPort": {
             "type": "number",
             "default": 6666,
             "description": "实时采样的 OpenOCD Tcl-RPC 端口。未显式设置时使用随机临时端口；显式设置后使用固定端口。Tcl 端口无认证，建议保持随机。 / OpenOCD Tcl-RPC port for live sampling. Uses a random ephemeral port unless explicitly configured. Tcl has no authentication; a random port is recommended.",
-            "order": 2
+            "order": 1
           },
           "emberprobe.adapterSpeedKhz": {
             "type": "integer",
@@ -184,7 +229,7 @@
             "maximum": 2147483647,
             "default": 0,
             "description": "调试和烧录的链路时钟（kHz）。0 使用脚本默认值，烧录时按探针能力提速，失败自动回退；非零值也限制复位事件提速，保留必要降速。 / Debug and flash adapter clock (kHz). 0 uses the script default and allows faster flashing with automatic fallback; nonzero values also cap reset-event speed increases while preserving required slowdowns.",
-            "order": 3
+            "order": 2
           },
           "emberprobe.transport": {
             "type": "string",
@@ -197,14 +242,58 @@
             ],
             "default": "auto",
             "description": "覆盖 OpenOCD 传输协议。auto 下 J-Link 对已知 Cortex-M 目标使用 SWD，其他目标使用接口脚本默认协议；不自动切换重试。 / Override the OpenOCD transport. With auto, J-Link uses SWD for known Cortex-M targets and the interface script default for other targets; no automatic transport retry.",
+            "order": 3
+          },
+          "emberprobe.rtos": {
+            "type": "string",
+            "enum": [
+              "",
+              "auto",
+              "none",
+              "FreeRTOS",
+              "ThreadX",
+              "chibios",
+              "Chromium-EC",
+              "eCos",
+              "embKernel",
+              "linux",
+              "mqx",
+              "nuttx",
+              "RIOT",
+              "uCOS-III",
+              "Zephyr"
+            ],
+            "default": "",
+            "description": "调试时的 OpenOCD RTOS 感知，名称区分大小写；留空关闭。启用后调用栈显示 RTOS 任务，栈帧、变量和单步绑定对应任务。修改后需停止并重新启动调试；会话内重启不重新配置。launch.json 的 rtos 优先。 / OpenOCD RTOS awareness for debugging; names are case-sensitive and empty disables it. The call stack shows RTOS tasks with task-bound frames, variables and stepping. Stop and start debugging to apply changes; session restart reuses the server. launch.json rtos takes precedence.",
             "order": 4
+          },
+          "emberprobe.prettyPrintingMode": {
+            "type": "string",
+            "enum": [
+              "builtin",
+              "gdb",
+              "raw"
+            ],
+            "default": "builtin",
+            "description": "暂停时的 C++ 变量显示：builtin 使用内置解析，无需 Python；gdb 仅加载 prettyPrinterFiles 明确指定的脚本；raw 显示原始字段。 / Paused C++ variable display: builtin uses internal parsing without Python; gdb loads only scripts explicitly listed in prettyPrinterFiles; raw shows physical fields.",
+            "order": 5
+          },
+          "emberprobe.prettyPrinterFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "default": [],
+            "description": "gdb 显示模式加载的 Python 打印脚本，最多 32 个。相对路径基于调试工作目录解析；脚本在 GDB 内执行。 / Python printer scripts loaded in gdb display mode, up to 32 files. Relative paths resolve against the debug working directory; scripts execute inside GDB.",
+            "order": 6
           }
         }
       },
       {
         "id": "emberprobe.sampling",
         "title": "EmberProbe: 采样与波形 / Sampling & Waveforms",
-        "order": 2,
+        "order": 3,
         "properties": {
           "emberprobe.sampleFrequencyHz": {
             "type": "number",
@@ -249,158 +338,9 @@
         }
       },
       {
-        "id": "emberprobe.debug",
-        "title": "EmberProbe: 工具链与调试 / Toolchain & Debugging",
-        "order": 3,
-        "properties": {
-          "emberprobe.gdbPath": {
-            "type": "string",
-            "default": "",
-            "description": "ARM GDB 可执行文件路径。 / ARM GDB executable path.",
-            "order": 1
-          },
-          "emberprobe.armToolchainPath": {
-            "type": "string",
-            "default": "",
-            "description": "ARM 工具链的 bin 目录。 / ARM toolchain bin directory.",
-            "order": 2
-          },
-          "emberprobe.armToolchainPrefix": {
-            "type": "string",
-            "default": "",
-            "description": "ARM 工具链前缀，留空使用 arm-none-eabi。 / ARM toolchain prefix; leave empty to use arm-none-eabi.",
-            "order": 3
-          },
-          "emberprobe.objdumpPath": {
-            "type": "string",
-            "default": "",
-            "description": "ARM objdump 可执行文件路径。 / ARM objdump executable path.",
-            "order": 4
-          },
-          "emberprobe.rtos": {
-            "type": "string",
-            "enum": [
-              "",
-              "auto",
-              "none",
-              "FreeRTOS",
-              "ThreadX",
-              "chibios",
-              "Chromium-EC",
-              "eCos",
-              "embKernel",
-              "linux",
-              "mqx",
-              "nuttx",
-              "RIOT",
-              "uCOS-III",
-              "Zephyr"
-            ],
-            "default": "",
-            "description": "调试时的 OpenOCD RTOS 感知，名称区分大小写；留空关闭。启用后调用栈显示 RTOS 任务，栈帧、变量和单步绑定对应任务。修改后需停止并重新启动调试；会话内重启不重新配置。launch.json 的 rtos 优先。 / OpenOCD RTOS awareness for debugging; names are case-sensitive and empty disables it. The call stack shows RTOS tasks with task-bound frames, variables and stepping. Stop and start debugging to apply changes; session restart reuses the server. launch.json rtos takes precedence.",
-            "order": 5
-          }
-        }
-      },
-      {
-        "id": "emberprobe.cpp",
-        "title": "EmberProbe: C++ 变量显示 / C++ Variable Display",
-        "order": 4,
-        "properties": {
-          "emberprobe.prettyPrintingMode": {
-            "type": "string",
-            "enum": [
-              "builtin",
-              "gdb",
-              "raw"
-            ],
-            "default": "builtin",
-            "description": "暂停时的 C++ 变量显示：builtin 使用内置解析，无需 Python；gdb 仅加载 prettyPrinterFiles 明确指定的脚本；raw 显示原始字段。 / Paused C++ variable display: builtin uses internal parsing without Python; gdb loads only scripts explicitly listed in prettyPrinterFiles; raw shows physical fields.",
-            "order": 1
-          },
-          "emberprobe.prettyPrinterFiles": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 32,
-            "default": [],
-            "description": "gdb 显示模式加载的 Python 打印脚本，最多 32 个。相对路径基于调试工作目录解析；脚本在 GDB 内执行。 / Python printer scripts loaded in gdb display mode, up to 32 files. Relative paths resolve against the debug working directory; scripts execute inside GDB.",
-            "order": 2
-          }
-        }
-      },
-      {
-        "id": "emberprobe.cubemx",
-        "title": "EmberProbe: STM32CubeMX",
-        "order": 5,
-        "properties": {
-          "emberprobe.cubemxPath": {
-            "type": "string",
-            "default": "",
-            "scope": "machine",
-            "description": "独立 STM32CubeMX 可执行文件路径（Windows：STM32CubeMX.exe；Linux：STM32CubeMX）。在用户设置中配置，本机所有工作区共享；留空自动检测。 / Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX). Configure in User settings for all workspaces on this machine; leave empty for automatic detection.",
-            "order": 1
-          },
-          "emberprobe.cubemx2Path": {
-            "type": "string",
-            "default": "",
-            "scope": "machine",
-            "description": "STM32CubeMX2 启动器路径。在用户设置中配置，本机所有工作区共享；留空时依次通过官方 Cube 注册信息或 Cube CLI、安装目录、PATH 和 Windows 快捷方式检测。 / STM32CubeMX2 launcher path. Configure in User settings for all workspaces on this machine; leave empty to detect via official Cube registration or Cube CLI, then installation directories, PATH and Windows shortcuts.",
-            "order": 2
-          }
-        }
-      },
-      {
-        "id": "emberprobe.memory",
-        "title": "EmberProbe: 内存 / Memory",
-        "order": 6,
-        "properties": {
-          "emberprobe.memory.regionKinds": {
-            "type": "object",
-            "default": {},
-            "additionalProperties": {
-              "type": "string",
-              "enum": [
-                "flash",
-                "ram",
-                "other"
-              ]
-            },
-            "markdownDescription": "按链接器中的精确名称覆盖内存区域类型，例如 `{\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}`。容量来自项目的 .map 或 .ld 文件。 / Override memory region types by exact linker names, e.g. `{\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}`. Capacities come from project .map or .ld files.",
-            "order": 1
-          }
-        }
-      },
-      {
-        "id": "emberprobe.mcp",
-        "title": "EmberProbe: Agent 与 MCP / Agent & MCP",
-        "order": 7,
-        "properties": {
-          "emberprobe.mcp.toolsets": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "core",
-                "debug",
-                "cubemx"
-              ]
-            },
-            "uniqueItems": true,
-            "default": [
-              "core",
-              "debug"
-            ],
-            "markdownDescription": "MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义占用 Agent 上下文，按需开启。参见 docs/guide/agent/mcp.md。 / Toolsets exposed by the MCP server: `core` (configuration, flashing, variables, peripherals), `debug` (debug control, breakpoints, RTOS), `cubemx` (STM32CubeMX generation). Tool definitions occupy Agent context; enable as needed. See docs/guide/agent/mcp.md.",
-            "order": 1
-          }
-        }
-      },
-      {
         "id": "emberprobe.experimental",
         "title": "EmberProbe: 实验功能 / Experimental",
-        "order": 8,
+        "order": 4,
         "properties": {
           "emberprobe.experimental.externalGdb.enabled": {
             "type": "boolean",
@@ -1112,6 +1052,7 @@
     "test:hil": "node test/hil/run-hil.js",
     "test:hil:smoke": "node test/hil/run-smoke.js",
     "test:hil:matrix": "node scripts/hil-matrix.js",
+    "test:hil:mcp": "node test/hil/run-mcp-baseline.js",
     "release:prepare": "node scripts/release.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
