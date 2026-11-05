@@ -40,7 +40,7 @@ module.exports = Object.freeze({
     "memory.mapMismatch": "The .map does not match this ELF. Rebuild the project or choose its linker script.",
     "memory.scriptMismatch":
         "The linker script's regions do not hold every section of this ELF. Choose the .ld that linked it.",
-    "memory.unknownKind": "A custom region needs a type in emberprobe.memory.regionKinds.",
+    "memory.unknownKind": "Some memory region names could not be classified as Flash or RAM.",
     "rtos.title": "RTOS tasks",
     "rtos.chooseSession": "Choose a debug session / core",
     "rtos.core": "Core",

@@ -95,6 +95,31 @@ Results and failure details are written to `test-results/cpp-board.json`. The ac
 
 Set `EMBERPROBE_HIL_CONFIRM=YES`, `RUNTIME_BOARD_ELF`, `RUNTIME_BOARD_GDB`, `RUNTIME_BOARD_PROBE` (for example `cmsis-dap.cfg`) and `RUNTIME_BOARD_TARGET` (for example `stm32h7x.cfg`); optional `RUNTIME_BOARD_OPENOCD`, `RUNTIME_BOARD_TRANSPORT`, `RUNTIME_BOARD_PROBE_SERIAL`, `RUNTIME_BOARD_ADAPTER_SPEED_KHZ`, `RUNTIME_BOARD_ROUNDS` and `RUNTIME_BOARD_STOPS`. `RUNTIME_BOARD_EXPECT=fixed` asserts that reconfiguration never fails a write, that every write is verified and that breakpoint interruptions report `DEBUG_STATE_CHANGED` with `details.written`. Without it the run only records outcomes, which is how a baseline checkout is compared: point `RUNTIME_BOARD_EXTENSION` at its bundled root and set `RUNTIME_BOARD_LABEL`. Results go to `test-results/runtime-write-<label>.json`. The run fails rather than passing when no runtime samples arrive, because the race needs real sampling load.
 
+## MCP baseline (scripted client, separate from the flashing runner)
+
+`npm run test:hil:mcp` drives `dist/mcp-server.js` over stdio with a deterministic MCP client against the Agent Bridge of an EmberProbe window that is already open. It runs before [the harness acceptance](../../docs/validation/MCP-HARNESS-ACCEPTANCE.md), so a harness failure can be attributed to that client or model and not to the tools. It is manual and is not part of `npm run test:hil` or normal software tests.
+
+Prepare the window first: open a dedicated workspace for the profile's board, enable Agent access, turn **Allow all Agent operations** off, clear 24-hour permissions and stop debugging and live sampling. Profiles come from the smoke configuration (`test/hil/smoke.local.json`, or `--config`), so `variables`, `svd` and `checks` have the same meaning here. The firmware must already be running; only the `flash` phase programs it.
+
+```sh
+npm run bundle
+npm run test:hil:mcp -- --profile h750-jlink --workspace C:/path/to/project --phases protocol
+```
+
+| Phase | Effect on the board | Needs `EMBERPROBE_HIL_CONFIRM=YES` |
+|---|---|---|
+| `protocol` | None. Checks the tool catalogue, prompts, argument validation, workspace identity, permissions and idle probe | No |
+| `read` | Opens the probe, samples, and briefly starts and stops live sampling. Adds a variable to the sidebar watch list | Yes |
+| `confirm` | Writes `variables.write` and `checks.peripherals.write`, then restores them. Covers denial, the chat fallback, one-time IDs and the 24-hour permission | Yes |
+| `debug` | Attaches without reset or download, halts, steps, hits `checks.breakpoint`, detaches, reads fault state | Yes |
+| `flash` | Erases and programs the workspace ELF | Yes |
+
+The default is `protocol,read`; `confirm`, `debug` and `flash` run only when named in `--phases`, and `protocol` always runs first. The script answers confirmations itself, so setting the variable is the operator's approval for those writes. This is why the baseline does not prove human confirmation; the harness acceptance does.
+
+A failed step stops all later phases. A mismatched workspace, an active remembered permission or a busy probe stops the run before the target is touched. Each phase restores what it changed, and a failed restore is reported as a failed `cleanup` step: check the board before continuing. If `variables.write.value` equals the current value, the run stops because a denial could not be observed; pass another safe value with `--write-value`.
+
+Reports go to `test-results/mcp-baseline/<profile>/` as JSON and Markdown, with every tool call, its result code and duration, plus the tools the run did not call. `debug_control restart` and the CubeMX tools that need a project are not covered. Record the board, probe, firmware and report path as with other HIL results.
+
 ## Automated smoke matrix (Windows + Linux through WSL2)
 
 `npm run test:hil:smoke` runs the everyday board checks for each configured board/probe profile in an isolated VS Code development host, through the same Agent Bridge dispatcher the skills use (flash and write confirmations are requested and supplied, never bypassed). Each profile performs, in order:

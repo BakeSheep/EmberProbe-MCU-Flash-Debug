@@ -69,15 +69,13 @@ function wrapperSource(runtime, launcher) {
 
 /**
  * Launch command for external clients, using absolute paths. Windows runs the editor's Electron directly (the exe in
- * the install root, stable across upgrades) with ELECTRON_RUN_AS_NODE; POSIX goes through the wrapper script. The
- * variable is omitted when toolsets is empty (the default toolset).
- * @param {{ platform: string, runtime: string, launcher: string, wrapper: string, toolsets?: string }} options
+ * the install root, stable across upgrades) with ELECTRON_RUN_AS_NODE; POSIX goes through the wrapper script.
+ * @param {{ platform: string, runtime: string, launcher: string, wrapper: string }} options
  * @returns {{ command: string, args: string[], env: Record<string, string> }}
  */
-function serverCommand({ platform, runtime, launcher, wrapper, toolsets }) {
-    const env = toolsets ? { EMBERPROBE_MCP_TOOLSETS: toolsets } : {};
-    if (platform === "win32") return { command: runtime, args: [launcher], env: { ELECTRON_RUN_AS_NODE: "1", ...env } };
-    return { command: wrapper, args: [], env };
+function serverCommand({ platform, runtime, launcher, wrapper }) {
+    if (platform === "win32") return { command: runtime, args: [launcher], env: { ELECTRON_RUN_AS_NODE: "1" } };
+    return { command: wrapper, args: [], env: {} };
 }
 
 function displayArg(value, platform) {
@@ -156,7 +154,7 @@ class McpRegistration {
     /**
      * @param {{
      *   vscode: any, context: any, t: (key: string, params?: Record<string, any>) => string,
-     *   isAvailable: () => boolean, isEnabled?: () => boolean, instanceId: () => string, toolsets: () => string,
+     *   isAvailable: () => boolean, isEnabled?: () => boolean, instanceId: () => string,
      *   onResolve: () => Promise<void>, onConfigured?: () => void, post?: (message: any) => void,
      *   platform?: string, runtime?: string, findExecutable?: (name: string) => string,
      *   runCli?: (file: string, args: string[]) => ReturnType<typeof runCli>,
@@ -173,7 +171,6 @@ class McpRegistration {
         this.isAvailable = options.isAvailable;
         this.isEnabled = options.isEnabled || options.isAvailable;
         this.instanceId = options.instanceId;
-        this.toolsets = options.toolsets;
         this.onResolve = options.onResolve;
         this.onConfigured = options.onConfigured || (() => {});
         this.post = options.post || (() => {});
@@ -221,8 +218,7 @@ class McpRegistration {
             platform: this.platform,
             runtime: this.runtime,
             launcher: this.launcherPath(),
-            wrapper: this.wrapperPath(),
-            toolsets: this.toolsets()
+            wrapper: this.wrapperPath()
         });
     }
 
@@ -268,10 +264,7 @@ class McpRegistration {
     }
 
     serverEnv() {
-        const env = { ELECTRON_RUN_AS_NODE: "1" };
-        const toolsets = this.toolsets();
-        if (toolsets) env.EMBERPROBE_MCP_TOOLSETS = toolsets;
-        return env;
+        return { ELECTRON_RUN_AS_NODE: "1" };
     }
 
     definitions() {

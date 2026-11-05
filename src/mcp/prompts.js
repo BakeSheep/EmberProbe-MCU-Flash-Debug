@@ -99,9 +99,4 @@ function listing(prompt) {
     };
 }
 
-function promptsFor(toolsets) {
-    const enabled = new Set(toolsets);
-    return PROMPTS.filter((prompt) => enabled.has(prompt.toolset));
-}
-
-module.exports = { PROMPTS, promptsFor, promptText, listing, skillsRoot, withoutFrontmatter, section };
+module.exports = { PROMPTS, promptText, listing, skillsRoot, withoutFrontmatter, section };

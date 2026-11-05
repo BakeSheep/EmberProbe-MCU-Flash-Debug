@@ -365,7 +365,6 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
         isAvailable: () => host._mcpAvailable(),
         isEnabled: () => host._mcpAvailable() && host._agentAccessDecision(host._skillStatusService.lastStatus).enabled,
         instanceId: () => host._agentService.instanceId(),
-        toolsets: () => host._mcpToolsets(),
         onResolve: () => host._requestMcpBridge(),
         onConfigured: () => host._markMcpConfigured(),
         post: (message) => host._webviewView?.webview.postMessage(message)

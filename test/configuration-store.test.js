@@ -14,9 +14,17 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
     assert.ok(Array.isArray(groups));
     const entries = groups.flatMap((group) => Object.entries(group.properties));
     const keys = entries.map(([key]) => key);
-    assert.strictEqual(keys.length, 23);
+    assert.strictEqual(keys.length, 21);
     assert.strictEqual(new Set(keys).size, keys.length);
-    for (const key of ["probeSerial", "sampleIntervalMs", "maxSamples", "enablePrettyPrinting", "prettyPrinterPath"])
+    for (const key of [
+        "probeSerial",
+        "sampleIntervalMs",
+        "maxSamples",
+        "enablePrettyPrinting",
+        "prettyPrinterPath",
+        "memory.regionKinds",
+        "mcp.toolsets"
+    ])
         assert.ok(!keys.includes(`emberprobe.${key}`));
     for (const [key, setting] of entries) {
         const description = setting.markdownDescription || setting.description;

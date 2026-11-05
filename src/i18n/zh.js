@@ -37,7 +37,7 @@ module.exports = Object.freeze({
     "memory.ambiguous": "存在多个布局文件，请选择当前 ELF 使用的文件。",
     "memory.mapMismatch": ".map 与当前 ELF 不匹配，请重新构建项目或选择其链接脚本。",
     "memory.scriptMismatch": "链接脚本的内存区域放不下当前 ELF 的所有节，可能不是链接它的脚本。请选择实际使用的 .ld。",
-    "memory.unknownKind": "自定义区域可通过 emberprobe.memory.regionKinds 指定类型。",
+    "memory.unknownKind": "部分内存区域名称无法自动识别为 Flash 或 RAM。",
     "rtos.title": "RTOS 任务",
     "rtos.chooseSession": "选择调试会话／核",
     "rtos.core": "核",

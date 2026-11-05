@@ -1,6 +1,6 @@
 "use strict";
 // Drift checks between the MCP tool catalog and Bridge routes, read-only annotation sources, schema strictness and
-// toolset switches.
+// tool categories.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
@@ -224,14 +224,10 @@ const validator = new AjvJsonSchemaValidator();
         assert.deepStrictEqual(tool("cubemx_execute").cancel({}), { method: "cubemx.cancel", params: {} });
     });
 
-    await scenario("Expose core and debug by default and CubeMX only on request", () => {
-        assert.deepStrictEqual(tools.parseToolsets(""), ["core", "debug"]);
-        assert.deepStrictEqual(tools.parseToolsets("core, CubeMX"), ["core", "cubemx"]);
-        assert.deepStrictEqual(tools.parseToolsets("all"), ["core", "debug", "cubemx"]);
-        assert.deepStrictEqual(tools.parseToolsets("unknown"), []);
-        const names = tools.toolsFor(tools.parseToolsets("")).map((tool) => tool.name);
+    await scenario("Include core, debug and CubeMX tools in the catalog", () => {
+        const names = tools.TOOLS.map((tool) => tool.name);
         assert.ok(names.includes("flash_program") && names.includes("debug_status"));
-        assert.ok(!names.some((name) => name.startsWith("cubemx_")));
+        assert.ok(names.includes("cubemx_execute"));
         assert.ok(Buffer.byteLength(INSTRUCTIONS, "utf8") <= 1536, "server instructions stay within 1.5 KB");
     });
 

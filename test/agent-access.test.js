@@ -126,17 +126,12 @@ const withoutSkills = { scopes: { workspace: { state: "notInstalled" }, global: 
 
     await scenario("Start the Bridge when VS Code resolves the MCP server for this window", async () => {
         const { provider, events, state } = createProvider(withoutSkills);
-        const settings = { "mcp.toolsets": ["debug", "core"] };
         const global = new Map();
         provider._context.globalState = { get: (key) => global.get(key), update: async (key, v) => global.set(key, v) };
         provider._bridgeRegistry = {};
-        vscode.workspace.getConfiguration = () => ({ get: (key) => settings[key] });
         vscode.workspace.workspaceFolders = [{ uri: { fsPath: "/work" } }];
         try {
             assert.strictEqual(provider._mcpAvailable(), true);
-            assert.strictEqual(provider._mcpToolsets(), "", "the default toolsets inject no variable");
-            settings["mcp.toolsets"] = ["cubemx", "core", "bogus"];
-            assert.strictEqual(provider._mcpToolsets(), "core,cubemx");
             await provider._requestMcpBridge();
             assert.deepStrictEqual(events.starts, [{ legacyPointer: false }], "MCP never writes a workspace pointer");
             state.set("emberprobe.agentAccess", "disabled");
@@ -154,7 +149,6 @@ const withoutSkills = { scopes: { workspace: { state: "notInstalled" }, global: 
             assert.strictEqual(provider._mcpAvailable(), false, "no folder, no server definition");
         } finally {
             vscode.workspace.workspaceFolders = [];
-            delete vscode.workspace.getConfiguration;
         }
     });
 

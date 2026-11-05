@@ -67,7 +67,7 @@ OpenCode 优先使用 `OPENCODE_CONFIG` 指定的绝对路径；未指定时查�
 `opencode.json`。工程内的 `opencode.json` 由用户自行维护，其中的同名服务器可能覆盖用户配置。环境变量路径覆盖必须为绝对路径。未被当前 VS Code 进程继承的环境设置不会被探测到，请核对安装对话框中的目标路径。
 
 自动合并保留其他服务器、设置、注释以及 EmberProbe 条目中的自定义选项和额外环境变量；更新启动命令、参数、
-工具集及支持的超时字段。JSONC 和 TOML 使用语法树定位编辑，DSH 只替换匹配的 MCP 条目，不重新序列化
+支持的超时字段。JSONC 和 TOML 使用语法树定位编辑，DSH 只替换匹配的 MCP 条目，不重新序列化
 其他 YAML 插件或执行 `!!js`。损坏/歧义配置、管理条目使用 YAML 标签/锚点、非 UTF-8 或超过 2 MiB 的文件会拒绝写入，
 改为复制配置并说明失败原因。不会删除同名服务器再重试。
 
@@ -158,13 +158,15 @@ DSH 加载后工具名形如 `mcp__emberprobe__config_get`。当前 DSH 不消�
 
 ## 工具 / Tools
 
-工具按工具集暴露，工具定义会常驻 Agent 上下文，只开启需要的部分。VS Code 中由设置 `emberprobe.mcp.toolsets` 控制，外部客户端用环境变量 `EMBERPROBE_MCP_TOOLSETS`（逗号分隔，`all` 表示全部），默认 `core,debug`：
+MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cubemx`，不支持更改暴露范围。旧设置 `emberprobe.mcp.toolsets` 和环境变量 `EMBERPROBE_MCP_TOOLSETS` 不再生效。下表仅按功能分类：
+
+MCP always exposes every tool and workflow prompt, including CubeMX. The exposed catalog is not configurable; legacy `emberprobe.mcp.toolsets` and `EMBERPROBE_MCP_TOOLSETS` values have no effect. The groups below are functional categories only:
 
 | 工具集 | 工具 |
 |---|---|
 | `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `peripherals_list` `peripherals_read` `peripherals_write` |
 | `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
-| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
+| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
 
 - 注解：`readOnlyHint` 由 `agent-client.js` 的 `READ_ONLY_METHODS`（可重试的只读方法）与 `OBSERVATION_METHODS`（不改变状态但可能访问硬件的方法）派生；`flash_program`、写入、CubeMX 生成与 `debug_control` 标记为 `destructiveHint`；所有工具 `openWorldHint: false`。
 - schema 手写在 `src/mcp/tools.js`，全部 `additionalProperties: false`；`probeSerial` 保持字符串原样传递。最终校验仍由 Bridge 完成。
@@ -202,7 +204,7 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 ## 客户端支持 / Client support
 
-以下行为需要在各客户端中实测后记录；本表不预设结果：
+以下行为需要在各客户端中实测后记录；本表不预设结果。实测流程、发给客户端的步骤和回报模板见 [MCP harness 实机验收](validation/MCP-HARNESS-ACCEPTANCE.md)：
 
 | 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
 |---|---|---|---|---|---|

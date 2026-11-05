@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -110,12 +111,16 @@ const { buildMemoryElf, snapshot, memoryMap, h750Regions, f407Regions } = requir
     const overlap = analyzeMemory(data, [...h750Regions, { name: "ALIAS", origin: 0, capacity: 1024 }]);
     assert.strictEqual(overlap.regions[4].used, null);
     assert.ok(overlap.diagnostics.some((d) => d.code === "MEMORY_REGION_AMBIGUOUS"));
-    const custom = analyzeMemory(
-        data,
-        h750Regions.map((r) => ({ ...r, name: r.name === "ITCMRAM" ? "FAST" : r.name })),
-        { FAST: "ram" }
-    );
-    assert.strictEqual(custom.ram.total, result.ram.total);
+    await scenario("Classify known region names automatically and report unknown names", () => {
+        const custom = analyzeMemory(
+            data,
+            h750Regions.map((r) => ({ ...r, name: r.name === "ITCMRAM" ? "FAST" : r.name }))
+        );
+        assert.strictEqual(custom.regions.find((r) => r.name === "FAST").type, "other");
+        assert.ok(custom.diagnostics.some((d) => d.code === "REGION_KIND_UNKNOWN" && d.message.includes("FAST")));
+        assert.strictEqual(result.regions.find((r) => r.name === "ITCMRAM").type, "ram");
+        assert.strictEqual(result.regions.find((r) => r.name === "FLASH").type, "flash");
+    });
     assert.strictEqual(loadAddress({ addr: 0, offset: 0, size: 1 }, []), null);
     assert.deepStrictEqual(unplacedSections(data, h750Regions), []);
     assert.deepStrictEqual(
@@ -212,11 +217,6 @@ const { buildMemoryElf, snapshot, memoryMap, h750Regions, f407Regions } = requir
         service.invalidate();
         assert.ok((await service.analyze()).source.candidates.includes(map));
         assert.strictEqual((await service.analyze({ mapFile: map })).source.kind, "map");
-        const invalidKinds = new MemoryAnalysisService({
-            elfService: { load: async () => snap },
-            regionKinds: () => ({ FLASH: "bad" })
-        });
-        await assert.rejects(invalidKinds.analyze(), (e) => e.code === "INVALID_MEMORY_REGION_KINDS");
         let reads = 0;
         workerService = new ElfService({
             context: { workspaceState: { get: () => elf } },

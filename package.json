@@ -352,55 +352,9 @@
         }
       },
       {
-        "id": "emberprobe.memory",
-        "title": "EmberProbe: 内存 / Memory",
-        "order": 6,
-        "properties": {
-          "emberprobe.memory.regionKinds": {
-            "type": "object",
-            "default": {},
-            "additionalProperties": {
-              "type": "string",
-              "enum": [
-                "flash",
-                "ram",
-                "other"
-              ]
-            },
-            "markdownDescription": "按链接器中的精确名称覆盖内存区域类型，例如 `{\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}`。容量来自项目的 .map 或 .ld 文件。 / Override memory region types by exact linker names, e.g. `{\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}`. Capacities come from project .map or .ld files.",
-            "order": 1
-          }
-        }
-      },
-      {
-        "id": "emberprobe.mcp",
-        "title": "EmberProbe: Agent 与 MCP / Agent & MCP",
-        "order": 7,
-        "properties": {
-          "emberprobe.mcp.toolsets": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "core",
-                "debug",
-                "cubemx"
-              ]
-            },
-            "uniqueItems": true,
-            "default": [
-              "core",
-              "debug"
-            ],
-            "markdownDescription": "MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义占用 Agent 上下文，按需开启。参见 docs/MCP.md。 / Toolsets exposed by the MCP server: `core` (configuration, flashing, variables, peripherals), `debug` (debug control, breakpoints, RTOS), `cubemx` (STM32CubeMX generation). Tool definitions occupy Agent context; enable as needed. See docs/MCP.md.",
-            "order": 1
-          }
-        }
-      },
-      {
         "id": "emberprobe.experimental",
         "title": "EmberProbe: 实验功能 / Experimental",
-        "order": 8,
+        "order": 6,
         "properties": {
           "emberprobe.experimental.externalGdb.enabled": {
             "type": "boolean",
@@ -1117,6 +1071,7 @@
     "test:hil": "node test/hil/run-hil.js",
     "test:hil:smoke": "node test/hil/run-smoke.js",
     "test:hil:matrix": "node scripts/hil-matrix.js",
+    "test:hil:mcp": "node test/hil/run-mcp-baseline.js",
     "release:prepare": "node scripts/release.js",
     "docs:clean": "node scripts/docs-cleanup.js",
     "bundle": "node esbuild.js",
