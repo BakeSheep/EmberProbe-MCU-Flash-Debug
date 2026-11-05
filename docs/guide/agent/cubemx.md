@@ -1,40 +1,48 @@
-# CubeMX generation and baseline conflicts
+# CubeMX 代码生成
 
-## Installation paths
+[English](cubemx.en.md)
 
-Configure **EmberProbe: Cubemx Path** (`emberprobe.cubemxPath`) and **EmberProbe: Cubemx2 Path**
-(`emberprobe.cubemx2Path`) in VS Code **User settings**. Both have `machine` scope and are shared by all workspaces
-on this machine; they are no longer sidebar configuration entries. Existing saved values are preserved. Leave a
-setting empty for automatic discovery, which saves the result to User settings and never replaces a saved path.
-Invalid saved paths are reported with instructions to update the relevant setting. The sidebar keeps the workspace's
-`.ioc` selection and firmware status.
+让 Agent 修改 CubeMX 配置并生成代码，用的是你本机安装的 STM32CubeMX 或 STM32CubeMX2。生成前会先检查，不会静默覆盖你的改动。
 
-`emberprobe.cubemx2Path` points to the CubeMX2 launcher, for example `stm32cubemx2-1.1.2.exe`, rather than the legacy
-`STM32CubeMX.exe` or bundled Java. Discovery first reads ST's official external bundle registration:
-`$CUBE_BUNDLE_PATH/.config/external_bundles.json`, or the default bundle root under
-`%LOCALAPPDATA%/stm32cube/bundles` on Windows and `$XDG_DATA_HOME/stm32cube/bundles` on Linux
-(`~/.local/share/stm32cube/bundles` when unset). It validates the registered `stm32cubemx-application` manifest and
-resolves its matching standalone launcher. Multiple valid registered versions select the newest.
+## 配置工具路径
 
-If no registered launcher is valid, it queries `cube --resolve --json mx`, using STM32Cube Core's bundled CLI when
-that extension is installed, otherwise `cube` on PATH. This only resolves the official application bundle; it does
-not execute `cube mx start`, launch CubeMX2 or install bundles. Missing tools and invalid/stale records fall back to
-common installation directories, versioned directories and PATH, plus Windows desktop/Start menu shortcuts and
-uninstall registry locations. Registry/manifest JSON reads are bounded to 2 MiB. Linux accepts
-an executable `stm32cubemx2` or `stm32cubemx2-<version>` launcher; macOS detection is currently unavailable.
+在 VS Code **用户设置**中配置，本机所有工作区共用：
 
-The selected project file chooses the tool: `.ioc` projects use `emberprobe.cubemxPath`, and `.ioc2` projects use
-`emberprobe.cubemx2Path` for inspection, CLI queries, configuration changes and generation (see
-[CUBEMX2-GENERATION.md](../../design/cubemx-pipeline.md)). Firmware package checks in the sidebar apply to `.ioc` projects only.
-Agent configuration reads include both paths, but Agents cannot change either executable path.
+| 设置 | 工具 |
+| --- | --- |
+| `emberprobe.cubemxPath` | STM32CubeMX，用于 `.ioc` 工程 |
+| `emberprobe.cubemx2Path` | STM32CubeMX2 启动器（如 `stm32cubemx2-1.1.2.exe`），用于 `.ioc2` 工程 |
 
-## Generation safety
+留空时自动查找，找到后保存到用户设置，不会替换已保存的路径。Agent 能读取这两个路径，但不能修改。
 
-EmberProbe regenerates a baseline and a candidate in separate staging directories before writing any project files. The stages are created under the system temporary directory (`emberprobe-cubemx-stage-*`), never inside the workspace, which also keeps CubeMX's deep `Drivers`/`Middlewares` paths short on Windows. They are removed when the operation ends; removal waits for confirmed CubeMX exit, and stages older than 24 hours left by a crashed extension host are swept when the next stage is created. For `ProjectManager.UnderRoot=false`, it places existing sources in the project-name child directory that CubeMX uses, so native Keep User Code processing can read them. Both stages must produce an expected `main.c`: a staged copy plus a generic `OK` is insufficient. CubeMX may preserve an unchanged file's timestamp, so an explicit generation record for that exact staged file is also accepted as evidence.
+CubeMX2 自动查找支持 Windows 和 Linux，macOS 暂不支持。
 
-The baseline comparison preserves existing text line endings and recognizes equivalent `.mxproject` section/key order and known path separators. It does not ignore source whitespace generally, remove meaningful metadata changes, or weaken byte-exact workspace concurrency checks. C and C++ USER CODE blocks are checked before writeback.
+## 选择工程
 
-`CUBEMX_BASELINE_DRIFT` can still indicate a real conflict. Inspect `details.changes` and compare the files with CubeMX's regenerated versions under `details.baselineOutput`. For example, a manually added source in `cmake/stm32cubemx/CMakeLists.txt` can be deleted by CubeMX because that file is regenerated. Put user sources in the user-owned top-level CMake file instead:
+在侧栏选择 `.ioc` 或 `.ioc2` 文件。工程文件决定使用哪个工具，没有单独的设置。侧栏的固件包检查只适用于 `.ioc` 工程。
+
+## 生成流程
+
+1. 让 Agent 提出修改。这一步只在临时副本上进行，不写工作区。
+2. Agent 展示工程和变更，等你在对话中确认。
+3. EmberProbe 重新生成当前配置和新配置两份结果，比较后再写回工程。
+4. 写回前备份被修改的文件。
+
+可以在确认时选择记住 24 小时，见 [Agent 权限](permissions.md)。
+
+Agent 可用的操作见 `mcu-cubemx` skill 和 [MCP 工具](mcp.md#工具)。
+
+## 用户代码
+
+**`.ioc` 工程**：写在 `USER CODE` 块内的代码会保留。
+
+**`.ioc2` 工程**：生成的源文件没有 `USER CODE` 块。`main.c`、`main.h`、启动文件、链接脚本等归你所有，已存在时不会被覆盖，只在结果的 `warnings` 中列出。其他生成文件归 CubeMX2 所有，改动过会被判定为冲突。
+
+## 处理冲突
+
+`CUBEMX_BASELINE_DRIFT` 表示工程里的生成文件被改过，与工具重新生成的结果不一致。查看错误中的 `details.changes`，并对比 `details.baselineOutput` 下工具重新生成的版本。
+
+常见情况：在 `cmake/stm32cubemx/CMakeLists.txt` 里手动加了源文件，而这个文件是生成的。把它移到你自己的顶层 CMake 文件：
 
 ```cmake
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
@@ -42,20 +50,30 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 )
 ```
 
-Remove the duplicate manual entry from the generated source list after reviewing the change, then prepare again. EmberProbe does not silently relocate or discard such edits.
+确认后删除生成列表中手动加的条目，再重新准备。EmberProbe 不会替你移动或丢弃这些修改。
 
-Log completion/error state is tracked while reading stdout/stderr, independently of the retained diagnostic tail. Generation failures return the last 100 lines (up to 16 Ki characters), plus the first detected failure line when available. An unusually long individual line is rejected conservatively. A `KO` answer to `project generate` fails generation; `KO` from other script commands (for example `project path` on Linux) does not. CubeMX's online updater and home-page advertisement panel log network failures at ERROR level even in script mode. Records whose log4j source class is `WebUtils`, `HomeAdPanel` or an `*Updater*`/`*Advert*` class, plus the stack trace directly below them, are reported as warnings. Firmware package, migration and generation-failure messages still block regardless of their source, as do errors and exceptions from any other source.
+## CubeMX2 的要求
 
-Each operation has a diagnostics directory in extension storage (`diagnosticsPath`): CubeMX logs stream directly into it (`baseline.log`, `generating.log`, `deepCheck.log`), drift failures add `baseline-drift/`, and a writeback adds `backup/` with the original bytes of each modified or deleted file. The backup is written before the first project file and is what `recoveryRequired` recovery uses. The newest 20 directories per project are kept; directories of operations whose source state is `recoveryRequired` or `unknown`, and directories holding a `backup/` that a retained operation record still reports, are never pruned (the operation store keeps the latest 50 records). A successful generation result is not a compilation or hardware test.
+- 必须安装工程记录的 CubeMX2 版本（`mx2Version`）。EmberProbe 不迁移工程。
+- 所需的 pack 要在 CubeMX2 界面中安装，EmberProbe 不下载。缺少时报 `CUBEMX2_PACK_MISSING`。
+- 不能通过 Agent 新建或删除工程、安装 pack、启用中间件组件。
+- 目前只在 Windows 上验证过，尚未提供侧栏配置界面。
 
-The project snapshot skips version control, editor and agent tool directories (`.git`, `.agents`, `.claude`, `.vscode`, …). Links in CubeMX inputs and outputs (`Core`, `Drivers`, `Middlewares`, `cmake`, the `.ioc`, linker scripts, startup files and generated root build files) are rejected, because they could redirect writes or feed linked sources into Keep User Code. Other links are skipped, and generation is rejected with `linked_output_path` if regenerated output would be written on or below a skipped link.
+## 限制
 
-Regression coverage is in `test/cubemx-generation-safety.test.js`, `test/cubemx-workspace-isolation.test.js` and `test/cubemx.test.js`; these tests require no CubeMX installation or hardware.
+- 生成成功不代表能编译，也不代表硬件上能跑。
+- 工程目录内的符号链接如果涉及 CubeMX 的输入或输出，生成会被拒绝。
+- 每次操作的日志和备份保存在扩展存储中，结果的 `diagnosticsPath` 给出位置。
 
-Agent generation is confirmed in the Agent conversation using the returned plan-bound
-confirmation ID. The Agent shows the project and changes, waits for the human's answer,
-then submits that ID. A 24-hour project permission requires an explicit chat choice and
-`remember`; EmberProbe does not show a second operation approval dialog. Execution recomputes
-the project identity and rejects a changed plan.
+## 常见问题
 
-Cancellation before process startup creates no script if already cancelled, or waits for removal of the script created during cancellation before returning. Cancellation and timeouts after startup first terminate CubeMX, then escalate to SIGKILL. If exit still cannot be confirmed, `CUBEMX_EXIT_UNCONFIRMED` is returned while the project and staging files remain owned by that process. New generation/deep checks remain blocked. `cubemx.cancel` retries termination; ownership and deferred cleanup finish only after process exit.
+**写回中断，结果显示 `recoveryRequired`**：备份在 `diagnosticsPath` 的 `backup/` 下，可用它恢复。
+
+**`CUBEMX_EXIT_UNCONFIRMED`**：工具没有确认退出，新的生成会被阻止。用 `cubemx.cancel` 重试结束进程。
+
+**`CUBEMX2_VERSION_MISMATCH`**：安装工程记录的 CubeMX2 版本。
+
+## 相关文档
+
+- [CubeMX 生成设计（英文）](../../design/cubemx-pipeline.md)
+- [Agent 权限](permissions.md)

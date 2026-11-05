@@ -1,41 +1,45 @@
-# VS Code 设置 / VS Code settings
+# VS Code 设置
 
-EmberProbe 提供 23 项设置，按 8 个分组排列。所有设置键均以 `emberprobe.` 开头；下表省略此前缀。设置页面中的每项说明同时提供中文和英文。
+[English](settings.en.md)
 
-EmberProbe provides 23 settings in eight groups. All keys start with `emberprobe.`; the table omits that prefix. Each Settings UI description includes both Chinese and English.
+EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 21 项，按 6 个分组排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
 
-| 分组 / Group | 设置 / Setting | 用途 / Purpose |
+| 分组 | 设置 | 用途 |
 | --- | --- | --- |
-| 连接 / Connection | `openocdPath` | OpenOCD 路径 / OpenOCD executable path |
-| | `tclPort` | Tcl-RPC 端口；未显式设置时随机分配 / Tcl-RPC port; random unless explicitly configured |
-| | `adapterSpeedKhz` | 调试和烧录链路时钟 / Debug and flash adapter clock |
-| | `transport` | OpenOCD 传输协议 / OpenOCD transport |
-| 采样与波形 / Sampling & Waveforms | `sampleFrequencyHz` | 波形目标采样频率 / Target waveform sampling frequency |
-| | `samplingAdapterSpeedKhz` | 独立采样链路时钟 / Standalone sampling adapter clock |
-| | `chartHistoryMaxMiB` | 波形历史内存预算 / Waveform history memory budget |
-| | `samplingArchiveMaxMiB` | 采样归档磁盘上限 / Sampling archive disk limit |
-| | `chartBackgroundIcon.enabled` | 显示波形背景图标 / Show waveform background icon |
-| 工具链与调试 / Toolchain & Debugging | `gdbPath` | ARM GDB 路径 / ARM GDB executable path |
-| | `armToolchainPath` | 工具链 bin 目录 / Toolchain bin directory |
-| | `armToolchainPrefix` | 工具链前缀 / Toolchain prefix |
-| | `objdumpPath` | ARM objdump 路径 / ARM objdump executable path |
-| | `rtos` | 调试时的 RTOS 感知 / RTOS awareness for debugging |
-| C++ 变量显示 / C++ Variable Display | `prettyPrintingMode` | 内置、GDB 或原始字段显示 / Built-in, GDB or raw field display |
-| | `prettyPrinterFiles` | 明确指定的 GDB Python 打印脚本 / Explicit GDB Python printer scripts |
-| CubeMX | `cubemxPath` | STM32CubeMX 路径 / STM32CubeMX executable path |
-| | `cubemx2Path` | STM32CubeMX2 启动器路径 / STM32CubeMX2 launcher path |
-| 内存 / Memory | `memory.regionKinds` | 覆盖链接器区域类型 / Override linker memory region types |
-| Agent 与 MCP / Agent & MCP | `mcp.toolsets` | MCP 暴露的工具集 / Toolsets exposed by MCP |
-| 实验功能 / Experimental | `experimental.externalGdb.enabled` | 启用外部 GDB 附加 / Enable external GDB attach |
-| | `experimental.externalGdb.target` | 外部服务器地址和端口 / External server host and port |
-| | `experimental.externalGdb.connectionMode` | 外部 GDB 连接模式 / External GDB connection mode |
+| 连接 | `openocdPath` | OpenOCD 路径 |
+| | `tclPort` | Tcl-RPC 端口；未设置时随机分配 |
+| | `adapterSpeedKhz` | 调试和烧录的链路时钟 |
+| | `transport` | 传输协议 |
+| 采样与波形 | `sampleFrequencyHz` | 波形目标采样频率 |
+| | `samplingAdapterSpeedKhz` | 独立采样的链路时钟 |
+| | `chartHistoryMaxMiB` | 波形历史的内存预算 |
+| | `samplingArchiveMaxMiB` | 采样归档的磁盘上限 |
+| | `chartBackgroundIcon.enabled` | 显示波形背景图标 |
+| 工具链与调试 | `gdbPath` | ARM GDB 路径 |
+| | `armToolchainPath` | 工具链 bin 目录 |
+| | `armToolchainPrefix` | 工具链前缀 |
+| | `objdumpPath` | ARM objdump 路径 |
+| | `rtos` | 调试时的 RTOS 感知 |
+| C++ 变量显示 | `prettyPrintingMode` | 内置、GDB 或原始字段显示 |
+| | `prettyPrinterFiles` | 明确指定的 GDB Python 打印脚本 |
+| CubeMX | `cubemxPath` | STM32CubeMX 路径 |
+| | `cubemx2Path` | STM32CubeMX2 启动器路径 |
+| 实验功能 | `experimental.externalGdb.enabled` | 启用外部 GDB 附加 |
+| | `experimental.externalGdb.target` | 外部服务器地址和端口 |
+| | `experimental.externalGdb.connectionMode` | 外部 GDB 连接模式 |
 
-## 已移除设置 / Removed settings
+探针不在设置中选择，而是在侧栏“已连接调试器”一行点选，见[探针连接](getting-started/probe-connections.md)。
 
-`probeSerial` 已从 VS Code 设置和 Agent `config.set` 中移除。请在侧栏“已连接调试器”中选择设备；原设置不再锁定或覆盖侧栏选择。接口脚本中指定的设备和独立烧录脚本的显式序列号参数仍按各自规则处理。
+## 已移除的设置
 
-`probeSerial` has been removed from VS Code settings and Agent `config.set`. Select the device under Connected probes in the sidebar; the old setting no longer locks or overrides that selection. Interface-script device selectors and explicit serial arguments in standalone flash scripts retain their own behavior.
+| 旧设置 | 现在的做法 |
+| --- | --- |
+| `probeSerial` | 在侧栏“已连接调试器”中选择设备。旧设置不再锁定或覆盖侧栏选择 |
+| `sampleIntervalMs` | 用 `sampleFrequencyHz` 设置频率 |
+| `maxSamples` | 波形历史保留最近 30 分钟，并受内存和磁盘预算约束 |
+| `enablePrettyPrinting` | 用 `prettyPrintingMode: "raw"` 查看原始字段 |
+| `prettyPrinterPath` | 用 `prettyPrintingMode: "gdb"` 加 `prettyPrinterFiles` 加载脚本 |
+| `memory.regionKinds` | 内存区域按链接器名称自动分类，无法识别的区域归为其他类型并提示 |
+| `mcp.toolsets` | MCP 固定提供全部工具，不再筛选 |
 
-`sampleIntervalMs`、`maxSamples`、`enablePrettyPrinting` 和 `prettyPrinterPath` 已移除。使用 `sampleFrequencyHz` 设置频率；波形历史保留最近 30 分钟，并受内存与磁盘预算约束。使用 `prettyPrintingMode: "raw"` 查看原始字段，使用 `prettyPrintingMode: "gdb"` 和 `prettyPrinterFiles` 加载明确指定的打印脚本。旧用户配置不会被自动改写。
-
-`sampleIntervalMs`, `maxSamples`, `enablePrettyPrinting` and `prettyPrinterPath` have been removed. Set the rate with `sampleFrequencyHz`; waveform history retains the latest 30 minutes within memory and disk budgets. Use `prettyPrintingMode: "raw"` for physical fields, or `prettyPrintingMode: "gdb"` with `prettyPrinterFiles` for explicit scripts. Existing user configuration files are not rewritten automatically.
+旧配置不会被自动改写，留在设置文件里不起作用，可以手动删除。

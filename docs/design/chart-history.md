@@ -1,4 +1,8 @@
-# 分层采样与静默历史
+# 波形历史与归档设计
+
+用户行为见[实时采样与历史](../guide/variables/sampling.md)，读取与调度见[采样链路设计](sampling-pipeline.md)。
+
+## 消费者分层
 
 | 消费者                               | 目标频率            | 原始历史                            | 绘图                       |
 | ------------------------------------ | ------------------- | ----------------------------------- | -------------------------- |
@@ -8,7 +12,7 @@
 
 全局启停保持原操作。改变波形目标频率不会改变侧栏独有变量的目标；波形到期且侧栏截止时间距当前不超过波形与侧栏周期中较短者的一半时，提前合并读取并推进侧栏截止时间；提前量计入复用判断，侧栏独有变量照常重新读取，同名侧栏变量仍复用本轮及不足 50 ms 的原始结果。慢速波形之间保留侧栏独立周期，侧栏目标保持约 20 Hz。两组截止时间按原相位累加，晚醒不累计漂移；落后超过一个周期才从当前时间重排，使用单调时钟的小数毫秒。样本携带消费者归属和原始采集时间，侧栏额外读取不计入波形归档。探针负载高时两组仍受自适应降速限制：独立模式用最近周期平均耗时 / 85%；调试模式仍用 P95 / 40%。暂停调试目标后的 DAP 快照仍遵守至少 250 ms 间隔。
 
-Tcl 连接先执行有界无回显自测，通过后独立/调试模式均直接返回协议响应；不兼容时回退，日志同步不可见时调试模式继续使用临时文件。固定地址读取可合并同一可写且已分配 ELF 节内不超过 32 字节的间隙，额外字节计入实际吞吐与调试预算，变量仍只收到自身字节。测量表、自测回退及单独兼容检查命令见 [UNLIMITED-SAMPLING.md](sampling-pipeline.md)。
+Tcl 连接先执行有界无回显自测，通过后独立/调试模式均直接返回协议响应；不兼容时回退，日志同步不可见时调试模式继续使用临时文件。固定地址读取可合并同一可写且已分配 ELF 节内不超过 32 字节的间隙，额外字节计入实际吞吐与调试预算，变量仍只收到自身字节。测量表、自测回退及单独兼容检查命令见 [采样链路设计](sampling-pipeline.md)。
 
 ## 历史与导出
 
@@ -30,7 +34,7 @@ Tcl 连接先执行有界无回显自测，通过后独立/调试模式均直接
 
 导出统一流式读取完整二进制采样归档，默认导出用户勾选变量从开始采样或上次清空历史以来的全部原始采样点，包含超过内存保留范围的历史和已移除变量的数据。CSV 字段规则、BOM、CRLF、行数与非空行统计保持原样，并与旧 NDJSON 路径逐字节比较（旧路径把缺失的 `__proto__` 列写成 `[object Object]`，现为空格子）。导出按 4 MiB 分块用零分配扫描器解析归档，有限数值不再逐格做转义检查，时间文本按秒缓存，每约 1 MiB 写一次：50 分钟、10 条 f32 曲线、200 Hz（119 MiB CSV）由约 5–9 s 降到约 1.3 s。写入中的文件名为 `<目标>.csv.part`，完成后原子改名；同名 `.part` 只有在是上次中断导出留下的文件（以 CSV 表头开头的普通文件）时才会被替换，其他同名文件保留不动，导出改用 `<目标>.csv.<随机>.part`；导出期间 VS Code 通知显示百分比并可取消（取消时删除 `.part`），波形窗口状态栏同步显示进度并禁用导出按钮，完成通知提供「在文件夹中显示」。冻结只影响图表查看，不改变导出来源；仍可选最近一段时间或自定义时间范围。用户无需区分磁盘归档、内存保留数据和冻结快照，像素绘图数据不用于导出。保存对话框打开期间发生清空历史或切换会话会取消旧导出，避免导出另一代历史。Agent 的归档 CSV 请求接口保持原有方式；侧栏独有变量不再产生归档记录。
 
-## 完整会话视口（P2b）
+## 完整会话视口
 
 30 分钟 / 360,001 点只限制近期内存缓存，不再限制后台历史模式的查看范围。Worker 只读跟踪
 `samples.bin`：宿主在每次写入批次完成后通知有效字节数，常规通知最多每秒 4 次，启动、重启和清空时立即同步。
@@ -57,8 +61,6 @@ Worker 从文件头自行重建字典，仅索引完整记录，重启后重新�
 ## 数据流与竞态
 
 运行时写入：批次中每项地址均按 4 字节对齐且恰好 4 字节时，只执行写前读取、直接 32 位字写入和回读，不查询或改变目标运行状态。其他写入在独立模式下暂停目标，先按自然对齐的 8/16/32 位访问只写变量自身的字节，避免暂停期间 DMA/外设更新的相邻字节被旧值覆盖；回读发现窄写入被丢弃（部分 Cortex-M7/AHB-AP 的 byte-lane）时才退回对齐 32 位读-改-写，随后校验并恢复运行状态。暂停 DAP 会话的写入采用相同策略；托管调试运行态拒绝这些写入，暂停后通过 DAP 执行。`liveStatus` 的 `canWrite/haltWrite` 在独立采样或暂停 DAP 就绪时为 `true/true`，托管调试运行期采样可用时为 `true/false`，禁止写入时为 `false/false`。事务及成功结果带 `halted`；未暂停时回读不一致仍报 `WRITE_VERIFY_FAILED`，并标记 `targetHaltedDuringWrite: false`，因为固件可能紧接着修改该值；写入后回读失败报 `WRITE_READBACK_FAILED`。托管调试运行态的写入和一次性读取只在目标执行状态、调试会话或连接变化时中止，采样频率、观察列表、存储背压或停止采样不会取消事务；中止的写入报 `DEBUG_STATE_CHANGED`，`details.written/verified` 说明值是否已写入及校验。
-
-Runtime writes keep execution running when every item is exactly four bytes at a four-byte-aligned address: read before, write each 32-bit word directly, and read back. Other standalone writes retain halt/RMW/verify/resume; running managed debug sessions reject them until paused for DAP writes. `canWrite/haltWrite` is `true/true` for standalone sampling or ready paused DAP, `true/false` for usable managed runtime sampling, and `false/false` when writes are disabled. Transactions and successful results include `halted`; an unhalted mismatch remains `WRITE_VERIFY_FAILED` with `targetHaltedDuringWrite: false`, since firmware may modify the value immediately after writing; a failed read-back after writing is `WRITE_READBACK_FAILED`. Running managed debug writes and one-shot reads are aborted only by target execution, debug session or connection changes, not by sampling-rate, watch-list, storage backpressure or sampling stops; an aborted write reports `DEBUG_STATE_CHANGED` with `details.written/verified` stating whether the value was written and verified.
 
 采样 Worker 保持唯一连接与原有读取预算、写入互斥及会话代次。扩展宿主解码后分别写入磁盘归档和历史 Worker。Webview 只持有当前值、历史边界和当前视口的缩减分段；原始历史不会随采样时长累积到页面。
 

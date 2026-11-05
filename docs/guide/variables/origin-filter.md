@@ -1,27 +1,34 @@
-# ELF 变量来源筛选
+# 变量来源筛选
 
-侧栏「ELF 全部变量」右上角的「仅用户」按钮会隐藏由工具或库生成的变量，只保留用户代码定义的变量。按钮状态保存在侧栏视图状态中；关闭后恢复完整列表。筛选只影响列表显示，不改变读写、采样或授权行为；已加入查看/写入列表的变量不会因筛选被移除。
+[English](origin-filter.en.md)
 
-## 分类依据
+ELF 里的变量很多来自 HAL、RTOS 和库。侧栏“ELF 全部变量”右上角的 **仅用户** 按钮把它们隐藏，只留下你的代码定义的变量。
 
-分类在扩展侧完成（`src/variableOrigin.js`），每个符号得到 `origin`：`user`、`vendor`、`rtos`、`middleware` 或 `runtime`。依据按优先级排列：
+## 使用
 
-1. **源文件路径**：DWARF 编译单元的 `DW_AT_name`（相对路径与 `DW_AT_comp_dir` 拼接）。路径按目录段匹配，项目所在目录名不会误判。
-   - `runtime`：`newlib`、`libgcc`、`libstdc++`、`picolibc`、`arm-none-eabi` 等工具链目录。
-   - `rtos`：`FreeRTOS`、`CMSIS_RTOS(_V2)`、`ThreadX`/`AZURE_RTOS`、`RT-Thread`、`uC/OS`、`Zephyr`、`RTX` 目录及 `cmsis_os*.c`。
-   - `middleware`：`Middlewares`、`Third_Party`、`USB_DEVICE`/`USB_HOST`、`FATFS`、`LWIP`、`SEGGER`、`TouchGFX`、`LVGL`、`TinyUSB` 等。
-   - `vendor`：`CMSIS`、`*_HAL_Driver`、`*_StdPeriph_Driver`、`nrfx`、`mcux-sdk` 目录，以及只含生成对象的文件：`stm32*_hal*.c`、`stm32*_it.c`、`*_hal_msp.c`、`*_hal_timebase*.c`、`system_<厂商>*.c`、`syscalls.c`、`sysmem.c`、`fsl_*.c` 等。
-2. **名称**：FreeRTOS/CMSIS-RTOS 内核对象（`pxCurrentTCB`、`ucHeap`、`Idle_Stack` 等）、HAL 全局量（`SystemCoreClock`、`uwTick` 等）、CubeMX 初始化状态（`FSMC_Initialized`、`HAL_RCC_*_CLK_ENABLED`）、C++ 编译器对象（vtable、typeinfo、guard）和 `std::`/`__gnu_cxx::` 对象。以下划线开头的全局名只在没有 DWARF 源文件时视为工具链对象。
-3. **类型**：`*_HandleTypeDef`（CubeMX 外设句柄，即使定义在 `main.c` 中）和 CMSIS-RTOS 类型（`osThreadId_t`、`osThreadAttr_t` 等，CubeMX 在 `freertos.c` 中生成）。DWARF 类型尚未就绪时，按 CubeMX 句柄命名（`huart1`、`hdma_usart1_rx` 等）判断。
-4. **缺少调试信息**：ELF 含 DWARF 时，没有任何 DWARF 变量记录的 C 符号来自预编译库（如 newlib）。带编号后缀的静态变量和 C++ 符号不适用此规则，因为它们的 DWARF 绑定可能缺失。
+点击按钮切换。关闭后恢复完整列表。
 
-无法判断时一律视为 `user`，宁可多显示也不隐藏用户变量。
+- 筛选只影响列表显示，不影响读写和采样。
+- 已加入查看或写入列表的变量不会被移除。
+- 悬停变量名可以看到分类和源文件。
+- 判断不了的变量一律保留。
 
-## 已知局限
+## 隐藏哪些变量
 
-- `main.c`、`freertos.c` 等 CubeMX 文件中同时包含生成代码和 `USER CODE` 段。筛选只按类型和名称识别其中的生成对象；用户在这些文件中定义的普通变量会保留。
-- `USB_DEVICE/App`、`FATFS/App` 等中间件目录下的文件也有 `USER CODE` 段，其中用户定义的变量会随中间件一起隐藏。需要时关闭筛选。
-- `Drivers/BSP` 等板级支持代码常由用户编写或修改，不会被隐藏。
-- 未带调试信息的 ELF 只能依据名称判断，准确度较低。
+| 分类 | 例子 |
+| --- | --- |
+| 工具链和运行库 | newlib、libgcc、libstdc++ 的变量 |
+| RTOS | FreeRTOS、ThreadX、RT-Thread、Zephyr，以及 `pxCurrentTCB`、`ucHeap` |
+| 中间件 | `Middlewares`、`Third_Party`、USB、FATFS、LWIP、LVGL |
+| 厂商代码 | CMSIS、HAL 驱动，`SystemCoreClock`、`uwTick`，CubeMX 外设句柄如 `huart1` |
 
-悬停变量名可查看分类和源文件，便于确认筛选结果。
+## 限制
+
+- `main.c`、`freertos.c` 同时有生成代码和 `USER CODE` 段。生成的句柄和 RTOS 对象会被隐藏，你写的普通变量会保留。
+- `USB_DEVICE/App`、`FATFS/App` 等目录下的文件也有 `USER CODE` 段，里面的变量会随中间件一起隐藏。需要时关闭筛选。
+- `Drivers/BSP` 等板级代码不会被隐藏。
+- 没有调试信息的 ELF 只能按名称判断，准确度较低。
+
+## 相关文档
+
+- [变量身份与来源分类设计](../../design/variable-identity.md)

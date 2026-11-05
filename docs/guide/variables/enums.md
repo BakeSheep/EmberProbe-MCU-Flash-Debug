@@ -1,29 +1,29 @@
-# Enum variables
+# 枚举变量
 
-With an ELF containing DWARF debug information, EmberProbe automatically reads C/C++
-enum types and their member values. Sidebar and Live Watch value cells show, for example,
-`ERROR(-1)` or `.Active(3)` for `app::State::Active`. Qualified member names replace the
-entire `::` prefix with a leading dot; full names remain in the DWARF metadata.
-This includes typedef/using aliases, const/volatile
-types, struct/class/union members, arrays and supported runtime object reads. Existing
-runtime path and RAM validation still determine which objects can be observed.
+[English](enums.en.md)
 
-Multiple members with the same value are shown together, for example `ACTIVE / READY(3)`
-or `.Active / .Ready(3)`.
-Values absent from the enum table remain numeric. Plain `int value = ACTIVE` variables
-remain integers: debug type information does not identify the initializer as an enum type.
-No source parsing or GDB expression evaluation is required for live enum name display.
+使用含调试信息的 ELF 时，EmberProbe 自动读取 C/C++ 枚举类型，把枚举变量显示为成员名加数值，无需配置。
 
-Charts and CSV keep numeric values. Exact 64-bit decimal text is preserved separately from
-the enum label. Write inputs continue to accept numeric values under the existing write
-authorization; enum member names are display labels, not new write commands.
+## 显示方式
 
-For legacy DWARF that omits an underlying encoding, negative enumerators enable signed
-reads; otherwise the storage is read as unsigned raw values. These inferred types remain
-read-only. An enum without enough information to select a read encoding is unavailable
-instead of silently using an unsigned type. Enum tables exceeding 1024 members or 64 KiB
-of names and constant text are rejected by the DWARF budget.
+| 情况 | 显示 |
+| --- | --- |
+| 普通枚举 | `ERROR(-1)` |
+| 带作用域的成员，如 `app::State::Active` | `.Active(3)`，`::` 前缀用一个点代替 |
+| 多个成员同值 | `ACTIVE / READY(3)` |
+| 值不在枚举表中 | 只显示数值 |
 
-Software validation: `node test/enum-variables.test.js` covers decoding and both webviews.
-`node test/gdb/enum-variables.test.js` uses `arm-none-eabi-gcc` and `arm-none-eabi-g++`
-(or `IMAGE_CC`/`IMAGE_CXX`) for ARM ELF fixtures. These tests do not establish board support.
+结构体成员、数组元素和类型别名中的枚举同样支持。
+
+## 限制
+
+- 波形和 CSV 保存数值，不保存名称。
+- 写入时输入数值，成员名只用于显示。
+- `int value = ACTIVE` 这样的变量是整数，显示数值，因为调试信息里它的类型不是枚举。
+- 缺少足够类型信息的枚举显示为不可用，不会按猜测的类型读取；推断出的类型只读。
+- 超过 1024 个成员或名称文本过大的枚举表不会加载。
+
+## 相关文档
+
+- [变量显示设计（英文）](../../design/variable-display.md)
+- [指针与 C++ 成员](pointers.md)

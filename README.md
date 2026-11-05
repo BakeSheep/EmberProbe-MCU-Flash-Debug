@@ -72,7 +72,7 @@ Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变�
 | CubeMX 路径 | 指定 STM32CubeMX，供 Agent 代码生成使用（Windows / Linux） |
 | .ioc 路径 | 指定 CubeMX 工程；缺少固件包时可通过 **在 CubeMX 中安装** 补齐 |
 
-配置按工作区保存。更多目标与探针说明见 [OpenOCD 目标配置](docs/design/openocd-build.md)和[探针连接与选择](docs/guide/getting-started/probe-connections.md)。
+配置按工作区保存。更多目标与探针说明见 [OpenOCD 目标配置](docs/guide/getting-started/openocd-targets.md)和[探针连接与选择](docs/guide/getting-started/probe-connections.md)。
 
 #### 4. J-Link 配置
 
@@ -189,7 +189,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 - 拖动底部时间轴的高亮区域或两端，调整查看范围；
 - 右键数值栏中的变量（或按 Shift+F10），修改类型、进制（DEC/HEX/BIN）、颜色与线型，进制只影响显示，不影响 CSV。
 
-**不限速**按探针吞吐连续读取，仅在独立采样时生效，调试会话中按有限频率采样；高频会更快消耗内存与磁盘归档，见 [不限速采样](docs/design/sampling-pipeline.md)。
+**不限速**按探针吞吐连续读取，仅在独立采样时生效，调试会话中按有限频率采样；高频会更快消耗内存与磁盘归档，见 [不限速采样](docs/guide/variables/sampling.md)。
 
 时间轴与“全部”窗口覆盖从开始采样（或上次清空历史）以来的整段会话：最近数据保存在内存中，更早的数据从临时磁盘归档读取。冻结不改变 CSV 导出范围。归档在扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。图表背景可显示自定义淡色图标，见 [波形图背景图标](docs/guide/variables/chart-background.md)。
 
@@ -297,7 +297,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 | `emberprobe.chartHistoryMaxMiB` | 512 | 内存历史预算；不足时缩短内存保留范围，更早的数据仍可从磁盘归档查看 |
 | `emberprobe.samplingArchiveMaxMiB` | 1024 | 临时磁盘归档上限，扩展退出后删除 |
 
-隐藏曲线仍会采样和记录。磁盘归档达到上限或写入失败时会暂停采样。详细规则见 [实时变量采样说明](docs/design/chart-history.md)。
+隐藏曲线仍会采样和记录。磁盘归档达到上限或写入失败时会暂停采样。详细规则见 [实时变量采样说明](docs/guide/variables/sampling.md)。
 
 #### 6. 内存区域类型
 
@@ -343,7 +343,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 #### 3. STM32C5 支持
 
-内置 OpenOCD 包含 STM32C5 的 Flash 驱动与 `stm32c5x.cfg`（来自 ST 尚在上游评审中的补丁），`stm32c5` 工程自动选用。仅支持 Flash 擦写与读取，不含选项字节/RDP 命令，尚未经实板验证。见 [OpenOCD 目标配置](docs/design/openocd-build.md)。
+内置 OpenOCD 包含 STM32C5 的 Flash 驱动与 `stm32c5x.cfg`（来自 ST 尚在上游评审中的补丁），`stm32c5` 工程自动选用。仅支持 Flash 擦写与读取，不含选项字节/RDP 命令，尚未经实板验证。见 [OpenOCD 目标配置](docs/guide/getting-started/openocd-targets.md)。
 
 ### 常见问题
 
@@ -371,7 +371,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 - [更新记录](CHANGELOG.md)
 - [Agent Skills](skills/)
-- [实时变量采样说明](docs/design/chart-history.md)
+- [实时变量采样说明](docs/guide/variables/sampling.md)
 - [FreeRTOS 调试说明](docs/guide/flash-debug/rtos.md)
 - [J-Link 兼容性说明](docs/guide/getting-started/jlink.md)
 - [探针连接与选择](docs/guide/getting-started/probe-connections.md)
@@ -381,7 +381,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 - [枚举变量显示](docs/guide/variables/enums.md)
 - [ELF 变量来源筛选](docs/guide/variables/origin-filter.md)
 - [外部 GDB Server（实验性）](docs/guide/flash-debug/external-gdb-server.md)
-- [不限速采样](docs/design/sampling-pipeline.md)
+- [不限速采样](docs/guide/variables/sampling.md)
 - [多核共享调试组（实验性）](docs/guide/flash-debug/multicore.md)
 - [CubeMX 代码生成说明](docs/guide/agent/cubemx.md)
 - [Agent 信任边界](docs/design/agent-trust-boundaries.md)

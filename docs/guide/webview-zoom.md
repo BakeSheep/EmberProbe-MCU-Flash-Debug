@@ -1,23 +1,14 @@
-# 页面滚轮缩放 / Webview wheel zoom
+# 页面滚轮缩放
 
-在 VS Code 设置中开启 **Editor: Mouse Wheel Zoom**（`editor.mouseWheelZoom`），将鼠标移到 EmberProbe
-侧栏或波形图页面，按住 Ctrl 滚动滚轮：向上放大，向下缩小。macOS 也支持 Command＋滚轮。
+[English](webview-zoom.en.md)
 
-缩放只影响鼠标所在页面，范围为 50%～200%。侧栏和每个波形窗口分别保存比例，恢复页面时继续使用该比例。
-设置切换即时生效；关闭设置后保留当前比例，停止处理页面缩放手势。普通滚轮仍用于页面滚动、写入滑块调整或
-波形坐标轴缩放。VS Code 原有的 Ctrl＋+/- 快捷键保持原来的窗口缩放行为。
+单独放大或缩小 EmberProbe 的侧栏和波形窗口，不影响 VS Code 其他部分。
 
-Enable **Editor: Mouse Wheel Zoom** (`editor.mouseWheelZoom`) in VS Code. Hold Ctrl and scroll over the EmberProbe
-sidebar or a waveform page to enlarge or shrink that page. Command+wheel is also supported on macOS.
-Each page retains its own 50–200% scale. Disabling the setting preserves the current scale and stops intercepting
-page zoom gestures. Ordinary wheel interactions and VS Code's existing window zoom shortcuts retain their behavior.
+1. 在 VS Code 设置中开启 **Editor: Mouse Wheel Zoom**（`editor.mouseWheelZoom`）。
+2. 把鼠标移到侧栏或波形窗口上，按住 Ctrl 滚动滚轮：向上放大，向下缩小。macOS 也支持 Command＋滚轮。
 
-`src/webview/pageZoom.js` owns shared zoom state and conversion between viewport and layout coordinates. The host
-returns settings through the shared message routes and broadcasts configuration changes; a focused page requests
-the current setting again. Waveform hit testing, panel resizing, popup placement, card reordering and export
-selection use the same coordinate conversions. The waveform canvas also adjusts its backing resolution for page
-zoom. Viewport CSS variables and container queries keep the layout inside the page and responsive to its effective
-width.
-
-Software validation uses `test/webview-zoom.test.js` and the existing Webview/layout tests. Browser mockup checks
-use simulated samples and do not establish hardware behavior.
+- 缩放范围是 50%～200%，只影响鼠标所在的页面。
+- 侧栏和每个波形窗口分别保存比例，重新打开时继续使用。
+- 关闭设置后保留当前比例，但不再响应缩放手势。
+- 普通滚轮的作用不变，仍用于滚动页面、调整写入滑块和缩放波形坐标轴。
+- VS Code 的 Ctrl＋+/- 快捷键仍然缩放整个窗口。

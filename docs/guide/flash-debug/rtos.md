@@ -1,88 +1,70 @@
-# RTOS-aware debugging / RTOS 感知调试
+# RTOS 调试
 
-EmberProbe's built-in debugger can show RTOS tasks in the VS Code call stack. This is opt-in and off by default: with no `rtos` value the session behaves exactly as before, GDB reports one thread, and the OpenOCD command line is unchanged.
+[English](rtos.en.md)
 
-EmberProbe 的内置调试器可以在 VS Code 调用栈中显示 RTOS 任务。该能力默认关闭：不填 `rtos` 时会话行为与之前完全一致，GDB 只报告一个线程，OpenOCD 命令行也不变。
+开启后，VS Code 调用栈按 RTOS 任务显示，可以切换任务查看各自的栈和局部变量。这一功能默认关闭。
 
-## Configuration / 配置
+FreeRTOS 还有实验性的任务面板，可以在暂停时查看任务列表，尚未经过实板验收。
 
-| Setting | Meaning / 含义 |
-| --- | --- |
-| `emberprobe.rtos` | Workspace default; empty (the default) means off / 工作区默认值，留空（默认）表示关闭 |
-| `launch.json` → `rtos` | Per-session value; also accepted under `attach` / 单次会话取值，`attach` 同样支持 |
+## 开启
 
-Precedence: a `launch.json` value wins whenever the key is present, **including an explicit empty string**, which turns awareness off for that session. Only a missing, `undefined` or `null` key falls back to `emberprobe.rtos`. `null` therefore cannot disable awareness — write `""`.
+在 VS Code 设置中填 `emberprobe.rtos`，或在 `launch.json` 中按会话设置：
 
-优先级：只要 `launch.json` 里存在 `rtos` 键就以它为准，**包括显式空字符串**（用于在该会话关闭感知）。只有键缺失、`undefined` 或 `null` 才回退到 `emberprobe.rtos`。因此 `null` 不能用来关闭，请写 `""`。
-
-Accepted values are `auto`, `none`, `FreeRTOS`, `ThreadX`, `chibios`, `Chromium-EC`, `eCos`, `embKernel`, `linux`, `mqx`, `nuttx`, `RIOT`, `uCOS-III` and `Zephyr`. OpenOCD compares these case-sensitively, so `freertos` and `FreeRTOs` are rejected with `OPENOCD_RTOS_INVALID` before any hardware is touched. This is the list Cortex-Debug documents for OpenOCD, plus `none`; `hwthread` and `rtkernel` are compiled into the bundled OpenOCD but deliberately not offered, because `hwthread` reports a single unnamed thread and `rtkernel` is RTEMS-only.
-
-可接受取值为 `auto`、`none`、`FreeRTOS`、`ThreadX`、`chibios`、`Chromium-EC`、`eCos`、`embKernel`、`linux`、`mqx`、`nuttx`、`RIOT`、`uCOS-III`、`Zephyr`。OpenOCD 区分大小写，因此 `freertos`、`FreeRTOs` 会在接触任何硬件之前以 `OPENOCD_RTOS_INVALID` 被拒绝。该列表取自 Cortex-Debug 为 OpenOCD 记录的名称，另加 `none`；内置 OpenOCD 虽也编译了 `hwthread` 与 `rtkernel`，但刻意不开放——`hwthread` 只报告一个无名线程，`rtkernel` 仅用于 RTEMS。
-
-`none` differs from an empty value: empty means EmberProbe never emits `-rtos`, while `none` tells OpenOCD explicitly, overriding a `-rtos` that a target `.cfg` may already set.
-
-`none` 与留空不同：留空表示 EmberProbe 完全不发 `-rtos`；`none` 则是显式告知 OpenOCD，可覆盖 target `.cfg` 中已有的 `-rtos` 设置。
-
-## Where it is applied / 生效位置
-
-Debug mode only. EmberProbe inserts one `-c` command after the interface and target configuration files and **before `init`**, which configures the RTOS on the current target:
-
-仅调试模式。EmberProbe 在接口与 target 配置文件之后、**`init` 之前**插入一条 `-c` 命令，为当前 target 配置 RTOS：
-
-```tcl
-set _ep_rtos_target ""; catch { set _ep_rtos_target [target current] };
-if { $_ep_rtos_target eq "" } { error "EmberProbe: no current target to configure for RTOS <name>" };
-_ep_rtos_target configure -rtos <name>
+```json
+{
+  "type": "emberprobe",
+  "request": "launch",
+  "executable": "${workspaceFolder}/build/app.elf",
+  "rtos": "FreeRTOS"
+}
 ```
 
-If there is no current target, or OpenOCD rejects the name, this raises a Tcl error, OpenOCD exits non-zero **before opening the probe**, and the normal startup-cleanup path reports `OPENOCD_RTOS_INVALID` with suggested actions. On a dual-core part only the current target is configured, so select the core that actually runs the RTOS. Standalone live sampling never configures an RTOS: walking kernel structures would change non-intrusive polling behaviour. The value is read at OpenOCD startup, so a change takes effect at the next debug session. The adapter's `restart` request deliberately reuses the running OpenOCD server — the extension, not the adapter, owns it — so Restart keeps the previously configured RTOS; stop and start again to apply a change.
+`attach` 配置同样支持。`launch.json` 优先，写 `"rtos": ""` 可以只在这次会话关闭。
 
-若不存在当前 target，或 OpenOCD 拒绝该名称，这里会抛出 Tcl 错误，OpenOCD **在打开探针之前**非零退出，随后由既有的启动清理流程报出带建议动作的 `OPENOCD_RTOS_INVALID`。双核器件只配置当前 target，因此请选择真正运行 RTOS 的那个核。独立实时采样永不配置 RTOS：遍历内核数据结构会改变非侵入轮询行为。该取值在 OpenOCD 启动时读取，因此改动在下次启动调试时生效。适配器的 `restart` 刻意复用正在运行的 OpenOCD 服务（服务由扩展而非适配器持有），因此“重启”仍保持先前配置的 RTOS；需停止后重新启动才会应用改动。
+可选值：`FreeRTOS`、`ThreadX`、`chibios`、`Chromium-EC`、`eCos`、`embKernel`、`linux`、`mqx`、`nuttx`、`RIOT`、`uCOS-III`、`Zephyr`、`auto`、`none`。
 
-## What changes in the debugger / 调试器行为变化
+- 名称区分大小写，`freertos` 会报错。
+- 建议写明 RTOS 名称。`auto` 在裁剪过或高度优化的固件上可能判断错误。
+- `none` 表示明确关闭，可以覆盖目标脚本中已有的 RTOS 设置。
 
-With awareness on, the adapter keeps a set of task IDs that GDB has actually confirmed, seeded from `-thread-info` after attach and maintained from `=thread-created` / `=thread-exited`. It never reports an unconfirmed ID: a `stopped` event with no confirmed task simply omits `threadId`, and VS Code refreshes the call stack from the task list instead. Before the scheduler has created tasks, or right after a reset, that means one confirmed thread rather than an invented set.
+修改在下一次启动调试时生效。VS Code 的“重启”沿用原设置，需要停止后重新启动。
 
-开启感知后，适配器维护一个"GDB 真正确认过"的任务 ID 集合：attach 后由 `-thread-info` 播种，之后由 `=thread-created` / `=thread-exited` 维护。它绝不上报未确认的 ID——没有已确认任务时，`stopped` 事件直接不带 `threadId`，由 VS Code 依据任务列表刷新调用栈。因此在调度器建立任务之前、或刚复位之后，看到的是一个已确认线程，而不是一组臆造的 ID。
+## 调试时的变化
 
-Stack frames, locals and expression evaluation are bound to the owning task and frame (`-var-create --thread N --frame M`), and `continue` / `next` / `stepIn` / `stepOut` pin the requested task (`-exec-next --thread N`). Browsing another task's stack therefore cannot make a subsequent step act on the task you were looking at. Requesting a task that has exited returns `DEBUG_TASK_EXITED` rather than stepping something else; `DEBUG_THREAD_INVALID` covers a malformed ID. Watch/hover remain expression evaluations; the native Debug Console accepts GDB CLI commands such as `p counter`, `thread 2` and `frame 1`. With no supplied frame, console commands preserve GDB's current context. Commands invalidate old inspection handles and RTOS snapshots, block background inspection/writes and session selection until completion, then refresh according to actual running/stopped state. See [Native GDB console](gdb-console.md).
+- 调用栈列出所有任务。调度器启动之前只显示一个线程，这是正常的。
+- 查看另一个任务的栈不影响单步，单步作用在你请求的任务上。
+- 任务已退出时操作会报 `DEBUG_TASK_EXITED`，不会误操作其他任务。
 
-栈帧、局部变量与表达式求值都绑定到所属任务与栈帧（`-var-create --thread N --frame M`），`continue` / `next` / `stepIn` / `stepOut` 则钉住被请求的任务（`-exec-next --thread N`）。因此浏览另一个任务的栈不会导致随后的单步作用在你正在看的那个任务上。请求一个已退出的任务会返回 `DEBUG_TASK_EXITED`，而不是去单步别的任务；ID 非法则返回 `DEBUG_THREAD_INVALID`。Watch／悬停继续使用表达式；原生调试控制台接受 `p counter`、`thread 2`、`frame 1` 等 GDB CLI 命令，无栈帧参数时保留当前 GDB 上下文。命令使旧检查句柄和 RTOS 快照失效，执行期间阻止后台检查、写入和会话切换，完成后按真实运行／暂停状态刷新。详见 [原生 GDB 控制台](gdb-console.md)。
+## FreeRTOS 任务面板
 
-The sidebar and Agent debug controls reconcile their cached task ID against the live list before acting on a paused RTOS session, preferring the task that actually stopped. Non-RTOS sessions keep the previous zero-round-trip path.
+暂停时显示任务列表，支持过滤、排序，继续运行后旧数据标记为过期。
 
-侧栏与 Agent 的调试控制在操作已暂停的 RTOS 会话前，会用实时任务列表校准缓存的任务 ID，并优先选择真正停下的那个任务。非 RTOS 会话保持原有的零往返路径。
+- 只支持小端 ARM32 和单核 FreeRTOS，不支持 FreeRTOS SMP。
+- 刚停在 `main` 时任务通常还没创建，面板会提示。继续运行过初始化后再暂停。
+- 栈使用量和运行时间统计取决于固件配置，缺少对应字段时不显示。
+- 栈填充估算只是估算，不代表当前实时的栈指针。
 
-## Firmware prerequisites / 固件前提
+## 固件要求
 
-OpenOCD resolves kernel structures through GDB symbol lookup against the loaded ELF, so the image must not have been stripped of them. The most common silent failure is `uxTopUsedPriority` being optimized out by the linker, which leaves `-rtos auto` finding no tasks. Prefer an explicit RTOS name over `auto`: `auto` probes every backend against the ELF and can mis-detect on a stripped or heavily optimized image. Whether the call stack shows a task name or `Thread N` depends on what OpenOCD's backend can read from the image — record what you actually observe rather than assuming names will appear.
+调试时依靠 ELF 中的内核符号找到任务，所以固件不能裁掉这些符号。
 
-OpenOCD 通过 GDB 对已加载 ELF 的符号查询来解析内核结构，因此镜像不能把这些符号裁剪掉。最常见的静默失败是 `uxTopUsedPriority` 被链接器优化掉，导致 `-rtos auto` 找不到任何任务。建议显式指定 RTOS 名称而非 `auto`：`auto` 会拿每个后端去试探 ELF，在裁剪或高度优化的镜像上可能误判。调用栈显示任务名还是 `Thread N`，取决于 OpenOCD 后端能从镜像里读到什么——请记录实际观察到的结果，不要假定一定会出现任务名。
+最常见的问题是 `uxTopUsedPriority` 被链接器优化掉，导致找不到任何任务。遇到这种情况时保留该符号。
 
-## Task snapshots and boundaries / 任务快照与边界
+调用栈显示任务名还是 `Thread N`，取决于固件中能读到什么。
 
-The workspace implementation adds an experimental FreeRTOS task panel with paused, bounded reads, filtering, sorting and stale labels after resume. Optional stack fill estimates require verified bounds and layout; they are not a measurement of current live SP. The panel does not yet have board acceptance. A task deleted while you are browsing its stack surfaces as `DEBUG_TASK_EXITED` on the next control action. Crashed-task analysis remains outside the implementation.
+## 限制
 
-工作区实现已增加实验性 FreeRTOS 任务面板，仅做有界暂停读取，支持过滤、排序和运行后旧快照标记。可选栈填充估算必须先确认边界与布局，不代表实时 SP；任务面板尚无实板验收。浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。崩溃任务分析仍未实现。
+- 只在调试时生效，实时采样不读取 RTOS 结构。
+- 双核芯片上只配置当前核，请选择真正运行 RTOS 的核。多核见[多核调试](multicore.md)。
+- 暂不支持崩溃任务分析。
 
-Snapshots require little-endian ARM32 and a single-core FreeRTOS kernel. GDB may report a Cortex-M ELF/AXF as generic `arm` or `armv6`/`armv7`/`armv8`; in that case the panel checks the current session's register names for `xpsr` without `cpsr`, following [GDB's M-profile register description](https://sourceware.org/gdb/current/onlinedocs/gdb.html/ARM-Features.html). This queries metadata without reading register values or changing the target architecture. Explicit A/R profiles, unknown targets, big-endian images, non-32-bit pointers and FreeRTOS SMP remain unsupported. Rejected targets include GDB's architecture, endianness and pointer size in the diagnostic; the sidebar's chip information is not used to identify the debug target.
+## 常见问题
 
-任务快照要求小端 ARM32 和单核 FreeRTOS 内核。GDB 有时把 Cortex-M 的 ELF/AXF 报告为通用 `arm` 或 `armv6`/`armv7`/`armv8`；此时面板依据 [GDB 的 M-profile 寄存器描述](https://sourceware.org/gdb/current/onlinedocs/gdb.html/ARM-Features.html)，检查当前会话的寄存器名称是否包含 `xpsr` 且不含 `cpsr`。该查询只读取元数据，不读取寄存器值或修改目标架构。明确的 A/R 架构、无法确认的目标、大端、非 32 位指针和 FreeRTOS SMP 仍不支持。拒绝时会在诊断中列出 GDB 的架构、字节序和指针大小；不会用侧栏的芯片信息代替当前调试会话的确认结果。
+**`OPENOCD_RTOS_INVALID`**：名称拼写或大小写不对，或目标脚本没有当前 target。
 
-The initial stop at `main` commonly precedes task creation and scheduler startup. When a null current TCB is corroborated by `xSchedulerRunning`, or by the task count where that static was optimized out, the panel shows a startup hint rather than traversing zero-initialized lists. When neither kernel static survives compilation the two cases cannot be told apart, so the panel reports the state as undeterminable instead of guessing. Continue past startup and pause again to inspect tasks. Optional `pxEndOfStack` and `ulRunTimeCounter` depend on firmware configuration; absent members omit the corresponding statistics. Initialized-list corruption and failed reads still produce partial diagnostics. This follows [FreeRTOS task-list initialization](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/V10.6.2/tasks.c).
+**看不到任务**：先确认调度器已经启动，再检查 `uxTopUsedPriority` 是否被优化掉。
 
-首次自动停在 `main` 通常早于任务创建和调度器启动。任务数与当前 TCB 确认尚无任务时，面板显示启动提示，不遍历仍为零值的链表；继续运行过初始化，再暂停查看任务。`pxEndOfStack`、`ulRunTimeCounter` 是否存在取决于固件配置，缺失时省略对应统计；已经初始化的链表损坏或内存读取失败仍显示部分结果。
+## 相关文档
 
-Snapshot cost after the first stop: the target check and the typed TCB/list layouts come only from GDB's target metadata and symbol information, so they are cached until the symbol directory reloads; a layout query that failed for a reason other than an absent configuration member is retried on the next stop. Each stop then evaluates only `pxCurrentTCB`, `xSchedulerRunning` and `uxCurrentNumberOfTasks`, reads the adjacent kernel list heads (the ready array, the delayed-list pointers and lists, and the suspended, pending-ready and termination lists) as one block of at most 4 KiB, and fetches each task's TCB together with the list item embedded in it. Heads that are not adjacent, or a block that cannot be read, fall back to individual reads. Stack fill scans are unchanged.
-
-首次暂停之后的快照开销：目标架构检查与 TCB、链表的类型布局只取自 GDB 的目标元数据与符号信息，会缓存到符号目录重新加载为止；布局查询若因配置缺字段以外的原因失败，下次暂停会重新查询。此后每次暂停只求值 `pxCurrentTCB`、`xSchedulerRunning`、`uxCurrentNumberOfTasks`，把相邻的内核链表头（就绪数组、延时链表指针及链表、挂起、待就绪与待删除链表）合并为一次不超过 4 KiB 的读取，并用一次读取同时取回 TCB 及其内嵌的链表项。链表头不相邻或整块读取失败时退回逐个读取。栈填充扫描不变。
-
-Experimental OpenOCD groups use `serverGroup`, `numberOfProcessors`, `targetProcessor` and optional `targetName`. Targets receive distinct GDB ports; selection and all-target RTOS configuration precede initialization. Start one member first, then attach other cores after successful initialization. Groups share one physical lease and require explicit session selection; restart and running Tcl sampling are disabled. OpenOCD reset behavior follows target scripts and may affect the whole device. See [configuration and verification limits](multicore.md); dual-core board acceptance remains pending.
-
-实验性 OpenOCD 共享组使用 `serverGroup`、`numberOfProcessors`、`targetProcessor` 和可选 `targetName`。每核独立 GDB 端口，初始化前选核并向全部目标配置相同 RTOS。先启动一个成员，初始化成功后通过 attach 加入其他核。组内共用一个探针租约，明确选择会话后路由；禁用组内重启和运行期 Tcl 采样。目标脚本的复位可能影响整个芯片。详见 [配置和验证边界](multicore.md)，双核实板验收仍待完成。
-
-## Verification boundary / 验证边界
-
-Configuration handling, OpenOCD argument ordering, multi-task GDB/MI events and DAP control are covered by hardware-independent tests (`test/ember-debug.test.js`, `test/openocd-entrypoints.test.js`, `test/openocd-compatibility.test.js`, `test/debug-control.test.js`). Real task discovery depends on the board, the kernel build and the linker script, so it is verified by the manual FreeRTOS procedure in `test/hil/README.md` on dedicated hardware. Those results are not established by the automated suite.
-
-配置处理、OpenOCD 参数顺序、多任务 GDB/MI 事件与 DAP 控制由不依赖硬件的测试覆盖（`test/ember-debug.test.js`、`test/openocd-entrypoints.test.js`、`test/openocd-compatibility.test.js`、`test/debug-control.test.js`）。真正的任务发现取决于板子、内核构建与链接脚本，因此按 `test/hil/README.md` 中的 FreeRTOS 手工流程在专用硬件上验证。自动化测试套件不能证明这部分结果。
+- [调试会话设计](../../design/debug-sessions.md)
+- [GDB 控制台](gdb-console.md)

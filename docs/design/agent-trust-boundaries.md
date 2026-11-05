@@ -1,5 +1,7 @@
 # Agent approval and local trust boundaries
 
+User behavior is in [Agent permissions](../guide/agent/permissions.en.md).
+
 Agent Bridge calls require a trusted VS Code workspace. Sensitive operations are confirmed
 in the Agent conversation by default: the Agent shows the returned plan, waits for the human's answer,
 then resubmits its one-time confirmation ID. There is no second VS Code operation approval
@@ -14,6 +16,8 @@ there is no Bridge method or configuration field that lets an Agent grant it to 
 opens the Agent channel. While active in a trusted workspace with Agent access enabled, supported
 operations report `mode: "full"` and skip the operation confirmation exchange. Disabling affects future
 authorizations and keeps ordinary Agent access enabled; it does not cancel an operation already running.
+The sidebar shows the new state only after the extension host has saved it, and a reopened page reads it from
+the host rather than a Webview cache.
 Hardware/identity guards, register side-effect restrictions, file boundaries and firmware mismatch
 checks stay in place. Anonymous probes still require one-time Flash and variable-write confirmation.
 Existing skill-content approval and MCP client trust settings remain independent.
@@ -44,8 +48,7 @@ reads, samples and writes report `firmwareConsistency` (`match`, `mismatch` or `
 against the configured ELF and add an `ELF_TARGET_MISMATCH` warning on mismatch; a
 remembered variable-write permission does not apply while the ELF differs. Programming by
 other tools is not observed, so `unknown` or a stale record is evidence, not proof.
-A built-in debugger launch updates the record too, both when it programs the ELF and when
-`compare-sections` confirms the target already holds it. The record is written only when
+A built-in debugger launch updates the record too when it programs the ELF. The record is written only when
 the executable keeps the same size and modification time from before GDB reads it until it
 is hashed. A launch with custom `loadFiles`, or one where the ELF changed during the launch,
 clears the record, so it reports `unknown` instead of a stale match.
