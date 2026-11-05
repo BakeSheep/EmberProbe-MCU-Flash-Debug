@@ -52,7 +52,13 @@ Read supporting documents when relevant: `docs/design/debug-sessions.md` for ses
 
 Tests are executable Node.js files using built-in `assert`. Name normal tests `test/<feature>.test.js` and register them in `scripts/test-groups.js`; add focused success, failure, and input-validation coverage. Add a fix or new behavior as a `scenario(...)` (`test/helpers/scenario.js`) in the module's existing test file; create a new test file only for a new module. Shared builders belong in `test/helpers/` (`elf-fixture`, `dwarf-tree`, `memory-fixture`, `render-webview`, `chart-history-host`, `fake-clock`, `fake-openocd-server`, `load-module`, `wait`); `test-helper-reuse.test.js` rejects local copies of the binary builders, wait helpers and module loaders. Drive timers with `FakeClock` through an injected clock instead of sleeping; where a test must cross a Worker, child process or file I/O, wait for a condition with `waitFor` rather than a fixed delay. `i18n-keys.test.js` rejects unreferenced and undefined i18n keys, so delete a key in the change that stops using it. Normal tests must not require OpenOCD or a connected probe. The c8 minimums are 80% lines/statements, 75% functions, and 65% branches; `scripts/check-coordinator-coverage.js` also enforces individual service and safety-module gates.
 
-During implementation, run affected tests and broaden checks for changes to shared contracts. Normal tests use local fixtures and may be run and rerun without additional approval. Before submitting code changes, run `npm run check`, `npm run quality`, `npm run bundle`, and relevant E2E tests. For GDB/MI, STL, or image-transfer changes, also run the relevant `test/gdb/` entry points with the toolchain/environment shown in `.github/workflows/ci.yml`. Documentation-only changes need command/link consistency and diff checks.
+During implementation, run affected tests and broaden checks for changes to shared contracts. Normal tests use local fixtures and may be run and rerun without additional approval. Before committing, scale verification to the change:
+
+- Documentation only: command/link consistency and diff checks.
+- Local change in one module or Webview page: affected tests plus `npm run check`.
+- Shared contracts, composition, Agent Bridge or MCP, probe or session paths, `package.json`, or bundled entry points: also `npm run quality`, `npm run bundle`, and relevant E2E tests.
+- GDB/MI, STL, or image-transfer changes: also the relevant `test/gdb/` entry points with the toolchain/environment shown in `.github/workflows/ci.yml`.
+- Before opening a pull request or preparing a release: the full set, regardless of size. CI runs it on every push to `master`.
 
 The normal runner defaults to at most four test processes; use `npm run test:unit -- --jobs 1` for serial diagnosis or `--keep-logs` to retain successful logs. Reports go to `test-results/`. Software tests do not establish real-board support; record hardware validation separately.
 
