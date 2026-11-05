@@ -22,6 +22,7 @@ const elfSymbols = require("../elfSymbols");
 const validation = require("../validation");
 const {
     buildActiveReadPlan,
+    openWatchItems,
     debugReadPlanKey,
     filterRuntimeRamPlan,
     runtimePointerRanges,
@@ -169,9 +170,10 @@ class LiveWatchController {
             lists.push(this.host._scalarWatchList(entry.watchKey));
             expansions.push(this.panelRuntimeExpansions(entry.watchKey));
         }
-        // Sidebar cards read the parts they opened, like chart cards; write cards read runtime objects whole.
-        lists.push(this.host._scalarWatchList(CACHE_KEYS.sidebarWatchList));
-        expansions.push(this.panelRuntimeExpansions(CACHE_KEYS.sidebarWatchList));
+        // Sidebar trees are read only while open, whatever the chart's pointer setting; write cards read
+        // runtime objects whole.
+        lists.push(this.sidebarSampledList());
+        expansions.push(this.host._runtimeExpansions(CACHE_KEYS.sidebarWatchList));
         // Write list variables are sampled too so write cards show current values; the stored list is not rewritten,
         // which would lose UI fields such as min/max
         try {
@@ -182,6 +184,20 @@ class LiveWatchController {
         }
         const plan = buildActiveReadPlan(lists, elfSymbols, expansions);
         return this.runtimeReadRanges(plan);
+    }
+    // The sidebar watch list without the trees it keeps closed and the entries drawn inside them.
+    sidebarSampledList() {
+        const key = CACHE_KEYS.sidebarWatchList;
+        return openWatchItems(this.host._scalarWatchList(key), this.host._runtimeExpansions(key));
+    }
+    // Every watched sidebar variable is in a closed tree, so opening one is what sampling waits for.
+    treesClosed() {
+        return this.host._scalarWatchList(CACHE_KEYS.sidebarWatchList).length > 0 && !this.sidebarSampledList().length;
+    }
+    async runtimeExpansionsChanged(watchKey) {
+        const sidebar = watchKey === CACHE_KEYS.sidebarWatchList;
+        if (sidebar) this.invalidateConsumerTypes();
+        if (sidebar || this.pointerExpandedOnly) await this.refreshSamplingPlan();
     }
     runtimeReadRanges(plan, result) {
         if (!plan.some((item) => item.runtimeLayout)) return plan;
@@ -227,9 +243,9 @@ class LiveWatchController {
     }
     // Each consumer's watch type per variable, so the same raw bytes are decoded and pushed per type.
     consumerTypes() {
-        const build = (key) => {
+        const build = (list) => {
             const m = new Map();
-            for (const item of this.host._scalarWatchList(key)) {
+            for (const item of list) {
                 if (item?.name)
                     m.set(
                         item.name,
@@ -238,7 +254,7 @@ class LiveWatchController {
             }
             return m;
         };
-        const sidebar = build(CACHE_KEYS.sidebarWatchList);
+        const sidebar = build(this.sidebarSampledList());
         // Write list variables are decoded with their own watch type and pushed to the sidebar; for the same name the
         // watch list type wins
         for (const item of this.host._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
@@ -267,7 +283,8 @@ class LiveWatchController {
             }
         }
         const graphs = new Map();
-        for (const entry of this.host._livePanels.values()) graphs.set(entry.watchKey, build(entry.watchKey));
+        for (const entry of this.host._livePanels.values())
+            graphs.set(entry.watchKey, build(this.host._scalarWatchList(entry.watchKey)));
         return { graphs, sidebar };
     }
     cachedConsumerTypes() {
@@ -365,8 +382,15 @@ class LiveWatchController {
             return;
         }
         if (this.session) {
-            if (active.length) this.applySamplingPlan(this.session, active);
-            else {
+            const waiting = !active.length && this.treesClosed();
+            if (active.length || waiting) {
+                // Closing the last tree keeps the connection, so opening one again need not reconnect.
+                this.applySamplingPlan(this.session, active);
+                if (waiting) this.host._postConsumerStatuses({ key: "live.needVar" });
+                else if (this._treesClosedSession === this.session)
+                    this.host._postConsumerStatuses({ key: "sb.sampling" });
+                this._treesClosedSession = waiting ? this.session : null;
+            } else {
                 this.stop({ preserveIntent: true });
                 this.host._postConsumerStatuses({ key: "live.needVar" });
             }

@@ -6,6 +6,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 查看列表 / Watch list
+
+- 侧边栏查看列表的结构体、数组与运行时对象仅在展开时采样：折叠的树及其内部的变量不再占用读取，也不再显示上一次的数值；展开后恢复采样。全部折叠时保持探针连接并提示展开变量，波形窗口仍按自身列表采样。
+- Sample structs, arrays and runtime objects in the sidebar watch list only while expanded: a closed tree and the variables inside it cost no reads and no longer show their last values, and expanding one resumes sampling. With everything closed the probe connection stays open and a hint asks to expand a variable; waveform windows keep sampling their own lists.
+
+### 侧边栏 / Sidebar
+
+- Agent 配置卡片标题右侧增加“可选”标记，所有“可选”标记统一为圆角矩形；MCP 服务器改为可折叠的下拉栏。
+- Add an "Optional" tag to the Agent Configuration card, draw all "Optional" tags as rounded rectangles, and move the MCP server list into a collapsible dropdown.
+
 ### MCP 工具 / MCP tools
 
 - `variables_sample` 的间隔改为从本次采样开始算起，读取耗时不再叠加到间隔上；工具说明补充外设访问的采样前置条件和 `sampling_control` 间隔的含义。

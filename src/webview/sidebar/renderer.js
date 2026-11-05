@@ -98,6 +98,7 @@ const valueTree = EmberProbeValueTree.create({
     savedPointers: { pointers: uiState.sbLastPointers, version: uiState.sbLastPointersVersion },
     displayName: (path) => sbDisplayName({ name: path }),
     save: () => saveSbUi(),
+    sampleOpenTreesOnly: true,
     rerender: () => renderValues(),
     rerenderPicker: () => renderAvailable(),
     post: (message) => api?.postMessage(message),
@@ -206,6 +207,7 @@ const mcuConfigSection = document.getElementById("mcuConfigSection");
 for (const id of [
     "mcuConfigSection",
     "agentConfigSection",
+    "mcpClientsSection",
     "memoryAnalysisSection",
     "chipInfoSection",
     "liveValuesSection",
@@ -1549,12 +1551,7 @@ window.EmberProbeMessages.connect(window, {
         state.watch = incoming;
         if (m.resetValues) {
             valueTree.pointers.clear();
-            state.watch.forEach((item) => {
-                delete state.latest[item.name];
-                delete state.latestText[item.name];
-                delete state.latestEnum[item.name];
-                delete state.latestPointer[item.name];
-            });
+            state.watch.forEach((item) => sbForgetValues(item.name));
         }
         valueTree.runtimeExpansionsReady();
         renderValues();

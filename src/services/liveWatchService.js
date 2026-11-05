@@ -104,6 +104,15 @@ function runtimeOpenPaths(item, list, expansions) {
     return paths;
 }
 
+// The entries of a list that are sampled: a view that samples open trees only names each closed entry
+// with no root path. Entries it does not name, such as plain scalars, are always read.
+function openWatchItems(list, expansions) {
+    return (list || []).filter((item) => {
+        const paths = expansions?.[item?.name];
+        return !Array.isArray(paths) || paths.includes("");
+    });
+}
+
 // Merges the watch lists of several consumers into one raw byte read plan. Same-named scalars use the widest width;
 // composites are read over their whole memory range. `runtimeExpansions[i]` limits list i's runtime objects to the
 // paths its view opened; a missing entry reads them whole. A runtime object shared by several lists reads the union.
@@ -551,6 +560,7 @@ class LiveWatchService {
 module.exports = {
     LiveWatchService,
     buildActiveReadPlan,
+    openWatchItems,
     buildChartHistoryItems,
     debugReadPlanKey,
     collectRuntimeHistoryLeaves,

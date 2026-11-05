@@ -753,6 +753,7 @@ module.exports = Object.freeze({
     "live.restoring": "Debugging ended; waiting for the probe and restoring sampling…",
     "live.needConfig": "Select a debugger and MCU target first",
     "live.needVar": "Add a variable to watch first",
+    "live.expandToSample": "Sampling starts when a watched variable is expanded",
     "live.notReady":
         'OpenOCD not ready: run "EmberProbe: Check OpenOCD Environment" from the command palette to check the environment or select a usable path',
     "live.serviceExited":

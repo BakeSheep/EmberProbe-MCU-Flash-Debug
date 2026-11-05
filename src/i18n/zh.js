@@ -710,6 +710,7 @@ module.exports = Object.freeze({
     "live.restoring": "调试已结束，正在等待探针释放并恢复采样…",
     "live.needConfig": "请先选择调试器与 MCU 目标",
     "live.needVar": "请先添加要观察的变量",
+    "live.expandToSample": "展开查看列表中的变量后开始采样",
     "live.notReady": "OpenOCD 未就绪：请在命令面板执行 “EmberProbe：检查 OpenOCD 环境” 检查环境或选择可用路径",
     "live.serviceExited": "OpenOCD 服务已退出（代码 {code}）：可能探针被占用、配置错误或端口 {port} 被占用",
     "live.probeDisconnected": "检测到调试器已断开，实时采样已自动停止",

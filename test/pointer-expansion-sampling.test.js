@@ -13,6 +13,7 @@ const {
     LiveWatchService,
     buildActiveReadPlan,
     buildChartHistoryItems,
+    openWatchItems,
     collectRuntimeHistoryLeaves
 } = require("../src/services/liveWatchService");
 const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
@@ -21,6 +22,8 @@ const { pointerDerefEntry } = require("../src/webview/runtime");
 const { loadProvider } = require("./helpers/load-provider");
 const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { getModernWebviewContent } = require("../src/modernView");
+const { scenario } = require("./helpers/scenario");
 
 const base = 0x20000000;
 const types = [
@@ -348,6 +351,89 @@ const member = (tree, name) => tree.members.find((entry) => entry.name === name)
     } finally {
         view.close();
     }
+
+    await scenario("sidebar trees are sampled only while open", async () => {
+        const sidebarKey = "mcu.sidebarWatchList";
+        const layout = { kind: "struct", members: [{ name: "gain", offset: 0, byteSize: 4, watchType: "u32" }] };
+        const tree = { name: "cfg", address: base, size: 4, isComposite: true, compositeLayout: layout };
+        const member = { name: "cfg.gain", address: base, size: 4, type: "u32" };
+        const scalar = { name: "tick", address: base + 8, size: 4, type: "u32" };
+        assert.deepStrictEqual(
+            openWatchItems([tree, member, scalar], { cfg: [], "cfg.gain": [] }).map((item) => item.name),
+            ["tick"]
+        );
+        assert.strictEqual(openWatchItems([tree], {}).length, 1, "entries the view has not named are read");
+        assert.strictEqual(openWatchItems([tree], { cfg: [".a"] }).length, 0, "a closed root hides opened children");
+
+        const Host = loadProvider({});
+        const host = Object.create(Host.prototype);
+        const stored = new Map([["liveWatch.runtimeExpansions", { [sidebarKey]: { cfg: [] } }]]);
+        const watched = { [sidebarKey]: [tree], chart: [] };
+        host._context = {
+            workspaceState: { get: (key) => stored.get(key), update: async (key, value) => stored.set(key, value) }
+        };
+        host._livePanels = new Map();
+        host._scalarWatchList = (key) => watched[key] || [];
+        host.readElfSymbols = () => {
+            throw new Error("no ELF");
+        };
+        assert.deepStrictEqual(host._sampling.activeReadPlan(), [], "a closed struct costs no read");
+        assert.strictEqual(host._sampling.consumerTypes().sidebar.has("cfg"), false);
+        assert.strictEqual(host._sampling.treesClosed(), true);
+
+        // The closed sidebar tree does not stop a chart watching the same variable.
+        host._livePanels = new Map([[1, { watchKey: "chart" }]]);
+        watched.chart = [tree];
+        assert.deepStrictEqual(
+            host._sampling.activeReadPlan().map((item) => item.name),
+            ["cfg"]
+        );
+        assert.strictEqual(host._sampling.consumerTypes().sidebar.has("cfg"), false);
+        host._livePanels = new Map();
+        watched.chart = [];
+
+        // Closing the last tree keeps the connection and says why nothing updates; opening resumes.
+        const plans = [];
+        const statuses = [];
+        let stops = 0;
+        const session = {};
+        host._debugBridge = { hasSession: false };
+        host._runtimeSampleHold = null;
+        host._sampling.session = session;
+        host._sampling.applySamplingPlan = (target, active) => plans.push([target, active.length]);
+        host._sampling.stop = () => stops++;
+        host._sampling._refreshPointerPeripherals = () => {};
+        host._postConsumerStatuses = (status) => statuses.push(status.key);
+        await host._sampling.refreshSamplingPlan();
+        assert.deepStrictEqual(plans.at(-1), [session, 0]);
+        assert.strictEqual(stops, 0);
+        assert.strictEqual(statuses.at(-1), "live.needVar");
+        await host._saveRuntimeExpansions(sidebarKey, { cfg: [""] });
+        assert.strictEqual(plans.at(-1)[1], 1, "opening a tree needs no chart pointer setting");
+        assert.strictEqual(statuses.at(-1), "sb.sampling");
+        assert.strictEqual(host._sampling.consumerTypes().sidebar.has("cfg"), true);
+        watched[sidebarKey] = [];
+        await host._sampling.refreshSamplingPlan();
+        assert.strictEqual(stops, 1, "an empty list still ends the session");
+        assert.strictEqual(host._sampling.treesClosed(), false);
+
+        const view = render(getModernWebviewContent({}, "en"));
+        try {
+            const sentPaths = () =>
+                view.messages.filter((message) => message.type === "saveRuntimeExpansions").at(-1)?.expansions;
+            view.send({ type: "sidebarWatchList", items: [tree, member, scalar] });
+            assert.deepStrictEqual({ ...sentPaths() }, { cfg: [], "cfg.gain": [] });
+            const card = view.document.querySelector(".value-row.composite");
+            const body = card.querySelector(".sb-body");
+            assert.strictEqual(view.window.getComputedStyle(body).display, "none", "no frozen values while closed");
+            card.querySelector(".sb-comp-head").click();
+            assert.deepStrictEqual({ ...sentPaths() }, { cfg: [""] });
+            assert.notStrictEqual(view.window.getComputedStyle(body).display, "none");
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    });
     console.log("Expanded-only pointer sampling, recording, persistence and view tests passed");
 })().catch((error) => {
     console.error(error);

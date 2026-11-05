@@ -64,7 +64,10 @@ function fixture() {
         _t: (key) => key
     });
     Object.assign(provider._sampling, { intent: false, intervalMs: 100, consumers: new Set() });
-    Object.assign(provider._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
+    Object.assign(provider._sampling, {
+        activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
+        treesClosed: () => false
+    });
     return { provider, sidebar, chart };
 }
 

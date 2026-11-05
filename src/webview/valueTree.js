@@ -171,6 +171,7 @@
     //   post(message)               sends a message to the host
     //   copy(text)                  copies text through the host
     //   layoutExpansion()           the page's layout expansion UI
+    //   sampleOpenTreesOnly         true when closed trees are not sampled at all
     //   requestPointerLayout(name)  asks for the runtime type graph a scalar pointer needs to expand
     //   togglePointee(entry)        adds or removes a pointee watch entry
     //   decorateLeaf(row, nameCell, { path, address, watchType, node }) → the row's first element
@@ -751,12 +752,31 @@
             const visible = runtime.displayRuntimeSelection(symbol, state.latest[symbol.name], showRawMembers);
             return (visible?.entries || []).concat(statics.filter((leaf) => leaf.layoutExpanded));
         }
+        // A stand-alone pointee card that is folded, or a watch drawn inside a closed root's tree.
+        function closedEntry(item) {
+            if (fallback.has(item.name)) return isComposite(item) && !state.expanded[item.name];
+            const rootName = baseName(item.name);
+            if (rootName === item.name || state.expanded[rootName]) return false;
+            if (!state.watch.some((entry) => entry.name === rootName && isComposite(entry))) return false;
+            return placed.has(item.name) || isLeafChild(item.name);
+        }
+        // Static composites and hidden entries join the opened paths; no root path means "do not sample".
+        function addClosedEntries(paths) {
+            for (const item of state.watch) {
+                const closed = closedEntry(item);
+                const staticTree = isComposite(item) && !item.runtimeLayout;
+                if (closed && item.name in paths) paths[item.name] = [];
+                else if ((!closed && !staticTree) || Object.keys(paths).length >= 256) continue;
+                else paths[item.name] = !closed && state.expanded[item.name] ? [""] : [];
+            }
+        }
         // Opened paths of each runtime object (pointer target, STL container), relative to its watch
         // name. While "sample expanded pointer parts only" is on, the host reads just these parts.
         // Nothing is sent before the host's watch list arrives, so a fresh view cannot clear them.
         function syncRuntimeExpansions() {
             if (!runtimeExpansionsLoaded) return;
             const value = runtime.runtimeExpansionPaths(state.watch, state.expanded, placed);
+            if (page.sampleOpenTreesOnly) addClosedEntries(value);
             const key = JSON.stringify(value);
             if (key === sentRuntimeExpansions) return;
             sentRuntimeExpansions = key;

@@ -684,7 +684,7 @@ class MainViewProvider {
             ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
             [watchKey]: normalized
         });
-        if (this._sampling.pointerExpandedOnly) await this._sampling.refreshSamplingPlan();
+        await this._sampling.runtimeExpansionsChanged(watchKey);
     }
     chartBackground() {
         if (!this._chartBackground) {
@@ -899,6 +899,7 @@ class MainViewProvider {
             message.snapshotReady = false;
         }
         message = withWriteAccessStatus(message);
+        if (message.key === "live.needVar" && this._sampling.treesClosed()) message.key = "live.expandToSample";
         for (const entry of this._livePanels.values()) entry.post(message);
         this._webviewView?.webview.postMessage({
             ...message,

@@ -56,6 +56,15 @@ try {
     assert.strictEqual(doc.getElementById("skillStatus").closest("details"), agents);
     assert.strictEqual(doc.getElementById("skillStatus").closest("#memoryAnalysisSection"), null);
     assert.strictEqual(doc.querySelector(".skill-row, .skill-tree"), null);
+    const optional = agents.querySelector(":scope > summary > .tag");
+    assert.strictEqual(optional.textContent, "Optional");
+    assert.strictEqual(view.window.getComputedStyle(optional).borderRadius, "4px");
+    // MCP clients sit in their own dropdown, folded until asked for.
+    const mcpMenu = doc.getElementById("mcpClientsSection");
+    assert.strictEqual(mcpMenu.parentElement.closest("details"), agents);
+    assert.strictEqual(mcpMenu.open, false);
+    assert.strictEqual(doc.getElementById("mcpClientList").closest("details"), mcpMenu);
+    assert.strictEqual(mcpMenu.querySelector(":scope > summary").textContent, "MCP server");
     assert.ok(view.messages.some((message) => message.type === "getMcpClients"));
     view.send({
         type: "mcpClients",

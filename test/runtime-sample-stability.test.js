@@ -190,7 +190,11 @@ const sample = (item, read) =>
     p._sampling.pointerExpandedOnly = true;
     assert.deepStrictEqual(p._sampling.activeReadPlan()[0].runtimeExpanded, ["", ".focus"]);
     p._sampling.pointerExpandedOnly = false;
-    assert.strictEqual(p._sampling.activeReadPlan()[0].runtimeExpanded, undefined, "off reads the whole object");
+    assert.deepStrictEqual(
+        p._sampling.activeReadPlan()[0].runtimeExpanded,
+        ["", ".focus"],
+        "the chart's pointer switch does not widen sidebar reads"
+    );
 
     const view = render(getModernWebviewContent({}, "en"));
     try {
