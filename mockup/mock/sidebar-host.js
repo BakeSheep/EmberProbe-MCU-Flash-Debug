@@ -12,8 +12,11 @@
         options = options || {};
         var notify = options.notify || function () {};
         var simulator = options.simulator || data.createSimulator();
-        var liveRunning = false;
+        // One sampling session per window: this host owns its state and the waveform panel follows it.
+        var samplingPhase = "stopped";
+        var samplingIntent = false;
         var liveTimer = null;
+        var phaseTimer = null;
         var watchItems = data.sidebarWatchList();
         var watchNames = watchItems.map(function (item) {
             return item.name;
@@ -42,7 +45,12 @@
             builtin: []
         };
         var debugTimer = null;
-        var targetState = "halted";
+        // "none" outside a debug session; the chip card's own state only matters there.
+        var debugState = "none";
+        var debugStarting = false;
+        var chipState = "running";
+        var flashRunning = false;
+        var skillsInstalled = true;
         var stopEpoch = 1;
         var targetLine = 103;
         var lastMemory = data.memoryAnalysis();
@@ -94,7 +102,7 @@
                 type: "skillStatus",
                 state: "installed",
                 busy: false,
-                scopes: { workspace: { state: "installed" } }
+                scopes: { workspace: { state: skillsInstalled ? "installed" : "notInstalled" } }
             });
             sendVariableList();
             send({ type: "sidebarWatchList", items: watchItems, resetValues: true });
@@ -104,16 +112,8 @@
             send({ type: "chipInfo", info: currentChipInfo() });
             send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
             sendDebugStatus();
-            send({
-                type: "liveStatus",
-                running: false,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.stopped"
-            });
-            sendSamples();
+            send(sidebarStatus(samplingPhase));
+            if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
             setTimeout(function () {
                 if (debugTimer === null) send({ type: "initSuccess" });
             }, 480);
@@ -124,63 +124,114 @@
             notify({ action: "debugPending", busy: busy });
         }
 
-        function startDebug() {
-            if (stopped || debugTimer !== null) return;
+        // kind "reset" is the debug command (reset, then run to main); "attach" halts the target where it is.
+        function startDebug(kind) {
+            if (stopped || debugTimer !== null || flashRunning) return;
+            if (debugState !== "none") {
+                send({
+                    type: "notice",
+                    area: "flash",
+                    id: "mcu-vscode.debug",
+                    notice: { level: "warning", key: "msg.debugBusy" }
+                });
+                return;
+            }
+            var cmd = kind === "attach" ? "mcu-vscode.attachDebug" : "mcu-vscode.debug";
+            debugStarting = true;
+            if (samplingIntent) setPhase("debug-waiting");
             debugTimer = setTimeout(function () {
                 debugTimer = null;
+                debugStarting = false;
                 if (stopped) return;
                 setDebugPending(false);
-                send({ type: "commandSuccess", cmd: "mcu-vscode.debug" });
-                notify({ action: "debugStart" });
+                if (kind !== "attach") simulator.reset();
+                notify({ action: "debugSessionChanged" });
+                send({ type: "commandSuccess", cmd: cmd });
+                notify({ action: "debugStart", kind: kind === "attach" ? "attach" : "reset" });
             }, 2200);
             setDebugPending(true);
-            send({ type: "openocdProgress", stage: "debug", key: "sb.executing", level: "info" });
         }
 
         function cancelDebugStart() {
             if (debugTimer === null) return false;
             clearTimeout(debugTimer);
             debugTimer = null;
+            debugStarting = false;
             setDebugPending(false);
-            send({ type: "openocdProgress", stage: "debug", key: "sb.stopped", level: "info" });
+            if (samplingIntent) setPhase("sampling");
             return true;
         }
 
-        function stopSampling(key) {
-            liveRunning = false;
-            if (liveTimer) {
-                clearInterval(liveTimer);
-                liveTimer = null;
+        function clearSamplingTimers() {
+            if (liveTimer) clearInterval(liveTimer);
+            if (phaseTimer) clearTimeout(phaseTimer);
+            liveTimer = phaseTimer = null;
+        }
+
+        function sidebarStatus(phase) {
+            var status = data.samplingStatus(phase);
+            // The sidebar reads at a fixed 20 Hz, whatever the waveform panel's frequency is.
+            if (status.running) {
+                status.frequencyHz = 20;
+                status.actualHz = data.samplingActive(phase) ? 20 : 0;
             }
-            send({
-                type: "liveStatus",
-                running: false,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: key || "sb.stopped"
-            });
+            return status;
+        }
+
+        function setPhase(phase) {
+            clearSamplingTimers();
+            samplingPhase = phase;
+            send(sidebarStatus(phase));
+            notify({ action: "sampling", phase: phase });
+            sendDebugStatus();
+            if (data.samplingActive(phase)) {
+                sendSamples();
+                liveTimer = setInterval(function () {
+                    simulator.tick();
+                    sendSamples();
+                }, 50);
+            }
+        }
+
+        // Each stop gets one DAP snapshot: memory is frozen until the next step or continue.
+        function readSnapshot() {
+            setPhase("debug-reading");
+            phaseTimer = setTimeout(function () {
+                phaseTimer = null;
+                setPhase("debug-ready");
+                sendSamples();
+            }, 120);
+        }
+
+        function stopSampling() {
+            samplingIntent = false;
+            setPhase(debugState === "none" ? "stopped" : "debug-disabled");
         }
 
         function startSampling() {
-            liveRunning = true;
-            send({
-                type: "liveStatus",
-                running: true,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.sampling",
-                actualHz: 10
-            });
-            if (liveTimer) clearInterval(liveTimer);
-            sendSamples();
-            liveTimer = setInterval(function () {
-                simulator.tick();
-                sendSamples();
-            }, 100);
+            if (samplingIntent) return;
+            samplingIntent = true;
+            if (debugStarting) setPhase("debug-waiting");
+            else if (debugState === "paused") readSnapshot();
+            else if (debugState === "running") resumeRuntimeSampling();
+            else connectStandalone();
+        }
+
+        function connectStandalone() {
+            setPhase("connecting");
+            phaseTimer = setTimeout(function () {
+                phaseTimer = null;
+                setPhase("sampling");
+            }, 400);
+        }
+
+        // Sampling restarts only once the target really runs again; a step never reaches here.
+        function resumeRuntimeSampling() {
+            setPhase("debug-waiting");
+            phaseTimer = setTimeout(function () {
+                phaseTimer = null;
+                setPhase("debug-sampling");
+            }, 150);
         }
 
         function sendSamples() {
@@ -197,59 +248,164 @@
 
         function currentChipInfo() {
             var info = data.chipInfo().info;
-            info.targetState = targetState;
-            info.haltReason = targetState === "halted" ? "断点命中 · main.c:" + targetLine : "";
-            if (targetState !== "halted") {
-                info.pc = "";
-                info.sp = "";
-                info.lr = "";
+            info.targetState = chipState;
+            if (chipState === "halted") {
+                info.haltReason = debugState === "none" ? "debug-request" : "断点命中 · main.c:" + targetLine;
+                info.pc = "0x08001a3c";
+                info.sp = "0x2001ffb0";
+                info.lr = "0x080012b7";
             }
             return info;
         }
 
-        function sendDebugStatus() {
-            send(data.rtosDebugStatus(targetState === "halted" ? "paused" : "running", stopEpoch));
-            send({
-                type: "peripheralDebugStatus",
-                state: targetState === "halted" ? "paused" : "running",
-                epoch: stopEpoch,
-                canRead: targetState === "halted",
-                canWrite: targetState === "halted"
-            });
+        // src/services/peripheralAccessService.js: no debug session needs a connected sampling session.
+        function peripheralAccess() {
+            var standalone = debugState === "none";
+            var connected = samplingPhase === "sampling";
+            var allowed = !standalone || connected;
+            return {
+                mode: standalone ? "standalone" : debugState === "paused" ? "debug-paused" : "debug-running",
+                generation: stopEpoch,
+                canRead: allowed,
+                canWrite: allowed,
+                reason: allowed ? "" : "PERIPHERAL_SAMPLING_REQUIRED"
+            };
         }
 
+        function sendDebugStatus() {
+            send(data.rtosDebugStatus(debugState, stopEpoch));
+            send(
+                Object.assign(
+                    { type: "peripheralDebugStatus", state: debugState, epoch: stopEpoch },
+                    peripheralAccess()
+                )
+            );
+        }
+
+        // Follows the debug session the shell drives. settings.step: the stop came from a step;
+        // settings.ended: the session is over and the target keeps running.
         function setTargetState(next, settings) {
             settings = settings || {};
-            targetState = next;
+            chipState = next;
             if (next === "halted") stopEpoch += 1;
             if (Number.isInteger(settings.line)) targetLine = settings.line;
+            debugState = settings.ended ? "none" : next === "halted" ? "paused" : "running";
+            if (next === "running") simulator.boot();
+            if (settings.step) simulator.tick();
             send({ type: "chipInfo", info: currentChipInfo() });
             send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
-            sendDebugStatus();
+            if (settings.ended) notify({ action: "debugSessionChanged" });
+            if (samplingIntent) {
+                if (settings.ended) {
+                    setPhase("restoring");
+                    phaseTimer = setTimeout(function () {
+                        phaseTimer = null;
+                        setPhase("sampling");
+                    }, 600);
+                } else if (next === "running") resumeRuntimeSampling();
+                else readSnapshot();
+            } else {
+                if (settings.ended) setPhase("stopped");
+                else setPhase("debug-disabled");
+            }
             if (settings.notify !== false) notify({ action: "targetState", state: next });
         }
 
+        function flashNotice(notice) {
+            send({ type: "notice", area: "flash", id: "mcu-vscode.download", notice: notice });
+        }
+
+        // The real run: each step is what src/openocdRunner.js makes of an OpenOCD line, in the terminal and,
+        // replaced in place, in the sidebar's notice (src/services/flashCommand.js). Only the wait inside
+        // the write and the verify takes time.
         function simulateDownload(cmd) {
-            var steps = [
-                { level: "info", message: "正在解析 ELF：build/Debug/EmberProbeDemo.elf" },
-                { level: "info", message: "连接探针 J-Link V11 (SWD 4000 kHz)…" },
-                { level: "info", message: "擦除扇区 0-7 (0x08000000 - 0x080FFFFF)…" },
-                { level: "info", message: "写入 917504 字节 (87.5%)…" },
-                { level: "success", message: "校验通过：CRC32 0x8F3C21A7" },
-                { level: "success", message: "烧录完成，耗时 4.8s" }
-            ];
-            steps.forEach(function (step, index) {
-                setTimeout(
-                    function () {
-                        send({ type: "openocdProgress", cmd: cmd, level: step.level, message: step.message });
-                        if (index === steps.length - 1) {
-                            send({ type: "commandSuccess", cmd: cmd });
-                            notify({ action: "toast", text: "烧录完成：EmberProbeDemo.elf (917504 字节)" });
-                        }
-                    },
-                    350 + index * 420
-                );
+            if (flashRunning) return flashNotice({ level: "warning", key: "msg.downloadBusy" });
+            if (debugStarting || debugState !== "none")
+                return flashNotice({ level: "warning", key: "msg.debugBusyForDownload" });
+            var resume = samplingIntent;
+            if (resume) stopSampling();
+            flashRunning = true;
+            setDebugPending(true);
+            var elf = data.ELF_PATH.replace(/\\/g, "/");
+            notify({
+                action: "flashLog",
+                start: true,
+                lines: [
+                    { cls: "info", text: "EmberProbe 固件下载" },
+                    { cls: "", text: "固件 " + elf },
+                    { cls: "", text: "探针 interface/jlink.cfg · 目标 target/stm32f4x.cfg" },
+                    { cls: "", text: "" }
+                ]
             });
+            var wrote = { bytes: 917504, seconds: 6.201542, speed: "144.480 KiB/s" };
+            var verified = { bytes: 917504, seconds: 0.912345, speed: "982.085 KiB/s" };
+            var steps = [
+                { at: 0, key: "run.starting", message: "正在启动 OpenOCD" },
+                { at: 240, message: "Open On-Chip Debugger 0.12.0 (2024-11-24-10:12)" },
+                { at: 400, message: "J-Link V11 compiled Nov 24 2024 10:12:05" },
+                { at: 520, key: "run.voltage", params: { volts: "3.30" }, message: "目标电压 3.30 V" },
+                { at: 640, key: "run.adapterClock", params: { clock: "4000 kHz" }, message: "适配器时钟 4000 kHz" },
+                { at: 820, message: "EP_FLASH_STAGE=init" },
+                { at: 960, message: "EP_FLASH_STAGE=reset_init" },
+                { at: 1100, message: "target halted due to debug-request, current mode: Thread" },
+                { at: 1240, key: "run.deviceId", params: { id: "0x10076413" }, message: "器件 ID 0x10076413" },
+                { at: 1380, key: "run.flash", params: { size: "1024 kbytes" }, message: "Flash 容量 1024 kbytes" },
+                { at: 1560, key: "run.programStart", message: "开始写入固件" },
+                {
+                    at: 7760,
+                    done: true,
+                    key: "run.wrote",
+                    params: wrote,
+                    message: "已写入 917504 bytes（6.201542s，144.480 KiB/s）"
+                },
+                { at: 7820, message: "** Verify Started **" },
+                {
+                    at: 8730,
+                    done: true,
+                    key: "run.verified",
+                    params: verified,
+                    message: "已校验 917504 bytes（0.912345s，982.085 KiB/s）"
+                },
+                { at: 8760, done: true, key: "run.verifyOk", message: "固件校验通过" },
+                { at: 8860, message: "** Resetting Target **" }
+            ];
+            steps.forEach(function (step) {
+                setTimeout(function () {
+                    flashNotice({
+                        level: "info",
+                        busy: true,
+                        key: step.key,
+                        params: step.params,
+                        message: step.message
+                    });
+                    notify({
+                        action: "flashLog",
+                        lines: [{ cls: step.done ? "ok" : "", text: (step.done ? "✓ " : "→ ") + step.message }]
+                    });
+                }, step.at);
+            });
+            setTimeout(function () {
+                flashRunning = false;
+                setDebugPending(false);
+                notify({
+                    action: "flashLog",
+                    lines: [
+                        { cls: "", text: "" },
+                        { cls: "ok", text: "✓ 固件下载并校验成功" },
+                        { cls: "", text: "  固件 " + elf.split("/").pop() },
+                        { cls: "", text: "  芯片 0x10076413" },
+                        { cls: "", text: "  Flash 容量 1024 kbytes" },
+                        { cls: "", text: "  探针 J-Link V11 compiled Nov 24 2024 10:12:05" },
+                        { cls: "", text: "  时钟 4000 kHz" },
+                        { cls: "", text: "  写入 917504 bytes，耗时 6.201542s（144.480 KiB/s）" },
+                        { cls: "", text: "  校验 917504 bytes，耗时 0.912345s（982.085 KiB/s）" },
+                        { cls: "", text: "  目标 target/stm32f4x.cfg · 探针配置 interface/jlink.cfg" }
+                    ]
+                });
+                flashNotice({ level: "success", key: "msg.downloadSuccess" });
+                send({ type: "commandSuccess", cmd: cmd });
+                if (resume) startSampling();
+            }, 9100);
         }
 
         function simulateSvdDownload(cmd) {
@@ -288,22 +444,17 @@
             );
         }
 
+        // The switch installs or removes the workspace's skills, whichever it does not have.
         function simulateSkillToggle(cmd) {
-            send({
-                type: "skillStatus",
-                state: "installed",
-                busy: true,
-                scopes: { workspace: { state: "installed" } }
-            });
+            function status(installed, busy) {
+                var state = installed ? "installed" : "notInstalled";
+                return { type: "skillStatus", state: state, busy: busy, scopes: { workspace: { state: state } } };
+            }
+            send(status(skillsInstalled, true));
             setTimeout(function () {
-                send({
-                    type: "skillStatus",
-                    state: "installed",
-                    busy: false,
-                    scopes: { workspace: { state: "installed" } }
-                });
+                skillsInstalled = !skillsInstalled;
+                send(status(skillsInstalled, false));
                 send({ type: "commandSuccess", cmd: cmd });
-                notify({ action: "toast", text: "Agent Skill 已安装到当前工作区" });
             }, 900);
         }
 
@@ -339,7 +490,7 @@
                     sendInitialState();
                     break;
                 case "liveToggle":
-                    if (liveRunning) stopSampling();
+                    if (samplingIntent) stopSampling();
                     else startSampling();
                     break;
                 case "writeVariable": {
@@ -350,10 +501,14 @@
                         send({ type: "writeResult", ok: false, name: name, seq: seq, message: "无效的写入值" });
                         break;
                     }
+                    if (!data.samplingStatus(samplingPhase).canWrite) {
+                        send({ type: "writeResult", ok: false, name: name, seq: seq, key: "sb.writeNeedSampling" });
+                        break;
+                    }
                     if (writeNames.indexOf(name) >= 0 && simulator.write(name, value)) {
                         send({ type: "writeResult", ok: true, name: name, value: value, valueText: null, seq: seq });
                         sendSamples();
-                        notify({ action: "toast", text: "已写入 " + name + " = " + value });
+                        if (samplingPhase === "debug-ready") notify({ action: "sampling", phase: samplingPhase });
                     } else {
                         send({ type: "writeResult", ok: false, name: name, seq: seq, key: "sb.writeUnsupported" });
                     }
@@ -363,16 +518,21 @@
                     handleExecute(message.cmd);
                     break;
                 case "readChipInfo":
+                    if (chipBusy()) break;
                     send({ type: "chipInfoStatus", state: "reading", key: "chip.reading" });
                     setTimeout(function () {
                         send({ type: "chipInfo", info: currentChipInfo() });
                         send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
-                        notify({ action: "toast", text: "芯片信息读取完成：STM32F407ZGTx" });
                     }, 700);
                     break;
                 case "chipControl":
-                    if (["pause", "continue", "reset"].indexOf(message.action) >= 0)
-                        setTargetState(message.action === "pause" ? "halted" : "running");
+                    if (["pause", "continue", "reset"].indexOf(message.action) < 0 || chipBusy()) break;
+                    send({ type: "chipInfoStatus", state: "reading", key: "chip.controlling" });
+                    setTimeout(function () {
+                        chipState = message.action === "pause" ? "halted" : "running";
+                        send({ type: "chipInfo", info: currentChipInfo() });
+                        send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+                    }, 500);
                     break;
                 case "memoryRefresh": {
                     lastMemory = data.memoryAnalysis();
@@ -382,7 +542,6 @@
                 }
                 case "memorySelectSource":
                     send({ type: "commandSuccess", cmd: "memorySelectSource" });
-                    notify({ action: "toast", text: "内存分析来源：EmberProbeDemo.map" });
                     break;
                 case "peripheralCatalogRequest":
                     send({
@@ -395,20 +554,38 @@
                     send(data.peripheralRegisters(message.name));
                     break;
                 case "peripheralReadRequest": {
-                    if (targetState !== "halted") break;
-                    var result = data.peripheralReadResult(message.targets, true);
+                    if (!peripheralAccess().canRead) {
+                        send({
+                            type: "peripheralError",
+                            operation: message.type,
+                            code: peripheralAccess().reason,
+                            message: "请先开启采样"
+                        });
+                        break;
+                    }
+                    // Hardware registers keep moving while the core runs; a paused target reads the same values.
+                    var result = data.peripheralReadResult(message.targets, debugState !== "paused");
                     result.session.epoch = stopEpoch;
                     send(result);
                     break;
                 }
                 case "peripheralWriteRequest": {
-                    if (targetState !== "halted") break;
+                    if (!peripheralAccess().canWrite) {
+                        send({
+                            type: "peripheralError",
+                            operation: message.type,
+                            target: message.target,
+                            code: peripheralAccess().reason,
+                            message: "请先开启采样"
+                        });
+                        break;
+                    }
                     var writeResult = data.peripheralWriteResult(message.target, message.value);
                     send(writeResult);
                     if (writeResult.type === "peripheralError") break;
                     var writeEpoch = stopEpoch;
                     setTimeout(function () {
-                        if (targetState !== "halted" || stopEpoch !== writeEpoch) return;
+                        if (!peripheralAccess().canRead || stopEpoch !== writeEpoch) return;
                         var base = String(message.target || "")
                             .split(".")
                             .slice(0, 2)
@@ -420,17 +597,17 @@
                     break;
                 }
                 case "rtosRefresh":
-                    if (targetState === "halted") send(data.rtosSnapshot(stopEpoch));
+                    if (debugState === "paused") send(data.rtosSnapshot(stopEpoch));
                     else
                         send(
-                            Object.assign(data.rtosDebugStatus("running", stopEpoch), {
+                            Object.assign(data.rtosDebugStatus(debugState, stopEpoch), {
                                 type: "rtosError",
                                 message: "暂停调试器后才能刷新 RTOS 任务"
                             })
                         );
                     break;
                 case "debugSelectSession":
-                    send(data.rtosDebugStatus(targetState === "halted" ? "paused" : "running", stopEpoch));
+                    send(data.rtosDebugStatus(debugState, stopEpoch));
                     break;
                 case "resolveCompositeLayout": {
                     var symbol = data.SYMBOLS.filter(function (item) {
@@ -454,14 +631,13 @@
                 }
                 case "refreshVariables":
                     sendVariableList();
-                    notify({ action: "toast", text: "已从 ELF 重新读取 28 个变量" });
                     break;
                 case "saveSidebarWatch": {
                     watchItems = message.items || [];
                     watchNames = (message.items || []).map(function (item) {
                         return item.name;
                     });
-                    sendSamples();
+                    if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
                     break;
                 }
                 case "saveSidebarWrite":
@@ -469,7 +645,7 @@
                     writeNames = writeItems.map(function (item) {
                         return item.name;
                     });
-                    sendSamples();
+                    if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
                     break;
                 case "setLang":
                     notify({ action: "setLang", lang: message.lang, page: "sidebar" });
@@ -518,7 +694,10 @@
                     simulateDownload(cmd);
                     break;
                 case "mcu-vscode.debug":
-                    startDebug();
+                    startDebug("reset");
+                    break;
+                case "mcu-vscode.attachDebug":
+                    startDebug("attach");
                     break;
                 case "mcu-vscode.openLiveWatch":
                     send({ type: "commandSuccess", cmd: cmd });
@@ -540,7 +719,6 @@
                     });
                     break;
                 case "mcu-vscode.autoDetect":
-                    notify({ action: "toast", text: "自动检测完成：J-Link V11 · STM32F407ZGTx" });
                     send({ type: "commandSuccess", cmd: cmd });
                     break;
                 default:
@@ -548,6 +726,19 @@
                     notify({ action: "toast", text: "已执行命令 " + cmd });
                     break;
             }
+        }
+
+        // src/services/chipInfoService.js refuses while anything else holds the probe.
+        function chipBusy() {
+            var key = flashRunning
+                ? "chip.busyDownload"
+                : debugStarting || debugState !== "none"
+                  ? "chip.busyDebug"
+                  : samplingIntent
+                    ? "chip.busyLive"
+                    : "";
+            if (key) send({ type: "chipInfoStatus", state: "error", key: key });
+            return !!key;
         }
 
         function copyText(text) {
@@ -576,13 +767,16 @@
             isDebugStarting: function () {
                 return debugTimer !== null;
             },
+            download: function () {
+                simulateDownload("mcu-vscode.download");
+            },
             startSampling: startSampling,
             stopSampling: stopSampling,
             getWatchList: function () {
                 return watchItems.slice();
             },
             isLiveRunning: function () {
-                return liveRunning;
+                return samplingIntent;
             },
             isInitialized: function () {
                 return initialized;
@@ -590,7 +784,7 @@
             destroy: function () {
                 cancelDebugStart();
                 stopped = true;
-                if (liveTimer) clearInterval(liveTimer);
+                clearSamplingTimers();
                 root.removeEventListener("message", onMessage);
             }
         };

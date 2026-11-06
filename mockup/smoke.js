@@ -296,7 +296,6 @@ async function testShell() {
     check("call stack rendered", doc.querySelectorAll("#debugCallStack .stack-row").length === 3);
     check("terminal rendered", doc.querySelectorAll("#terminalBody span").length === shellData.TERMINAL_LINES.length);
     check("problems rendered", doc.querySelectorAll("#problemsList .problem-row").length === 2);
-    check("status bar shows connection", doc.getElementById("emberprobeStatus").textContent.includes("已连接"));
 
     doc.getElementById("commandCenter").click();
     await sleep(30);

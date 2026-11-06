@@ -1432,18 +1432,6 @@ button {
     color: var(--vscode-statusBarItem-remoteForeground);
 }
 
-.status-item.emberprobe {
-    color: inherit;
-}
-
-.status-item.emberprobe.debugging {
-    color: inherit;
-}
-
-.status-item.emberprobe.running {
-    color: inherit;
-}
-
 /* ---------------------------------------------------------- command palette */
 
 .overlay {

@@ -186,6 +186,14 @@ function testHostsAndRenderer() {
             env.deliver(sidebar, { type: "memoryRefresh" });
             assert.deepStrictEqual(latest(sidebar, "memoryAnalysis").result, memory, "the same ELF has stable totals");
         }
+        env.deliver(sidebar, { type: "writeVariable", name: "g_target_rpm", value: 1, seq: 1 });
+        assert.equal(latest(sidebar, "writeResult").key, "sb.writeNeedSampling", "writes need a sampling session");
+        assert.equal(latest(sidebar, "liveSample"), undefined, "no value is known before sampling starts");
+        env.deliver(sidebar, { type: "liveToggle" });
+        assert.equal(latest(sidebar, "liveStatus").mode, "standalone-pending");
+        env.advance(400);
+        assert.equal(latest(sidebar, "liveStatus").mode, "standalone-sampling");
+        assert.equal(latest(sidebar, "liveStatus").frequencyHz, 20);
         const slider = view.document.querySelector("#writeValues input[type=range]");
         assert.equal(slider.min, "0");
         assert.equal(slider.max, "3000");
@@ -220,21 +228,31 @@ function testHostsAndRenderer() {
         assert.equal(latest(live, "chartValues").samples.find((sample) => sample.name === "g_target_rpm").value, 2000);
         assert.ok(latest(live, "liveCompositeSample").samples.some((sample) => sample.name === "g_imu"));
 
-        env.deliver(sidebar, { type: "chipControl", action: "reset" });
-        assert.equal(notices.at(-1).state, "running");
+        env.deliver(sidebar, { type: "readChipInfo" });
+        assert.equal(latest(sidebar, "chipInfoStatus").key, "chip.busyLive", "the chip card needs the probe to itself");
+        env.deliver(sidebar, { type: "liveToggle" });
+        assert.equal(latest(sidebar, "liveStatus").mode, "stopped");
+        assert.equal(latest(sidebar, "liveStatus").canRead, false);
         env.deliver(sidebar, { type: "readChipInfo" });
         env.advance(700);
-        assert.equal(latest(sidebar, "chipInfo").info.targetState, "running");
+        assert.equal(latest(sidebar, "chipInfo").info.targetState, "running", "a powered board runs");
+        assert.equal(latest(sidebar, "chipInfo").info.haltReason, "");
         env.deliver(sidebar, { type: "chipControl", action: "pause" });
+        assert.equal(latest(sidebar, "chipInfoStatus").key, "chip.controlling");
+        env.advance(500);
+        assert.equal(latest(sidebar, "chipInfo").info.targetState, "halted");
+        assert.ok(!notices.some((event) => event.action === "targetState"), "this is no debug session");
+        env.deliver(sidebar, { type: "peripheralReadRequest", targets: ["GPIOA.MODER"] });
+        assert.equal(latest(sidebar, "peripheralError").code, "PERIPHERAL_SAMPLING_REQUIRED");
+        host.setTargetState("halted", { notify: false, line: 105 });
+        assert.ok(latest(sidebar, "chipInfo").info.haltReason.includes("105"));
+        assert.equal(latest(sidebar, "peripheralDebugStatus").mode, "debug-paused");
         const epoch = latest(sidebar, "peripheralDebugStatus").epoch;
         env.deliver(sidebar, { type: "peripheralReadRequest", targets: ["GPIOA.MODER"] });
         assert.equal(latest(sidebar, "peripheralReadResult").session.epoch, epoch);
-        host.setTargetState("halted", { notify: false, line: 105 });
-        assert.ok(latest(sidebar, "chipInfo").info.haltReason.includes("105"));
-        assert.ok(latest(sidebar, "peripheralDebugStatus").epoch > epoch);
 
         env.deliver(sidebar, { type: "liveToggle" });
-        env.advance(100);
+        env.advance(200);
         assert.ok(latest(sidebar, "liveSample").samples.some((sample) => sample.name === "g_pid_kp"));
         const count = sidebar.messages.length;
         env.deliver(sidebar, { type: "liveToggle" }, {});
@@ -324,6 +342,122 @@ function testReadableArchiveHeaders() {
     }
 }
 
+function sidebarWithSampling() {
+    const env = hostEnvironment();
+    const frame = env.frame();
+    const simulator = sidebarData.createSimulator();
+    const notices = [];
+    const host = env.root.EmberProbeSidebarHost.create(frame, { simulator, notify: (event) => notices.push(event) });
+    host.sendInitialState();
+    const names = ["g_motor_rpm", "g_state", "g_loop_time_us"];
+    env.deliver(frame, { type: "saveSidebarWatch", items: names.map((name) => sidebarData.watchItem(name)) });
+    env.deliver(frame, { type: "liveToggle" });
+    env.advance(400);
+    assert.equal(latest(frame, "liveStatus").mode, "standalone-sampling");
+    const samples = () => JSON.stringify(latest(frame, "liveSample").samples.map((item) => [item.name, item.value]));
+    return { env, frame, simulator, notices, host, samples };
+}
+
+function testSamplingFollowsDebugSession() {
+    const { env, frame, notices, host, samples } = sidebarWithSampling();
+    const mode = () => latest(frame, "liveStatus").mode;
+    const sampleCount = () => frame.messages.filter((message) => message.type === "liveSample").length;
+    try {
+        host.startDebug("attach");
+        assert.equal(mode(), "debug-running-waiting");
+        assert.equal(latest(frame, "liveStatus").key, "live.debugWaiting");
+        assert.equal(latest(frame, "liveStatus").canRead, false);
+        const started = sampleCount();
+        env.advance(2199);
+        assert.equal(sampleCount(), started, "no sample is read while debug starts");
+        env.advance(1);
+        assert.equal(latest(frame, "commandSuccess").cmd, "mcu-vscode.attachDebug");
+        assert.ok(notices.some((event) => event.action === "debugSessionChanged"));
+        assert.equal(notices.find((event) => event.action === "debugStart").kind, "attach");
+
+        host.setTargetState("halted", { notify: false, line: 90 });
+        assert.equal(mode(), "debug-paused-reading");
+        env.advance(120);
+        assert.equal(mode(), "debug-paused-ready");
+        const frozen = samples();
+        const count = sampleCount();
+        env.advance(5000);
+        assert.equal(sampleCount(), count, "a paused target gets one snapshot per stop");
+        env.deliver(frame, { type: "peripheralReadRequest", targets: ["GPIOA.MODER"] });
+        const first = JSON.stringify(latest(frame, "peripheralReadResult").registers);
+        env.deliver(frame, { type: "peripheralReadRequest", targets: ["GPIOA.MODER"] });
+        assert.equal(JSON.stringify(latest(frame, "peripheralReadResult").registers), first, "registers hold");
+        assert.equal(samples(), frozen);
+
+        host.setTargetState("halted", { notify: false, line: 91, step: true });
+        env.advance(120);
+        assert.notEqual(samples(), frozen, "a step lets the target run and takes a new snapshot");
+        assert.equal(mode(), "debug-paused-ready");
+
+        host.setTargetState("running", { notify: false });
+        assert.equal(mode(), "debug-running-waiting");
+        env.advance(150);
+        assert.equal(mode(), "debug-running-sampling");
+        assert.equal(latest(frame, "liveStatus").source, "openocd");
+
+        host.setTargetState("running", { notify: false, ended: true });
+        assert.equal(latest(frame, "liveStatus").key, "live.restoring");
+        env.advance(600);
+        assert.equal(mode(), "standalone-sampling");
+    } finally {
+        host.destroy();
+    }
+}
+
+function testResetStopsBeforeFirmwareRuns() {
+    const { env, frame, host } = sidebarWithSampling();
+    const value = (name) => latest(frame, "liveSample").samples.find((item) => item.name === name).value;
+    try {
+        assert.notEqual(value("g_motor_rpm"), 0);
+        host.startDebug("reset");
+        env.advance(2200);
+        host.setTargetState("halted", { notify: false, line: 167 });
+        env.advance(120);
+        assert.equal(value("g_motor_rpm"), 0, "nothing has run yet at main");
+        host.setTargetState("running", { notify: false });
+        env.advance(200);
+        assert.notEqual(value("g_motor_rpm"), 0);
+    } finally {
+        host.destroy();
+    }
+}
+
+function testDownloadRun() {
+    const { env, frame, notices, host } = sidebarWithSampling();
+    const flash = () => frame.messages.filter((message) => message.type === "notice" && message.area === "flash");
+    try {
+        env.deliver(frame, { type: "executeCommand", cmd: "mcu-vscode.download" });
+        assert.equal(latest(frame, "liveStatus").mode, "stopped", "sampling gives up the probe");
+        env.deliver(frame, { type: "executeCommand", cmd: "mcu-vscode.download" });
+        assert.equal(flash().at(-1).notice.key, "msg.downloadBusy");
+        env.advance(1559);
+        assert.equal(flash().at(-1).notice.key, "run.flash");
+        env.advance(1);
+        assert.equal(flash().at(-1).notice.message, "开始写入固件");
+        env.advance(6200);
+        assert.equal(flash().at(-1).notice.params.bytes, 917504);
+        env.advance(1340);
+        const done = flash().at(-1).notice;
+        assert.deepEqual([done.level, done.key], ["success", "msg.downloadSuccess"]);
+        assert.ok(flash().every((message) => message.notice.level !== "error"));
+        assert.equal(latest(frame, "commandSuccess").cmd, "mcu-vscode.download");
+        const log = notices.filter((event) => event.action === "flashLog").flatMap((event) => event.lines);
+        assert.equal(log[0].text, "EmberProbe 固件下载");
+        assert.ok(log.some((line) => line.text === "→ 目标电压 3.30 V"));
+        assert.ok(log.some((line) => line.text === "✓ 固件校验通过"));
+        assert.equal(latest(frame, "liveStatus").mode, "standalone-pending", "sampling comes back afterwards");
+        env.advance(400);
+        assert.equal(latest(frame, "liveStatus").mode, "standalone-sampling");
+    } finally {
+        host.destroy();
+    }
+}
+
 function testDebugLatency() {
     const env = hostEnvironment();
     const notices = [];
@@ -339,8 +473,6 @@ function testDebugLatency() {
         assert.equal(latest(frame, "mockDebugPending").busy, true);
         env.advance(600);
         assert.equal(latest(frame, "initSuccess"), undefined, "initialization must not erase the pending status");
-        assert.equal(latest(frame, "openocdProgress").key, "sb.executing");
-        assert.ok(frame.messages.filter((m) => m.type === "openocdProgress").every((m) => m.stage));
         env.deliver(frame, command);
         env.advance(1599);
         assert.equal(latest(frame, "commandSuccess"), undefined, "debug does not complete early");
@@ -493,18 +625,24 @@ async function testShell() {
         doc.getElementById("debugStartButton").click();
         assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
         assert.equal(doc.getElementById("debugStartButton").disabled, true);
-        assert.ok(doc.getElementById("emberprobeStatus").textContent.includes("正在执行"));
         await clock.advance(2300);
+        assert.equal(doc.querySelector(".code-line.active-line").textContent.trim(), "HAL_Init();");
+        assert.ok(doc.getElementById("debugSessionName").textContent.includes("EmberProbe"));
+        doc.getElementById("dbgContinue").click();
+        await clock.advance(450);
+        assert.equal(doc.querySelector(".code-line.active-line").dataset.line, "103", "continue hits the breakpoint");
         assert.equal(doc.getElementById("debugStartButton").disabled, false);
         const activeGlyph = doc.querySelector(".gutter-line.active .glyph-margin");
         assert.ok(activeGlyph.querySelector(".codicon-debug-stackframe"));
         assert.ok(activeGlyph.querySelector(".breakpoint.codicon-debug-stackframe-dot"));
+        doc.querySelector('.gutter-line[data-line="103"]').click();
         doc.getElementById("dbgContinue").click();
         assert.ok(doc.getElementById("dbgContinue").querySelector(".codicon-debug-pause"));
         assert.equal(doc.getElementById("dbgStepOver").disabled, true);
         assert.equal(doc.querySelector(".current-arrow"), null);
         doc.getElementById("dbgContinue").click();
         assert.equal(doc.getElementById("dbgStepOver").disabled, false);
+        doc.querySelector('.gutter-line[data-line="103"]').click();
         const initialLine = Number(doc.querySelector(".code-line.active-line").dataset.line);
         doc.getElementById("dbgStepOver").click();
         const second = Number(doc.querySelector(".code-line.active-line").dataset.line);
@@ -688,6 +826,9 @@ async function testServer() {
     testHostsAndRenderer();
     testArchive();
     testReadableArchiveHeaders();
+    testSamplingFollowsDebugSession();
+    testResetStopsBeforeFirmwareRuns();
+    testDownloadRun();
     testDebugLatency();
     testDebugBusyBridge();
     await testShell();

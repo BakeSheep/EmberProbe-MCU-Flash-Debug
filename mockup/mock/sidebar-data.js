@@ -313,11 +313,11 @@
                 flashSize: "1024 KB",
                 endian: "little",
                 uid: "0x002E 004D 3038 5157 3236 3813",
-                targetState: "halted",
-                haltReason: "断点命中 · main.c:103",
-                pc: "0x08001a3c",
-                sp: "0x2001ffb0",
-                lr: "0x080012b7",
+                targetState: "running",
+                haltReason: "",
+                pc: "",
+                sp: "",
+                lr: "",
                 probe: "J-Link",
                 probeName: "J-Link V11",
                 probeVersion: "V11 compiled Nov 24 2024 10:12:05",
@@ -348,9 +348,12 @@
             state: state,
             stopEpoch: stopEpoch || 0,
             inspectionEpoch: 1,
-            sessionId: state === "paused" ? RTOS_SESSION : "",
-            supported: true,
-            sessions: [{ id: RTOS_SESSION, name: "EmberProbe (J-Link)", serverGroup: "Cortex-M4", targetProcessor: 0 }]
+            sessionId: state === "none" ? "" : RTOS_SESSION,
+            supported: state !== "none",
+            sessions:
+                state === "none"
+                    ? []
+                    : [{ id: RTOS_SESSION, name: "EmberProbe (J-Link)", serverGroup: "Cortex-M4", targetProcessor: 0 }]
         };
     }
 
@@ -801,7 +804,12 @@
 
     function createSimulator() {
         var overrides = new Map();
+        // Everything a sample shows comes from this state, so nothing changes unless the target ran (tick).
         var state = {
+            now: Date.now(),
+            loopUs: 840,
+            inReset: false,
+            saved: null,
             temp: 36.4,
             rpm: 1450,
             voltage: 24.02,
@@ -819,7 +827,34 @@
             var factor = Math.pow(10, digits);
             return Math.round(value * factor) / factor;
         }
+        // Stopped at main after a reset: the firmware's runtime values have not been computed yet.
+        var RESET_ZERO = [
+            "g_sensor_temp",
+            "g_motor_rpm",
+            "g_bus_voltage",
+            "g_bus_current",
+            "g_error_count",
+            "g_warn_count",
+            "g_state",
+            "g_measured",
+            "g_pwm_duty",
+            "g_uart_tx_count",
+            "g_uart_rx_count",
+            "g_watchdog_kick",
+            "g_loop_time_us",
+            "g_debug_counter"
+        ];
+        function reset() {
+            overrides.clear();
+            state.inReset = true;
+        }
+        function boot() {
+            state.inReset = false;
+        }
         function tick() {
+            if (state.inReset) return;
+            state.now = Date.now();
+            state.loopUs = 840 + Math.round(noise(60));
             state.temp = round(state.temp + noise(0.06) + (36.5 - state.temp) * 0.02, 3);
             state.rpm = Math.max(0, Math.min(65535, Math.round(state.rpm + noise(6))));
             state.voltage = round(state.voltage + noise(0.02), 3);
@@ -839,7 +874,7 @@
                 return round(value + noise(0.02), 4);
             });
             state.imu.temp = round(state.temp + noise(0.05), 3);
-            state.imu.timestamp = Date.now() & 0xffffffff;
+            state.imu.timestamp = state.now & 0xffffffff;
         }
         function scalarSamples(names, t) {
             var values = {
@@ -849,7 +884,7 @@
                 g_bus_current: state.current,
                 g_error_count: state.errors,
                 g_warn_count: state.warns,
-                g_state: Math.floor(Date.now() / 2000) % 4,
+                g_state: Math.floor(state.now / 2000) % 4,
                 g_target_rpm: 1500,
                 g_pid_kp: 1.85,
                 g_pid_ki: 0.42,
@@ -857,13 +892,13 @@
                 g_setpoint: 1500,
                 g_measured: state.rpm,
                 g_pwm_duty: Math.min(1000, Math.round(state.rpm / 2)),
-                g_uart_tx_count: 12844 + (Math.floor(Date.now() / 1000) % 1000),
-                g_uart_rx_count: 9120 + (Math.floor(Date.now() / 1000) % 700),
+                g_uart_tx_count: 12844 + (Math.floor(state.now / 1000) % 1000),
+                g_uart_rx_count: 9120 + (Math.floor(state.now / 1000) % 700),
                 g_can_last_id: 0x18ff50e5,
                 g_watchdog_kick: 88213,
                 g_heap_used: 35456,
                 g_stack_high_water: 412,
-                g_loop_time_us: 840 + Math.round(noise(60)),
+                g_loop_time_us: state.loopUs,
                 g_control_dt: 0.001,
                 g_temp_limit: 85,
                 g_motor_enabled: 1,
@@ -871,6 +906,10 @@
                 system_core_clock: 168000000,
                 SystemCoreClock: 168000000
             };
+            if (state.inReset)
+                RESET_ZERO.forEach(function (name) {
+                    values[name] = 0;
+                });
             return (names || [])
                 .map(function (name) {
                     return { name: name, value: overrides.has(name) ? overrides.get(name) : values[name], t: t };
@@ -978,7 +1017,14 @@
             }
             return null;
         }
-        return { tick: tick, scalarSamples: scalarSamples, compositeSample: compositeSample, write: write };
+        return {
+            tick: tick,
+            reset: reset,
+            boot: boot,
+            scalarSamples: scalarSamples,
+            compositeSample: compositeSample,
+            write: write
+        };
     }
 
     /* ------------------------------------------------------------------ probes */
@@ -1015,6 +1061,55 @@
 
     // The extension's connectedProbes message for the selected device and any driver switched in the mock.
     // Automatic mode checks the chip it recorded and, among several J-Links, uses the one that chip is on.
+    /* ---------------------------------------------------------------- sampling */
+
+    // One sampling state shared by the sidebar and the waveform panel, as the fields the extension posts in
+    // liveStatus (samplingCoordinator.status, debugLaunch.prepareProbe, debugSessionBridge.status).
+    var SAMPLING_PHASES = {
+        stopped: { mode: "stopped", key: "sb.stopped", source: "none", intent: false },
+        connecting: { mode: "standalone-pending", key: "sb.stopped", source: "none", intent: true },
+        sampling: { mode: "standalone-sampling", key: "sb.sampling", source: "openocd", intent: true, live: true },
+        restoring: { mode: "standalone-pending", key: "live.restoring", source: "none", intent: true },
+        "debug-waiting": { mode: "debug-running-waiting", key: "live.debugWaiting", source: "dap", intent: true },
+        "debug-reading": {
+            mode: "debug-paused-reading",
+            key: "live.dapReading",
+            source: "dap",
+            intent: true,
+            canRead: true
+        },
+        "debug-ready": { mode: "debug-paused-ready", key: "live.dapReady", source: "dap", intent: true, live: true },
+        "debug-disabled": { mode: "debug-disabled", key: "sb.stopped", source: "dap", intent: false, canRead: true },
+        "debug-sampling": {
+            mode: "debug-running-sampling",
+            key: "live.debugRuntimeSampling",
+            source: "openocd",
+            intent: true,
+            live: true
+        }
+    };
+
+    function samplingStatus(phase) {
+        var entry = SAMPLING_PHASES[phase];
+        var live = !!entry.live;
+        return {
+            type: "liveStatus",
+            running: entry.intent,
+            intentEnabled: entry.intent,
+            canRead: live || !!entry.canRead,
+            canWrite: live,
+            haltWrite: live && entry.mode !== "debug-running-sampling",
+            snapshotReady: live,
+            source: entry.source,
+            mode: entry.mode,
+            key: entry.key
+        };
+    }
+
+    function samplingActive(phase) {
+        return phase === "sampling" || phase === "debug-sampling";
+    }
+
     function connectedProbes(selectedId, drivers, automatic) {
         var selected =
             PROBES.find(function (probe) {
@@ -1080,6 +1175,9 @@
         peripheralRegisters: peripheralRegisters,
         peripheralReadResult: peripheralReadResult,
         peripheralWriteResult: peripheralWriteResult,
-        createSimulator: createSimulator
+        ELF_PATH: ELF_PATH,
+        createSimulator: createSimulator,
+        samplingStatus: samplingStatus,
+        samplingActive: samplingActive
     };
 });

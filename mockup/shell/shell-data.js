@@ -535,11 +535,7 @@
 
     var DEBUG_CONSOLE_LINES = [
         { cls: "prompt", text: "> EmberProbe DAP 会话已启动 (J-Link · SWD 4000 kHz)" },
-        { cls: "", text: "已加载符号: EmberProbeDemo.elf (28 个全局变量, 6 个 FreeRTOS 任务)" },
-        { cls: "", text: "断点命中 main.c:103 — ControlTask()" },
-        { cls: "dim", text: "  g_setpoint = 1500.0" },
-        { cls: "dim", text: "  g_measured = 1447.0" },
-        { cls: "dim", text: "  pid.output = 742.16" }
+        { cls: "", text: "已加载符号: EmberProbeDemo.elf (28 个全局变量, 6 个 FreeRTOS 任务)" }
     ];
 
     var COMMANDS = [
