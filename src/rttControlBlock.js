@@ -182,6 +182,10 @@ const commands = Object.freeze({
 });
 
 const CHANNEL_MODES = ["skip", "trim", "block"];
+const CHANNEL_FORMATS = ["text", "raw", "hex"];
+// WHATWG labels, all available from TextDecoder in the extension host (verified on VS Code 1.136 / Electron 42).
+const CHANNEL_ENCODINGS = ["utf-8", "gbk", "gb18030", "big5", "shift_jis", "euc-kr", "latin1"];
+const CHANNEL_FIELDS = ["index", "mode", "format", "encoding", "down"];
 const CHANNEL_LINE = /^(\d+): (.*) (\d+) (\d+)$/;
 
 // Parses `rtt channels` into { up: [...], down: [...] } with { index, name, size, flags, mode }:
@@ -223,14 +227,67 @@ function parseChannelList(text) {
     return result;
 }
 
+// Normalize once per manual start; retries and session following must not acquire new write intent from settings.
+function normalizeRttSettings(settings = {}) {
+    const selected = settings.channels;
+    const encoding = settings.encoding ?? "utf-8";
+    if (!CHANNEL_ENCODINGS.includes(encoding))
+        throw rttError("RTT_INVALID_CHANNELS", `Invalid RTT encoding: ${encoding}`);
+    let channels;
+    if (selected !== undefined) {
+        if (!Array.isArray(selected) || !selected.length || selected.length > 16)
+            throw rttError("RTT_INVALID_CHANNELS", "RTT channels must list 1..16 unique channel entries");
+        const seen = new Set();
+        channels = selected.map((entry) => {
+            const object = entry !== null && typeof entry === "object" && !Array.isArray(entry);
+            if (object && Object.keys(entry).some((key) => !CHANNEL_FIELDS.includes(key)))
+                throw rttError("RTT_INVALID_CHANNELS", "Unknown RTT channel configuration field");
+            const index = object ? entry.index : entry;
+            integerIn(index, 0, MAX_CHANNEL, "RTT_INVALID_CHANNELS", "channel");
+            const mode = object ? entry.mode : undefined;
+            if (mode !== undefined && !CHANNEL_MODES.includes(mode))
+                throw rttError("RTT_INVALID_CHANNELS", `Invalid RTT channel mode: ${mode}`);
+            if (seen.has(index)) throw rttError("RTT_INVALID_CHANNELS", `Duplicate RTT channel: ${index}`);
+            seen.add(index);
+            const { format = "text", encoding: channelEncoding = encoding, down = index } = object ? entry : {};
+            if (!CHANNEL_FORMATS.includes(format))
+                throw rttError("RTT_INVALID_CHANNELS", `Invalid RTT channel format: ${format}`);
+            if (!CHANNEL_ENCODINGS.includes(channelEncoding))
+                throw rttError("RTT_INVALID_CHANNELS", `Invalid RTT encoding: ${channelEncoding}`);
+            integerIn(down, 0, MAX_CHANNEL, "RTT_INVALID_CHANNELS", "channel");
+            return Object.freeze({
+                index,
+                ...(mode === undefined ? {} : { mode }),
+                format,
+                encoding: channelEncoding,
+                down
+            });
+        });
+        Object.freeze(channels);
+    }
+    const configuredPollingIntervalMs = settings.pollingIntervalMs ?? 10;
+    integerIn(configuredPollingIntervalMs, 0, 60000, "RTT_INVALID_INTERVAL", "pollingIntervalMs");
+    return Object.freeze({
+        encoding,
+        controlBlockAddress: settings.controlBlockAddress,
+        searchRange: settings.searchRange ? Object.freeze({ ...settings.searchRange }) : undefined,
+        channels,
+        configuredPollingIntervalMs,
+        pollingIntervalMs: configuredPollingIntervalMs || 100
+    });
+}
+
 module.exports = {
     AUTO_SCAN_MAX_BYTES,
+    CHANNEL_ENCODINGS,
+    CHANNEL_FORMATS,
     CONTROL_BLOCK_SYMBOL,
     MANUAL_SCAN_MAX_BYTES,
     MIN_CONTROL_BLOCK_SIZE,
     RTT_ID,
     SCAN_SLICE_BYTES,
     commands,
+    normalizeRttSettings,
     parseChannelList,
     resolveControlBlock,
     scanSlices

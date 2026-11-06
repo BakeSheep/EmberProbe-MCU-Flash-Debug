@@ -6,7 +6,9 @@
 
 const { commands, parseChannelList } = require("./rttControlBlock");
 
-const OPERATIONS = ["start", "channels", "serverStart", "serverStop", "stop"];
+const { MAX_TARGET_TRANSACTION_MS, targetTransaction, validateTargetRequest } = require("./rttTarget");
+
+const OPERATIONS = ["start", "channels", "serverStart", "serverStop", "stop", "snapshot", "setMode"];
 // A transaction is a bounded command list; the controller splits larger channel sets across calls.
 const MAX_SERVER_COMMANDS = 16;
 // An OpenOCD without the rtt command set cannot gain it by retrying. Other Tcl failures ("control block not found"
@@ -50,21 +52,28 @@ function buildPlan(request) {
         throw rttError("RTT_INVALID_OPERATION", `Invalid RTT operation: ${operation}`, {
             operation: operation === undefined ? null : String(operation)
         });
+    if (operation === "snapshot" || operation === "setMode") {
+        validateTargetRequest(request);
+        return { operation, target: true, steps: [] };
+    }
     if (operation === "start") {
         if (!request.block || typeof request.block !== "object")
             throw rttError("RTT_INVALID_CONTROL_BLOCK", "RTT start requires a control block { address, size }", {
                 block: request.block ?? null
             });
-        const interval =
-            request.pollingIntervalMs === undefined ? [] : [commands.pollingInterval(request.pollingIntervalMs)];
-        // `rtt start` searches once and fails when the control block is missing; the controller repeats it. The
-        // listing runs last and may still be empty when the firmware has not configured an up buffer yet.
+        const interval = commands.pollingInterval(
+            request.pollingIntervalMs === undefined ? 10 : request.pollingIntervalMs
+        );
+        // Stop any existing timer before starting. The bundled OpenOCD registers a timer if the interval is set
+        // before start; setting it afterwards also applies it when reusing an already-started session.
+        // The listing may still be empty while firmware initializes its up buffers.
         return {
             operation,
             steps: [
                 { command: commands.setup(request.block), channels: false },
-                ...interval.map((command) => ({ command, channels: false })),
+                { command: commands.stop(), channels: false },
                 { command: commands.start(), channels: false },
+                { command: interval, channels: false },
                 { command: commands.channels(), channels: true }
             ],
             parseChannels: true
@@ -92,16 +101,24 @@ async function runStep(session, step) {
     }
 }
 
-// request: { operation: "start"|"channels"|"serverStart"|"serverStop"|"stop", block?, pollingIntervalMs?, servers?,
-// ports? }. Returns { channels? }; start and channels parse the channel listing, which may be empty until the firmware
-// configures its up buffers.
+// request: { operation: "start"|"channels"|"serverStart"|"serverStop"|"stop"|"snapshot"|"setMode", block?,
+// pollingIntervalMs?, servers?, ports?, channels?, channel?, mode?, expected? }. Snapshot and mode operations use the
+// verified ARM32 layout in rttTarget; all operations share this lock and target epoch guard.
 async function rttControl(session, request, timeoutMs = 5000) {
-    const plan = buildPlan(request);
+    let plan;
+    try {
+        plan = buildPlan(request);
+    } catch (error) {
+        error.retryable = false;
+        if (request?.operation === "setMode")
+            error.details = { ...error.details, operation: "setMode", resultUnknown: false, completed: [] };
+        throw error;
+    }
     // The budget is checked between OpenOCD commands; each command is bounded by the Tcl RPC timeout.
-    const budgetMs = Math.min(Math.max(Number(timeoutMs) || 5000, 1), 5000);
+    const budgetMs = Math.min(Math.max(Number(timeoutMs) || 5000, 1), plan.target ? MAX_TARGET_TRANSACTION_MS : 5000);
     const deadline = session.clock.now() + budgetMs;
     const guard = { targetEpoch: session.targetEpoch, requireSampling: false };
-    await session._acquireExclusive(deadline);
+    let acquired = false;
     const output = {};
     let executed = 0;
     const check = () => {
@@ -111,10 +128,19 @@ async function rttControl(session, request, timeoutMs = 5000) {
                 code: "LIVE_READ_BUDGET_EXCEEDED",
                 details: { maxTransactionMs: budgetMs }
             });
-        if (session.stopped || !session.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
+        if (session.stopped || !session.tcl.connected)
+            throw rttError("RTT_DISCONNECTED", "OpenOCD Tcl service is not connected");
     };
     try {
+        await session._acquireExclusive(deadline);
+        acquired = true;
         check();
+        if (plan.target)
+            return await targetTransaction(session, request, check, async (command) => {
+                const response = await session.tcl.sendChecked(command);
+                executed++;
+                return response;
+            });
         let channelText = "";
         for (const step of plan.steps) {
             check();
@@ -133,8 +159,10 @@ async function rttControl(session, request, timeoutMs = 5000) {
         }
         return output;
     } catch (error) {
-        if (error?.retryable === undefined) error.retryable = false;
+        if (!error.code) error.code = "RTT_CONTROL_FAILED";
+        if (error?.retryable === undefined || request.operation === "setMode") error.retryable = false;
         error.details = {
+            ...(request.operation === "setMode" ? { resultUnknown: false, completed: [] } : {}),
             ...error.details,
             operation: plan.operation,
             executed,
@@ -142,7 +170,7 @@ async function rttControl(session, request, timeoutMs = 5000) {
         };
         throw error;
     } finally {
-        session._releaseExclusive();
+        if (acquired) session._releaseExclusive();
     }
 }
 

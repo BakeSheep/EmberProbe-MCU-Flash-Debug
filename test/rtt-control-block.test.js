@@ -3,10 +3,13 @@
 const assert = require("assert");
 const { scenario } = require("./helpers/scenario");
 const {
+    CHANNEL_ENCODINGS,
+    CHANNEL_FORMATS,
     AUTO_SCAN_MAX_BYTES,
     MIN_CONTROL_BLOCK_SIZE,
     SCAN_SLICE_BYTES,
     commands,
+    normalizeRttSettings,
     parseChannelList,
     resolveControlBlock,
     scanSlices
@@ -22,6 +25,62 @@ const sections = [
     { name: ".sram4", addr: 0x38000000, size: 0x8000, flags: 0x3 },
     { name: ".debug_info", addr: 0, size: 0x9000, flags: 0 }
 ];
+
+scenario("mixed channel settings are frozen, preserve firmware modes and reject ambiguous selections", () => {
+    const input = { channels: [0, { index: 1, mode: "trim" }], pollingIntervalMs: 0 };
+    const result = normalizeRttSettings(input);
+    const defaults = { format: "text", encoding: "utf-8" };
+    assert.deepStrictEqual(result.channels, [
+        { index: 0, ...defaults, down: 0 },
+        { index: 1, mode: "trim", ...defaults, down: 1 }
+    ]);
+    assert.strictEqual(result.pollingIntervalMs, 100);
+    assert.strictEqual(result.configuredPollingIntervalMs, 0);
+    input.channels[1].mode = "block";
+    assert.strictEqual(result.channels[1].mode, "trim");
+    assert.ok(Object.isFrozen(result.channels[1]));
+    assert.strictEqual(normalizeRttSettings().pollingIntervalMs, 10);
+    for (const channels of [
+        [],
+        [1, { index: 1 }],
+        [{ index: 0, mode: "unknown" }],
+        [{ index: 0, address: 0 }],
+        [null],
+        [256]
+    ])
+        assert.throws(() => normalizeRttSettings({ channels }), code("RTT_INVALID_CHANNELS"));
+    for (const pollingIntervalMs of [-1, 60001, 1.5, "10"])
+        assert.throws(() => normalizeRttSettings({ pollingIntervalMs }), code("RTT_INVALID_INTERVAL"));
+});
+
+scenario("channels take a format, an encoding and a down channel, and bad values are refused", () => {
+    const { channels, encoding } = normalizeRttSettings({
+        encoding: "gbk",
+        channels: [0, { index: 1, format: "hex", encoding: "latin1", down: 3 }]
+    });
+    assert.strictEqual(encoding, "gbk");
+    assert.deepStrictEqual(channels, [
+        { index: 0, format: "text", encoding: "gbk", down: 0 },
+        { index: 1, format: "hex", encoding: "latin1", down: 3 }
+    ]);
+    for (const settings of [
+        { encoding: "koi8-r" },
+        { channels: [{ index: 0, format: "json" }] },
+        { channels: [{ index: 0, encoding: "utf-16" }] },
+        { channels: [{ index: 0, down: 256 }] },
+        { channels: [{ index: 0, input: true }] }
+    ])
+        assert.throws(() => normalizeRttSettings(settings), { code: "RTT_INVALID_CHANNELS" });
+});
+
+scenario("the channels schema offers exactly the validated formats and encodings", () => {
+    const { contributes } = require("../package.json");
+    const { properties } = contributes.configuration.find((entry) => entry.id === "emberprobe.rtt");
+    const fields = properties["emberprobe.rtt.channels"].items.oneOf[1].properties;
+    assert.deepStrictEqual(fields.format.enum, CHANNEL_FORMATS);
+    assert.deepStrictEqual(fields.encoding.enum, CHANNEL_ENCODINGS);
+    assert.deepStrictEqual(properties["emberprobe.rtt.encoding"].enum, CHANNEL_ENCODINGS);
+});
 
 scenario("configured address wins over the ELF symbol", () => {
     assert.deepStrictEqual(

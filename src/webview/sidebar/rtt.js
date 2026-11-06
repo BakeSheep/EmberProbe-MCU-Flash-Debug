@@ -18,6 +18,23 @@
         trim: { label: "rtt.mode.trim", hint: "rtt.modeHint.trim" },
         block: { label: "rtt.mode.block", hint: "rtt.modeHint.block" }
     };
+    const TELEMETRY_REASONS = {
+        RTT_EXACT_ADDRESS_REQUIRED: "rtt.err.exactAddressRequired",
+        RTT_TARGET_INVALID: "rtt.err.targetInvalid",
+        RTT_MODE_TARGET_CHANGED: "rtt.err.modeTargetChanged",
+        RTT_ACCESS_UNSUPPORTED: "rtt.err.accessUnsupported",
+        RTT_CHANNEL_UNINITIALIZED: "rtt.err.unknownChannel",
+        RTT_INVALID_LAYOUT: "rtt.err.targetInvalid",
+        RTT_READ_FAILED: "rtt.err.targetInvalid",
+        RTT_VALUE_CHANGED: "rtt.err.targetChanged",
+        RTT_IDENTITY_CHANGED: "rtt.err.targetChanged",
+        RTT_TARGET_BUDGET_EXCEEDED: "rtt.err.targetBudget",
+        LIVE_READ_BUDGET_EXCEEDED: "rtt.err.targetBudget",
+        PROBE_CONNECTION_BUSY_TIMEOUT: "rtt.err.targetBudget",
+        LIVE_READ_CANCELLED: "rtt.err.cancelled",
+        RTT_TELEMETRY_PENDING: "rtt.telemetryPending",
+        RTT_NOT_RUNNING: "rtt.err.notRunning"
+    };
     const SVG_NS = "http://www.w3.org/2000/svg";
     function inputIcon(label) {
         const svg = document.createElementNS(SVG_NS, "svg");
@@ -65,6 +82,48 @@
             if (current === "starting" || current === "pending-host") return "busy";
             return message.error || message.reason === "host-lost" ? "err" : "";
         }
+        function modeText(mode) {
+            const labels = MODE_LABELS[mode];
+            return labels ? t(labels.label) : mode || t("rtt.metricUnknown");
+        }
+        function channelDiagnostics(message, channel, buffer) {
+            const diagnostic = document.createElement("div");
+            diagnostic.className = "rtt-ch-diagnostics";
+            const unknown = t("rtt.metricUnknown");
+            const rate = message.state === "running" ? buffer?.rateBytesPerSecond : null;
+            const parts = [
+                t("rtt.receiveRate", { rate: Number.isFinite(rate) && rate >= 0 ? Math.round(rate) : unknown }),
+                t("rtt.receivedBytes", { bytes: buffer?.receivedBytes ?? unknown })
+            ];
+            const telemetry = message.targetTelemetry;
+            const sample = (telemetry?.channels || []).find((entry) => entry.index === channel.index);
+            if (
+                message.state === "running" &&
+                telemetry?.available === true &&
+                Number.isFinite(telemetry.sampledAt) &&
+                Number.isSafeInteger(sample?.usedBytes) &&
+                Number.isSafeInteger(sample?.capacity) &&
+                sample.usedBytes >= 0 &&
+                sample.usedBytes <= sample.capacity
+            ) {
+                parts.push(t("rtt.targetOccupancy", { used: sample.usedBytes, capacity: sample.capacity }));
+                diagnostic.title = t("rtt.targetOccupancyHint");
+            } else {
+                const reason = TELEMETRY_REASONS[telemetry?.reason];
+                parts.push(t("rtt.targetOccupancyUnknown", { reason: reason ? t(reason) : unknown }));
+            }
+            parts.push(t("rtt.historyEvictions", { bytes: buffer?.start ?? unknown }));
+            parts.push(t("rtt.targetLossUnknown"));
+            if (channel.modeState === "pending" || channel.modeState === "mismatch")
+                parts.push(
+                    t(channel.modeState === "pending" ? "rtt.modePending" : "rtt.modeMismatch", {
+                        desired: modeText(channel.desiredMode),
+                        actual: modeText(channel.mode)
+                    })
+                );
+            diagnostic.textContent = parts.join(" · ");
+            return diagnostic;
+        }
         // Channel names come from the firmware, so they render as text nodes, never as markup.
         function renderChannels(message) {
             channels.replaceChildren();
@@ -78,7 +137,7 @@
                 return;
             }
             const down = new Map((message.channels?.down || []).map((channel) => [channel.index, channel]));
-            const connected = new Map((message.buffers || []).map((buffer) => [buffer.channel, buffer.connected]));
+            const buffers = new Map((message.buffers || []).map((buffer) => [buffer.channel, buffer]));
             for (const channel of up) {
                 const row = document.createElement("div");
                 row.className = "rtt-ch";
@@ -91,18 +150,20 @@
                 const modeLabels = MODE_LABELS[channel.mode];
                 const mode = document.createElement("span");
                 mode.className = "tag" + (channel.mode === "block" ? " warn" : "");
-                mode.textContent = modeLabels ? t(modeLabels.label) : channel.mode;
+                mode.textContent = modeText(channel.mode);
                 if (modeLabels) mode.title = t(modeLabels.hint);
                 row.append(index, name, mode);
-                if ((down.get(channel.index)?.size || 0) > 0) row.append(inputIcon(t("rtt.hasInput")));
-                const online = connected.get(channel.index) !== false;
+                if ((down.get(channel.downChannel ?? channel.index)?.size || 0) > 0)
+                    row.append(inputIcon(t("rtt.hasInput")));
+                const buffer = buffers.get(channel.index);
+                const online = buffer?.connected !== false;
                 const link = t(online ? "rtt.connected" : "rtt.disconnected");
                 const dot = document.createElement("i");
                 dot.className = "rtt-ch-dot" + (online ? "" : " off");
                 dot.setAttribute("role", "img");
                 dot.setAttribute("aria-label", link);
                 dot.title = link;
-                row.append(dot);
+                row.append(dot, channelDiagnostics(message, channel, buffer));
                 channels.append(row);
             }
         }

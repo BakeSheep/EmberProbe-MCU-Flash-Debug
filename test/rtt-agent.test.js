@@ -38,6 +38,10 @@ function fixture() {
             channels: null,
             missingChannels: [],
             buffers: [],
+            configuredPollingIntervalMs: null,
+            pollingIntervalMs: null,
+            targetDroppedBytes: null,
+            targetTelemetry: { available: false, reason: "RTT_NOT_RUNNING", sampledAt: null, channels: [] },
             error: null
         });
         controller._servers = [{ channel: 0, port: 12345 }];
@@ -46,6 +50,100 @@ function fixture() {
         assert.deepStrictEqual(status.error, { code: "RTT_START_TIMEOUT", message: "failure" });
         assert.strictEqual("servers" in status, false);
         assert.deepStrictEqual(JSON.parse(JSON.stringify(status)), status);
+    });
+
+    await scenario("Agent status keeps uncertain and partial mode outcomes while filtering private details", () => {
+        const { controller, routes } = fixture();
+        controller.error = Object.assign(new Error("mode could not be verified"), {
+            code: "RTT_READBACK_MISMATCH",
+            details: {
+                resultUnknown: true,
+                writeAcknowledged: true,
+                attempted: 0x20000030,
+                expectedFlags: 2,
+                actualFlags: 1,
+                completedChannels: [0, 2, -1, "3", 256],
+                completed: [{ index: 0, flags: 2, mode: "block", port: 12345, private: true }, null],
+                port: 12345,
+                socket: { secret: true },
+                commandCount: 10
+            }
+        });
+        assert.deepStrictEqual(routes["rtt.status"]().error, {
+            code: "RTT_READBACK_MISMATCH",
+            message: "mode could not be verified",
+            details: {
+                resultUnknown: true,
+                writeAcknowledged: true,
+                attempted: 0x20000030,
+                expectedFlags: 2,
+                actualFlags: 1,
+                completedChannels: [0, 2],
+                completed: [{ index: 0, flags: 2, mode: "block" }]
+            }
+        });
+    });
+
+    await scenario("Agent status and reads project cached diagnostics without starting or refreshing hardware", () => {
+        const { controller, routes } = fixture();
+        let statusReads = 0;
+        const buffer = new RttBuffer({ generation: 3, maxBytes: 4 });
+        buffer.append("abcdef");
+        const cached = {
+            state: "running",
+            configuredPollingIntervalMs: 0,
+            pollingIntervalMs: 100,
+            targetDroppedBytes: null,
+            targetTelemetry: {
+                available: true,
+                sampledAt: 1234,
+                reason: null,
+                channels: [{ index: 0, usedBytes: 7, capacity: 15, size: 16, mode: "trim", flags: 1 }]
+            },
+            channels: { up: [{ index: 0, mode: "trim", desiredMode: "block", modeState: "mismatch" }], down: [] },
+            buffers: [{ channel: 0, connected: true, ...buffer.stats(), receivedBytes: 6, rateBytesPerSecond: 0 }],
+            servers: [{ channel: 0, port: 12345 }],
+            error: null
+        };
+        controller.status = () => {
+            statusReads++;
+            return cached;
+        };
+        controller.start = () => assert.fail("cached observations must not start RTT");
+        controller.state = "running";
+        controller._buffers.set(0, buffer);
+        const status = routes["rtt.status"]();
+        for (const key of [
+            "configuredPollingIntervalMs",
+            "pollingIntervalMs",
+            "targetDroppedBytes",
+            "targetTelemetry",
+            "channels",
+            "buffers"
+        ])
+            assert.deepStrictEqual(status[key], cached[key]);
+        assert.strictEqual("servers" in status, false);
+        const read = routes["rtt.read"]({ generation: 3, cursor: 0 });
+        assert.strictEqual(read.droppedBytes, 2);
+        assert.strictEqual(read.text, "cdef");
+        assert.strictEqual(statusReads, 1, "read uses cached bytes without querying status or telemetry");
+    });
+
+    await scenario("a GBK channel reads as text without cutting a character across reads", () => {
+        const { controller, routes } = fixture();
+        const buffer = new RttBuffer({ generation: 1 });
+        buffer.append(Buffer.of(0xce, 0xc2, 0xb6));
+        controller.state = "running";
+        controller.channels = { up: [{ index: 0, encoding: "gbk" }], down: [] };
+        controller._buffers.set(0, buffer);
+        const first = routes["rtt.read"]({ generation: 1, cursor: 0 });
+        assert.strictEqual(first.text, "温");
+        assert.strictEqual(first.textEncoding, "gbk");
+        assert.strictEqual(first.nextCursor, 2);
+        buffer.append(Buffer.of(0xc8));
+        const second = routes["rtt.read"]({ generation: 1, cursor: first.nextCursor });
+        assert.strictEqual(second.text, "度");
+        assert.strictEqual(second.nextCursor, 4);
     });
 
     await scenario("All RTT routes reject non-objects and unknown keys before accessing the host", async () => {

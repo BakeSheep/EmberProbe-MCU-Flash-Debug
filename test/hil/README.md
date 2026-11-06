@@ -106,13 +106,13 @@ npm run bundle
 npm run test:hil:mcp -- --profile h750-jlink --workspace C:/path/to/project --phases protocol
 ```
 
-| Phase | Effect on the board | Needs `EMBERPROBE_HIL_CONFIRM=YES` |
-|---|---|---|
-| `protocol` | None. Checks the tool catalogue, prompts, argument validation, workspace identity, permissions and idle probe | No |
-| `read` | Opens the probe, samples, and briefly starts and stops live sampling. Adds a variable to the sidebar watch list | Yes |
-| `confirm` | Writes `variables.write` and `checks.peripherals.write`, then restores them. Covers denial, the chat fallback, one-time IDs and the 24-hour permission | Yes |
-| `debug` | Attaches without reset or download, halts, steps, hits `checks.breakpoint`, detaches, reads fault state | Yes |
-| `flash` | Erases and programs the workspace ELF | Yes |
+| Phase      | Effect on the board                                                                                                                                    | Needs `EMBERPROBE_HIL_CONFIRM=YES` |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `protocol` | None. Checks the tool catalogue, prompts, argument validation, workspace identity, permissions and idle probe                                          | No                                 |
+| `read`     | Opens the probe, samples, and briefly starts and stops live sampling. Adds a variable to the sidebar watch list                                        | Yes                                |
+| `confirm`  | Writes `variables.write` and `checks.peripherals.write`, then restores them. Covers denial, the chat fallback, one-time IDs and the 24-hour permission | Yes                                |
+| `debug`    | Attaches without reset or download, halts, steps, hits `checks.breakpoint`, detaches, reads fault state                                                | Yes                                |
+| `flash`    | Erases and programs the workspace ELF                                                                                                                  | Yes                                |
 
 The default is `protocol,read`; `confirm`, `debug` and `flash` run only when named in `--phases`, and `protocol` always runs first. The script answers confirmations itself, so setting the variable is the operator's approval for those writes. This is why the baseline does not prove human confirmation; the harness acceptance does.
 
@@ -180,7 +180,26 @@ $env:EMBERPROBE_HIL_CONFIRM = 'YES'
 node test/hil/run-smoke.js --suite rtt --config <file> --profile <name>
 ```
 
-`--suite rtt` runs `rtt-smoke.test.js` instead of the smoke test. It needs firmware with the output and down-channel commands of `H750_RttTest`. `EMBERPROBE_RTT_ONLY` limits a run to steps whose names match. The report is `test-results/hil-rtt-<platform>-<profile>.json`. The suite flashes the board and leaves it running the profile's firmware.
+`--suite rtt` runs `rtt-smoke.test.js` instead of the smoke test. It needs firmware with the output and down-channel commands of `H750_RttTest`. `EMBERPROBE_RTT_ONLY` limits a run to steps whose names match; include `setup|chip.read|flash|ui.start` when selecting stress steps in a fresh host. The report is `test-results/hil-rtt-<platform>-<profile>.json`. The suite flashes the board and leaves it running the profile's firmware.
+
+Stream checks use raw base64 reads of ch1 and ch0's existing `status` command for sequence, written, dropped and lifetime maximum write cycles. They do not read firmware variables or edit the firmware project. Each `burst 64000` must finish exactly 1000 attempts of 64 bytes before a bounded drain matches received bytes to firmware-accepted bytes. Block mode requires all 64000 bytes and 1000 valid, terminated records. Skip/trim may refuse bytes; the report separates attempted, accepted and rejected bytes, raw received bytes, missing complete records, malformed records, unterminated tail bytes, and consumer cursor gaps/resets. A 63-byte tail is never a complete line. `maxWriteCycles` before/after are lifetime maxima, not a subtractable burst duration; `producerCompletedMs` and `elapsedMs` are host wall-clock observations including command/status overhead.
+
+The optional `checks.rtt.stress` profile prepares six comparisons: 100/10 ms polling with standalone RTT in skip mode, sampling coexistence in trim mode, and running-debug coexistence in block mode. Every comparison includes a sustained rate above the old 10240 B/s polling limit and a 64000-byte burst; standalone comparisons also include an 8000 B/s baseline. This avoids a full mode/context/rate matrix. For example, add this inside `checks.rtt` in a dedicated smoke profile:
+
+```json
+"stress": {
+    "enabled": true,
+    "pollingIntervalsMs": [100, 10],
+    "contexts": ["own-session", "live-watch", "debug-server"],
+    "durationMs": 3000,
+    "rate": 32000,
+    "samplingIntervalMs": 100,
+    "completionTimeoutMs": 30000,
+    "drainTimeoutMs": 10000
+}
+```
+
+Use a subset of `contexts` or `pollingIntervalsMs` to shorten an explicitly authorized hardware run. Sustained captures last 1–10 seconds and rates are bounded to 16384–96000 B/s; burst completion and drain deadlines are independently bounded. Host-configured modes are verified against actual channel Flags/mode after UI restart; the fixture's `status` mode is a shadow and is not readback evidence. Reports retain sampling status before/after (actual Hz, effective interval, p95 duration, missed deadlines and host delay), raw receive rate, timeout/disconnect errors and active terminal/file-log settings. Optional `maxSamplingIntervalMs` supplies a hardware-profile acceptance ceiling; there is no universal throughput or coexistence threshold. The prepared cases have not established hardware performance until they are explicitly run and the board/probe/OS/build are recorded.
 
 `--pause` waits for Enter before each profile so the board or probe can be swapped. `--repeat N` (1-50) repeats the debug round. `--platforms win32` or `linux` runs one side; `--distro` selects a non-default WSL distribution; `--skip-bundle` reuses the existing Windows bundle. On a native Linux machine run `EMBERPROBE_HIL_CONFIRM=YES xvfb-run -a npm run test:hil:smoke -- --profile <name>` directly.
 

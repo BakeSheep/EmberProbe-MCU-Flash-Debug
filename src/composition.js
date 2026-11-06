@@ -63,7 +63,9 @@ function createRttController(host, vscode, ManagedOpenOcdSession) {
         vscode,
         ManagedOpenOcdSession,
         onStatus: (status) => host._rttTerminals.onStatus(status),
-        onBeforeStop: () => host._rttTerminalController?.flush()
+        onBeforeStop: () => host._rttTerminalController?.flush(),
+        onData: (channel) => host._rttTerminalController?.dataArrived(channel),
+        onAutoStart: () => void host._rttTerminals.startAutoCommand()
     });
 }
 
@@ -79,11 +81,16 @@ function createRttTerminals(host, vscode) {
             const resolved =
                 directory && (path.isAbsolute(directory) ? directory : root && path.resolve(root, directory));
             const logEnabled = config.get("rtt.logFile.enabled", false) === true;
+            const logRaw = config.get("rtt.logFile.raw", false) === true;
             return {
                 timestamps: config.get("rtt.timestamps", false),
                 logEnabled,
                 logDirectory: resolved || "",
-                logFile: logEnabled && resolved ? path.join(resolved, "rtt.log") : "",
+                logFile: logEnabled && resolved ? path.join(resolved, logRaw ? "rtt.bin" : "rtt.log") : "",
+                logRaw,
+                virtualTerminals: config.get("rtt.virtualTerminals", true),
+                inputMode: config.get("rtt.input.mode", "line"),
+                inputLineEnding: config.get("rtt.input.lineEnding", "lf"),
                 logMaxBytes: config.get("rtt.logFile.maxBytes", 8 * 1024 * 1024),
                 stripAnsi: config.get("rtt.logFile.stripAnsi", true)
             };

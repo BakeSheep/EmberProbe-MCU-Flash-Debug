@@ -110,6 +110,9 @@ class OpenOcdDebugController {
     get stopped() {
         return this.state === "stopped" || !!this.runtime?.stopped;
     }
+    get targetEpoch() {
+        return this.runtime?.targetEpoch;
+    }
     get pollingFailed() {
         return !!this.runtime?.pollingFailed;
     }

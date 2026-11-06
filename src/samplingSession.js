@@ -15,6 +15,9 @@ class SamplingSession {
         this.deliveryEnabled = this.mode !== "debug";
         this.stopped = false;
         this.generation = 0;
+        this._workerTargetEpoch = 0;
+        this._targetInvalidations = 0;
+        this._workerTargetInvalidations = 0;
         this.nextId = 0;
         this.pending = new Map();
         this.worker = new Worker(workerPath, {
@@ -22,6 +25,13 @@ class SamplingSession {
         });
         this.worker.on("message", (message) => {
             if (message.state) {
+                if (Number.isSafeInteger(message.state.targetEpoch))
+                    this._workerTargetEpoch = Math.max(this._workerTargetEpoch, message.state.targetEpoch);
+                if (Number.isSafeInteger(message.state.targetInvalidations))
+                    this._workerTargetInvalidations = Math.max(
+                        this._workerTargetInvalidations,
+                        message.state.targetInvalidations
+                    );
                 if (message.state.childPid) this.childPid = message.state.childPid;
                 this.stopped = message.state.stopped;
                 this.pollingFailed = message.state.pollingFailed === true;
@@ -84,6 +94,9 @@ class SamplingSession {
     request(method, args = []) {
         if (this.stopped && method !== "stop") return Promise.reject(new Error("Sampling session stopped"));
         if (this.exited) return Promise.reject(new Error("Sampling worker exited"));
+        // Invalidate on the host before the Worker can deliver an older transaction result. Acknowledged
+        // invalidations are counted separately from worker epochs, which also advance on disconnect/stop.
+        if (method === "invalidateTarget") this._targetInvalidations++;
         const id = ++this.nextId;
         return new Promise((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
@@ -148,6 +161,9 @@ class SamplingSession {
     setPauseReason(reason) {
         this._latestStats = { ...this.stats(), pauseReason: reason || null };
         this.notify("setPauseReason", [reason]);
+    }
+    get targetEpoch() {
+        return this._workerTargetEpoch + this._targetInvalidations - this._workerTargetInvalidations;
     }
     invalidateTarget() {
         this.notify("invalidateTarget", []);

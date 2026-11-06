@@ -111,7 +111,8 @@ function resolveChecks(raw = {}, profile, platform) {
             nosymElf: raw.rtt.nosymElf ? platformPath(raw.rtt.nosymElf, platform, "checks.rtt.nosymElf", profile) : "",
             sectionScan: raw.rtt.sectionScan !== false,
             scanSpeedKhz: Number(raw.rtt.scanSpeedKhz ?? 0),
-            searchRange: raw.rtt.searchRange || null
+            searchRange: raw.rtt.searchRange || null,
+            stress: raw.rtt.stress || null
         };
     if (raw.negative)
         checks.negative = {

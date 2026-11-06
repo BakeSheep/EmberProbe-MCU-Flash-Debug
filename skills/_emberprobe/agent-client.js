@@ -108,6 +108,12 @@ const DIAGNOSTICS = {
         ["仅按用户要求通过 {{config}} 修正 RTT 通道选择。"],
         false
     ],
+    RTT_MODE_REQUIRES_UI_START: [
+        "rtt_configuration",
+        "RTT 配置了通道模式覆盖，只能由用户在 VS Code 中启动。",
+        ["请用户从 EmberProbe 侧栏或命令面板启动 RTT，之后可以继续读取。"],
+        false
+    ],
     RTT_INVALID_CONTROL_BLOCK: ["rtt_firmware", "RTT 控制块无效。", ["检查固件初始化和控制块地址是否匹配。"], false],
     BRIDGE_UNAVAILABLE: [
         "extension",

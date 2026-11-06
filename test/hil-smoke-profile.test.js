@@ -115,7 +115,8 @@ const checked = withProfile({
             write: { target: "TIM7.PSC", value: 1 },
             reject: [{ target: "TIM7.EGR", value: "1", code: "PERIPHERAL_WRITE_NOT_ALLOWED" }]
         },
-        negative: { readOnly: "uxTopUsedPriority" }
+        negative: { readOnly: "uxTopUsedPriority" },
+        rtt: { stress: { enabled: true, rate: 96000 } }
     }
 });
 const linuxChecked = resolveProfile(checked, "h750-jlink", "linux");
@@ -127,6 +128,7 @@ assert.deepStrictEqual(linuxChecked.checks.sampling, {
     intervalMs: 50
 });
 assert.strictEqual(linuxChecked.checks.breakpoint, "App_Tick");
+assert.deepStrictEqual(linuxChecked.checks.rtt.stress, { enabled: true, rate: 96000 });
 assert.deepStrictEqual(linuxChecked.checks.peripherals.write, { target: "TIM7.PSC", value: "1" });
 assert.deepStrictEqual(linuxChecked.checks.negative, { readOnly: "uxTopUsedPriority", outOfBounds: null });
 const badCheck = (checks, pattern, extra = {}) =>

@@ -141,7 +141,7 @@ function makeService({ channels = oneChannel, settings = {}, vscode } = {}) {
         vscode: vscode || fakeVscode(),
         clock,
         controller: () => controller,
-        t: (key) => key,
+        t: (key, params) => key + (params?.bytes !== undefined ? ` ${params.bytes}` : ""),
         settings: () => ({ timestamps: false, logFile: "", logMaxBytes: 8 * 1024 * 1024, ...settings }),
         onNotice: (notice, id) => {
             notices.push(notice);
@@ -243,6 +243,181 @@ const firedOf = (terminal) => {
         await service.stopCommand();
     });
 
+    await scenario("the line ending setting applies to the next line", async () => {
+        const settings = { inputLineEnding: "crlf" };
+        const { service, controller, vscode } = makeService({ settings });
+        await service.startCommand();
+        const { pty } = vscode.terminals[0];
+        pty.handleInput("a\r");
+        settings.inputLineEnding = "none";
+        pty.handleInput("\r");
+        pty.handleInput("b\r");
+        settings.inputLineEnding = "cr";
+        pty.handleInput("c\r");
+        assert.deepStrictEqual(
+            controller.writes.map((write) => write.data),
+            ["a\r\n", "b", "c\r"]
+        );
+        await service.stopCommand();
+    });
+
+    await scenario("raw input sends keystrokes at once with no local echo", async () => {
+        const { service, controller, vscode } = makeService({ settings: { inputMode: "raw" } });
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        const { pty } = vscode.terminals[0];
+        pty.handleInput("a");
+        pty.handleInput("\u0003");
+        pty.handleInput("\u001b[A");
+        pty.handleInput("\r");
+        assert.deepStrictEqual(
+            controller.writes.map((write) => write.data),
+            ["a", "\u0003", "\u001b[A", "\r"]
+        );
+        assert.strictEqual(fired(), "");
+        await service.stopCommand();
+    });
+
+    await scenario("raw input over the down buffer is refused whole", async () => {
+        const { service, controller, vscode } = makeService({ channels: twoChannels, settings: { inputMode: "raw" } });
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        vscode.terminals[0].pty.handleInput("x".repeat(16));
+        assert.deepStrictEqual(controller.writes, []);
+        assert.ok(fired().includes("rtt.inputTooLong 16"));
+        vscode.terminals[1].pty.handleInput("x");
+        assert.deepStrictEqual(controller.writes, [], "a channel with no down buffer sends nothing");
+        await service.stopCommand();
+    });
+
+    await scenario(
+        "input goes to the mapped down channel's size, and the write stays addressed by up channel",
+        async () => {
+            const channels = {
+                up: [{ ...oneChannel.up[0], downChannel: 1 }],
+                down: [
+                    { index: 0, size: 0 },
+                    { index: 1, size: 8 }
+                ]
+            };
+            const { service, controller, vscode } = makeService({ channels });
+            await service.startCommand();
+            vscode.terminals[0].pty.handleInput("hi\r");
+            assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "hi\n" }]);
+            await service.stopCommand();
+        }
+    );
+
+    await scenario("a channel's format and encoding choose its formatter", async () => {
+        const channels = {
+            up: [
+                { ...oneChannel.up[0], format: "text", encoding: "gbk" },
+                { index: 1, name: "Bin", size: 64, format: "hex", encoding: "utf-8" },
+                { index: 2, name: "Shell", size: 64, format: "raw", encoding: "utf-8" }
+            ],
+            down: []
+        };
+        const { service, controller, clock, vscode } = makeService({ channels });
+        await service.startCommand();
+        const fired = vscode.terminals.map(firedOf);
+        controller.emit(0, Buffer.of(0xce, 0xc2, 0x0a));
+        controller.emit(1, Buffer.of(0x41));
+        controller.emit(2, Buffer.from("\x1b[2J\n"));
+        await clock.advance(100);
+        assert.strictEqual(fired[0](), "温\r\n");
+        assert.strictEqual(fired[1](), `00000000  41${" ".repeat(45)}  |A|\r\n`);
+        assert.strictEqual(fired[2](), "\x1b[2J\n");
+        await service.stopCommand();
+    });
+
+    await scenario("virtual terminals apply only to channel 0 and follow the setting", async () => {
+        const marked = Buffer.concat([Buffer.of(0xff, 0x31), Buffer.from("x\n")]);
+        const run = async (settings) => {
+            const { service, controller, clock, vscode } = makeService({ channels: twoChannels, settings });
+            await service.startCommand();
+            const fired = vscode.terminals.map(firedOf);
+            for (const channel of [0, 2]) controller.emit(channel, marked);
+            await clock.advance(100);
+            const text = fired.map((read) => read());
+            await service.stopCommand();
+            return text;
+        };
+        const [first, second] = await run({});
+        assert.strictEqual(first, "[T1] x\r\n");
+        assert.ok(!second.includes("[T1]"));
+        assert.ok(!(await run({ virtualTerminals: false }))[0].includes("[T1]"));
+    });
+
+    await scenario("with timestamps, arriving bytes take their time at once", async () => {
+        const { service, controller, clock, vscode } = makeService({ settings: { timestamps: true } });
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        controller.emit(0, "a\n");
+        service.dataArrived(0);
+        assert.strictEqual(fired(), `[${formatTimestamp(clock.now())}] a\r\n`);
+        service.dataArrived(9);
+        await service.stopCommand();
+    });
+
+    await scenario("without timestamps, arriving bytes wait for the tick", async () => {
+        const { service, controller, clock, vscode } = makeService();
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        controller.emit(0, "a\n");
+        service.dataArrived(0);
+        assert.strictEqual(fired(), "");
+        await clock.advance(100);
+        assert.strictEqual(fired(), "a\r\n");
+        await service.stopCommand();
+    });
+
+    await scenario("a gap finishes the partial line before its marker", async () => {
+        const { service, controller, clock, vscode } = makeService();
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        controller.emit(0, "partial\r");
+        await clock.advance(100);
+        const read = controller.read;
+        controller.read = (channel, request) => {
+            controller.read = read;
+            return { ...read(channel, request), droppedBytes: 4 };
+        };
+        controller.emit(0, "x");
+        await clock.advance(100);
+        const text = fired();
+        assert.ok(text.indexOf("partial\r") < text.indexOf("rtt.termGap"));
+        assert.ok(text.endsWith("x"));
+        await service.stopCommand();
+    });
+
+    await scenario("a raw log holds the channel's bytes and none of the terminal's text", async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rtt-raw-"));
+        const file = path.join(directory, "rtt.bin");
+        const settings = { logFile: file, logRaw: true, timestamps: true };
+        const { service, controller, clock } = makeService({ settings });
+        await service.startCommand();
+        const bytes = Buffer.of(0x00, 0xff, 0x0a, 0x80);
+        controller.emit(0, bytes);
+        await clock.advance(100);
+        await service.stopCommand();
+        await service.dispose();
+        assert.deepStrictEqual(fs.readFileSync(file), bytes);
+        fs.rmSync(directory, { recursive: true, force: true });
+    });
+
+    await scenario("automatic start keeps focus and reports a failure without throwing", async () => {
+        const { service, controller, notices, vscode } = makeService();
+        const status = await service.startAutoCommand();
+        assert.strictEqual(status.state, "running");
+        assert.strictEqual(vscode.terminals[0].shown, 1, "only the creation show, which keeps focus");
+        await service.stopCommand();
+        controller.start = async () => {
+            throw Object.assign(new Error("nope"), { code: "RTT_INVALID_CHANNELS" });
+        };
+        assert.strictEqual(await service.startAutoCommand(), false);
+        assert.strictEqual(notices.length, 1);
+    });
+
     await scenario("input without a down buffer warns and writes nothing", async () => {
         const channels = { up: oneChannel.up, down: [] };
         const { service, controller, notices, vscode } = makeService({ channels });
@@ -335,6 +510,39 @@ const firedOf = (terminal) => {
         const { service, notices } = makeService();
         assert.strictEqual(service.showTerminals(), false);
         assert.deepStrictEqual(notices, [{ level: "warning", key: "rtt.err.notRunning" }]);
+    });
+
+    await scenario("starts preserve user and Agent origins and localize target and mode policy failures", async () => {
+        const { service, controller, notices } = makeService();
+        const starts = [];
+        controller.start = async (options) => {
+            starts.push(options);
+            return { state: "starting" };
+        };
+        await service.startCommand();
+        await service.startAgentCommand();
+        assert.deepStrictEqual(starts, [{ origin: "user" }, { origin: "agent" }]);
+        for (const [code, key] of [
+            ["RTT_EXACT_ADDRESS_REQUIRED", "rtt.err.exactAddressRequired"],
+            ["RTT_TARGET_INVALID", "rtt.err.targetInvalid"],
+            ["RTT_MODE_REQUIRES_UI_START", "rtt.err.modeRequiresUiStart"],
+            ["RTT_MODE_TARGET_CHANGED", "rtt.err.modeTargetChanged"],
+            ["RTT_READBACK_MISMATCH", "rtt.err.modeVerifyFailed"],
+            ["RTT_ACCESS_UNSUPPORTED", "rtt.err.accessUnsupported"],
+            ["RTT_CHANNEL_UNINITIALIZED", "rtt.err.unknownChannel"],
+            ["RTT_INVALID_LAYOUT", "rtt.err.targetInvalid"],
+            ["RTT_VALUE_CHANGED", "rtt.err.targetChanged"],
+            ["RTT_IDENTITY_CHANGED", "rtt.err.targetChanged"],
+            ["RTT_TARGET_BUDGET_EXCEEDED", "rtt.err.targetBudget"]
+        ]) {
+            const failure = Object.assign(new Error("raw backend text"), { code });
+            controller.start = async () => {
+                throw failure;
+            };
+            await assert.rejects(service.startAgentCommand(), (error) => error === failure);
+            assert.strictEqual(notices.at(-1).error.i18nKey, key);
+        }
+        service.dispose();
     });
 
     await scenario("a start failure maps its code to an i18n key", async () => {
@@ -586,7 +794,7 @@ const firedOf = (terminal) => {
             const log = fs.readFileSync(logFile, "utf8");
             assert.ok(log.startsWith("sent\r\nfirst\r\n"), log.slice(0, 40));
             assert.ok(!log.includes("dropped"));
-            assert.ok(log.includes("rtt.termGap"), "the gap is recorded");
+            assert.ok(log.includes("rtt.termGap 37856\r\n"), "the exact reader gap is recorded");
             assert.ok(log.includes("rtt.termReattached"), "the attachment boundary is recorded");
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -737,7 +945,7 @@ const firedOf = (terminal) => {
         await service.startCommand();
         const pty = vscode.terminals[0].pty;
         pty.handleInput("中".repeat(400) + "\r");
-        assert.strictEqual(Buffer.byteLength(controller.writes[0].data), 1024);
+        assert.strictEqual(Buffer.byteLength(controller.writes[0].data), MAX_INPUT_BYTES - 1);
         pty.handleInput("😀\b好\r");
         assert.strictEqual(controller.writes[1].data, "好\n");
         await service.stopCommand();
@@ -761,6 +969,71 @@ const firedOf = (terminal) => {
         assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "new\n" }]);
         assert.ok(fired().endsWith("new\r\n"));
         assert.ok(!fired().includes("�"));
+        await service.stopCommand();
+    });
+
+    await scenario("known generations count evictions before the first terminal poll", async () => {
+        const { service, controller, clock, vscode } = makeService();
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        controller.emit(0, "x".repeat(300000));
+        await clock.advance(50);
+        assert.ok(fired().includes("rtt.termGap 37856\r\n"));
+        assert.ok(!fired().includes("rtt.termReattached"), "initial retained history has no unknown boundary");
+        await clock.advance(50);
+        assert.strictEqual(fired().split("rtt.termGap").length - 1, 1, "the gap is counted once");
+        await service.stopCommand();
+    });
+
+    await scenario(
+        "empty reads report numeric gaps and unannounced generation resets in terminals and logs",
+        async () => {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-rtt-term-"));
+            const logFile = path.join(dir, "rtt.log");
+            const { service, controller, vscode } = makeService({ settings: { logFile } });
+            try {
+                await service.startCommand();
+                const fired = firedOf(vscode.terminals[0]);
+                let result = {
+                    generation: 1,
+                    cursor: 24,
+                    nextCursor: 24,
+                    droppedBytes: 24,
+                    reset: false,
+                    more: false,
+                    data: Buffer.alloc(0)
+                };
+                controller.read = () => result;
+                service.flush();
+                result = { ...result, droppedBytes: 0 };
+                service.flush();
+                assert.strictEqual(fired(), "\r\nrtt.termGap 24\r\n");
+                result = { ...result, generation: 2, cursor: 7, nextCursor: 7, reset: true };
+                service.flush();
+                result = { ...result, reset: false };
+                service.flush();
+                const expected = "\r\nrtt.termGap 24\r\n\r\nrtt.termReattached\r\n\r\nrtt.termGap 7\r\n";
+                assert.strictEqual(fired(), expected);
+                assert.strictEqual(fs.readFileSync(logFile, "utf8"), expected);
+                controller.notify(controller.status()); // The status reports generation 1, which is another boundary.
+                assert.strictEqual(fired().split("rtt.termReattached").length - 1, 2);
+            } finally {
+                service.dispose();
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        }
+    );
+
+    await scenario("status generation changes mark unknown gaps once and count the new history eviction", async () => {
+        const { service, controller, clock, vscode } = makeService();
+        await service.startCommand();
+        const fired = firedOf(vscode.terminals[0]);
+        controller.reattach();
+        controller.emit(0, "x".repeat(300000));
+        controller.notify(controller.status());
+        await clock.advance(50);
+        assert.ok(fired().startsWith("\r\nrtt.termReattached\r\n\r\nrtt.termGap 37856\r\n"));
+        assert.strictEqual(fired().split("rtt.termReattached").length - 1, 1);
         await service.stopCommand();
     });
 

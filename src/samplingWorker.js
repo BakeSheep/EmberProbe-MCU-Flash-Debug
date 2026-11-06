@@ -67,6 +67,7 @@ function run(
     now = () => performance.now()
 ) {
     let generation = 0,
+        targetInvalidations = 0,
         waiting = false,
         deliveryHold = false,
         queued = [],
@@ -84,6 +85,8 @@ function run(
     const stats = () => (typeof session.stats === "function" ? { ...session.stats(), ...backlogStats() } : null);
     const state = () => ({
         generation,
+        targetEpoch: session.targetEpoch,
+        targetInvalidations,
         samplingEnabled: session.samplingEnabled,
         pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
@@ -250,6 +253,12 @@ function run(
                 // The host pauses delivery (for example while its archive drains) without pausing acquisition.
                 deliveryHold = args[0] === true;
                 flush();
+            } else if (method === "invalidateTarget") {
+                // The runtime increments synchronously. Publish its epoch and this acknowledgment together,
+                // before awaiting, so concurrent responses cannot count the host invalidation twice.
+                result = session.invalidateTarget();
+                targetInvalidations++;
+                result = await result;
             } else if (method === "stats") result = stats();
             else result = await session[method](...args);
             updateHostHold();

@@ -24,7 +24,7 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
     );
     assert.deepStrictEqual(
         groups.map((group) => Object.keys(group.properties).length),
-        [7, 6, 5, 9, 3]
+        [7, 6, 5, 15, 3]
     );
     for (const key of ["openocdPath", "gdbPath", "objdumpPath", "cubemxPath", "cubemx2Path"])
         assert.ok(groups[0].properties[`emberprobe.${key}`], `${key} belongs with tools and paths`);
@@ -32,7 +32,7 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
         assert.ok(groups[1].properties[`emberprobe.${key}`], `${key} belongs with connection and debugging`);
     const entries = groups.flatMap((group) => Object.entries(group.properties));
     const keys = entries.map(([key]) => key);
-    assert.strictEqual(keys.length, 30);
+    assert.strictEqual(keys.length, 36);
     assert.strictEqual(new Set(keys).size, keys.length);
     for (const key of [
         "probeSerial",

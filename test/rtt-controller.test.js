@@ -128,12 +128,426 @@ function makeController(host, options = {}) {
         ramRegions: options.ramRegions,
         net: options.net,
         onStatus: (status) => statuses.push(status),
-        onBeforeStop: options.onBeforeStop
+        onBeforeStop: options.onBeforeStop,
+        onData: options.onData,
+        onAutoStart: options.onAutoStart,
+        autoStart: options.autoStart
     });
     return { controller, statuses };
 }
 
 (async () => {
+    await scenario(
+        "Agent mode overrides reject before probe access and frozen settings cannot add later writes",
+        async () => {
+            const host = fakeHost();
+            let settings = { controlBlockAddress: "0x24000000", channels: [{ index: 0, mode: "trim" }] };
+            const { controller } = makeController(host, { rttSettings: () => settings });
+            await assert.rejects(controller.start({ origin: "agent" }), { code: "RTT_MODE_REQUIRES_UI_START" });
+            assert.strictEqual(host._probeCoordinator.anyActive(), false);
+            const managed = fakeHostSession();
+            host.debugLaunch.managedServer = managed.session;
+            settings = { controlBlockAddress: "0x24000000", channels: [0], pollingIntervalMs: 20 };
+            await controller.start({ origin: "agent" });
+            settings = { ...settings, channels: [{ index: 0, mode: "block" }], pollingIntervalMs: 1 };
+            await controller.yieldForRestart("debug");
+            controller.onSessionsChanged();
+            await flushQueue(controller);
+            assert.strictEqual(managed.calls.filter((call) => call.operation === "start").at(-1).pollingIntervalMs, 20);
+            assert.ok(!managed.calls.some((call) => call.operation === "setMode"));
+            await controller.stop();
+        }
+    );
+
+    await scenario("mode overrides require an exact block before issuing RTT control", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const { controller } = makeController(host, {
+            rttSettings: () => ({
+                searchRange: { address: "0x24000000", size: 4096 },
+                channels: [{ index: 0, mode: "trim" }]
+            })
+        });
+        await assert.rejects(controller.start(), { code: "RTT_EXACT_ADDRESS_REQUIRED" });
+        assert.ok(!managed.calls.some((call) => call.operation === "start"));
+    });
+
+    await scenario(
+        "modes apply once after all sockets connect and firmware changes are observed, not overridden",
+        async () => {
+            const host = fakeHost({ _writes: { sessionConnection: () => ({ probe: "test", target: "stm32f4x" }) } });
+            const managed = fakeHostSession();
+            host.debugLaunch.managedServer = managed.session;
+            const base = managed.session.rttControl;
+            managed.session.rttControl = async (request) => {
+                if (request.operation === "setMode") {
+                    managed.calls.push(request);
+                    return { channel: { index: 0, flags: 1, mode: "trim" }, changed: true };
+                }
+                if (request.operation === "snapshot") {
+                    managed.calls.push(request);
+                    return {
+                        snapshot: {
+                            channels: [{ index: 0, flags: 0, mode: "skip", size: 1024, usedBytes: 12, capacity: 1023 }]
+                        }
+                    };
+                }
+                return base(request);
+            };
+            const socket = idleSocket();
+            const clock = new FakeClock();
+            const { controller } = makeController(host, {
+                clock,
+                net: { connect: () => socket },
+                rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [{ index: 0, mode: "trim" }] })
+            });
+            await controller.start();
+            assert.strictEqual(controller.status().channels.up[0].modeState, "pending");
+            assert.ok(!managed.calls.some((call) => call.operation === "setMode"));
+            socket.emit("connect");
+            await flushQueue(controller);
+            assert.strictEqual(controller.status().channels.up[0].mode, "trim");
+            assert.strictEqual(controller.status().channels.up[0].modeState, "applied");
+            socket.emit("data", Buffer.alloc(2000));
+            await clock.advance(1000);
+            await waitFor(() => controller.status().targetTelemetry.available);
+            assert.strictEqual(controller.status().buffers[0].rateBytesPerSecond, 2000);
+            assert.strictEqual(controller.status().channels.up[0].modeState, "mismatch");
+            await clock.advance(1000);
+            assert.strictEqual(controller.status().buffers[0].rateBytesPerSecond, 0);
+            assert.strictEqual(managed.calls.filter((call) => call.operation === "setMode").length, 1);
+            assert.strictEqual(controller.status().targetDroppedBytes, null);
+            await controller.stop();
+            const calls = managed.calls.length;
+            await clock.advance(5000);
+            assert.strictEqual(managed.calls.length, calls);
+        }
+    );
+
+    await scenario("uncertain mode writes stop attachment without automatic retries", async () => {
+        const host = fakeHost({ _writes: { sessionConnection: () => ({ probe: "test" }) } });
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const base = managed.session.rttControl;
+        managed.session.rttControl = async (request) => {
+            if (request.operation === "setMode") {
+                managed.calls.push(request);
+                throw Object.assign(new Error("write result unknown"), {
+                    code: "RTT_READBACK_MISMATCH",
+                    retryable: true,
+                    details: { resultUnknown: true }
+                });
+            }
+            return base(request);
+        };
+        const socket = idleSocket();
+        const clock = new FakeClock();
+        const { controller } = makeController(host, {
+            clock,
+            net: { connect: () => socket },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [{ index: 0, mode: "trim" }] })
+        });
+        await controller.start();
+        socket.emit("connect");
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "stopped");
+        assert.strictEqual(controller.status().error.details.resultUnknown, true);
+        await clock.advance(20000);
+        assert.strictEqual(managed.calls.filter((call) => call.operation === "setMode").length, 1);
+    });
+
+    await scenario("a busy lock delays a mode write without ending RTT", async () => {
+        const host = fakeHost({ _writes: { sessionConnection: () => ({ probe: "test" }) } });
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const base = managed.session.rttControl;
+        let busy = 2;
+        managed.session.rttControl = async (request) => {
+            if (request.operation === "setMode" && busy-- > 0)
+                throw Object.assign(new Error("lock busy"), { code: "PROBE_CONNECTION_BUSY_TIMEOUT" });
+            return base(request);
+        };
+        const socket = idleSocket();
+        const clock = new FakeClock();
+        const { controller } = makeController(host, {
+            clock,
+            net: { connect: () => socket },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [{ index: 0, mode: "trim" }] })
+        });
+        await controller.start();
+        socket.emit("connect");
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "running");
+        await clock.advance(300);
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "running");
+        assert.strictEqual(managed.calls.filter((call) => call.operation === "setMode").length, 1);
+        await controller.stop();
+    });
+
+    await scenario("stopped status keeps no polling, origin or mode settings from the finished run", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const { controller } = makeController(host, {
+            net: { connect: () => idleSocket() },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", pollingIntervalMs: 50 })
+        });
+        await controller.start();
+        assert.strictEqual(controller.status().configuredPollingIntervalMs, 50);
+        await controller.stop();
+        assert.strictEqual(controller._runSettings, null);
+        assert.strictEqual(controller._origin, null);
+        assert.notStrictEqual(controller.status().configuredPollingIntervalMs, 50);
+    });
+
+    await scenario("a mapped down channel gets an input-only server and writes route to it", async () => {
+        const channels = {
+            up: [{ index: 0, name: "Terminal", size: 1024, flags: 2, mode: "block" }],
+            down: [
+                { index: 0, name: "Unused", size: 16, flags: 0, mode: "skip" },
+                { index: 2, name: "Shell", size: 16, flags: 0, mode: "skip" }
+            ]
+        };
+        const host = fakeHost();
+        const managed = fakeHostSession({ channels });
+        host.debugLaunch.managedServer = managed.session;
+        const sockets = [];
+        const ports = [19021, 19022];
+        const { controller } = makeController(host, {
+            findFreePort: async () => ports.shift(),
+            net: {
+                connect: () => {
+                    const writes = [];
+                    const socket = writableSocket(writes);
+                    socket.writes = writes;
+                    sockets.push(socket);
+                    return socket;
+                }
+            },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [{ index: 0, down: 2 }] })
+        });
+        const status = await controller.start();
+        assert.strictEqual(status.channels.up[0].downChannel, 2);
+        const start = managed.calls.find((call) => call.operation === "startServers" || call.servers);
+        assert.deepStrictEqual(
+            start.servers.map(({ channel, inputOnly }) => ({ channel, inputOnly })),
+            [
+                { channel: 0, inputOnly: undefined },
+                { channel: 2, inputOnly: true }
+            ]
+        );
+        for (const socket of sockets) socket.emit("connect");
+        await flushQueue(controller);
+        sockets[1].emit("data", Buffer.from("discarded"));
+        assert.strictEqual(controller.read(0, {}).data.length, 0);
+        assert.strictEqual(controller.write(0, "x\n"), 2);
+        assert.deepStrictEqual(sockets[0].writes, []);
+        assert.strictEqual(Buffer.concat(sockets[1].writes.map((data) => Buffer.from(data))).toString(), "x\n");
+        await controller.stop();
+    });
+
+    await scenario("received bytes notify onData and a throwing consumer keeps the socket", async () => {
+        const host = fakeHost();
+        host.debugLaunch.managedServer = fakeHostSession().session;
+        const socket = idleSocket();
+        const seen = [];
+        const { controller } = makeController(host, {
+            net: { connect: () => socket },
+            onData: (channel) => {
+                seen.push(channel);
+                throw new Error("consumer failed");
+            }
+        });
+        await controller.start();
+        socket.emit("connect");
+        await flushQueue(controller);
+        socket.emit("data", Buffer.from("a"));
+        assert.deepStrictEqual(seen, [0]);
+        assert.strictEqual(controller.read(0, {}).data.toString(), "a");
+        await controller.stop();
+    });
+
+    await scenario("automatic start acts once per host and never opens the probe", async () => {
+        const host = fakeHost();
+        let starts = 0;
+        const { controller } = makeController(host, { autoStart: () => true, onAutoStart: () => starts++ });
+        controller.onSessionsChanged();
+        assert.strictEqual(starts, 0, "no session, no start");
+        const first = fakeHostSession().session;
+        host.debugLaunch.managedServer = first;
+        controller.onSessionsChanged();
+        controller.onSessionsChanged();
+        assert.strictEqual(starts, 1);
+        host.debugLaunch.managedServer = null;
+        controller.onSessionsChanged();
+        host.debugLaunch.managedServer = first;
+        controller.onSessionsChanged();
+        assert.strictEqual(starts, 2, "a session that went away counts as new");
+        const off = makeController(host, { autoStart: () => false, onAutoStart: () => assert.fail("disabled") });
+        off.controller.onSessionsChanged();
+    });
+
+    await scenario("a user stop is not undone on the same host, and the next host starts again", async () => {
+        const host = fakeHost();
+        const session = fakeHostSession().session;
+        host.debugLaunch.managedServer = session;
+        let autoStarts = 0;
+        const { controller } = makeController(host, {
+            autoStart: () => true,
+            onAutoStart: () => autoStarts++,
+            net: { connect: () => idleSocket() }
+        });
+        await controller.start();
+        await controller.stop();
+        controller.onSessionsChanged();
+        assert.strictEqual(autoStarts, 0);
+        host.debugLaunch.managedServer = fakeHostSession().session;
+        controller.onSessionsChanged();
+        assert.strictEqual(autoStarts, 1);
+    });
+
+    await scenario("origin auto borrows a session, refuses mode writes and never starts its own", async () => {
+        const host = fakeHost();
+        const { controller } = makeController(host, { net: { connect: () => idleSocket() } });
+        assert.strictEqual((await controller.start({ origin: "auto" })).state, "stopped");
+        assert.strictEqual(controller._ownSession ?? null, null);
+        const modes = makeController(host, {
+            rttSettings: () => ({ channels: [{ index: 0, mode: "trim" }] })
+        });
+        host.debugLaunch.managedServer = fakeHostSession().session;
+        await assert.rejects(modes.controller.start({ origin: "auto" }), { code: "RTT_MODE_REQUIRES_UI_START" });
+        assert.strictEqual((await controller.start({ origin: "auto" })).state, "running");
+        await controller.stop();
+    });
+
+    await scenario(
+        "telemetry is unavailable for scanning and late samples cannot revive a detached generation",
+        async () => {
+            const host = fakeHost();
+            const managed = fakeHostSession();
+            host.debugLaunch.managedServer = managed.session;
+            const clock = new FakeClock();
+            const { controller } = makeController(host, { clock, net: { connect: idleSocket } });
+            let resolveSample;
+            const base = managed.session.rttControl;
+            managed.session.rttControl = (request) =>
+                request.operation === "snapshot"
+                    ? new Promise((resolve) => {
+                          resolveSample = resolve;
+                      })
+                    : base(request);
+            await controller.start();
+            await clock.advance(1000);
+            assert.ok(resolveSample);
+            await controller.stop();
+            resolveSample({ snapshot: { channels: [] } });
+            await Promise.resolve();
+            assert.strictEqual(controller.status().targetTelemetry.available, false);
+            assert.strictEqual(controller.status().targetTelemetry.reason, "RTT_NOT_RUNNING");
+            const scanned = makeController(host, {
+                clock,
+                net: { connect: idleSocket },
+                rttSettings: () => ({ searchRange: { address: "0x24000000", size: 4096 } })
+            }).controller;
+            await scanned.start();
+            assert.strictEqual(scanned.status().targetTelemetry.reason, "RTT_EXACT_ADDRESS_REQUIRED");
+            await scanned.stop();
+        }
+    );
+
+    await scenario("a silent receiver has a bounded mode startup deadline and pending sockets are closed", async () => {
+        const host = fakeHost({ _writes: { sessionConnection: () => ({ probe: "test" }) } });
+        const managed = fakeHostSession();
+        host.debugLaunch.managedServer = managed.session;
+        const socket = idleSocket();
+        const clock = new FakeClock();
+        const { controller } = makeController(host, {
+            clock,
+            net: { connect: () => socket },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [{ index: 0, mode: "block" }] })
+        });
+        await controller.start();
+        await clock.advance(10000);
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "stopped");
+        assert.strictEqual(controller.status().error.code, "RTT_CHANNEL_DISCONNECTED");
+        assert.strictEqual(socket.destroyed, true);
+        assert.ok(!managed.calls.some((call) => call.operation === "setMode"));
+    });
+
+    await scenario("stop or receiver loss between mode writes prevents the remaining block write", async () => {
+        for (const action of ["stop", "disconnect"]) {
+            const host = fakeHost({ _writes: { sessionConnection: () => ({ probe: "test" }) } });
+            const channels = { up: [oneChannel.up[0], { ...oneChannel.up[0], index: 1 }], down: [] };
+            const managed = fakeHostSession({ channels });
+            host.debugLaunch.managedServer = managed.session;
+            const sockets = [idleSocket(), idleSocket()];
+            let next = 0;
+            let release;
+            const base = managed.session.rttControl;
+            managed.session.rttControl = (request) => {
+                if (request.operation !== "setMode") return base(request);
+                managed.calls.push(request);
+                return new Promise((resolve) => {
+                    release = () => resolve({ channel: { index: request.channel, mode: "block", flags: 2 } });
+                });
+            };
+            const { controller } = makeController(host, {
+                net: { connect: () => sockets[next++] },
+                rttSettings: () => ({
+                    controlBlockAddress: "0x24000000",
+                    channels: [
+                        { index: 0, mode: "block" },
+                        { index: 1, mode: "block" }
+                    ]
+                })
+            });
+            await controller.start();
+            sockets.forEach((socket) => socket.emit("connect"));
+            await waitFor(() => !!release);
+            const stopping = action === "stop" ? controller.stop() : null;
+            if (action === "disconnect") {
+                sockets[1].destroy();
+                sockets[1].emit("close");
+            }
+            release();
+            await flushQueue(controller);
+            if (stopping) await stopping;
+            assert.deepStrictEqual(
+                managed.calls.filter((call) => call.operation === "setMode").map((call) => call.channel),
+                [0]
+            );
+            await controller.stop();
+        }
+    });
+
+    await scenario("same-session epoch changes invalidate delayed and cached target telemetry", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        managed.session.targetEpoch = 1;
+        host.debugLaunch.managedServer = managed.session;
+        const base = managed.session.rttControl;
+        let epoch = 0;
+        managed.session.rttControl = async (request) =>
+            request.operation === "snapshot"
+                ? { snapshot: { targetEpoch: epoch, channels: [{ index: 0, mode: "skip", flags: 0 }] } }
+                : base(request);
+        const clock = new FakeClock();
+        const { controller } = makeController(host, { clock, net: { connect: idleSocket } });
+        await controller.start();
+        await clock.advance(1000);
+        assert.strictEqual(controller.status().targetTelemetry.available, false);
+        assert.strictEqual(controller.status().targetTelemetry.reason, "LIVE_READ_CANCELLED");
+        epoch = 1;
+        await clock.advance(1000);
+        await waitFor(() => controller.status().targetTelemetry.available);
+        managed.session.targetEpoch = 2;
+        assert.strictEqual(controller.status().targetTelemetry.available, false);
+        await controller.stop();
+    });
+
     await scenario("the managed debug server is borrowed before the live-watch session", async () => {
         const host = fakeHost();
         const managed = fakeHostSession();
@@ -798,7 +1212,7 @@ function makeController(host, options = {}) {
         await controller.stop();
     });
 
-    await scenario("the polling interval setting left alone starts RTT with OpenOCD's default", async () => {
+    await scenario("polling defaults to 10 ms and explicit zero restores 100 ms on a reused session", async () => {
         const properties = Object.assign({}, ...pkg.contributes.configuration.map((group) => group.properties));
         const rttKeys = Object.keys(properties).filter((key) => key.startsWith("emberprobe.rtt."));
         // VS Code answers a setting without a default with its type's empty value, such as 0 for an integer.
@@ -817,8 +1231,14 @@ function makeController(host, options = {}) {
         const { controller } = makeController(host, { vscode, rttSettings: undefined });
         await controller.start();
         const start = managed.calls.find((call) => call.operation === "start");
-        assert.ok(!("pollingIntervalMs" in start), "0 sends no polling command");
+        assert.strictEqual(start.pollingIntervalMs, 10);
+        assert.strictEqual(controller.status().pollingIntervalMs, 10);
         assert.strictEqual(controller.status().state, "running");
+        await controller.stop();
+        user["rtt.pollingIntervalMs"] = 0;
+        await controller.start();
+        assert.strictEqual(managed.calls.filter((call) => call.operation === "start").at(-1).pollingIntervalMs, 100);
+        assert.strictEqual(controller.status().configuredPollingIntervalMs, 0);
         await controller.stop();
 
         user["rtt.pollingIntervalMs"] = 20;

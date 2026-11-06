@@ -96,7 +96,13 @@ class RttBuffer {
     }
 
     stats() {
-        return { generation: this.generation, start: this.start, end: this.end, bytes: this.end - this.start };
+        return {
+            generation: this.generation,
+            start: this.start,
+            end: this.end,
+            bytes: this.end - this.start,
+            capacity: this.maxBytes
+        };
     }
 }
 

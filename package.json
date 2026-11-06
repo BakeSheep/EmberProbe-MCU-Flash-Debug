@@ -365,9 +365,60 @@
           "emberprobe.rtt.channels": {
             "type": "array",
             "items": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 255
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "index"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "index": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "skip",
+                        "trim",
+                        "block"
+                      ]
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "raw",
+                        "hex"
+                      ]
+                    },
+                    "encoding": {
+                      "type": "string",
+                      "enum": [
+                        "utf-8",
+                        "gbk",
+                        "gb18030",
+                        "big5",
+                        "shift_jis",
+                        "euc-kr",
+                        "latin1"
+                      ]
+                    },
+                    "down": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 255
+                    }
+                  }
+                }
+              ]
             },
             "uniqueItems": true,
             "minItems": 1,
@@ -375,14 +426,20 @@
             "default": [
               0
             ],
-            "description": "要读取的 RTT up 通道编号，最多 16 个。修改后重新启动 RTT 生效。 / RTT up channel numbers to read, up to 16. Restart RTT to apply changes.",
+            "markdownDescription": "要读取的 RTT up 通道，最多 16 个，例如 `[0, { \"index\": 1, \"mode\": \"trim\", \"format\": \"hex\" }]`。对象写法还可以设置 `format`（text、raw、hex）、`encoding` 和 `down`（输入发往的 down 通道）。省略 mode 保持固件模式；设置 mode 需要精确控制块地址和从 VS Code 启动。block 可能阻塞固件，停止 RTT 不恢复原模式。修改后手动重新启动 RTT 生效。 / RTT up channels, up to 16, e.g. `[0, { \"index\": 1, \"mode\": \"trim\", \"format\": \"hex\" }]`. The object form also sets `format` (text, raw, hex), `encoding` and `down` (the down channel that receives input). Omit mode to retain firmware behavior. Overrides require an exact control block address and a start from VS Code. Block can stall firmware; stopping RTT does not restore modes. Manually restart RTT to apply changes.",
             "order": 1
+          },
+          "emberprobe.rtt.autoStart": {
+            "type": "boolean",
+            "default": false,
+            "description": "调试或实时采样会话开始时自动附加 RTT。不会为此单独打开探针；配置了通道 mode 时不自动启动。 / Attach RTT automatically when a debug or live sampling session starts. Never opens the probe for this alone, and does not start when channel modes are configured.",
+            "order": 2
           },
           "emberprobe.rtt.controlBlockAddress": {
             "type": "string",
             "default": "",
             "markdownDescription": "RTT 控制块地址（如 `0x24000000`）。设置后直接使用该地址，不再读取 ELF 符号或扫描；未设置时依次尝试 ELF 的 `_SEGGER_RTT` 符号、搜索范围、可写段和链接脚本 RAM 区。 / RTT control block address (such as `0x24000000`). When set it is used directly, without ELF symbols or scanning; otherwise EmberProbe tries the ELF `_SEGGER_RTT` symbol, the search range, writable sections and linker script RAM regions in turn.",
-            "order": 2
+            "order": 3
           },
           "emberprobe.rtt.searchRange": {
             "type": "object",
@@ -398,33 +455,76 @@
               }
             },
             "markdownDescription": "RTT 控制块搜索范围 `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`，按 32 KiB 分片搜索，片间释放会话。优先级低于 ELF `_SEGGER_RTT` 符号，高于自动扫描。 / RTT control block search range `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`, searched in 32 KiB slices that release the session between them. Ranks below the ELF `_SEGGER_RTT` symbol and above automatic scanning.",
-            "order": 3
+            "order": 4
           },
           "emberprobe.rtt.pollingIntervalMs": {
             "type": "integer",
-            "default": 0,
+            "default": 10,
             "minimum": 0,
             "maximum": 60000,
-            "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒）。0 表示使用 OpenOCD 默认值；仅影响 OpenOCD 侧轮询，终端读取不受此设置限制。 / How often OpenOCD polls the RTT ring buffers (ms). 0 uses the OpenOCD default; this only affects OpenOCD's polling, not terminal reads.",
-            "order": 4
+            "markdownDescription": "OpenOCD 轮询 RTT 环形缓冲的间隔（毫秒），默认 10 ms。显式设置 0 使用原有 100 ms 间隔。更短间隔可能增加探针负载；手动重新启动 RTT 生效。 / How often OpenOCD polls RTT ring buffers (ms), 10 ms by default. Explicit 0 selects the former 100 ms interval. Shorter intervals can increase probe load. Manually restart RTT to apply changes.",
+            "order": 5
+          },
+          "emberprobe.rtt.encoding": {
+            "type": "string",
+            "enum": [
+              "utf-8",
+              "gbk",
+              "gb18030",
+              "big5",
+              "shift_jis",
+              "euc-kr",
+              "latin1"
+            ],
+            "default": "utf-8",
+            "markdownDescription": "RTT 通道的默认文本编码，可在 `rtt.channels` 中按通道覆盖。终端输入始终按 UTF-8 发送。手动重新启动 RTT 生效。 / Default text encoding of RTT channels, overridable per channel in `rtt.channels`. Terminal input is always sent as UTF-8. Manually restart RTT to apply changes.",
+            "order": 6
+          },
+          "emberprobe.rtt.virtualTerminals": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "解析通道 0 上的 SEGGER 虚拟终端切换（`0xFF` + 终端号），非 0 终端的行加 `[Tn]` 前缀。通道 0 输出 latin1 二进制内容时可关闭。重新启动 RTT 生效。 / Follow SEGGER virtual terminal switches (`0xFF` + id) on channel 0 and prefix lines from terminals other than 0 with `[Tn]`. Turn off when channel 0 carries latin1 data that can contain 0xFF. Restart RTT to apply changes.",
+            "order": 7
           },
           "emberprobe.rtt.timestamps": {
             "type": "boolean",
             "default": false,
-            "description": "在 RTT 终端和日志的每行行首添加主机时间戳 [HH:MM:SS.mmm]。修改对运行中的终端立即生效。 / Prefix each RTT terminal and log line with a host timestamp [HH:MM:SS.mmm]. Applies to running terminals immediately.",
-            "order": 5
+            "description": "在 RTT 终端和日志的每行行首添加主机接收时间 [HH:MM:SS.mmm]。同一次轮询读到的行时间相同，不是固件时间。修改对运行中的终端立即生效。 / Prefix each RTT terminal and log line with the host receive time [HH:MM:SS.mmm]. Lines read in one poll share a time; this is not firmware time. Applies to running terminals immediately.",
+            "order": 8
+          },
+          "emberprobe.rtt.input.mode": {
+            "type": "string",
+            "enum": [
+              "line",
+              "raw"
+            ],
+            "default": "line",
+            "description": "终端输入方式。line：本地回显和编辑，回车发送一行。raw：按键立即发送，包括控制字符，不做本地回显。修改立即生效。 / How terminals send input. line: local echo and editing, Enter sends the line. raw: keystrokes go out at once, control characters included, with no local echo. Applies immediately.",
+            "order": 9
+          },
+          "emberprobe.rtt.input.lineEnding": {
+            "type": "string",
+            "enum": [
+              "lf",
+              "crlf",
+              "cr",
+              "none"
+            ],
+            "default": "lf",
+            "description": "line 输入方式下附加在每行末尾的行尾。修改立即生效。 / Line ending appended to each line in line input mode. Applies immediately.",
+            "order": 10
           },
           "emberprobe.rtt.logFile.enabled": {
             "type": "boolean",
             "default": false,
             "description": "将 RTT 输出追加保存到日志文件。修改立即生效。 / Append RTT output to a log file. Applies immediately.",
-            "order": 6
+            "order": 11
           },
           "emberprobe.rtt.logFile.directory": {
             "type": "string",
             "default": "",
             "markdownDescription": "RTT 日志目录，空值使用工作区根目录，相对路径从工作区解析。目录须已存在；单通道写入 `rtt.log`，多通道写入 `rtt-chN.log`。无工作区时请指定绝对路径。 / RTT log directory. Empty uses the workspace root and relative paths resolve from the workspace. The directory must exist; one channel writes `rtt.log`, several write `rtt-chN.log`. Use an absolute path when no workspace is open.",
-            "order": 7
+            "order": 12
           },
           "emberprobe.rtt.logFile.maxBytes": {
             "type": "integer",
@@ -432,13 +532,19 @@
             "minimum": 4,
             "maximum": 1073741824,
             "description": "单个 RTT 日志文件的字节上限；写满后轮转为 .1 备份，仅保留一个备份。 / Size limit of one RTT log file in bytes; a full file rotates to a single .1 backup.",
-            "order": 8
+            "order": 13
+          },
+          "emberprobe.rtt.logFile.raw": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "按接收到的原始字节保存日志，文件为 `rtt.bin`（多通道 `rtt-chN.bin`），不含时间戳和缺口标记，适合事后解码。修改立即生效。 / Save the bytes as received to `rtt.bin` (`rtt-chN.bin` with several channels), without timestamps or gap markers, for offline decoding. Applies immediately.",
+            "order": 14
           },
           "emberprobe.rtt.logFile.stripAnsi": {
             "type": "boolean",
             "default": true,
             "description": "从 RTT 日志文件中移除 ANSI 转义序列。终端保留 ANSI 颜色。 / Remove ANSI escape sequences from RTT log files. Terminals keep ANSI colors.",
-            "order": 9
+            "order": 15
           }
         }
       },

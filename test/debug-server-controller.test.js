@@ -8,6 +8,7 @@ const { normalizeTargetSelection, buildOpenOcdTargetArgs } = require("../src/ope
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { loadProvider } = require("./helpers/load-provider");
+const { scenario } = require("./helpers/scenario");
 
 const settings = { executable: "fake", probe: "cmsis-dap.cfg", target: "stm32h7x.cfg", port: 32000, gdbPort: 32001 };
 function fixture(options = {}, overrides = {}) {
@@ -61,6 +62,18 @@ function fixture(options = {}, overrides = {}) {
 }
 
 (async () => {
+    await scenario("debug target epoch follows runtime invalidations synchronously", async () => {
+        const f = fixture({}, { targetEpoch: 4 });
+        f.runtime.invalidateTarget = () => f.runtime.targetEpoch++;
+        assert.strictEqual(f.controller.targetEpoch, undefined, "there is no target before runtime construction");
+        await f.controller.start();
+        assert.strictEqual(f.controller.targetEpoch, 4);
+        f.controller.invalidateTarget();
+        assert.strictEqual(f.controller.targetEpoch, 5);
+        f.runtime.targetEpoch++;
+        assert.strictEqual(f.controller.targetEpoch, 6, "runtime-driven invalidations remain visible");
+        await f.controller.stop();
+    });
     assert.deepStrictEqual(normalizeTargetSelection({}), {});
     assert.deepStrictEqual(
         normalizeTargetSelection({ numberOfProcessors: 2, targetProcessor: 1, targetName: "chip.cpu1" }),

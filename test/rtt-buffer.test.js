@@ -35,7 +35,7 @@ scenario("old bytes are evicted and reported as dropped", () => {
     buffer.append("0123");
     buffer.append("4567");
     buffer.append("89");
-    assert.deepStrictEqual(buffer.stats(), { generation: 0, start: 2, end: 10, bytes: 8 });
+    assert.deepStrictEqual(buffer.stats(), { generation: 0, start: 2, end: 10, bytes: 8, capacity: 8 });
     const read = buffer.read({ generation: 0, cursor: 0 });
     assert.strictEqual(read.data.toString(), "23456789");
     assert.strictEqual(read.droppedBytes, 2);
@@ -43,7 +43,7 @@ scenario("old bytes are evicted and reported as dropped", () => {
     // A single chunk larger than the buffer keeps its tail
     buffer.append("abcdefghijkl");
     assert.strictEqual(buffer.read().data.toString(), "efghijkl");
-    assert.deepStrictEqual(buffer.stats(), { generation: 0, start: 14, end: 22, bytes: 8 });
+    assert.deepStrictEqual(buffer.stats(), { generation: 0, start: 14, end: 22, bytes: 8, capacity: 8 });
 });
 
 scenario("cursors from another generation restart at the oldest byte", () => {

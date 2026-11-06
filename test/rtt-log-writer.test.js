@@ -113,6 +113,21 @@ function tempLog() {
         }
     });
 
+    await scenario("a raw log keeps every byte and rotates at the exact limit", async () => {
+        const { file, cleanup } = tempLog();
+        try {
+            const writer = new RttLogWriter({ maxBytes: 4, raw: true });
+            writer.open(file);
+            assert.strictEqual(writer.raw, true);
+            writer.appendBytes(Buffer.from("温度"));
+            writer.close();
+            assert.deepStrictEqual(fs.readFileSync(`${file}.1`), Buffer.from("温度").subarray(0, 4));
+            assert.deepStrictEqual(fs.readFileSync(file), Buffer.from("温度").subarray(4));
+        } finally {
+            cleanup();
+        }
+    });
+
     await scenario("an invalid size is rejected", async () => {
         assert.throws(() => new RttLogWriter({ maxBytes: 0 }), /Invalid RTT log size/);
     });

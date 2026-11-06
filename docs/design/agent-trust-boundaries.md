@@ -53,6 +53,15 @@ the executable keeps the same size and modification time from before GDB reads i
 is hashed. A launch with custom `loadFiles`, or one where the ELF changed during the launch,
 clears the record, so it reports `unknown` instead of a stale match.
 
+RTT status/read only project cached data. RTT start carries its Agent origin through the shared
+terminal service into the controller. Configured channel mode overrides write target RAM and therefore
+require a direct start from VS Code; an Agent start that would apply them is refused before probe
+acquisition. The Agent may read a user-started attachment. Channel and polling settings are frozen
+for the manual run, so later configuration edits cannot add writes during automatic reattachment.
+Mode intent is also bound to the verified connection, selected probe/target, ELF and control-block
+address; an identity change requires a new user start. This adds no Agent mode setter or implicit
+approval through workspace configuration.
+
 During extension shutdown the Agent Bridge stops first, calls already in flight are refused
 with `EXTENSION_SHUTTING_DOWN`, and no new probe operation can start, so an Agent call cannot
 start OpenOCD after sampling and debugging have been stopped.

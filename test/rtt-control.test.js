@@ -44,14 +44,15 @@ async function fixture(options = {}) {
 }
 
 (async () => {
-    await scenario("start runs setup, interval, start and channels as one transaction", async () => {
+    await scenario("start runs setup, stop, start, interval and channels as one transaction", async () => {
         const f = await fixture();
         try {
             const result = await f.session.rttControl({ operation: "start", block, pollingIntervalMs: 20 });
             assert.deepStrictEqual(f.rttCommands(), [
                 'rtt setup 0x20000400 168 "SEGGER RTT"',
-                "rtt polling_interval 20",
+                "rtt stop",
                 "rtt start",
+                "rtt polling_interval 20",
                 "rtt channels"
             ]);
             assert.deepStrictEqual(f.fake.rtt, { address: 0x20000400, size: 168 });
@@ -68,20 +69,47 @@ async function fixture(options = {}) {
         }
     });
 
-    await scenario("start without a polling interval skips the interval command", async () => {
+    await scenario("start without a polling interval applies the backend 10 ms default", async () => {
         const f = await fixture();
         try {
             await f.session.rttControl({ operation: "start", block });
             assert.deepStrictEqual(f.rttCommands(), [
                 'rtt setup 0x20000400 168 "SEGGER RTT"',
+                "rtt stop",
                 "rtt start",
+                "rtt polling_interval 10",
                 "rtt channels"
             ]);
-            assert.strictEqual(f.fake.rttPollingIntervalMs, null);
+            assert.strictEqual(f.fake.rttPollingIntervalMs, 10);
         } finally {
             await f.close();
         }
     });
+
+    await scenario(
+        "repeated starts replace the effective interval and channels-only retries do not restart",
+        async () => {
+            const f = await fixture();
+            try {
+                await f.session.rttControl({ operation: "start", block, pollingIntervalMs: 100 });
+                assert.strictEqual(f.fake.rttPollingIntervalMs, 100);
+                await f.session.rttControl({ operation: "start", block, pollingIntervalMs: 7 });
+                assert.deepStrictEqual(f.rttCommands().slice(-5), [
+                    'rtt setup 0x20000400 168 "SEGGER RTT"',
+                    "rtt stop",
+                    "rtt start",
+                    "rtt polling_interval 7",
+                    "rtt channels"
+                ]);
+                const count = f.rttCommands().length;
+                await f.session.rttControl({ operation: "channels" });
+                assert.deepStrictEqual(f.rttCommands().slice(count), ["rtt channels"]);
+                assert.strictEqual(f.fake.rttPollingIntervalMs, 7);
+            } finally {
+                await f.close();
+            }
+        }
+    );
 
     await scenario("the channel listing keeps channel numbers, modes and sizes", async () => {
         const f = await fixture();
@@ -134,8 +162,9 @@ async function fixture(options = {}) {
             const result = await f.session.rttControl({ operation: "start", block, pollingIntervalMs: 10 });
             assert.deepStrictEqual(f.rttCommands(), [
                 'rtt setup 0x20000400 168 "SEGGER RTT"',
-                "rtt polling_interval 10",
+                "rtt stop",
                 "rtt start",
+                "rtt polling_interval 10",
                 "rtt channels"
             ]);
             assert.deepStrictEqual(result.channels, { up: [], down: [] });
@@ -226,6 +255,7 @@ async function fixture(options = {}) {
                 [{ operation: "start", block: { address: -1, size: 168 } }, { code: "RTT_INVALID_ADDRESS" }],
                 [{ operation: "start", block: { address: 0x20000400, size: 8 } }, { code: "RTT_INVALID_RANGE" }],
                 [{ operation: "start", block, pollingIntervalMs: 0 }, { code: "RTT_INVALID_INTERVAL" }],
+                [{ operation: "start", block, pollingIntervalMs: null }, { code: "RTT_INVALID_INTERVAL" }],
                 [{ operation: "serverStart" }, { code: "RTT_INVALID_SERVERS" }],
                 [{ operation: "serverStart", servers: [] }, { code: "RTT_INVALID_SERVERS" }],
                 [

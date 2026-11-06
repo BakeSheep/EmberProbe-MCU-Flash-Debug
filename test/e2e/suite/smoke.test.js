@@ -56,7 +56,7 @@ async function run() {
     const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
         Object.entries(group.properties)
     );
-    assert.strictEqual(settings.length, 30);
+    assert.strictEqual(settings.length, 36);
     for (const [key, setting] of settings)
         assert.deepStrictEqual(
             vscode.workspace.getConfiguration().inspect(key)?.defaultValue,

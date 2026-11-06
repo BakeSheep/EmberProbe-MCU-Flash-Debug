@@ -1,9 +1,11 @@
 "use strict";
 
 // Terminal UI for RTT: one VS Code pseudoterminal per up channel, fed by cursor reads of the controller's channel
-// buffer on an injected clock, with optional host timestamps (RttLineFormatter) and an optional plain-text log file
-// per channel (RttLogWriter). Input is line-oriented: printable characters are echoed locally and Enter sends the
-// line plus "\n" to the same-numbered down channel through the channel's RTT TCP port. The controller's statuses
+// buffer on an injected clock, formatted per channel (createRttFormatter: text, raw or hex, with optional host
+// timestamps) and with an optional log file per channel, formatted or as received (RttLogWriter). With timestamps on,
+// each socket chunk is read as it arrives, so its time is when the bytes reached the host and not the next poll tick.
+// Line input echoes printable characters locally and Enter sends the line plus the configured ending to the channel's
+// down channel; raw input sends each keystroke as typed and leaves the echo to the firmware. The controller's statuses
 // drive the lifecycle: terminals appear when an attachment runs, stay open across yields (paused with a notice line)
 // and stay readable after RTT stops, with the reason as their last line; the next start reuses them. A terminal the
 // user closed does not stop the channel; its cursor, formatter and log keep running, and a fresh terminal can be
@@ -15,7 +17,7 @@
 
 const path = require("path");
 const { SYSTEM_CLOCK } = require("../samplingClock");
-const { AnsiStripper, RttLineFormatter } = require("../rttLineFormatter");
+const { AnsiStripper, createRttFormatter } = require("../rttLineFormatter");
 const { RttLogWriter } = require("./rttLogWriter");
 
 // Terminal responsiveness versus host wakeups; every read is a plain buffer access, so this stays cheap.
@@ -23,7 +25,9 @@ const POLL_INTERVAL_MS = 50;
 const READ_CHUNK_BYTES = 64 * 1024;
 const MAX_READS_PER_TICK = 4;
 // The line editor's bound; the controller's write cap is the hard safety net behind it.
-const MAX_INPUT_BYTES = 1023; // Reserve one byte for the newline in the controller's 1024-byte cap.
+const MAX_INPUT_BYTES = 1022; // Reserve room for the longest line ending in the controller's 1024-byte cap.
+const MAX_WRITE_BYTES = 1024;
+const LINE_ENDINGS = Object.freeze({ lf: "\n", crlf: "\r\n", cr: "\r", none: "" });
 const DEFAULT_LOG_MAX_BYTES = 8 * 1024 * 1024;
 
 const RTT_ERROR_KEYS = Object.freeze({
@@ -45,10 +49,27 @@ const RTT_ERROR_KEYS = Object.freeze({
     RTT_CHANNEL_DISCONNECTED: "rtt.err.channelDisconnected",
     RTT_WRITE_TOO_LARGE: "rtt.err.writeTooLarge",
     RTT_NOT_RUNNING: "rtt.err.notRunning",
+    RTT_DISCONNECTED: "rtt.err.hostLost",
     RTT_UNKNOWN_CHANNEL: "rtt.err.unknownChannel",
     RTT_INPUT_UNAVAILABLE: "rtt.inputUnavailable",
     RTT_INPUT_BUSY: "rtt.err.inputBusy",
-    RTT_INVALID_CHANNELS: "rtt.err.invalidChannels"
+    RTT_INVALID_CHANNELS: "rtt.err.invalidChannels",
+    RTT_EXACT_ADDRESS_REQUIRED: "rtt.err.exactAddressRequired",
+    RTT_TARGET_INVALID: "rtt.err.targetInvalid",
+    RTT_MODE_REQUIRES_UI_START: "rtt.err.modeRequiresUiStart",
+    RTT_MODE_TARGET_CHANGED: "rtt.err.modeTargetChanged",
+    RTT_ACCESS_UNSUPPORTED: "rtt.err.accessUnsupported",
+    RTT_CHANNEL_UNINITIALIZED: "rtt.err.unknownChannel",
+    RTT_INVALID_LAYOUT: "rtt.err.targetInvalid",
+    RTT_READ_FAILED: "rtt.err.targetInvalid",
+    RTT_VALUE_CHANGED: "rtt.err.targetChanged",
+    RTT_IDENTITY_CHANGED: "rtt.err.targetChanged",
+    RTT_READBACK_MISMATCH: "rtt.err.modeVerifyFailed",
+    RTT_WRITE_FAILED: "rtt.err.modeVerifyFailed",
+    RTT_TARGET_BUDGET_EXCEEDED: "rtt.err.targetBudget",
+    LIVE_READ_BUDGET_EXCEEDED: "rtt.err.targetBudget",
+    PROBE_CONNECTION_BUSY_TIMEOUT: "rtt.err.targetBudget",
+    LIVE_READ_CANCELLED: "rtt.err.cancelled"
 });
 
 const clampLogBytes = (value) => {
@@ -56,9 +77,11 @@ const clampLogBytes = (value) => {
     return Math.min(value, 1024 * 1024 * 1024);
 };
 
-// The down buffer size of a channel, if the firmware configured one.
-const downSize = (status, channel) =>
-    (status?.channels?.down || []).find((entry) => entry.index === channel)?.size || 0;
+// The size of the down buffer behind an up channel's input, if the firmware configured one.
+const downSize = (status, channel) => {
+    const index = channel.downChannel ?? channel.index;
+    return (status?.channels?.down || []).find((entry) => entry.index === index)?.size || 0;
+};
 
 const channelName = (channel) => `EmberProbe RTT #${channel.index}${channel.name ? ` ${channel.name}` : ""}`;
 
@@ -122,27 +145,32 @@ class RttTerminalService {
     // Starts RTT and reveals the terminals; starting an already running attachment only reveals them. A failure is
     // reported here, once, whichever path it arrived on, so callers get false and report nothing further.
     async startCommand() {
-        return this._startCommand(false);
+        return this._startCommand("user");
     }
 
     // Agent callers share terminal/card/notice updates but must receive the original failure.
     async startAgentCommand() {
-        return this._startCommand(true);
+        return this._startCommand("agent");
     }
 
-    async _startCommand(rethrow) {
+    // A session appeared and automatic start is on; failures reach the sidebar like a manual start's.
+    async startAutoCommand() {
+        return this._startCommand("auto");
+    }
+
+    async _startCommand(origin) {
         this._failureNoticed = null;
         for (const id of ["rtt", "rtt-channels", "rtt-log"]) this._clearNotice(id);
         let status;
         try {
-            status = await this._controller().start();
+            status = await this._controller().start({ origin });
         } catch (error) {
             if (this._failureNoticed !== error?.code)
                 this._notice({ level: "error", titleKey: "notice.rttStartFailed", error: this._withErrorKey(error) });
-            if (rethrow) throw error;
+            if (origin === "agent") throw error;
             return false;
         }
-        this.sync(status, true);
+        this.sync(status, origin !== "auto");
         return status;
     }
 
@@ -355,30 +383,43 @@ class RttTerminalService {
             if (!entry) entry = this._createEntry(channel, status);
             entry.active = true;
             this._applyLog(entry, settings);
-            entry.down = downSize(status, channel.index);
+            entry.down = downSize(status, channel);
             const generation = generations.get(channel.index);
             if (generation === undefined) continue;
+            const formatChanged = entry.format !== channel.format || entry.encoding !== channel.encoding;
+            entry.format = channel.format;
+            entry.encoding = channel.encoding;
             if (entry.generation !== undefined && entry.generation !== generation) {
                 // A new attachment replaced the buffers; mark the boundary and read from its beginning.
                 this._mark(entry, "rtt.termReattached");
-                entry.cursor = undefined;
-                entry.formatter = this._newFormatter();
+                entry.formatter = this._newFormatter(entry);
                 entry.input = "";
-            }
+            } else if (formatChanged) entry.formatter = this._newFormatter(entry);
+            // A known generation starts at zero, even if its first poll follows an eviction.
+            if (entry.generation !== generation) entry.cursor = 0;
             entry.generation = generation;
         }
     }
 
-    _newFormatter() {
-        return new RttLineFormatter({ timestamps: this._settings().timestamps === true, clock: this.clock });
+    _newFormatter({ channel, format, encoding }) {
+        const settings = this._settings();
+        return createRttFormatter({
+            format,
+            encoding,
+            timestamps: settings.timestamps === true,
+            virtualTerminals: channel === 0 && settings.virtualTerminals !== false,
+            clock: this.clock
+        });
     }
 
     _createEntry(channel, status) {
         const entry = {
             channel: channel.index,
             name: channelName(channel),
-            down: downSize(status, channel.index),
-            formatter: this._newFormatter(),
+            down: downSize(status, channel),
+            format: channel.format,
+            encoding: channel.encoding,
+            formatter: null,
             generation: undefined,
             cursor: undefined,
             input: "",
@@ -392,6 +433,7 @@ class RttTerminalService {
             pty: null,
             terminal: null
         };
+        entry.formatter = this._newFormatter(entry);
         this._channels.set(entry.channel, entry);
         this._attachTerminal(entry);
         return entry;
@@ -452,13 +494,15 @@ class RttTerminalService {
         const file = this._logFileFor(entry.channel, settings);
         const maxBytes = clampLogBytes(settings.logMaxBytes);
         if (file && file === entry.logFailed) return;
-        if (entry.log && entry.log.file === file && entry.log.maxBytes === maxBytes) return;
+        const raw = settings.logRaw === true;
+        if (entry.log && entry.log.file === file && entry.log.maxBytes === maxBytes && entry.log.raw === raw) return;
         entry.log?.close();
         entry.log = null;
         entry.ansi.reset();
         if (!file) return;
         const log = new RttLogWriter({
             maxBytes,
+            raw,
             onError: (error) => {
                 entry.logFailed = file;
                 if (entry.log === log) entry.log = null;
@@ -505,35 +549,54 @@ class RttTerminalService {
 
     _poll() {
         if (this.state !== "running") return;
+        for (const entry of this._active()) if (!this._drain(entry)) return;
+    }
+
+    // Bytes reached the host: a timestamped line takes its time now rather than at the next tick.
+    dataArrived(channel) {
+        const entry = this._channels.get(channel);
+        if (this.state === "running" && entry?.active && entry.formatter.timestamps) this._drain(entry);
+    }
+
+    // Reads what arrived since the last drain; the bound keeps one channel from starving the others. False when RTT
+    // left the running state mid-read: its status stops the tick.
+    _drain(entry) {
         const controller = this._controller();
-        for (const entry of this._active()) {
-            // Drain what arrived since the last tick; the bound keeps one channel from starving the others.
-            for (let read = 0; read < MAX_READS_PER_TICK; read++) {
-                let result;
-                const hadCursor = entry.cursor !== undefined;
-                try {
-                    result = controller.read(entry.channel, {
-                        generation: entry.generation,
-                        cursor: entry.cursor,
-                        maxBytes: READ_CHUNK_BYTES
-                    });
-                } catch {
-                    return; // RTT left the running state mid-poll; its status stops the tick.
-                }
-                entry.generation = result.generation;
-                entry.cursor = result.nextCursor;
-                if (result.data?.length) {
-                    if (result.droppedBytes || (result.reset && hadCursor)) {
-                        entry.formatter = this._newFormatter();
-                        this._mark(entry, "rtt.termGap");
-                    }
-                    const text = entry.formatter.push(result.data);
-                    this._fire(entry, text);
-                    this._appendLog(entry, text);
-                }
-                if (!result.more) break;
+        for (let read = 0; read < MAX_READS_PER_TICK; read++) {
+            let result;
+            const hadCursor = entry.cursor !== undefined;
+            try {
+                result = controller.read(entry.channel, {
+                    generation: entry.generation,
+                    cursor: entry.cursor,
+                    maxBytes: READ_CHUNK_BYTES
+                });
+            } catch {
+                return false;
             }
+            // A reset cannot quantify unread bytes in the old generation. Its retained start still tells us
+            // exactly how much history the new generation evicted. Report both even without any payload.
+            const reset = result.reset && hadCursor;
+            const gap = result.droppedBytes || (reset ? result.cursor : 0);
+            if (reset || gap) {
+                const tail = entry.formatter.flush();
+                this._fire(entry, tail);
+                this._appendLog(entry, tail);
+                entry.formatter = this._newFormatter(entry);
+            }
+            if (reset) this._mark(entry, "rtt.termReattached");
+            if (gap) this._mark(entry, "rtt.termGap", { bytes: gap });
+            entry.generation = result.generation;
+            entry.cursor = result.nextCursor;
+            if (result.data?.length) {
+                if (entry.log?.raw) entry.log.appendBytes(result.data);
+                const text = entry.formatter.push(result.data, result.cursor);
+                this._fire(entry, text);
+                this._appendLog(entry, text);
+            }
+            if (!result.more) break;
         }
+        return true;
     }
 
     // Line editor: printable input is echoed locally, Enter sends the line to the down channel, backspace edits;
@@ -541,6 +604,10 @@ class RttTerminalService {
     // whole sequence in one call, so a lone Esc cannot swallow the next key.
     _handleInput(entry, data) {
         if (!entry.open || !entry.active || this.state !== "running") return;
+        if (this._settings().inputMode === "raw") {
+            this._sendRaw(entry, data);
+            return;
+        }
         let escape = null;
         for (const char of String(data ?? "")) {
             if (escape === "csi") {
@@ -592,19 +659,40 @@ class RttTerminalService {
             this._inputProblem(entry, this._t("rtt.inputUnavailable", { channel: entry.channel }));
             return;
         }
-        const bytes = Buffer.byteLength(line, "utf8") + 1;
+        const ending = LINE_ENDINGS[this._settings().inputLineEnding] ?? LINE_ENDINGS.lf;
+        if (!line && !ending) return;
+        const bytes = Buffer.byteLength(line + ending, "utf8");
         const max = entry.down - 1; // A ring buffer holds one byte less than its size.
         if (bytes > max) {
             this._inputProblem(entry, this._t("rtt.inputTooLong", { bytes, max }));
             return;
         }
         try {
-            this._controller().write(entry.channel, `${line}\n`);
+            this._controller().write(entry.channel, line + ending);
         } catch (error) {
             this._inputProblem(entry, `${this._t("rtt.writeFailed")}: ${this._errorText(error)}`);
             return;
         }
         this._appendLog(entry, `${line}\r\n`);
+    }
+
+    // Keystrokes, including control characters, go out as typed. The firmware echoes what it wants shown.
+    _sendRaw(entry, data) {
+        if (!entry.down) {
+            this._inputProblem(entry, this._t("rtt.inputUnavailable", { channel: entry.channel }));
+            return;
+        }
+        const bytes = Buffer.from(String(data ?? ""), "utf8");
+        const max = Math.min(entry.down - 1, MAX_WRITE_BYTES);
+        if (bytes.length > max) {
+            this._inputProblem(entry, this._t("rtt.inputTooLong", { bytes: bytes.length, max }));
+            return;
+        }
+        try {
+            this._controller().write(entry.channel, bytes);
+        } catch (error) {
+            this._inputProblem(entry, `${this._t("rtt.writeFailed")}: ${this._errorText(error)}`);
+        }
     }
 
     _notePaused() {
@@ -618,11 +706,11 @@ class RttTerminalService {
     }
 
     // A session boundary shown in the terminal and recorded in its log.
-    _mark(entry, key) {
-        const line = `\r\n${this._t(key)}\r\n`;
+    _mark(entry, key, params = undefined) {
+        const line = `\r\n${this._t(key, params)}\r\n`;
         entry.ansi.reset();
         this._fire(entry, line);
-        entry.log?.append(line);
+        if (!entry.log?.raw) entry.log?.append(line);
     }
 
     // RTT ended for this channel: everything held back goes out, and the terminal stays readable with the reason as
@@ -661,7 +749,7 @@ class RttTerminalService {
 
     // Keeps partial escape sequences across chunks so ANSI never leaks into plain-text logs.
     _appendLog(entry, text) {
-        if (!entry.log) return;
+        if (!entry.log || entry.log.raw) return;
         if (this._settings().stripAnsi === false) {
             entry.ansi.reset();
             entry.log.append(text);

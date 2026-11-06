@@ -47,7 +47,9 @@ generation and nextCursor from the new history. `droppedBytes` counts bytes evic
 were read: report the gap, and do not imply the log is complete. `more` means buffered bytes remain;
 continue with the returned cursor within the user's requested reading budget. UTF-8 holds an
 incomplete trailing sequence back, so an empty reply with `more: false` means nothing new is ready:
-wait before polling again rather than spinning. Base64 returns exact bytes
+wait before polling again rather than spinning. A channel configured with another encoding decodes the
+same way and adds `textEncoding`. Text keeps SEGGER virtual-terminal markers: `U+FFFD` plus a hex digit
+switches terminal on channel 0; read them as switches, not as corruption. Base64 returns exact bytes
 in `dataBase64`; UTF-8 returns `text`. Stop is idempotent.
 
 ## Interpret the evidence

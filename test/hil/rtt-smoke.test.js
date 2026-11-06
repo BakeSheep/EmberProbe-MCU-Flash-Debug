@@ -9,6 +9,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const vscode = require("vscode");
+const { checkStream, delta32, fixtureDelta, parseFixtureStatus } = require("../helpers/rtt-stream");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const REPLACEMENT = "\ufffd";
@@ -39,38 +40,57 @@ function withTimeout(promise, ms, label) {
     ]).finally(() => clearTimeout(timer));
 }
 
-// Checks stream lines: "S <8 hex seq> <letters derived from seq and column>\n", 64 bytes each.
-function checkStream(text) {
-    const result = { lines: 0, lost: 0, malformed: 0, resets: 0, first: null, last: null };
-    let previous = null;
-    for (const line of text.split("\n")) {
-        const match = /^S ([0-9a-f]{8}) ([a-z]+)$/u.exec(line);
-        if (!match) {
-            if (/^S /u.test(line)) result.malformed++;
-            continue;
-        }
-        const seq = parseInt(match[1], 16);
-        const pattern = match[2];
-        const intact =
-            line.length === 63 &&
-            [...pattern].every((char, index) => char.charCodeAt(0) - 97 === (seq + 11 + index) % 26);
-        if (!intact) result.malformed++;
-        result.lines++;
-        if (result.first === null) result.first = seq;
-        if (previous !== null) {
-            if (seq <= previous) result.resets++;
-            else result.lost += seq - previous - 1;
-        }
-        previous = seq;
-        result.last = seq;
-    }
-    return result;
-}
-
 async function run() {
     const profile = JSON.parse(process.env.EMBERPROBE_SMOKE_PROFILE || "null");
     assert(profile, "EMBERPROBE_SMOKE_PROFILE is required");
     const rttChecks = profile.checks?.rtt || {};
+    const stress = rttChecks.stress?.enabled ? rttChecks.stress : null;
+    const stressOptions = {
+        durationMs: stress?.durationMs ?? 3000,
+        rate: stress?.rate ?? 32000,
+        completionTimeoutMs: stress?.completionTimeoutMs ?? 30000,
+        drainTimeoutMs: stress?.drainTimeoutMs ?? 10000
+    };
+    if (stress) {
+        for (const [key, min, max] of [
+            ["durationMs", 1000, 10000],
+            ["rate", 16384, 96000],
+            ["completionTimeoutMs", 5000, 60000],
+            ["drainTimeoutMs", 1000, 30000]
+        ])
+            assert(
+                Number.isInteger(stressOptions[key]) && stressOptions[key] >= min && stressOptions[key] <= max,
+                `checks.rtt.stress.${key} must be an integer from ${min} to ${max}`
+            );
+        for (const [values, allowed, label] of [
+            [stress.pollingIntervalsMs ?? [100, 10], [100, 10], "pollingIntervalsMs"],
+            [
+                stress.contexts ?? ["own-session", "live-watch", "debug-server"],
+                ["own-session", "live-watch", "debug-server"],
+                "contexts"
+            ]
+        ])
+            assert(
+                Array.isArray(values) &&
+                    values.length > 0 &&
+                    new Set(values).size === values.length &&
+                    values.every((value) => allowed.includes(value)),
+                `stress ${label} must select unique allowed values`
+            );
+        if (stress.maxSamplingIntervalMs !== undefined)
+            assert(
+                Number.isInteger(stress.maxSamplingIntervalMs) &&
+                    stress.maxSamplingIntervalMs > 0 &&
+                    stress.maxSamplingIntervalMs <= 10000,
+                "stress maxSamplingIntervalMs must be from 1 to 10000"
+            );
+        assert(
+            Number.isInteger(stress.samplingIntervalMs ?? 100) &&
+                (stress.samplingIntervalMs ?? 100) >= 10 &&
+                (stress.samplingIntervalMs ?? 100) <= 1000,
+            "stress samplingIntervalMs must be an integer from 10 to 1000"
+        );
+    }
     const extension = vscode.extensions.getExtension("BakeSheep.emberprobe");
     await extension.activate();
     const provider = extension.exports.debugTestProvider;
@@ -149,31 +169,49 @@ async function run() {
         throw Object.assign(new Error(`Debug state stayed ${status.state}`), { code: "HIL_DEBUG_STATE" });
     };
 
-    // Agent cursor per channel. Text read so far accumulates until a check consumes it.
+    // Channel 1 is collected as raw bytes, independently of UTF-8 terminal/file formatting.
     const readers = new Map();
     const reader = (channel) => {
         if (!readers.has(channel))
-            readers.set(channel, { generation: undefined, cursor: undefined, text: "", dropped: 0, resets: 0 });
+            readers.set(channel, {
+                generation: undefined,
+                cursor: undefined,
+                text: "",
+                chunks: [],
+                rawBytes: 0,
+                dropped: 0,
+                resets: 0
+            });
         return readers.get(channel);
     };
     const pull = async (channel) => {
         const state = reader(channel);
+        const deadline = Date.now() + 5000;
         for (;;) {
             const reply = await call("rtt.read", {
                 channel,
+                ...(channel === 1 ? { encoding: "base64" } : {}),
                 ...(state.cursor !== undefined ? { generation: state.generation, cursor: state.cursor } : {})
             });
             if (reply.reset && state.cursor !== undefined) state.resets++;
             state.generation = reply.generation;
             state.cursor = reply.nextCursor;
             state.dropped += reply.droppedBytes || 0;
-            state.text += reply.text;
+            if (channel === 1) {
+                const bytes = Buffer.from(reply.dataBase64, "base64");
+                state.chunks.push(bytes);
+                state.rawBytes += bytes.length;
+                state.text += bytes.toString("latin1");
+            } else state.text += reply.text;
             if (!reply.more) return state;
+            assert(Date.now() < deadline, "RTT consumer could not catch up within 5 seconds");
         }
     };
     const drain = async (channel) => {
         const state = await pull(channel);
         state.text = "";
+        state.chunks = [];
+        state.rawBytes = 0;
         state.dropped = 0;
         state.resets = 0;
     };
@@ -223,8 +261,157 @@ async function run() {
 
     // Through the firmware's command, over the down channel: the channel must keep its buffer afterwards.
     const setUpMode = async (channel, mode) => {
+        await drain(0);
         type(0, `mode ${channel} ${mode}`);
         await expectText(0, new RegExp(`ok: ch${channel} mode=${mode}`, "u"));
+    };
+    const firmwareStatus = async () => {
+        await drain(0);
+        type(0, "status");
+        await expectText(0, /^status: ch1 mode=\w+ written=\d+ dropped=\d+ maxCycles=\d+\r?\n/mu);
+        const status = parseFixtureStatus(reader(0).text);
+        assert(status, `incomplete fixture status: ${reader(0).text.slice(-600)}`);
+        return status;
+    };
+    const stopRate = async () => {
+        await drain(0);
+        type(0, "rate 0");
+        await expectText(0, /ok: rate=0\r?\n/u);
+    };
+    // Producer completion precedes drain completion. Quiet time confirms no late TCP data beyond acceptedBytes;
+    // failure to receive those bytes by the deadline fails instead of passing after an arbitrary capture duration.
+    const drainAccepted = async (acceptedBytes, pollingIntervalMs, timeoutMs = 10000) => {
+        const deadline = Date.now() + timeoutMs;
+        const quietMs = Math.max(250, pollingIntervalMs * 3);
+        let quietSince = null;
+        do {
+            const state = await pull(1);
+            assert.strictEqual(state.resets, 0, "RTT generation changed during the stream capture");
+            assert(
+                state.rawBytes <= acceptedBytes,
+                `received ${state.rawBytes} bytes, firmware accepted ${acceptedBytes}`
+            );
+            if (state.rawBytes === acceptedBytes) {
+                quietSince ??= Date.now();
+                if (Date.now() - quietSince >= quietMs) return;
+            } else quietSince = null;
+            await sleep(25);
+        } while (Date.now() < deadline);
+        throw new Error(
+            `RTT drain timed out: accepted=${acceptedBytes}, rawReceived=${reader(1).rawBytes}, ` +
+                `consumerGapBytes=${reader(1).dropped}, consumerResets=${reader(1).resets}`
+        );
+    };
+    const prepareStream = async (pollingIntervalMs) => {
+        await stopRate();
+        const status = await firmwareStatus();
+        // Clear prior captures only after the stopped producer and transport have quiesced.
+        let previous = -1;
+        let quietSince = Date.now();
+        const deadline = Date.now() + 10000;
+        do {
+            const state = await pull(1);
+            if (state.rawBytes !== previous) {
+                previous = state.rawBytes;
+                quietSince = Date.now();
+            }
+            if (Date.now() - quietSince >= Math.max(250, pollingIntervalMs * 3)) {
+                await drain(1);
+                return status;
+            }
+            await sleep(25);
+        } while (Date.now() < deadline);
+        throw new Error("RTT did not quiesce before stream capture");
+    };
+    const captureStream = async ({
+        rate,
+        mode,
+        durationMs = 3000,
+        pollingIntervalMs = 10,
+        completionTimeoutMs = 30000,
+        drainTimeoutMs = 10000,
+        requireComplete = false
+    } = {}) => {
+        const before = await prepareStream(pollingIntervalMs);
+        const started = Date.now();
+        let after;
+        if (rate) {
+            type(0, `rate ${rate}`);
+            try {
+                const deadline = Date.now() + durationMs;
+                while (Date.now() < deadline) {
+                    await pull(1);
+                    await sleep(25);
+                }
+            } finally {
+                await stopRate();
+            }
+            after = await firmwareStatus();
+        } else {
+            type(0, "burst 64000");
+            const deadline = Date.now() + completionTimeoutMs;
+            for (;;) {
+                await pull(1);
+                after = await firmwareStatus();
+                const attempts = delta32(after.sequence, before.sequence);
+                assert(attempts <= 1000, `burst exceeded 1000 attempts: ${attempts}`);
+                if (attempts === 1000) break;
+                assert(Date.now() < deadline, `burst timed out at ${attempts}/1000 attempts`);
+                await sleep(25);
+            }
+        }
+        const producerCompletedMs = Date.now() - started;
+        const counters = fixtureDelta(before, after);
+        if (!rate) {
+            assert.strictEqual(counters.attempts, 1000);
+            assert.strictEqual(counters.attemptedBytes, 64000);
+        } else assert(counters.attempts > 0, "sustained stream made no write attempts");
+        let drainError;
+        try {
+            await drainAccepted(counters.acceptedBytes, pollingIntervalMs, drainTimeoutMs);
+        } catch (error) {
+            drainError = error;
+        }
+        const elapsedMs = Date.now() - started;
+        const state = reader(1);
+        const integrity = checkStream(state.chunks, counters);
+        const result = {
+            ...counters,
+            ...integrity,
+            requestedRate: rate || null,
+            attemptedBytesPerSecond: (counters.attemptedBytes * 1000) / producerCompletedMs,
+            producerCompletedMs,
+            elapsedMs,
+            rawReceivedBytes: state.rawBytes,
+            rawReceiveBytesPerSecond: (state.rawBytes * 1000) / elapsedMs,
+            consumerGapBytes: state.dropped,
+            consumerResets: state.resets,
+            before,
+            after,
+            overhead: { terminal: true, fileLog: true, timestamps: terminals._view().timestamps },
+            ...(drainError ? { drainError: summarize(drainError) } : {})
+        };
+        // Keep measurements in failed-step reports too (including target refusal versus consumer gaps).
+        report.steps.at(-1).captures ??= [];
+        report.steps.at(-1).captures.push(result);
+        if (drainError) throw drainError;
+        assert.strictEqual(state.rawBytes, counters.acceptedBytes, JSON.stringify(result));
+        assert.strictEqual(state.dropped, 0, JSON.stringify(result));
+        assert.strictEqual(state.resets, 0, JSON.stringify(result));
+        assert.strictEqual(integrity.duplicates, 0, JSON.stringify(result));
+        assert.strictEqual(integrity.resets, 0, JSON.stringify(result));
+        assert.strictEqual(integrity.outOfEnvelope, 0, JSON.stringify(result));
+        if (mode === "skip") {
+            assert.strictEqual(counters.rejectedBytes % 64, 0, JSON.stringify(result));
+            assert.strictEqual(integrity.malformed, 0, JSON.stringify(result));
+            assert.strictEqual(integrity.partialBytes, 0, JSON.stringify(result));
+        }
+        if (requireComplete || counters.rejectedBytes === 0) {
+            assert.strictEqual(counters.rejectedBytes, 0, JSON.stringify(result));
+            assert.strictEqual(integrity.complete, true, JSON.stringify(result));
+            if (!rate) assert.strictEqual(integrity.lines, 1000, JSON.stringify(result));
+        }
+        return result;
     };
 
     try {
@@ -249,6 +436,7 @@ async function run() {
                     source: "user"
                 });
             await setting("rtt.channels", [0, 1]);
+            await setting("rtt.pollingIntervalMs", 10);
             await setting("rtt.logFile.enabled", true);
             await setting("rtt.logFile.directory", "rtt-logs");
             await setting("rtt.logFile.maxBytes", 1048576);
@@ -390,66 +578,158 @@ async function run() {
             return { bytes: text.length };
         });
 
-        const stream = async (commandText, seconds) => {
-            await drain(1);
-            type(0, commandText);
-            const deadline = Date.now() + seconds * 1000;
-            while (Date.now() < deadline) {
-                await pull(1);
-                await sleep(100);
-            }
-            const state = await pull(1);
-            return { ...checkStream(state.text), dropped: state.dropped };
-        };
         await step(
             "stream.8kB",
             async () => {
-                const result = await stream("rate 8000", 8);
-                type(0, "rate 0");
-                await sleep(300);
-                assert(result.lines > 500, `only ${result.lines} lines`);
-                assert.strictEqual(result.lost, 0, JSON.stringify(result));
-                assert.strictEqual(result.malformed, 0, JSON.stringify(result));
-                assert.strictEqual(result.dropped, 0, "the host buffer dropped data");
-                return result;
-            },
-            20000
-        );
-        await step(
-            "mode.trim",
-            async () => {
-                await setUpMode(1, "trim");
-                const result = await stream("burst 64000", 4);
-                await heartbeat();
-                assert(result.lines > 100, `only ${result.lines} lines`);
-                return result;
+                await setUpMode(1, "skip");
+                return captureStream({ rate: 8000, durationMs: 5000, requireComplete: true });
             },
             40000
         );
-        await step(
-            "mode.block",
-            async () => {
-                await setUpMode(1, "block");
-                const result = await stream("burst 64000", 10);
-                await heartbeat();
-                assert(result.lines * 64 >= 60000, `only ${result.lines} lines`);
-                assert.strictEqual(result.lost, 0, JSON.stringify(result));
-                assert.strictEqual(result.malformed, 0, JSON.stringify(result));
-                await setUpMode(1, "skip");
-                return result;
-            },
-            50000
-        );
+        for (const mode of ["skip", "trim", "block"]) {
+            await step(
+                `mode.${mode}`,
+                async () => {
+                    await setUpMode(1, mode);
+                    try {
+                        const result = await captureStream({ mode, requireComplete: mode === "block" });
+                        await heartbeat();
+                        return result;
+                    } finally {
+                        await setUpMode(1, "skip");
+                    }
+                },
+                90000
+            );
+        }
+
+        // Optional six comparisons instead of a full context × mode × rate matrix. Each context uses one mode,
+        // compares 100/10 ms, sends above the old 10240 B/s polling limit, then sends an over-capacity finite burst.
+        if (stress) {
+            for (const source of stress.contexts ?? ["own-session", "live-watch", "debug-server"]) {
+                const mode = { "own-session": "skip", "live-watch": "trim", "debug-server": "block" }[source];
+                for (const pollingIntervalMs of stress.pollingIntervalsMs ?? [100, 10]) {
+                    await step(
+                        `stress.${source}.${pollingIntervalMs}ms.${mode}`,
+                        async () => {
+                            await stopRate();
+                            await setUpMode(1, "skip");
+                            await command("mcu-vscode.stopRtt");
+                            await stopped();
+                            await setting("rtt.pollingIntervalMs", pollingIntervalMs);
+                            await setting("rtt.channels", [0, { index: 1, mode }]);
+                            try {
+                                if (source === "live-watch") {
+                                    await call("watch.add", { variables: ["g_rtt_test.uptimeSeconds"] });
+                                    await call("sampling.start", { intervalMs: stress.samplingIntervalMs ?? 100 });
+                                } else if (source === "debug-server") {
+                                    await call("debug.start");
+                                    await waitDebug((next) => next.paused || next.state === "running", 60000);
+                                    // debug.start can report running before the entry stop, which would leave RTT halted.
+                                    const debug = await waitDebug((next) => next.paused, 20000).catch(() =>
+                                        call("debug.status")
+                                    );
+                                    if (debug.paused) await call("debug.control", { action: "continue" });
+                                    await waitDebug((next) => next.state === "running");
+                                }
+                                await command("mcu-vscode.startRtt");
+                                const status = await waitStatus(
+                                    (next) =>
+                                        next.state === "running" &&
+                                        next.source === source &&
+                                        next.channels.up.some(
+                                            (channel) =>
+                                                channel.index === 1 &&
+                                                channel.mode === mode &&
+                                                channel.modeState === "applied"
+                                        ),
+                                    30000
+                                );
+                                assert.strictEqual(status.pollingIntervalMs, pollingIntervalMs);
+                                const actual = status.channels.up.find((channel) => channel.index === 1);
+                                assert(Number.isInteger(actual.flags), "actual channel Flags readback is missing");
+                                assert.strictEqual(actual.flags & 3, { skip: 0, trim: 1, block: 2 }[mode]);
+                                readers.clear();
+                                watchTerminals();
+                                await drain(0);
+                                type(0, "auto off");
+                                await expectText(0, /ok: auto=off/u);
+                                const common = { ...stressOptions, pollingIntervalMs, mode };
+                                const samplingBefore = source === "live-watch" ? await call("sampling.status") : null;
+                                const baseline =
+                                    source === "own-session"
+                                        ? await captureStream({ ...common, rate: 8000, requireComplete: true })
+                                        : null;
+                                const sustained = await captureStream({ ...common, requireComplete: mode === "block" });
+                                const burst = await captureStream({
+                                    ...common,
+                                    rate: undefined,
+                                    requireComplete: mode === "block"
+                                });
+                                const samplingAfter = source === "live-watch" ? await call("sampling.status") : null;
+                                if (samplingAfter) {
+                                    report.steps.at(-1).sampling = { before: samplingBefore, after: samplingAfter };
+                                    assert.strictEqual(samplingAfter.running, true, JSON.stringify(samplingAfter));
+                                    // actualHz follows the chart; a watch list alone is read at the sidebar rate.
+                                    assert(
+                                        Math.max(samplingAfter.actualHz, samplingAfter.consumers?.sidebarHz ?? 0) > 0,
+                                        `no actual sampling load: ${JSON.stringify(samplingAfter)}`
+                                    );
+                                    if (stress.maxSamplingIntervalMs !== undefined)
+                                        assert(
+                                            samplingAfter.effectiveIntervalMs <= stress.maxSamplingIntervalMs,
+                                            `sampling interval exceeded profile limit: ${JSON.stringify(samplingAfter)}`
+                                        );
+                                }
+                                return {
+                                    source,
+                                    mode,
+                                    pollingIntervalMs,
+                                    hostFlags: actual.flags,
+                                    baseline,
+                                    sustained,
+                                    burst,
+                                    samplingBefore,
+                                    samplingAfter
+                                };
+                            } finally {
+                                // Leave firmware in skip before detaching: stopping a reader does not restore block Flags.
+                                const current = await call("rtt.status");
+                                if (current.state === "running") {
+                                    await stopRate();
+                                    await setUpMode(1, "skip");
+                                }
+                                await command("mcu-vscode.stopRtt");
+                                await stopped();
+                                if (source === "live-watch") await call("sampling.stop");
+                                if (source === "debug-server" && (await call("debug.status")).state !== "none") {
+                                    await call("debug.control", { action: "stop" });
+                                    await waitDebug((next) => next.state === "none");
+                                }
+                                await setting("rtt.channels", [0, 1]);
+                                await setting("rtt.pollingIntervalMs", 10);
+                                await command("mcu-vscode.startRtt");
+                                await running("own-session", 30000);
+                                readers.clear();
+                                watchTerminals();
+                            }
+                        },
+                        240000
+                    );
+                }
+            }
+        }
 
         // --- Following the probe owner ---
         await step(
-            "follow.agentRead",
+            "follow.statusKeepsSession",
             async () => {
                 const before = await call("rtt.status");
-                const values = await call("variables.read", { variables: ["g_rtt_test.uptimeSeconds"] });
-                const status = await running("own-session", 20000);
-                await heartbeat();
-                return { before: before.buffers?.[0]?.generation, after: status.buffers?.[0]?.generation, values };
+                const fixture = await firmwareStatus();
+                const status = await call("rtt.status");
+                assert.strictEqual(status.source, "own-session");
+                assert.strictEqual(status.buffers?.[0]?.generation, before.buffers?.[0]?.generation);
+                return { generation: status.buffers?.[0]?.generation, fixture };
             },
             40000
         );

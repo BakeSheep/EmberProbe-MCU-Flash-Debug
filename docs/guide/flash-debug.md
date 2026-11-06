@@ -28,12 +28,12 @@
 
 ### launch 配置
 
-| 配置 | 效果 |
-| --- | --- |
-| 默认 | 下载 `executable` 指定的 ELF |
-| `loadFiles: ["a.elf", "b.elf"]` | 按顺序下载这些文件 |
-| `loadFiles: []` | 不下载 |
-| `request: "attach"` | 从不写入 Flash |
+| 配置                            | 效果                         |
+| ------------------------------- | ---------------------------- |
+| 默认                            | 下载 `executable` 指定的 ELF |
+| `loadFiles: ["a.elf", "b.elf"]` | 按顺序下载这些文件           |
+| `loadFiles: []`                 | 不下载                       |
+| `request: "attach"`             | 从不写入 Flash               |
 
 ### 查看启动耗时
 
@@ -47,16 +47,16 @@ Windows 上首次启动 GDB 可能需要几秒。EmberProbe 会在后台提前�
 
 ### 常用命令
 
-| 输入 | 用途 |
-| --- | --- |
-| `bt` | 查看调用栈 |
-| `info registers` | 查看寄存器 |
-| `p counter` | 打印变量 |
-| `x/16wx 0x20000000` | 按 32 位十六进制查看 16 个内存单元 |
-| `set variable counter = 5` | 修改变量 |
-| `thread 2`、`frame 1` | 切换线程、栈帧 |
-| `continue`、`next`、`step`、`finish` | 运行或单步 |
-| `info breakpoints` | 查看全部断点及实际启用状态 |
+| 输入                                 | 用途                               |
+| ------------------------------------ | ---------------------------------- |
+| `bt`                                 | 查看调用栈                         |
+| `info registers`                     | 查看寄存器                         |
+| `p counter`                          | 打印变量                           |
+| `x/16wx 0x20000000`                  | 按 32 位十六进制查看 16 个内存单元 |
+| `set variable counter = 5`           | 修改变量                           |
+| `thread 2`、`frame 1`                | 切换线程、栈帧                     |
+| `continue`、`next`、`step`、`finish` | 运行或单步                         |
+| `info breakpoints`                   | 查看全部断点及实际启用状态         |
 
 打印变量要写 `p counter`，直接输入 `counter` 不会求值。Watch 和悬停仍使用表达式，写 `counter` 即可。
 
@@ -92,10 +92,10 @@ FreeRTOS 还有实验性的任务面板，可以在暂停时查看任务列表�
 
 ```json
 {
-  "type": "emberprobe",
-  "request": "launch",
-  "executable": "${workspaceFolder}/build/app.elf",
-  "rtos": "FreeRTOS"
+    "type": "emberprobe",
+    "request": "launch",
+    "executable": "${workspaceFolder}/build/app.elf",
+    "rtos": "FreeRTOS"
 }
 ```
 
@@ -154,41 +154,41 @@ FreeRTOS 还有实验性的任务面板，可以在暂停时查看任务列表�
 
 ```json
 {
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "CPU 0 launch",
-      "type": "emberprobe",
-      "request": "launch",
-      "executable": "${workspaceFolder}/build/core0.elf",
-      "cwd": "${workspaceFolder}",
-      "serverGroup": "dual",
-      "numberOfProcessors": 2,
-      "targetProcessor": 0,
-      "rtos": "FreeRTOS",
-      "runToEntryPoint": "main"
-    },
-    {
-      "name": "CPU 1 attach",
-      "type": "emberprobe",
-      "request": "attach",
-      "executable": "${workspaceFolder}/build/core1.elf",
-      "cwd": "${workspaceFolder}",
-      "serverGroup": "dual",
-      "numberOfProcessors": 2,
-      "targetProcessor": 1,
-      "rtos": "FreeRTOS"
-    }
-  ]
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "CPU 0 launch",
+            "type": "emberprobe",
+            "request": "launch",
+            "executable": "${workspaceFolder}/build/core0.elf",
+            "cwd": "${workspaceFolder}",
+            "serverGroup": "dual",
+            "numberOfProcessors": 2,
+            "targetProcessor": 0,
+            "rtos": "FreeRTOS",
+            "runToEntryPoint": "main"
+        },
+        {
+            "name": "CPU 1 attach",
+            "type": "emberprobe",
+            "request": "attach",
+            "executable": "${workspaceFolder}/build/core1.elf",
+            "cwd": "${workspaceFolder}",
+            "serverGroup": "dual",
+            "numberOfProcessors": 2,
+            "targetProcessor": 1,
+            "rtos": "FreeRTOS"
+        }
+    ]
 }
 ```
 
-| 字段 | 要求 |
-| --- | --- |
-| `serverGroup` | 组名，1–64 个字母、数字、下划线、点或短横线，以字母或数字开头 |
-| `numberOfProcessors` | 2–32 |
-| `targetProcessor` | 从 0 开始的核索引 |
-| `targetName` | 可选，必须与该索引的实际目标名一致 |
+| 字段                 | 要求                                                          |
+| -------------------- | ------------------------------------------------------------- |
+| `serverGroup`        | 组名，1–64 个字母、数字、下划线、点或短横线，以字母或数字开头 |
+| `numberOfProcessors` | 2–32                                                          |
+| `targetProcessor`    | 从 0 开始的核索引                                             |
+| `targetName`         | 可选，必须与该索引的实际目标名一致                            |
 
 ### 启动顺序
 
@@ -232,27 +232,27 @@ node <skill-dir>/scripts/debug.js --workspace <workspace> --select --group dual 
 
 1. 在目标工作区或文件夹的 VS Code 设置中开启：
 
-   ```json
-   {
-     "emberprobe.experimental.externalGdb.enabled": true,
-     "emberprobe.experimental.externalGdb.target": "127.0.0.1:3333",
-     "emberprobe.experimental.externalGdb.connectionMode": "extended-remote"
-   }
-   ```
+    ```json
+    {
+        "emberprobe.experimental.externalGdb.enabled": true,
+        "emberprobe.experimental.externalGdb.target": "127.0.0.1:3333",
+        "emberprobe.experimental.externalGdb.connectionMode": "extended-remote"
+    }
+    ```
 
-   `target` 写 `host:port` 或 `[IPv6]:port`，不支持串口、URL 或管道。`connectionMode` 可选 `remote` 和 `extended-remote`。
+    `target` 写 `host:port` 或 `[IPv6]:port`，不支持串口、URL 或管道。`connectionMode` 可选 `remote` 和 `extended-remote`。
 
 2. 在 `launch.json` 添加配置：
 
-   ```json
-   {
-     "name": "External GDB attach",
-     "type": "emberprobe",
-     "request": "attach",
-     "servertype": "external",
-     "executable": "${workspaceFolder}/build/app.elf"
-   }
-   ```
+    ```json
+    {
+        "name": "External GDB attach",
+        "type": "emberprobe",
+        "request": "attach",
+        "servertype": "external",
+        "executable": "${workspaceFolder}/build/app.elf"
+    }
+    ```
 
 3. 启动你的 GDB server，然后在 VS Code 的“运行和调试”中选择这项配置，按 F5。
 
@@ -296,13 +296,27 @@ EmberProbe 不主动发送 OpenOCD `monitor` 命令。你在配置里写的 atta
 - **停止**：执行 `EmberProbe: 停止 RTT 日志`。终端保留已有输出和结束原因，下次启动继续使用。
 - **找回终端**：运行中关闭终端不会停止 RTT 或日志，执行 `EmberProbe: 显示 RTT 终端` 重新打开。
 
-RTT 手动启动，之后跟随会话变化：调试或采样开始后继续输出，烧录期间暂停，并清除未发送的输入。启动失败、重试耗尽和连接中断都显示在 RTT 卡片的提示框里，卡片折叠时自动展开。
+RTT 默认手动启动，之后跟随会话变化：调试或采样开始后继续输出，烧录期间暂停，并清除未发送的输入。启动失败、重试耗尽和连接中断都显示在 RTT 卡片的提示框里，卡片折叠时自动展开。
+
+打开 `emberprobe.rtt.autoStart` 后，调试或实时采样会话开始时自动附加 RTT。它只使用已经打开的会话，不会单独占用探针；在某次会话中手动停止后，这次会话不再自动启动。固件停在复位处时，使用精确控制块地址的自动启动会等待约 5 分钟。配置了通道 `mode` 时不自动启动，需要手动启动。
 
 ### 选择通道
 
-默认读取 up 通道 0。用 `emberprobe.rtt.channels` 选择其他通道，例如 `[0, 2]`，最多 16 个，修改后重新启动生效。
+默认读取 up 通道 0。用 `emberprobe.rtt.channels` 选择其他通道，例如 `[0, 2]`，最多 16 个，修改后手动重新启动生效。
 
-每个已配置的通道有一个 `EmberProbe RTT #N <名称>` 终端。固件尚未配置所选通道时会继续重试；只缺其中一部分时照常启动，并提示缺少的通道。
+也可以给通道指定模式，例如 `[0, { "index": 1, "mode": "trim" }]`。省略 mode 时保留固件设置；可选 skip、trim、block。覆盖模式需要精确控制块地址或 ELF `_SEGGER_RTT` 符号，并由你在 VS Code 中启动 RTT；Agent 不能隐式应用配置中的模式写入，但可以读取已经启动的输出。
+
+对象写法还可以设置：
+
+- `format`：`text`（默认，按行处理）、`raw`（解码后原样显示，用于 shell、光标控制等固件自己控制终端的场景）、`hex`（十六进制转储，带流偏移，用于二进制数据）。
+- `encoding`：`utf-8`、`gbk`、`gb18030`、`big5`、`shift_jis`、`euc-kr`、`latin1`。默认取 `emberprobe.rtt.encoding`。
+- `down`：输入发往的 down 通道，默认与 up 通道同号。
+
+每个已配置的通道有一个 `EmberProbe RTT #N <名称>` 终端。固件尚未配置所选通道时会继续重试；未指定模式的通道只缺其中一部分时照常启动，并提示缺少的通道。指定了模式的通道必须初始化完成，等待耗尽时会明确失败。卡片显示实际模式；待应用或固件后来改变模式时，同时说明期望模式。
+
+### 虚拟终端
+
+固件用 `SEGGER_RTT_SetTerminal()` 在通道 0 上切换虚拟终端时，切换标记不会显示，来自 1 到 F 号终端的行带 `[Tn]` 前缀。不同终端的输出不会并在一行。通道 0 以 `latin1` 输出可能含 0xFF 的内容时，关闭 `emberprobe.rtt.virtualTerminals`。
 
 ### 找不到控制块
 
@@ -322,34 +336,47 @@ ELF 中有多个 `_SEGGER_RTT` 时报 `RTT_CONTROL_BLOCK_AMBIGUOUS`，这时也�
 
 ### 向固件发送输入
 
-在终端输入一行并回车，发送到同号 down 通道，退格可以编辑。
+默认在终端输入一行并回车，发送到通道的 down 通道，退格可以编辑。`emberprobe.rtt.input.lineEnding` 选择行尾：`lf`（默认）、`crlf`、`cr` 或 `none`。
 
-- 每行最多 1023 个 UTF-8 字节，且不能超过 down 缓冲容量，超出时整行不发送。
+`emberprobe.rtt.input.mode` 设为 `raw` 后，每次按键立即发送，包括方向键和 Ctrl+C，不做本地回显，由固件决定显示什么。这两个设置立即生效。
+
+- 输入始终按 UTF-8 发送，不跟随通道的 `encoding`。
+- 每行最多 1022 个字节（不含行尾）；加上行尾不能超过 down 缓冲容量，超出时整行不发送。
 - 没有 down 缓冲、超长和发送失败的提示显示在该终端，不写入日志。
 - 输入发送成功不代表固件已处理。缓冲中还有未读数据时，输入可能被丢弃。
 
 ### 时间戳和日志文件
 
-- **时间戳**：`EmberProbe: 切换 RTT 时间戳`，或设置 `emberprobe.rtt.timestamps`。在一行的第一个字节到达时记录，格式 `[HH:MM:SS.mmm]`。
+- **时间戳**：`EmberProbe: 切换 RTT 时间戳`，或设置 `emberprobe.rtt.timestamps`。记录一行的第一个字节到达电脑的时间，格式 `[HH:MM:SS.mmm]`。这不是固件时间：同一次轮询读到的行时间相同，精度受轮询间隔限制，不能用来测量固件内部的时间差。`hex` 格式给每次收到的数据加时间，`raw` 格式不加。
 - **保存日志**：`EmberProbe: 保存/停止保存 RTT 日志`，选择已有目录开始保存，再次执行停止。也可以设置 `emberprobe.rtt.logFile.enabled` 和 `directory`。
 
 目录留空时使用工作区根目录，相对路径从根目录解析，没有工作区时要写绝对路径。单通道写入 `rtt.log`，多通道写入 `rtt-chN.log`，已有文件继续追加。
+
+打开 `emberprobe.rtt.logFile.raw` 后保存收到的原始字节，单通道写入 `rtt.bin`，多通道写入 `rtt-chN.bin`，适合事后解码。原始日志不含时间戳、边界和缺口标记。
 
 单个文件默认 8 MiB（`emberprobe.rtt.logFile.maxBytes`），写满后轮转为 `.1`，只保留一个备份。默认去除 ANSI 颜色序列，关闭 `emberprobe.rtt.logFile.stripAnsi` 可以保留。
 
 日志写入失败时会提示并停止该文件的记录，终端继续输出。修改日志设置或重新启动 RTT 后再次尝试。时间戳和日志设置立即生效。
 
+### 速率、占用和丢失
+
+默认以 10 ms 间隔轮询目标。`emberprobe.rtt.pollingIntervalMs` 可调整间隔，显式设置 0 使用原有 100 ms；手动重启 RTT 后生效。更短间隔可能增加探针负载，具体吞吐和对采样的影响取决于探针、固件和通道数。
+
+卡片按通道显示原始接收速率及累计接收字节。已知精确控制块地址时，还显示约每秒采样的目标缓冲占用；只有扫描范围时占用显示不可用，需要选择带符号 ELF 或设置精确地址。
+
+主机“历史淘汰”表示缓存删除了旧历史，不等于终端已经漏读。终端或日志实际错过主机字节时会插入带字节数的缺口标记；会话切换的缺口无法定量，会单独提示。标准 RTT 不提供通用的固件丢弃计数，卡片会把目标丢失显示为未知。低占用、主机缺口为零都不能保证固件端未丢失。
+
 ### 通道模式
 
-固件为每个通道设置模式：skip（缓冲满时丢弃）、trim（截断）、block（等待主机读取）。
+固件为每个通道设置模式：skip（剩余空间不足时丢弃整次写入）、trim（只保留能放入的前缀）、block（等待主机读取）。可以按上面的通道配置在启动时覆盖，停止 RTT 不恢复原模式。
 
-**block 模式下主机没有读取时，目标会阻塞**。调试暂停时尤其要注意，排查时序问题建议用 skip 或 trim。
+**block 模式下主机没有读取时，目标会阻塞**，包括停止 RTT 后缓冲写满的情况。调试暂停时尤其要注意，排查时序问题建议用 skip 或 trim。
 
 ### 限制
 
 - 只支持单核目标，多核共享调试组中不可用。
 - 外部 GDB Server 模式下不可用。
-- 不支持 SWO、半主机和 defmt 解码。
+- 不支持 SWO、半主机和 defmt 解码，也不解析固件自带的时间戳。
 - 重新挂载时终端和日志会标记输出边界；缓冲溢出时显示数据丢失提示。
 
 ## 相关文档

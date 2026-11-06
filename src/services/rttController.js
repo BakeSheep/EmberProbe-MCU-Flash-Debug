@@ -13,7 +13,7 @@
 
 const net = require("net");
 const { SYSTEM_CLOCK } = require("../samplingClock");
-const { resolveControlBlock, scanSlices } = require("../rttControlBlock");
+const { normalizeRttSettings, resolveControlBlock, scanSlices } = require("../rttControlBlock");
 const { RttBuffer } = require("../rttBuffer");
 const { MAX_SERVER_COMMANDS } = require("../rttControl");
 const { findFreePort } = require("../liveWatch");
@@ -24,6 +24,9 @@ const START_FIRST_DELAY_MS = 200;
 const START_BACKOFF_FACTOR = 1.5;
 const START_MAX_DELAY_MS = 2000;
 const START_MAX_ATTEMPTS = 12;
+// An automatic start may meet a target halted at reset. An exact block is cheap to ask for, so it waits about five
+// minutes for the user to resume; a scan keeps the short ladder.
+const AUTO_START_MAX_ATTEMPTS = 150;
 // OpenOCD binds the RTT TCP ports when `rtt server start` runs; connections retry until then.
 const CONNECT_FIRST_DELAY_MS = 25;
 const CONNECT_BACKOFF_FACTOR = 2;
@@ -38,25 +41,34 @@ const TRANSIENT_ELF_ERRORS = ["ELF_LOADING", "ELF_CHANGED"];
 const TRANSIENT_HOST_ERRORS = ["LIVE_READ_CANCELLED", "PROBE_CONNECTION_BUSY_TIMEOUT"];
 // One terminal line per write; the target's down buffer is small and OpenOCD drops what does not fit.
 const MAX_WRITE_BYTES = 1024;
+const METRICS_INTERVAL_MS = 1000;
+const MODE_CONNECT_TIMEOUT_MS = 10000;
+// A shared host can hold its lock past a mode write's budget. Nothing reached the target then, so the write repeats
+// until the mode deadline above.
+const MODE_BUSY_RETRY_MS = 100;
 
 const rttError = (code, message, details) =>
     Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
 const probeBusy = (message) => Object.assign(new Error(message), { code: "PROBE_BUSY", retryable: true });
 
 class RttController {
-    // host: the provider. options: { vscode, ManagedOpenOcdSession, clock, net, findFreePort, rttSettings,
-    // ramRegions, onStatus } — the functions are injectable so tests can drive them.
+    // host: the provider. options: { vscode, ManagedOpenOcdSession, clock, net, findFreePort, rttSettings, autoStart,
+    // ramRegions, onStatus, onBeforeStop, onData, onAutoStart } — the functions are injectable so tests can drive them.
     constructor(host, options = {}) {
         this.host = host;
         this._vscode = options.vscode;
         this._ManagedOpenOcdSession = options.ManagedOpenOcdSession;
         this.clock = { ...SYSTEM_CLOCK, ...options.clock };
+        if (options.clock?.now && !options.clock.monotonicMs) this.clock.monotonicMs = options.clock.now;
         this.net = options.net || net;
         this._findFreePort = options.findFreePort || findFreePort;
         this._rttSettings = options.rttSettings;
         this._ramRegions = options.ramRegions;
         this.onStatus = options.onStatus || (() => {});
         this.onBeforeStop = options.onBeforeStop || (() => {});
+        this.onData = options.onData || (() => {});
+        this._autoStart = options.autoStart;
+        this.onAutoStart = options.onAutoStart || (() => this.start({ origin: "auto" }).catch(() => {}));
         this.state = "stopped"; // stopped | starting | running | pending-host
         this.source = null; // debug-server | live-watch | own-session
         this.reason = null;
@@ -69,6 +81,7 @@ class RttController {
         this._buffers = new Map(); // up channel index -> RttBuffer
         this._bufferGeneration = 0;
         this._sockets = new Map(); // up channel index -> net.Socket
+        this._pendingSockets = new Set();
         this._connectTimers = new Map();
         this._servers = []; // [{ port, channel }]
         this._block = null;
@@ -84,9 +97,25 @@ class RttController {
         this._queue = Promise.resolve();
         this._queued = 0;
         this._interrupts = 0; // Bumped ahead of the queue so a long control-block scan stops between slices.
+        this._runSettings = null;
+        this._origin = null;
+        this._autoHost = null; // The host automatic start already acted on, or the user stopped RTT on.
+        this._modeIdentity = null;
+        this._metricsTimer = null;
+        this._modeConnectTimer = null;
+        this._metricsBusy = false;
+        this._rates = new Map();
+        this.targetTelemetry = { available: false, reason: "RTT_NOT_RUNNING", sampledAt: null, channels: [] };
     }
 
     status() {
+        const targetEpoch = this._hostSession?.targetEpoch;
+        if (
+            this.targetTelemetry.available &&
+            targetEpoch !== undefined &&
+            this.targetTelemetry.targetEpoch !== targetEpoch
+        )
+            this.targetTelemetry = { available: false, reason: "LIVE_READ_CANCELLED", sampledAt: null, channels: [] };
         return {
             state: this.state,
             source: this.source,
@@ -98,10 +127,20 @@ class RttController {
                 : null,
             channels: this.channels,
             missingChannels: this.missingChannels,
+            configuredPollingIntervalMs: this._runSettings?.configuredPollingIntervalMs ?? null,
+            pollingIntervalMs: this._runSettings?.pollingIntervalMs ?? null,
+            targetDroppedBytes: null,
+            targetTelemetry: this.targetTelemetry,
             servers: this._servers.map((server) => ({ ...server })),
             buffers: [...this._buffers.entries()].map(([channel, buffer]) => {
                 const socket = this._sockets.get(channel);
-                return { channel, connected: !!socket && !socket.destroyed, ...buffer.stats() };
+                return {
+                    channel,
+                    connected: !!socket && !socket.destroyed,
+                    ...buffer.stats(),
+                    receivedBytes: buffer.end,
+                    rateBytesPerSecond: this._rates.get(channel)?.rate ?? null
+                };
             }),
             error: this.error
         };
@@ -121,11 +160,12 @@ class RttController {
     write(channel, data) {
         if (this.state !== "running")
             throw rttError("RTT_NOT_RUNNING", `RTT is ${this.state || "stopped"}`, { state: this.state });
-        const socket = this._sockets.get(channel);
+        const down = this.channels?.up?.find((entry) => entry.index === channel)?.downChannel ?? channel;
+        const socket = this._sockets.get(down);
         if (!socket || socket.destroyed)
-            throw rttError("RTT_CHANNEL_DISCONNECTED", `RTT channel ${channel} has no data connection`, { channel });
-        if (!this.channels?.down?.some((entry) => entry.index === channel && entry.size > 0))
-            throw rttError("RTT_INPUT_UNAVAILABLE", `RTT channel ${channel} has no down buffer`, { channel });
+            throw rttError("RTT_CHANNEL_DISCONNECTED", `RTT channel ${down} has no data connection`, { channel });
+        if (!this.channels?.down?.some((entry) => entry.index === down && entry.size > 0))
+            throw rttError("RTT_INPUT_UNAVAILABLE", `RTT channel ${down} has no down buffer`, { channel });
         if (socket.writableNeedDrain)
             throw rttError("RTT_INPUT_BUSY", `RTT channel ${channel} is still sending input`, { channel });
         const bytes = Buffer.isBuffer(data) ? data : Buffer.from(String(data ?? ""), "utf8");
@@ -141,10 +181,27 @@ class RttController {
     }
 
     // Manual start. Resolves once the attachment is launched; the retry ladder finishes in the background and
+    // The text encoding of an up channel, without touching status or telemetry.
+    channelEncoding(channel) {
+        return this.channels?.up?.find((entry) => entry.index === channel)?.encoding ?? "utf-8";
+    }
+
     // reports through onStatus. Terminal setup failures reject. A pending controller stops waiting: the user asked now.
-    start() {
+    // origin: "user" may write configured channel modes; "agent" and "auto" never acquire that intent, and "auto" only
+    // borrows a session that already holds the probe.
+    start({ origin = "user" } = {}) {
         return this._enqueue(async () => {
             if (this.state === "running" || this.state === "starting") return this.status();
+            if (origin === "auto" && (this.state !== "stopped" || !this._selectHost()?.session)) return this.status();
+            const settings = normalizeRttSettings(this._settings());
+            if (origin !== "user" && settings.channels?.some((channel) => channel.mode !== undefined))
+                throw rttError(
+                    "RTT_MODE_REQUIRES_UI_START",
+                    "Start RTT from VS Code to apply configured channel modes"
+                );
+            this._runSettings = settings;
+            this._origin = origin;
+            this._modeIdentity = null;
             this._cancelTimers();
             this._ownSessionIntent = false;
             this._yieldOperation = null;
@@ -166,6 +223,7 @@ class RttController {
 
     stop() {
         this._interrupts++;
+        this._autoHost = this._hostSession ?? this._autoHost; // Stopped here means stay stopped for this session.
         return this._enqueue(() => this._stopInternal("user-stopped"));
     }
 
@@ -202,8 +260,27 @@ class RttController {
 
     // Session topology changed (debug server started or stopped, live watch started or stopped, flash finished).
     onSessionsChanged() {
-        if (this.state === "stopped" && !this._queued) return;
+        if (this.state === "stopped" && !this._queued) {
+            this._maybeAutoStart();
+            return;
+        }
         void this._enqueue(() => this._reconcile());
+    }
+
+    // One attempt per host session, and none after the user stopped RTT on it. Starting a session never hands it a
+    // second try: a failure is reported once and a manual start is the way back.
+    _maybeAutoStart() {
+        if (!this._autoStartEnabled()) return;
+        const selection = this._selectHost();
+        if (!selection) this._autoHost = null;
+        if (!selection?.session || selection.session === this._autoHost) return;
+        this._autoHost = selection.session;
+        this.onAutoStart();
+    }
+
+    _autoStartEnabled() {
+        if (this._autoStart) return this._autoStart() === true;
+        return this._vscode?.workspace?.getConfiguration("emberprobe").get("rtt.autoStart", false) === true;
     }
 
     // A probe lease changed: this is what ends a pending wait for an operation that hosts no session.
@@ -221,7 +298,10 @@ class RttController {
     }
 
     async _reconcile() {
-        if (this.state === "stopped") return;
+        if (this.state === "stopped") {
+            this._maybeAutoStart();
+            return;
+        }
         const selection = this._selectHost();
         if (selection?.session) {
             if (this.state === "pending-host") {
@@ -288,7 +368,8 @@ class RttController {
             controlBlockAddress: configuration.get("rtt.controlBlockAddress"),
             searchRange: configuration.get("rtt.searchRange"),
             channels: configuration.get("rtt.channels", [0]),
-            pollingIntervalMs: configuration.get("rtt.pollingIntervalMs")
+            pollingIntervalMs: configuration.get("rtt.pollingIntervalMs", 10),
+            encoding: configuration.get("rtt.encoding", "utf-8")
         };
     }
 
@@ -361,6 +442,14 @@ class RttController {
                     "None of the selected RTT up channels are configured",
                     "RTT_UNKNOWN_CHANNEL"
                 );
+            const unapplied = this._modeOverrides().filter((entry) => this.missingChannels.includes(entry.index));
+            if (unapplied.length)
+                return await this._scheduleStartRetry(
+                    run,
+                    false,
+                    `waiting for RTT channels ${unapplied.map((entry) => entry.index).join(", ")} before applying modes`,
+                    "RTT_UNKNOWN_CHANNEL"
+                );
             await this._startChannels(run, up);
             return null;
         } catch (error) {
@@ -374,14 +463,20 @@ class RttController {
     // Searches the resolved block slice by slice. Returns the start result, or null when a stop or yield interrupted
     // the search; its queued task follows at once.
     async _startRtt(interrupts) {
-        const settings = this._settings();
+        const settings = this._runSettings;
         this._block = await this._resolveBlock(settings);
+        if (this._modeOverrides().length) {
+            if (!this._block.exact)
+                throw rttError(
+                    "RTT_EXACT_ADDRESS_REQUIRED",
+                    "Channel modes require an exact RTT address or ELF symbol"
+                );
+            this._assertModeIdentity();
+        }
         let failure = null;
         for (const block of scanSlices(this._block)) {
             if (this._interrupts !== interrupts) return null;
-            const request = { operation: "start", block };
-            // 0 is the setting's "OpenOCD default"; anything else is checked with the rest of the request.
-            if (settings.pollingIntervalMs) request.pollingIntervalMs = settings.pollingIntervalMs;
+            const request = { operation: "start", block, pollingIntervalMs: settings.pollingIntervalMs };
             try {
                 return await this._session().rttControl(request);
             } catch (error) {
@@ -400,8 +495,10 @@ class RttController {
     // Backoff ladder over _attemptStart. timeoutCode names what the exhausted ladder failed on.
     async _scheduleStartRetry(run, fullStart, reason, timeoutCode = "RTT_START_TIMEOUT") {
         this._startAttempts++;
-        if (this._startAttempts > START_MAX_ATTEMPTS) {
-            const error = rttError(timeoutCode, `RTT gave up after ${START_MAX_ATTEMPTS} attempts: ${reason}`);
+        const maxAttempts =
+            this._origin === "auto" && this._block?.exact ? AUTO_START_MAX_ATTEMPTS : START_MAX_ATTEMPTS;
+        if (this._startAttempts > maxAttempts) {
+            const error = rttError(timeoutCode, `RTT gave up after ${maxAttempts} attempts: ${reason}`);
             await this._fail(error);
             return error;
         }
@@ -423,33 +520,38 @@ class RttController {
     // The firmware may configure more channels a moment later, so an empty result is retried by the caller and a
     // partial one proceeds with the missing channels reported in the status.
     _selectChannels(channels) {
-        const selected = this._settings().channels;
+        const selected = this._runSettings?.channels;
         if (selected === undefined) {
             this.missingChannels = [];
             return channels.up.slice(0, MAX_SERVER_COMMANDS);
         }
-        if (
-            !Array.isArray(selected) ||
-            !selected.length ||
-            selected.length > MAX_SERVER_COMMANDS ||
-            selected.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)
-        )
-            throw rttError(
-                "RTT_INVALID_CHANNELS",
-                `RTT channels must list 1..${MAX_SERVER_COMMANDS} integers from 0 to 255`
-            );
+        const indices = selected.map((entry) => entry.index);
         const available = new Set(channels.up.map((channel) => channel.index));
-        this.missingChannels = selected.filter((channel) => !available.has(channel));
-        return channels.up.filter((channel) => selected.includes(channel.index));
+        this.missingChannels = indices.filter((channel) => !available.has(channel));
+        return channels.up.filter((channel) => indices.includes(channel.index));
     }
 
     async _startChannels(run, up) {
-        this.channels = { ...this.channels, up };
+        this.channels = {
+            ...this.channels,
+            up: up.map((channel) => {
+                const selected = this._runSettings.channels?.find((entry) => entry.index === channel.index);
+                const desiredMode = selected?.mode;
+                return {
+                    ...channel,
+                    ...(desiredMode === undefined ? {} : { desiredMode }),
+                    modeState: desiredMode === undefined ? "firmware" : "pending",
+                    format: selected?.format ?? "text",
+                    encoding: selected?.encoding ?? this._runSettings.encoding ?? "utf-8",
+                    downChannel: selected?.down ?? channel.index
+                };
+            })
+        };
         const servers = [];
-        for (const channel of up) {
+        for (const entry of this._serverPlan()) {
             const port = await this._findFreePort();
             if (!port) throw rttError("RTT_PORT_UNAVAILABLE", "No free local port for an RTT server");
-            servers.push({ port, channel: channel.index });
+            servers.push({ port, ...entry });
         }
         try {
             await this._session().rttControl({ operation: "serverStart", servers });
@@ -465,11 +567,204 @@ class RttController {
         this._servers = servers;
         const generation = ++this._bufferGeneration;
         this._buffers = new Map(up.map((channel) => [channel.index, new RttBuffer({ generation })]));
+        this._rates = new Map(
+            up.map((channel) => [channel.index, { bytes: 0, time: this.clock.monotonicMs(), rate: null }])
+        );
+        this.targetTelemetry = {
+            available: false,
+            reason: this._block.exact ? "RTT_TELEMETRY_PENDING" : "RTT_EXACT_ADDRESS_REQUIRED",
+            sampledAt: null,
+            channels: []
+        };
         this.state = "running";
         this.error = null;
         this._retry = null;
         this._postStatus();
+        if (this._modeOverrides().length) {
+            this._modeConnectTimer = this.clock.schedule(() => {
+                this._modeConnectTimer = null;
+                void this._enqueue(async () => {
+                    if (
+                        run !== this._attachRun ||
+                        !this.channels?.up.some((channel) => channel.modeState === "pending")
+                    )
+                        return;
+                    await this._fail(
+                        rttError(
+                            "RTT_CHANNEL_DISCONNECTED",
+                            "RTT receiver connections did not become ready before the mode deadline"
+                        )
+                    );
+                });
+            }, MODE_CONNECT_TIMEOUT_MS);
+        }
         for (const server of servers) this._connectChannel(run, server);
+        this._scheduleMetrics(run);
+    }
+
+    // `rtt server start` couples a port to one channel number in both directions, so input for a differently numbered
+    // down channel needs a server of its own. Its up data, if that channel has any, is read and dropped.
+    _serverPlan() {
+        const { up, down = [] } = this.channels;
+        const inputs = new Set(up.map((channel) => channel.downChannel));
+        for (const channel of up) inputs.delete(channel.index);
+        const plan = [
+            ...up.map((channel) => ({ channel: channel.index })),
+            ...[...inputs]
+                .filter((index) => down.some((channel) => channel.index === index && channel.size > 0))
+                .map((channel) => ({ channel, inputOnly: true }))
+        ];
+        if (plan.length > MAX_SERVER_COMMANDS)
+            throw rttError("RTT_INVALID_CHANNELS", `RTT uses at most ${MAX_SERVER_COMMANDS} channel servers`);
+        return plan;
+    }
+
+    _modeOverrides() {
+        return this._runSettings?.channels?.filter((channel) => channel.mode !== undefined) || [];
+    }
+
+    // Reuse writeExecution's physical-session identity validation; automatic following cannot transfer write intent
+    // to a different probe, target, or selected ELF. Settings are frozen, but these selections remain live.
+    _assertModeIdentity() {
+        if (this._origin !== "user")
+            throw rttError("RTT_MODE_REQUIRES_UI_START", "Start RTT from VS Code to apply configured channel modes");
+        const session = this._session();
+        if (!this.host._writes?.sessionConnection)
+            throw rttError("RTT_MODE_TARGET_CHANGED", "The active RTT write connection cannot be verified");
+        const connection = this.host._writes.sessionConnection(session);
+        const state = this.host._context.workspaceState;
+        const elf = this._readElf({});
+        const identity = JSON.stringify({
+            connection,
+            probe: state.get(CACHE_KEYS.debugger),
+            target: state.get(CACHE_KEYS.mcuCore),
+            elfPath: state.get(CACHE_KEYS.elfPath),
+            elfSha256: elf?.elf?.sha256 ?? null,
+            address: this._block.address
+        });
+        if (this._modeIdentity && this._modeIdentity !== identity)
+            throw rttError(
+                "RTT_MODE_TARGET_CHANGED",
+                "RTT target identity changed; manually restart RTT to apply modes"
+            );
+        this._modeIdentity = identity;
+    }
+
+    _receiversReady() {
+        return this._servers.every((server) => {
+            const socket = this._sockets.get(server.channel);
+            return socket && !socket.destroyed;
+        });
+    }
+
+    async _applyModes(run, interrupts) {
+        if (run !== this._attachRun || interrupts !== this._interrupts || this.state !== "running") return;
+        const pending = this.channels.up.filter((channel) => channel.modeState === "pending");
+        if (!pending.length || !this._receiversReady()) return;
+        const completed = [];
+        try {
+            for (const channel of pending) {
+                if (run !== this._attachRun || interrupts !== this._interrupts || !this._receiversReady()) return;
+                this._assertModeIdentity();
+                const result = await this._session().rttControl({
+                    operation: "setMode",
+                    block: this._block,
+                    channel: channel.index,
+                    mode: channel.desiredMode
+                });
+                if (run !== this._attachRun) return;
+                this._assertModeIdentity();
+                Object.assign(channel, result.channel, { modeState: "applied" });
+                completed.push(channel.index);
+            }
+            if (this._modeConnectTimer !== null) {
+                this.clock.cancel(this._modeConnectTimer);
+                this._modeConnectTimer = null;
+            }
+            this._postStatus();
+        } catch (error) {
+            if (error?.code === "PROBE_CONNECTION_BUSY_TIMEOUT" && this._modeConnectTimer !== null) {
+                this._retryTimer = this.clock.schedule(() => {
+                    this._retryTimer = null;
+                    void this._enqueue(() => this._applyModes(run, interrupts));
+                }, MODE_BUSY_RETRY_MS);
+                return;
+            }
+            // Never feed a write failure back into startup's retry ladder, including an acknowledged but unverified write.
+            error.retryable = false;
+            error.details = { ...error.details, completedChannels: completed };
+            await this._fail(error);
+        }
+    }
+
+    _scheduleMetrics(run) {
+        if (this._metricsTimer !== null || this.state !== "running" || run !== this._attachRun) return;
+        this._metricsTimer = this.clock.schedule(() => {
+            this._metricsTimer = null;
+            if (run !== this._attachRun || this.state !== "running") return;
+            this._updateRates();
+            this._postStatus();
+            if (!this._metricsBusy && !this._queued) {
+                this._metricsBusy = true;
+                void this._sampleTarget(run).finally(() => {
+                    this._metricsBusy = false;
+                });
+            }
+            this._scheduleMetrics(run);
+        }, METRICS_INTERVAL_MS);
+    }
+
+    _updateRates() {
+        const now = this.clock.monotonicMs();
+        for (const [channel, buffer] of this._buffers) {
+            const previous = this._rates.get(channel);
+            const elapsed = previous ? now - previous.time : 0;
+            this._rates.set(channel, {
+                bytes: buffer.end,
+                time: now,
+                rate: elapsed > 0 ? ((buffer.end - previous.bytes) * 1000) / elapsed : null
+            });
+        }
+    }
+
+    async _sampleTarget(run) {
+        const session = this._hostSession;
+        if (!this._block?.exact) return;
+        // A pending sample may outlive a timer cycle; stop showing a previous sample as current while it waits.
+        this.targetTelemetry = { available: false, reason: "RTT_TELEMETRY_PENDING", sampledAt: null, channels: [] };
+        try {
+            const { snapshot } = await session.rttControl({
+                operation: "snapshot",
+                block: this._block,
+                channels: this.channels.up.map((channel) => channel.index)
+            });
+            if (run !== this._attachRun || session !== this._hostSession || this.state !== "running") return;
+            if (!snapshot?.channels) throw rttError("RTT_TARGET_INVALID", "RTT target snapshot is unavailable");
+            if (session.targetEpoch !== undefined && snapshot.targetEpoch !== session.targetEpoch)
+                throw rttError("LIVE_READ_CANCELLED", "RTT target changed before the snapshot was delivered");
+            this.targetTelemetry = { available: true, reason: null, sampledAt: this.clock.now(), ...snapshot };
+            for (const observed of snapshot.channels) {
+                const channel = this.channels.up.find((entry) => entry.index === observed.index);
+                if (!channel) continue;
+                Object.assign(channel, { flags: observed.flags, mode: observed.mode, size: observed.size });
+                if (channel.modeState !== "pending")
+                    channel.modeState =
+                        channel.desiredMode === undefined
+                            ? "firmware"
+                            : channel.desiredMode === observed.mode
+                              ? "applied"
+                              : "mismatch";
+            }
+        } catch (error) {
+            if (run !== this._attachRun || session !== this._hostSession || this.state !== "running") return;
+            this.targetTelemetry = {
+                available: false,
+                reason: error.code || "RTT_TARGET_INVALID",
+                sampledAt: null,
+                channels: []
+            };
+        }
+        this._postStatus();
     }
 
     // Connects one up channel's data port. OpenOCD may need a moment to bind it, so failures retry with backoff;
@@ -479,10 +774,12 @@ class RttController {
         const attempt = () => {
             if (run !== this._attachRun) return;
             const buffer = this._buffers.get(server.channel);
-            if (!buffer) return;
+            if (!buffer && !server.inputOnly) return;
             const socket = this.net.connect({ host: "127.0.0.1", port: server.port });
+            this._pendingSockets.add(socket);
             socket.setNoDelay?.(true);
             socket.on("connect", () => {
+                this._pendingSockets.delete(socket);
                 if (run !== this._attachRun) {
                     socket.destroy();
                     return;
@@ -490,10 +787,23 @@ class RttController {
                 attempts = 0;
                 this._sockets.set(server.channel, socket);
                 this._postStatus();
+                if (this._modeOverrides().length) {
+                    const interrupts = this._interrupts;
+                    void this._enqueue(() => this._applyModes(run, interrupts));
+                }
             });
-            socket.on("data", (chunk) => buffer.append(chunk));
+            socket.on("data", (chunk) => {
+                if (!buffer) return;
+                buffer.append(chunk);
+                try {
+                    this.onData(server.channel);
+                } catch {
+                    /* A data consumer must not break the socket. */
+                }
+            });
             socket.on("error", () => {});
             socket.on("close", () => {
+                this._pendingSockets.delete(socket);
                 if (this._sockets.get(server.channel) === socket) this._sockets.delete(server.channel);
                 if (run !== this._attachRun || this.state !== "running") return;
                 attempts++;
@@ -592,7 +902,7 @@ class RttController {
     }
 
     async _fail(error) {
-        this.error = { code: error.code, message: error.message };
+        this.error = { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) };
         await this._stopInternal("start-failed");
     }
 
@@ -616,6 +926,9 @@ class RttController {
         if (nextState === "stopped") {
             this._ownSessionIntent = false;
             this._yieldOperation = null;
+            this._runSettings = null;
+            this._origin = null;
+            this._modeIdentity = null;
         }
         await this._detach().catch(() => {});
         this._postStatus();
@@ -625,6 +938,8 @@ class RttController {
     // stop a session we own and release its lease.
     async _detach() {
         for (const socket of this._sockets.values()) socket.destroy();
+        for (const socket of this._pendingSockets) socket.destroy();
+        this._pendingSockets.clear();
         this._sockets.clear();
         const session = this._hostSession;
         if (session?.rttControl) {
@@ -648,6 +963,8 @@ class RttController {
             this._lease = null;
         }
         this._buffers.clear();
+        this._rates.clear();
+        this.targetTelemetry = { available: false, reason: "RTT_NOT_RUNNING", sampledAt: null, channels: [] };
         this._servers = [];
         this.channels = null;
         this.missingChannels = [];
@@ -674,6 +991,14 @@ class RttController {
 
     _cancelTimers() {
         this._cancelSettle();
+        if (this._modeConnectTimer !== null) {
+            this.clock.cancel(this._modeConnectTimer);
+            this._modeConnectTimer = null;
+        }
+        if (this._metricsTimer !== null) {
+            this.clock.cancel(this._metricsTimer);
+            this._metricsTimer = null;
+        }
         if (this._retryTimer !== null) {
             this.clock.cancel(this._retryTimer);
             this._retryTimer = null;
