@@ -8,6 +8,7 @@ const http = require("http");
 const vm = require("vm");
 const { render } = require("./helpers/render-webview");
 const { FakeClock } = require("./helpers/fake-clock");
+const { scenario } = require("./helpers/scenario");
 const { getModernWebviewContent } = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
 const mockCsv = require("../mockup/mock-csv");
@@ -559,12 +560,14 @@ function testThemeBridge() {
     const parent = { postMessage() {} };
     const root = {
         parent,
+        location: { search: "" },
         localStorage: { getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value) },
         addEventListener: (type, handler) => listeners.set(type, handler)
     };
     try {
         vm.runInNewContext(fs.readFileSync(path.join(mockup, "mock/theme.js"), "utf8"), {
             window: root,
+            URLSearchParams,
             document: view.document
         });
         assert.equal(root.EmberProbeMockTheme.current(), "light", "a saved theme survives a new page");
@@ -659,6 +662,27 @@ async function testServer() {
 }
 
 (async () => {
+    scenario("website language and theme parameters are optional and validated", () => {
+        for (const [query, lang, theme] of [
+            ["", "zh-CN", "dark"],
+            ["?lang=en&theme=light", "en", "light"],
+            ["?lang=invalid&theme=invalid", "zh-CN", "dark"]
+        ]) {
+            const view = render(shellHtml(), {}, { url: "https://example.test/" + query });
+            try {
+                assert.equal(view.document.documentElement.lang, lang);
+                assert.equal(view.document.documentElement.dataset.mockTheme, theme);
+                if (lang === "en") {
+                    assert.ok(view.document.getElementById("sidebarFrame").src.endsWith("sidebar.en.html"));
+                    assert.ok(view.document.getElementById("livewatchFrame").src.endsWith("livewatch.en.html"));
+                }
+                assert.equal(view.window.localStorage.getItem("emberprobe.mock.theme"), null);
+                view.assertHealthy();
+            } finally {
+                view.close();
+            }
+        }
+    });
     testSimulatorAndRegisters();
     testMockUnlimitedPreset();
     testHostsAndRenderer();

@@ -28,7 +28,7 @@
     }
 
     var state = {
-        lang: "zh",
+        lang: new URLSearchParams(window.location.search).get("lang") === "en" ? "en" : "zh",
         activeView: "emberprobe",
         activeTab: "livewatch",
         openTabs: ["FreeRTOSConfig.h", "main.c", "livewatch", "README.md"],
@@ -1360,6 +1360,12 @@
 
     /* ------------------------------------------------------------------- init */
 
+    if (state.lang === "en") {
+        document.documentElement.lang = "en";
+        $("sidebarFrame").src = "sidebar.en.html";
+        $("livewatchFrame").src = "livewatch.en.html";
+        TAB_META.livewatch.label = "Waveform #1";
+    }
     state.debugLine = findDebugLine();
     setTheme(window.EmberProbeMockTheme.current());
     renderTabs();
