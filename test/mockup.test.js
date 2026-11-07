@@ -117,6 +117,11 @@ function testSimulatorAndRegisters() {
     assert.ok(simulator.write("g_target_rpm", 2000));
     simulator.tick();
     assert.equal(simulator.scalarSamples(["g_target_rpm"], 1)[0].value, 2000);
+    for (let tick = 0; tick < 300; tick++) simulator.tick();
+    assert.ok(
+        Math.abs(simulator.scalarSamples(["g_motor_rpm"], 1)[0].value - 2000) < 200,
+        "the motor follows the target"
+    );
     for (const [name, value] of [
         ["missing", 1],
         ["g_temp_limit", 40],

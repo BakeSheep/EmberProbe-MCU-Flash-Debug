@@ -1,6 +1,6 @@
 # 官网开发与发布
 
-官网源码在 `website/`，使用静态 HTML/CSS/JavaScript。中文在站点根路径，英文在 `en/`，交互演示在 `demo/`。默认项目地址是 https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/。
+官网源码在 `website/`，使用静态 HTML/CSS/JavaScript。中文在站点根路径，英文在 `en/`，引导教程在 `demo/`。默认项目地址是 https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/。
 
 ## 本地预览与校验
 
@@ -15,17 +15,51 @@ node test/mockup.test.js
 
 打开终端给出的地址（默认端口 8086）。预览故意使用 GitHub 项目子路径，以便发现根路径资源引用。`site:serve` 只监听本机；可用 `npm run site:serve -- 8090` 改端口。
 
-`site:build` 先执行 mockup 构建，然后复制到 `website/dist/demo/editor/`。它只替换 `website/dist/`，不改扩展的 `dist/`。网站产物被忽略，不提交，也不加入 VSIX。`site:check` 会重新构建并检查页面、资源、锚点及图片替代文本。
+`site:build` 先执行 mockup 构建，然后复制到 `website/dist/demo/editor/`。它只替换 `website/dist/`，不改扩展的 `dist/`。网站产物被忽略，不提交，也不加入 VSIX。`site:check` 会重新构建并检查页面、资源、海报、锚点及图片替代文本。
 
-## 内容与截图
+## 内容
 
-双语文案在 `website/content.js`，HTML 模板在 `website/template.js`，样式和交互分别在 `site.css`、`site.js`。版本读取根 `package.json`。不在页面内复制一份版本号。
+双语文案在 `website/content.js`，HTML 模板在 `website/template.js`，样式和交互在 `site.css`、`site.js`、`motion.js`。版本读取根 `package.json`，不在页面内复制版本号。文案只写功能、条件和能力边界，每条描述对照 `docs/guide/`。
 
-`website/assets/` 保存当前 mockup 的中英文浅色截图；它们是模拟数据，不能作为硬件实测依据。更改前端后，重新构建 mockup，在 `?lang=zh&theme=light` 和 `?lang=en&theme=light` 中分别操作并截图。`wave`、`config`、`flash`、`debug` 对应四个流程，`peripheral`、`rtos`、`memory`、`agent` 对应功能细节。保留关键字段并使用 PNG 无损压缩，不缩放或重画软件内容。`website/assets/capture-notes.md` 记录本次取景。
+`content.js` 的章节 `id` 同时是 `website/capture/scenes.js` 中的场景名，每章的步骤数必须等于场景的 `steps` 数。
 
-截图放大通过键盘可访问的按钮和原生 dialog 完成。首页波形是独立交互示意，明确标记无硬件实测。完整演示复用真实渲染器，iframe 重建即重新开始；不清空其他标签页的 localStorage。
+新增文案出现新汉字时要重新生成字体子集，否则 `test/website.test.js` 会失败。源字体不在仓库中：
 
-交互演示的侧栏与波形页共享采样状态：任意一处启动或停止都会同步。复位调试停在 `main()`；暂停时保留快照，单步后读取新快照，继续运行后恢复采样。更新 mockup 行为后运行 `site:build` 即会应用到本地官网，并同步更新上述截图；生成目录不需要提交。
+```sh
+FONTS=<源字体目录> node website/capture/fonts.js
+```
+
+## 录屏
+
+首页录屏全部来自 mockup 的真实前端，是提交到 `website/assets/media/` 的产物，CI 不录制。画面数据是模拟数据，不能作为硬件实测依据。前端或 mock 行为改变后需要重录对应场景。
+
+录制依赖 ffmpeg 和 `playwright-core`，后者不是本仓库的依赖，用 `LIB` 指向含有它的目录：
+
+```sh
+LIB=<目录> node website/capture/record.js --preview waveform
+LIB=<目录> node website/capture/record.js --lang=zh waveform
+LIB=<目录> node website/capture/record.js
+```
+
+`--preview` 每 0.5 秒存一帧到 `test-results/website-capture/`，用来核对操作时序。不写语言时录中英文，不写场景时录全部，约需 30 分钟。
+
+- 时钟由 Playwright 控制并逐帧推进，等待时间可以在场景中用 `skip` 缩短。场景只用选择器定位，中英文共用同一份脚本。
+- 场景的 `window` 是页面上的显示尺寸。录制使用 2 倍像素，编码时不缩放，所以静止时视频按 1:1 显示。
+- 单段不超过 2 MB，全部不超过 60 MB。超出时先缩短时长，再提高场景的 `crf`。
+- 社交分享图由 `website/capture/og.js` 生成，需要先构建站点。
+
+## 引导教程
+
+`website/tour-data.js` 定义章节和步骤，`website/demo.js` 负责运行。每章使用全新的 mockup iframe，章节之间不共享状态。步骤高亮真实控件，等访客实际操作后才前进；控件禁用时不显示高亮。窗口窄于 900 像素时不启动教程，保留可横向滚动的编辑器。
+
+修改 mock、前端选择器或教程步骤后，用真实鼠标键盘走完全部章节：
+
+```sh
+npm run site:build
+LIB=<目录> node website/capture/check-tour.js
+```
+
+重新开始和切换章节都通过重建 iframe 实现，不清空其他标签页的 localStorage。
 
 mockup 支持可选参数 `lang=zh|en` 和 `theme=light|dark`。非法语言回退中文；非法主题沿用原存储值或深色默认值。显式主题不修改已保存偏好。语言参数选择两页真实 Webview 的语言，VS Code 外壳的部分固定说明仍沿用原演示文本。
 

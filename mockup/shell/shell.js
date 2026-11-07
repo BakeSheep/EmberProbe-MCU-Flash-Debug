@@ -847,7 +847,8 @@
         if (line)
             breakpointTimer = setTimeout(function () {
                 if (!state.debugActive || state.debugPaused) return;
-                $("debugConsoleBody").innerHTML += "\n" + esc("断点命中 main.c:" + line + " — ControlTask()");
+                $("debugConsoleBody").innerHTML +=
+                    "\n" + esc(D.translate("断点命中") + " main.c:" + line + " — ControlTask()");
                 stopAt(line);
             }, 400);
     }
@@ -947,7 +948,10 @@
         if (sidebarHost) sidebarHost.destroy();
         sidebarHost = window.EmberProbeSidebarHost.create($("sidebarFrame"), {
             notify: notify,
-            simulator: simulator
+            simulator: simulator,
+            isEnglish: function () {
+                return state.lang === "en";
+            }
         });
         var frame = $("sidebarFrame");
         frame.onload = function () {
@@ -1403,6 +1407,7 @@
         $("sidebarFrame").src = "sidebar.en.html";
         $("livewatchFrame").src = "livewatch.en.html";
         TAB_META.livewatch.label = "Waveform #1";
+        D.useEnglish();
     }
     state.debugLine = findDebugLine();
     setTheme(window.EmberProbeMockTheme.current());
@@ -1417,6 +1422,7 @@
     renderMarkdown();
     activateTab(state.activeTab);
     updateDebugToolbar();
+    if (state.lang === "en") D.translateDocument(document.body);
     mountSidebarHost();
     mountLivewatchHost();
 })();

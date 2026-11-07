@@ -11,6 +11,16 @@
     function createSidebarHost(iframe, options) {
         options = options || {};
         var notify = options.notify || function () {};
+        var probesRead = false; // The refresh button reads each probe's chip (connectedProbes.js).
+        var isEnglish =
+            options.isEnglish ||
+            function () {
+                return false;
+            };
+        // The terminal and these notices are the extension's own localized text.
+        function say(zh, en) {
+            return isEnglish() ? en : zh;
+        }
         var simulator = options.simulator || data.createSimulator();
         // One sampling session per window: this host owns its state and the waveform panel follows it.
         var samplingPhase = "stopped";
@@ -97,7 +107,7 @@
 
         function sendInitialState() {
             send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
-            send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic));
+            send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
             send({
                 type: "skillStatus",
                 state: "installed",
@@ -250,7 +260,10 @@
             var info = data.chipInfo().info;
             info.targetState = chipState;
             if (chipState === "halted") {
-                info.haltReason = debugState === "none" ? "debug-request" : "断点命中 · main.c:" + targetLine;
+                info.haltReason =
+                    debugState === "none"
+                        ? "debug-request"
+                        : say("断点命中", "Breakpoint hit") + " · main.c:" + targetLine;
                 info.pc = "0x08001a3c";
                 info.sp = "0x2001ffb0";
                 info.lr = "0x080012b7";
@@ -331,32 +344,61 @@
                 action: "flashLog",
                 start: true,
                 lines: [
-                    { cls: "info", text: "EmberProbe 固件下载" },
-                    { cls: "", text: "固件 " + elf },
-                    { cls: "", text: "探针 interface/jlink.cfg · 目标 target/stm32f4x.cfg" },
+                    { cls: "info", text: say("EmberProbe 固件下载", "EmberProbe firmware download") },
+                    { cls: "", text: say("固件 ", "Firmware ") + elf },
+                    {
+                        cls: "",
+                        text: say(
+                            "探针 interface/jlink.cfg · 目标 target/stm32f4x.cfg",
+                            "Probe interface/jlink.cfg · Target target/stm32f4x.cfg"
+                        )
+                    },
                     { cls: "", text: "" }
                 ]
             });
             var wrote = { bytes: 917504, seconds: 6.201542, speed: "144.480 KiB/s" };
             var verified = { bytes: 917504, seconds: 0.912345, speed: "982.085 KiB/s" };
             var steps = [
-                { at: 0, key: "run.starting", message: "正在启动 OpenOCD" },
+                { at: 0, key: "run.starting", message: say("正在启动 OpenOCD", "Starting OpenOCD") },
                 { at: 240, message: "Open On-Chip Debugger 0.12.0 (2024-11-24-10:12)" },
                 { at: 400, message: "J-Link V11 compiled Nov 24 2024 10:12:05" },
-                { at: 520, key: "run.voltage", params: { volts: "3.30" }, message: "目标电压 3.30 V" },
-                { at: 640, key: "run.adapterClock", params: { clock: "4000 kHz" }, message: "适配器时钟 4000 kHz" },
+                {
+                    at: 520,
+                    key: "run.voltage",
+                    params: { volts: "3.30" },
+                    message: say("目标电压 3.30 V", "Target voltage 3.30 V")
+                },
+                {
+                    at: 640,
+                    key: "run.adapterClock",
+                    params: { clock: "4000 kHz" },
+                    message: say("适配器时钟 4000 kHz", "Adapter clock 4000 kHz")
+                },
                 { at: 820, message: "EP_FLASH_STAGE=init" },
                 { at: 960, message: "EP_FLASH_STAGE=reset_init" },
                 { at: 1100, message: "target halted due to debug-request, current mode: Thread" },
-                { at: 1240, key: "run.deviceId", params: { id: "0x10076413" }, message: "器件 ID 0x10076413" },
-                { at: 1380, key: "run.flash", params: { size: "1024 kbytes" }, message: "Flash 容量 1024 kbytes" },
-                { at: 1560, key: "run.programStart", message: "开始写入固件" },
+                {
+                    at: 1240,
+                    key: "run.deviceId",
+                    params: { id: "0x10076413" },
+                    message: say("器件 ID 0x10076413", "Device ID 0x10076413")
+                },
+                {
+                    at: 1380,
+                    key: "run.flash",
+                    params: { size: "1024 kbytes" },
+                    message: say("Flash 容量 1024 kbytes", "Flash size 1024 kbytes")
+                },
+                { at: 1560, key: "run.programStart", message: say("开始写入固件", "Writing firmware") },
                 {
                     at: 7760,
                     done: true,
                     key: "run.wrote",
                     params: wrote,
-                    message: "已写入 917504 bytes（6.201542s，144.480 KiB/s）"
+                    message: say(
+                        "已写入 917504 bytes（6.201542s，144.480 KiB/s）",
+                        "Wrote 917504 bytes (6.201542s, 144.480 KiB/s)"
+                    )
                 },
                 { at: 7820, message: "** Verify Started **" },
                 {
@@ -364,9 +406,12 @@
                     done: true,
                     key: "run.verified",
                     params: verified,
-                    message: "已校验 917504 bytes（0.912345s，982.085 KiB/s）"
+                    message: say(
+                        "已校验 917504 bytes（0.912345s，982.085 KiB/s）",
+                        "Verified 917504 bytes (0.912345s, 982.085 KiB/s)"
+                    )
                 },
-                { at: 8760, done: true, key: "run.verifyOk", message: "固件校验通过" },
+                { at: 8760, done: true, key: "run.verifyOk", message: say("固件校验通过", "Firmware verified") },
                 { at: 8860, message: "** Resetting Target **" }
             ];
             steps.forEach(function (step) {
@@ -391,15 +436,33 @@
                     action: "flashLog",
                     lines: [
                         { cls: "", text: "" },
-                        { cls: "ok", text: "✓ 固件下载并校验成功" },
-                        { cls: "", text: "  固件 " + elf.split("/").pop() },
-                        { cls: "", text: "  芯片 0x10076413" },
-                        { cls: "", text: "  Flash 容量 1024 kbytes" },
-                        { cls: "", text: "  探针 J-Link V11 compiled Nov 24 2024 10:12:05" },
-                        { cls: "", text: "  时钟 4000 kHz" },
-                        { cls: "", text: "  写入 917504 bytes，耗时 6.201542s（144.480 KiB/s）" },
-                        { cls: "", text: "  校验 917504 bytes，耗时 0.912345s（982.085 KiB/s）" },
-                        { cls: "", text: "  目标 target/stm32f4x.cfg · 探针配置 interface/jlink.cfg" }
+                        { cls: "ok", text: say("✓ 固件下载并校验成功", "✓ Firmware downloaded and verified") },
+                        { cls: "", text: say("  固件 ", "  Firmware ") + elf.split("/").pop() },
+                        { cls: "", text: say("  芯片 0x10076413", "  Chip 0x10076413") },
+                        { cls: "", text: say("  Flash 容量 1024 kbytes", "  Flash size 1024 kbytes") },
+                        { cls: "", text: say("  探针 ", "  Probe ") + "J-Link V11 compiled Nov 24 2024 10:12:05" },
+                        { cls: "", text: say("  时钟 4000 kHz", "  Clock 4000 kHz") },
+                        {
+                            cls: "",
+                            text: say(
+                                "  写入 917504 bytes，耗时 6.201542s（144.480 KiB/s）",
+                                "  Wrote 917504 bytes in 6.201542s (144.480 KiB/s)"
+                            )
+                        },
+                        {
+                            cls: "",
+                            text: say(
+                                "  校验 917504 bytes，耗时 0.912345s（982.085 KiB/s）",
+                                "  Verified 917504 bytes in 0.912345s (982.085 KiB/s)"
+                            )
+                        },
+                        {
+                            cls: "",
+                            text: say(
+                                "  目标 target/stm32f4x.cfg · 探针配置 interface/jlink.cfg",
+                                "  Target target/stm32f4x.cfg · Probe script interface/jlink.cfg"
+                            )
+                        }
                     ]
                 });
                 flashNotice({ level: "success", key: "msg.downloadSuccess" });
@@ -559,13 +622,16 @@
                             type: "peripheralError",
                             operation: message.type,
                             code: peripheralAccess().reason,
-                            message: "请先开启采样"
+                            message: "请先开启采样",
+                            requestPoll: message.poll === true
                         });
                         break;
                     }
                     // Hardware registers keep moving while the core runs; a paused target reads the same values.
                     var result = data.peripheralReadResult(message.targets, debugState !== "paused");
                     result.session.epoch = stopEpoch;
+                    // src/controllers/sidebarRoutes.js: the poll loop waits for this answer before the next round.
+                    if (message.poll === true) result.requestPoll = true;
                     send(result);
                     break;
                 }
@@ -665,7 +731,7 @@
                     setTimeout(function () {
                         probeDrivers[message.deviceId] = message.driver === "winusb" ? "ready" : "repair";
                         send({ type: "probeDriverSwitch", busy: false });
-                        send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic));
+                        send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
                         send({ type: "probeDriverStatus", state: message.driver === "winusb" ? "ready" : "restored" });
                         send({ type: "commandSuccess", cmd: "selectProbeDriver" });
                     }, 900);
@@ -673,12 +739,15 @@
                 case "selectConnectedProbe":
                     selectedProbe = message.deviceId || data.PROBES[0].id;
                     probeAutomatic = !message.deviceId;
-                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic));
+                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
                     send({ type: "commandSuccess", cmd: "selectConnectedProbe" });
                     break;
                 case "refreshConnectedProbes":
+                    probesRead = true;
+                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
+                    break;
                 case "acceptTargetChip":
-                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic));
+                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
                     break;
                 case "cancelSvdDownload":
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
@@ -719,6 +788,23 @@
                     });
                     break;
                 case "mcu-vscode.autoDetect":
+                    // src/mainViewProvider.js reports everything it found in one notice.
+                    send({
+                        type: "notice",
+                        area: "config",
+                        id: cmd,
+                        notice: {
+                            level: "success",
+                            key: "msg.autoDoneWith",
+                            params: {
+                                found: [
+                                    "ELF: " + data.ELF_PATH.replace(/\\/g, "/").split("/").pop(),
+                                    "MCU: stm32f4x.cfg",
+                                    say("调试器: ", "Debugger: ") + "jlink.cfg"
+                                ].join(", ")
+                            }
+                        }
+                    });
                     send({ type: "commandSuccess", cmd: cmd });
                     break;
                 default:

@@ -18,7 +18,10 @@ const MIME = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".ttf": "font/ttf",
-    ".woff": "font/woff"
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4"
 };
 
 function createMockServer(directory = dist) {
@@ -51,10 +54,23 @@ function createMockServer(directory = dist) {
             response.end("Not found");
             return;
         }
-        response.writeHead(200, {
+        const headers = {
+            "accept-ranges": "bytes",
             "content-type": MIME[path.extname(file).toLowerCase()] || "application/octet-stream"
-        });
-        const stream = fs.createReadStream(file);
+        };
+        // Browsers can only seek a video when the server answers range requests, as GitHub Pages does.
+        const size = fs.statSync(file).size;
+        const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range || "");
+        const start = range ? Number(range[1]) : 0;
+        const end = range && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+        if (range && start < size && start <= end) {
+            headers["content-range"] = `bytes ${start}-${end}/${size}`;
+            headers["content-length"] = end - start + 1;
+            response.writeHead(206, headers);
+        } else {
+            response.writeHead(200, headers);
+        }
+        const stream = fs.createReadStream(file, range && start < size && start <= end ? { start, end } : {});
         stream.on("error", () => response.destroy());
         stream.pipe(response);
     });

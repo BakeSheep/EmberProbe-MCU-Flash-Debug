@@ -14,9 +14,14 @@ function checkSite(directory) {
         const dom = new JSDOM(fs.readFileSync(path.join(directory, name), "utf8"));
         const document = dom.window.document;
         assert.ok(document.title, `${name}: missing title`);
-        for (const element of document.querySelectorAll("[src], link[href], a[href]")) {
-            const link = element.getAttribute("src") || element.getAttribute("href");
-            if (!link || link.startsWith("data:")) continue;
+        const linked = "[src], [poster], [data-poster], [data-poster-narrow], link[href], a[href]";
+        const links = [...document.querySelectorAll(linked)].flatMap((element) =>
+            ["src", "href", "poster", "data-poster", "data-poster-narrow"]
+                .map((name) => element.getAttribute(name))
+                .filter(Boolean)
+        );
+        for (const link of links) {
+            if (link.startsWith("data:")) continue;
             const resolved = new URL(link, new URL(name, base));
             if (resolved.origin !== base.origin) continue;
             assert.ok(resolved.pathname.startsWith(base.pathname), `${name}: resource escapes project base: ${link}`);

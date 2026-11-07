@@ -18,8 +18,7 @@ function buildSite() {
     fs.mkdirSync(path.join(output, "demo"), { recursive: true });
     fs.cpSync(path.join(root, "mockup/dist"), path.join(output, "demo/editor"), { recursive: true });
     fs.cpSync(path.join(__dirname, "assets"), path.join(output, "assets"), { recursive: true });
-    fs.copyFileSync(path.join(root, "media/icon.png"), path.join(output, "assets/icon.png"));
-    for (const name of ["site.css", "site.js", "demo.js"])
+    for (const name of ["site.css", "site.js", "motion.js", "tour-data.js", "demo.js"])
         fs.copyFileSync(path.join(__dirname, name), path.join(output, "assets", name));
     for (const lang of ["zh", "en"])
         fs.writeFileSync(path.join(output, lang === "en" ? "en/index.html" : "index.html"), home(lang, version));
@@ -31,12 +30,15 @@ function buildSite() {
         `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${origin}</loc></url><url><loc>${origin}en/</loc></url></urlset>\n`
     );
     const credits = [
-        "EmberProbe website — MIT. Screenshots: EmberProbe mockup, simulated data, not hardware measurements.",
+        "EmberProbe website — MIT. Recordings: EmberProbe mockup, simulated data, not hardware measurements.",
         "The editor shell approximates VS Code and is not affiliated with Microsoft.",
         fs.readFileSync(path.join(root, "mockup/vendor/README.md"), "utf8")
     ];
     for (const file of ["LICENSE-CODE", "LICENSE-ICONS", "LICENSE-VSCODE", "SETI-NOTICES.txt"])
         credits.push(`\n--- ${file} ---\n${fs.readFileSync(path.join(root, "mockup/vendor", file), "utf8")}`);
+    const licenses = path.join(__dirname, "capture/font-licenses");
+    for (const file of fs.readdirSync(licenses).sort())
+        credits.push(`\n--- ${file} ---\n${fs.readFileSync(path.join(licenses, file), "utf8")}`);
     fs.writeFileSync(path.join(output, "credits.txt"), credits.join("\n\n"));
     return output;
 }

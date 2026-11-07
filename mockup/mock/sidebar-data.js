@@ -856,7 +856,9 @@
             state.now = Date.now();
             state.loopUs = 840 + Math.round(noise(60));
             state.temp = round(state.temp + noise(0.06) + (36.5 - state.temp) * 0.02, 3);
-            state.rpm = Math.max(0, Math.min(65535, Math.round(state.rpm + noise(6))));
+            // The firmware's speed loop: the motor follows a written g_target_rpm.
+            var targetRpm = overrides.has("g_target_rpm") ? overrides.get("g_target_rpm") : 1500;
+            state.rpm = Math.max(0, Math.min(65535, Math.round(state.rpm + (targetRpm - state.rpm) * 0.04 + noise(6))));
             state.voltage = round(state.voltage + noise(0.02), 3);
             state.current = round(state.current + noise(0.01), 3);
             if (Math.random() < 0.004) state.errors += 1;
@@ -1110,7 +1112,7 @@
         return phase === "sampling" || phase === "debug-sampling";
     }
 
-    function connectedProbes(selectedId, drivers, automatic) {
+    function connectedProbes(selectedId, drivers, automatic, read) {
         var selected =
             PROBES.find(function (probe) {
                 return probe.id === selectedId;
@@ -1150,6 +1152,7 @@
                         selectable: true
                     },
                     automatic && probe.chip ? { targetLabel: probe.chip } : {},
+                    read && probe.selectable !== false ? { targetCore: "Cortex-M4" } : {},
                     kind ? { driver: { kind: kind, instanceId: probe.id } } : {}
                 );
             })
