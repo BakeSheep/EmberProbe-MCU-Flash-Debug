@@ -4,14 +4,29 @@
     {
       "name": "mockup",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["mockup/serve.js", "8085"],
+      "runtimeArgs": [
+        "mockup/serve.js",
+        "8085"
+      ],
       "port": 8085
     },
     {
       "name": "mockup-jlink-driver-fix",
       "runtimeExecutable": "node",
-      "runtimeArgs": [".claude/worktrees/jlink-driver-fix/mockup/serve.js", "8086"],
+      "runtimeArgs": [
+        ".claude/worktrees/jlink-driver-fix/mockup/serve.js",
+        "8086"
+      ],
       "port": 8086
+    },
+    {
+      "name": "website",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "website/serve.js",
+        "8087"
+      ],
+      "port": 8087
     }
   ]
 }

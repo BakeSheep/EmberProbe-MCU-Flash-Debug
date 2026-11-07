@@ -5,7 +5,6 @@ const { scenario } = require("./helpers/scenario");
 const assert = require("assert");
 const {
     DebugSessionBridge,
-    MIN_DAP_INTERVAL_MS,
     SNAPSHOT_INITIAL_DELAY_MS,
     SNAPSHOT_RETRY_DELAYS_MS,
     mergeReadPlan
@@ -190,7 +189,6 @@ async function testBackgroundStatusBroadcasts(debugType) {
             cancel: clock.cancel,
             now: clock.now,
             getReadPlan: () => readPlan,
-            getIntervalMs: () => 1,
             onSamples: (value) => samples.push(value),
             onStatus: (value) => statuses.push(value),
             onTargetState: (value) => {
@@ -228,7 +226,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
         assert.strictEqual(bridge.status().haltWrite, true);
         assert.strictEqual(bridge.status({ canWrite: false }).haltWrite, false);
         const pausedRequestCount = requests.length;
-        await delay(MIN_DAP_INTERVAL_MS + 20);
+        await delay(SNAPSHOT_RETRY_DELAYS_MS.at(-1) + 20);
         assert.strictEqual(
             requests.length,
             pausedRequestCount,
@@ -269,7 +267,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
             "step continuation must remain distinguishable from free run"
         );
         const requestCount = requests.length;
-        await delay(MIN_DAP_INTERVAL_MS + 20);
+        await delay(SNAPSHOT_RETRY_DELAYS_MS.at(-1) + 20);
         assert.strictEqual(requests.length, requestCount, "continued targets must not be read or written");
         assert.strictEqual(bridge.status().mode, "debug-running-waiting");
 
