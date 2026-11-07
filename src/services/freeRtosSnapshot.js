@@ -89,9 +89,10 @@ class FreeRtosSnapshot {
                 const architecture = target.match(/\barm(?:v[\w.-]+)?\b/i)?.[0] || "";
                 const arm32LittleEndian = width === 4 && /little endian/i.test(target);
                 let cortexM = /^armv[678][\w.-]*m\b/i.test(architecture);
-                if (arm32LittleEndian && !cortexM && /^arm(?:v[678])?$/i.test(architecture)) {
-                    // GDB can report only "arm"/"armv7" for a Cortex-M ELF/AXF. Its M-profile register
-                    // description uses xpsr instead of cpsr; listing names reads metadata, not registers.
+                if (arm32LittleEndian && !cortexM && architecture && !/-[ar]$/i.test(architecture)) {
+                    // A name without an A/R profile does not identify the core: GDB reports "arm"/"armv7" for
+                    // some Cortex-M images and its "armv3m" default for one without Tag_CPU_arch. The M-profile
+                    // register description uses xpsr instead of cpsr; listing names reads metadata, not registers.
                     const registers = await this.session.mi.command("-data-list-register-names");
                     this.check(context);
                     const names = Array.isArray(registers["register-names"])

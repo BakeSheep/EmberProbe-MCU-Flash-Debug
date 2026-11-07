@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### RTOS
+
+- 修复固件缺少 `.ARM.attributes` 架构信息时 FreeRTOS 任务快照误报“需要 Cortex-M 目标”：GDB 此时显示的 `armv3m` 等名称不代表真实内核，现在统一按寄存器描述识别，Cortex-A/R 目标仍会被拒绝。
+- Fix FreeRTOS task snapshots wrongly requiring a Cortex-M target for firmware without `.ARM.attributes` CPU information. Names such as `armv3m` that GDB shows in this case do not identify the core, so the target is now recognized from its register description; Cortex-A/R targets are still rejected.
+
 ## [0.9.1] - 2026-11-05
 
 ### 查看列表 / Watch list

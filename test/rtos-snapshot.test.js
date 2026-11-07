@@ -277,7 +277,7 @@ function fixture({
         assert.strictEqual(result.tasks.length, 2);
         assert(!target.commands.includes("-data-list-register-names"), "explicit M-profile needs no fallback");
     }
-    for (const arch of ["arm", "armv6", "armv7", "armv8"]) {
+    for (const arch of ["arm", "armv3m", "armv4t", "armv5te", "armv6", "armv7", "armv8"]) {
         const target = fixture({ arch });
         const result = await new FreeRtosSnapshot(target.session).snapshot();
         assert.strictEqual(result.kernel.supported, true, `${arch} with xpsr is a Cortex-M target`);
@@ -305,7 +305,9 @@ function fixture({
         { arch: "arm", registerNames: ["xpsr", "cpsr"] },
         { arch: "arm", registerNames: [] },
         { arch: "arm", registerNames: null },
-        { arch: "arm", registerNames: "xpsr" }
+        { arch: "arm", registerNames: "xpsr" },
+        { arch: "armv3m", registerNames: ["r0", "sp", "pc", "cpsr"] },
+        { arch: "armv3m", endian: "big" }
     ]) {
         const gate = fixture(rejected);
         const result = await new FreeRtosSnapshot(gate.session).snapshot();
