@@ -623,10 +623,8 @@
                     '</span><span class="var-value">= ' +
                     esc(node.value) +
                     "</span>" +
-                    (node.stl ? '<span class="stl-badge">STL</span>' : "") +
-                    '<span class="var-type">' +
-                    esc(node.type) +
-                    "</span></div>";
+                    (node.type ? '<span class="var-type">' + esc(node.type) + "</span>" : "") +
+                    "</div>";
                 if (hasChildren && expanded) html += renderVariableTree(node.children, depth + 1, path);
                 return html;
             })

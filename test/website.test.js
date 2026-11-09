@@ -30,7 +30,7 @@ function testPages() {
         assert.ok(doc.querySelector(".footer").textContent.includes("1.2.3-test"));
         assert.equal(doc.querySelectorAll("iframe").length, 0, "homepage does not load the editor");
         const videos = [...doc.querySelectorAll("video")];
-        assert.equal(videos.length, content[lang].chapters.length + content[lang].tools.items.length);
+        assert.equal(videos.length, clipIds(content[lang]).length + content[lang].tools.items.length);
         for (const video of videos) {
             assert.equal(video.getAttribute("preload"), "none");
             assert.ok(video.hasAttribute("poster") || video.hasAttribute("data-poster"));
@@ -48,7 +48,19 @@ function testPages() {
     }
 }
 
-const pointCount = (c) => c.chapters.reduce((total, chapter) => total + (chapter.points?.length ?? 0), 0);
+// The sampling zone has a recording per target state, one for types and one for plotting, plus stills.
+const zoneClips = (zone) => [...zone.states.items.map((state) => state.id), "variables", "waveform"];
+const clipIds = (c) => c.chapters.flatMap((chapter) => (chapter.zone ? zoneClips(chapter.zone) : chapter.id));
+const zoneStills = (zone) => [
+    ...zone.modes.cards.map((card) => ({ id: card.shot })),
+    ...zone.types.gallery,
+    ...zone.chart.shots
+];
+const pointCount = (c) =>
+    c.chapters.reduce(
+        (total, chapter) => total + (chapter.zone ? chapter.zone.types.points.length : (chapter.points?.length ?? 0)),
+        0
+    );
 const supportCount = (c) =>
     c.chapters.reduce(
         (total, chapter) =>
@@ -94,17 +106,94 @@ function testHeroAndSupportPresentation() {
 
 function testChaptersMatchRecordings() {
     for (const c of Object.values(content)) {
-        for (const chapter of c.chapters) assert.ok(timeline[chapter.id]?.steps, chapter.id);
+        for (const id of clipIds(c)) assert.ok(timeline[id]?.steps, id);
+        for (const chapter of c.chapters.filter((item) => item.zone)) {
+            for (const still of zoneStills(chapter.zone)) assert.ok(timeline[still.id]?.still, still.id);
+        }
         for (const tool of c.tools.items) assert.ok(timeline[tool.id], tool.id);
     }
     assert.deepStrictEqual(Object.keys(timeline).sort(), Object.keys(scenes).sort());
     for (const [name, scene] of Object.entries(scenes)) {
-        if (scene.still) {
+        if (scene.cropTo) {
+            // Cropped to an element, so each language keeps the size its own layout gave.
+            assert.ok(timeline[name].still, name);
+            for (const lang of ["zh", "en"]) {
+                const size = timeline[name][lang];
+                assert.ok(size.width > 0 && size.width <= scene.window.width, `${name} ${lang}`);
+                assert.ok(size.height > 0 && size.height <= scene.window.height, `${name} ${lang}`);
+            }
+        } else if (scene.still) {
             assert.ok(timeline[name].still, name);
             assert.equal(timeline[name].width, scene.window.width, name);
             assert.equal(timeline[name].height, scene.window.height, name);
         } else {
             assert.equal(timeline[name].steps.length, scene.steps.length, name);
+        }
+    }
+}
+
+function testSamplingZone() {
+    for (const lang of ["zh", "en"]) {
+        const dom = new JSDOM(home(lang, "1.2.3-test"));
+        try {
+            const doc = dom.window.document;
+            const zone = content[lang].chapters.find((chapter) => chapter.zone).zone;
+            const section = doc.getElementById("sampling");
+            assert.ok(section.matches(".chapter.zone-sampling"));
+            assert.equal(doc.querySelectorAll('.header nav a[href="#sampling"]').length, 1);
+            for (const id of ["variables", "waveform"])
+                assert.equal(doc.querySelectorAll(`.header nav a[href="#${id}"]`).length, 0);
+            const parts = [zone.modes, zone.states, zone.types, zone.chart];
+            assert.deepStrictEqual(
+                parts.map((part) => part.id),
+                ["sampling-modes", "sampling-states", "variables", "waveform"]
+            );
+            assert.deepStrictEqual(
+                [...section.querySelectorAll(".zone-nav a")].map((a) => a.getAttribute("href")),
+                parts.map((part) => `#${part.id}`)
+            );
+            for (const part of parts) assert.ok(section.querySelector(`#${part.id}.zone-part`), part.id);
+            assert.equal(section.querySelectorAll(".zone-stats li").length, zone.stats.length);
+            // The sweep's bright trace shows through a mask the page defines once.
+            const hot = section.querySelector(".scope .scope-hot");
+            const maskId = hot.getAttribute("mask").match(/^url\(#(.+)\)$/)[1];
+            assert.equal(doc.querySelectorAll(`[id="${maskId}"]`).length, 1);
+            assert.ok(doc.getElementById(maskId).querySelector(".scope-band"));
+            assert.ok(section.querySelector(".scope .scope-cursor"));
+            assert.equal(section.querySelectorAll(".feature-grid li").length, zone.chart.features.length);
+
+            // Each way to watch shows its real UI.
+            const cards = [...section.querySelectorAll(".mode-card")];
+            assert.equal(cards.length, zone.modes.cards.length);
+            cards.forEach((card, i) =>
+                assert.ok(card.querySelector(`.mode-shot img[src$="${zone.modes.cards[i].shot}-${lang}.webp"]`))
+            );
+            assert.equal(section.querySelectorAll(".mode-silent").length, 1);
+
+            // Each target state is its own row with its own recording.
+            const states = [...section.querySelectorAll(".states > .state")];
+            assert.equal(states.length, 3);
+            states.forEach((row, i) => {
+                const state = zone.states.items[i];
+                assert.ok(row.classList.contains(`state-${i + 1}`));
+                assert.equal(row.querySelector("h4").textContent, state.name);
+                assert.equal(row.querySelector(".state-tag").textContent, state.tag);
+                assert.ok(row.querySelector(`.state-clip video[data-poster$="${state.id}-${lang}.webp"]`), state.id);
+            });
+
+            // Types are tiled stills: no tabs, no source code.
+            const grid = section.querySelector(".type-grid");
+            assert.equal(grid.querySelectorAll(".type-card").length, zone.types.gallery.length);
+            for (const item of zone.types.gallery) {
+                const image = grid.querySelector(`img[src$="${item.id}-${lang}.webp"]`);
+                assert.ok(image, item.id);
+                assert.ok(image.getAttribute("width") && image.getAttribute("height") && image.getAttribute("alt"));
+            }
+            assert.equal(section.querySelectorAll('[role="tab"], pre, code').length, 0);
+            for (const shot of zone.chart.shots)
+                assert.ok(section.querySelector(`img[src$="${shot.id}-${lang}.webp"]`));
+        } finally {
+            dom.window.close();
         }
     }
 }
@@ -239,6 +328,7 @@ async function testServer() {
         testHeroAndSupportPresentation
     );
     scenario("every chapter has its recording and matching steps", testChaptersMatchRecordings);
+    scenario("sampling is one themed zone with modes, states, tiled types and stills", testSamplingZone);
     scenario("hero tilt responds on desktop and respects narrow, touch and reduced motion", testHeroMotion);
     scenario("guided tour targets exist in the real pages", testTourTargetsExist);
     scenario("the font subset covers both pages and the tour", testFontsCoverPages);

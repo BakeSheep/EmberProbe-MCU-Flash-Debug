@@ -21,6 +21,7 @@
     const pointer = { x: 0, y: 0, seen: false, moved: -Infinity, onControls: false };
     const grid = document.querySelector(".hero-grid");
     const heroSection = document.querySelector("[data-hero]");
+    const zoneGrid = document.querySelector(".zone-bg");
     const bar = document.querySelector(".scroll-progress");
     const started = performance.now();
     let frame = 0;
@@ -241,6 +242,22 @@
         if (!frame) frame = requestAnimationFrame(step);
     }
 
+    // The sampling zone's scope grid lights up around a mouse pointer over it.
+    function lightZoneGrid() {
+        const box = zoneGrid.getBoundingClientRect();
+        const over =
+            fine.matches &&
+            pointer.seen &&
+            pointer.y >= box.top &&
+            pointer.y <= box.bottom &&
+            pointer.x >= box.left &&
+            pointer.x <= box.right;
+        zoneGrid.classList.toggle("lit", over);
+        if (!over) return;
+        zoneGrid.style.setProperty("--zx", `${(pointer.x - box.left).toFixed(0)}px`);
+        zoneGrid.style.setProperty("--zy", `${(pointer.y - box.top).toFixed(0)}px`);
+    }
+
     function showProgress() {
         const range = document.documentElement.scrollHeight - window.innerHeight;
         if (bar) bar.style.transform = `scaleX(${range > 0 ? clamp(window.scrollY / range, 0, 1) : 0})`;
@@ -260,6 +277,7 @@
                 grid.style.setProperty("--gx", `${(pointer.x - box.left).toFixed(0)}px`);
                 grid.style.setProperty("--gy", `${(pointer.y - box.top).toFixed(0)}px`);
             }
+            if (zoneGrid) lightZoneGrid();
             schedule();
         },
         { passive: true }
@@ -269,6 +287,7 @@
         () => {
             showProgress();
             if (deck) layoutDeck();
+            if (zoneGrid) lightZoneGrid();
             schedule();
         },
         { passive: true }
@@ -308,10 +327,12 @@
 
         const links = new Map([...document.querySelectorAll(".header nav a")].map((a) => [a.hash.slice(1), a]));
         const marker = document.querySelector(".nav-marker");
+        const header = document.querySelector(".header");
         const chapters = new IntersectionObserver(
             (entries) => {
                 for (const { isIntersecting, target } of entries) {
                     const link = links.get(target.id);
+                    if (isIntersecting) header.classList.toggle("in-zone", target.hasAttribute("data-zone"));
                     if (isIntersecting && link && marker) {
                         marker.style.width = `${link.offsetWidth}px`;
                         marker.style.transform = `translateX(${link.offsetLeft}px)`;
@@ -324,6 +345,22 @@
             { rootMargin: "-40% 0px -55% 0px" }
         );
         document.querySelectorAll(".chapter").forEach((section) => chapters.observe(section));
+
+        // The zone's own line marks the part being read.
+        const partLinks = new Map([...document.querySelectorAll(".zone-nav a")].map((a) => [a.hash.slice(1), a]));
+        const parts = new IntersectionObserver(
+            (entries) => {
+                for (const { isIntersecting, target } of entries) {
+                    if (!isIntersecting) continue;
+                    for (const [id, link] of partLinks) {
+                        if (id === target.id) link.setAttribute("aria-current", "true");
+                        else link.removeAttribute("aria-current");
+                    }
+                }
+            },
+            { rootMargin: "-40% 0px -55% 0px" }
+        );
+        document.querySelectorAll(".zone-part").forEach((part) => parts.observe(part));
     } else {
         document.querySelectorAll("[data-reveal]").forEach((element) => element.classList.add("shown"));
     }

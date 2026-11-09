@@ -82,20 +82,6 @@
             9.2
         ]
     },
-    "sampling": {
-        "duration": 16,
-        "width": 1200,
-        "height": 640,
-        "narrow": [
-            852,
-            560
-        ],
-        "steps": [
-            0,
-            2.2,
-            10.4
-        ]
-    },
     "agent": {
         "duration": 10,
         "width": 800,
@@ -157,5 +143,154 @@
         "steps": [
             0
         ]
+    },
+    "type-basic": {
+        "still": true,
+        "zh": {
+            "width": 425,
+            "height": 226
+        },
+        "en": {
+            "width": 425,
+            "height": 226
+        }
+    },
+    "type-struct": {
+        "still": true,
+        "zh": {
+            "width": 425,
+            "height": 337
+        },
+        "en": {
+            "width": 425,
+            "height": 337
+        }
+    },
+    "type-enum": {
+        "still": true,
+        "zh": {
+            "width": 425,
+            "height": 91
+        },
+        "en": {
+            "width": 425,
+            "height": 91
+        }
+    },
+    "type-pointer": {
+        "still": true,
+        "zh": {
+            "width": 425,
+            "height": 239
+        },
+        "en": {
+            "width": 425,
+            "height": 239
+        }
+    },
+    "type-class": {
+        "still": true,
+        "zh": {
+            "width": 425,
+            "height": 166
+        },
+        "en": {
+            "width": 425,
+            "height": 166
+        }
+    },
+    "chart-menu": {
+        "still": true,
+        "zh": {
+            "width": 272,
+            "height": 245
+        },
+        "en": {
+            "width": 272,
+            "height": 245
+        }
+    },
+    "chart-export": {
+        "still": true,
+        "zh": {
+            "width": 642,
+            "height": 426
+        },
+        "en": {
+            "width": 642,
+            "height": 426
+        }
+    },
+    "sampling-standalone": {
+        "duration": 10,
+        "width": 1200,
+        "height": 640,
+        "narrow": [
+            852,
+            560
+        ],
+        "steps": [
+            0,
+            3.4
+        ]
+    },
+    "sampling-debug": {
+        "duration": 11,
+        "width": 1200,
+        "height": 640,
+        "narrow": [
+            852,
+            560
+        ],
+        "steps": [
+            0,
+            4.8
+        ]
+    },
+    "sampling-break": {
+        "duration": 11,
+        "width": 1200,
+        "height": 640,
+        "narrow": [
+            852,
+            560
+        ],
+        "steps": [
+            0,
+            7.4
+        ]
+    },
+    "mode-sidebar": {
+        "still": true,
+        "zh": {
+            "width": 443,
+            "height": 418
+        },
+        "en": {
+            "width": 443,
+            "height": 418
+        }
+    },
+    "mode-chart": {
+        "still": true,
+        "zh": {
+            "width": 844,
+            "height": 608
+        },
+        "en": {
+            "width": 844,
+            "height": 608
+        }
+    },
+    "type-stl": {
+        "still": true,
+        "zh": {
+            "width": 443,
+            "height": 384
+        },
+        "en": {
+            "width": 443,
+            "height": 384
+        }
     }
 }

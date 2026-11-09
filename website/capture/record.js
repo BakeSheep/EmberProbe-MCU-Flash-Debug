@@ -82,6 +82,34 @@ async function pointOf(session, step) {
     return { x: rect.x + rect.width * at[0] + origin.x, y: rect.y + rect.height * at[1] + origin.y };
 }
 
+// The page-space box around every element the selectors match, with padding, kept inside the window. Used by
+// `cropTo`, so a still fits its content in either language.
+async function boxOf(session, { on = "sb", to, pad = 8 }, windowSize) {
+    const frame = session.frames[on];
+    const rect = await frame.evaluate((selectors) => {
+        const boxes = selectors
+            .flatMap((selector) => [...document.querySelectorAll(selector)])
+            .map((element) => element.getBoundingClientRect())
+            .filter((box) => box.width && box.height);
+        if (!boxes.length) return null;
+        const left = Math.min(...boxes.map((box) => box.left));
+        const top = Math.min(...boxes.map((box) => box.top));
+        return {
+            x: left,
+            y: top,
+            width: Math.max(...boxes.map((box) => box.right)) - left,
+            height: Math.max(...boxes.map((box) => box.bottom)) - top
+        };
+    }, [].concat(to));
+    if (!rect) throw new Error(`cropTo matched nothing: ${to}`);
+    const origin = frame === session.frames.page ? { x: 0, y: 0 } : await (await frame.frameElement()).boundingBox();
+    const x = Math.max(0, Math.floor(rect.x + origin.x - pad));
+    const y = Math.max(0, Math.floor(rect.y + origin.y - pad));
+    const right = Math.min(windowSize.width, Math.ceil(rect.x + origin.x + rect.width + pad));
+    const bottom = Math.min(windowSize.height, Math.ceil(rect.y + origin.y + rect.height + pad));
+    return [x, y, right - x, bottom - y];
+}
+
 async function addCursor(session) {
     await session.page.evaluate((cursor) => {
         const pointer = document.createElement("div");
@@ -201,9 +229,10 @@ async function capture(browser, url, name, lang, windowSize, label, every) {
     const session = await openWindow(browser, url, scene, windowSize, lang);
     await scene.prepare(session, { pump, openSections });
     const frames = await take(session, scene, directory, every);
+    const crop = scene.cropTo ? await boxOf(session, scene.cropTo, windowSize) : scene.crop;
     await session.context.close();
     if (session.failures.length) throw new Error(`${name}: ${session.failures.join("; ")}`);
-    return { directory, frames };
+    return { directory, frames, crop };
 }
 
 // A wide scene's phone version is a crop of the same pass. A panel's is a second pass in a narrower window, so
@@ -215,14 +244,16 @@ async function record(browser, url, name, lang, preview) {
     const second = scene.compact
         ? await capture(browser, url, name, lang, scene.compact.window, `${name}-${lang}-compact`, every)
         : null;
-    if (preview) return console.log(`${name}-${lang}: preview frames in ${main.directory}`);
+    if (preview)
+        return console.log(`${name}-${lang}: preview frames in ${main.directory}, crop ${main.crop || "none"}`);
 
     fs.mkdirSync(media, { recursive: true });
     const framePath = (directory) =>
         path.join(directory, `${String(Math.round(scene.poster * FPS)).padStart(4, "0")}.png`);
     const crf = scene.crf || 24;
-    if (!scene.still) encode(main.directory, path.join(media, `${name}-${lang}.mp4`), crf, scene.crop);
-    poster(framePath(main.directory), path.join(media, `${name}-${lang}.webp`), scene.crop);
+    const crop = main.crop;
+    if (!scene.still) encode(main.directory, path.join(media, `${name}-${lang}.mp4`), crf, crop);
+    poster(framePath(main.directory), path.join(media, `${name}-${lang}.webp`), crop);
     const narrowSource = second || (scene.narrow && main);
     const narrowCrop = scene.compact ? scene.compact.crop : scene.narrow;
     if (narrowSource) {
@@ -231,15 +262,20 @@ async function record(browser, url, name, lang, preview) {
         poster(framePath(narrowSource.directory), path.join(media, `${name}-${lang}-narrow.webp`), narrowCrop);
     }
     const timeline = fs.existsSync(timelineFile) ? JSON.parse(fs.readFileSync(timelineFile, "utf8")) : {};
+    // A fitted still differs in size between languages.
     const size = {
-        width: scene.crop ? scene.crop[2] : scene.window.width,
-        height: scene.crop ? scene.crop[3] : scene.window.height,
+        width: crop ? crop[2] : scene.window.width,
+        height: crop ? crop[3] : scene.window.height,
         narrow: narrowCrop ? narrowCrop.slice(2) : undefined
     };
     // A still needs only its dimensions; a clip also keeps its duration and steps.
-    timeline[name] = scene.still
-        ? { still: true, ...size }
-        : { duration: main.frames / FPS, ...size, steps: scene.steps };
+    // A still fitted to its content has a size per language.
+    if (scene.cropTo)
+        timeline[name] = { still: true, ...timeline[name], [lang]: { width: size.width, height: size.height } };
+    else
+        timeline[name] = scene.still
+            ? { still: true, ...size }
+            : { duration: main.frames / FPS, ...size, steps: scene.steps };
     fs.writeFileSync(timelineFile, `${JSON.stringify(timeline, null, 4)}\n`);
     if (scene.still) console.log(`${name}-${lang}: still written`);
     for (const suffix of scene.still ? [] : narrowCrop ? ["", "-narrow"] : [""]) {

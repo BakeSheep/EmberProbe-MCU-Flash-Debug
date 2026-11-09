@@ -65,19 +65,7 @@
             send({
                 type: "variableTypes",
                 version: data.VERSION,
-                symbols: symbols.map(function (symbol) {
-                    return {
-                        name: symbol.name,
-                        displayName: symbol.displayName,
-                        typeName: symbol.typeName,
-                        watchType: symbol.watchType,
-                        isComposite: !!symbol.isComposite,
-                        hasRuntimeLayout: false,
-                        unsupportedReason: "",
-                        hasDwarfWriteType: !!symbol.hasDwarfWriteType,
-                        isBoolean: !!symbol.isBoolean
-                    };
-                })
+                symbols: root.EmberProbeSidebarData.variableTypes()
             });
             send({ type: "variableTypesDone", version: data.VERSION });
         }
@@ -374,16 +362,12 @@
                     break;
                 }
                 case "resolveCompositeLayout": {
-                    var symbol = symbols.find(function (entry) {
-                        return entry.name === message.name;
-                    });
-                    send({
-                        type: "compositeLayoutResult",
-                        name: message.name,
-                        version: message.version,
-                        layout: symbol && symbol.compositeLayout,
-                        error: symbol && symbol.compositeLayout ? undefined : "未找到复合布局"
-                    });
+                    send(
+                        Object.assign(
+                            { type: "compositeLayoutResult", name: message.name, version: message.version },
+                            root.EmberProbeSidebarData.layoutResult(message.name)
+                        )
+                    );
                     break;
                 }
                 case "saveWatch":

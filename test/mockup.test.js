@@ -270,6 +270,43 @@ function testHostsAndRenderer() {
     }
 }
 
+function testTypeShowcase() {
+    const simulator = sidebarData.createSimulator();
+    simulator.tick();
+    const scalars = Object.fromEntries(
+        simulator
+            .scalarSamples(["g_motor_mode", "g_app_state", "g_active_sensor", "g_on_fault", "g_banner", "g_pending"], 1)
+            .map((sample) => [sample.name, sample])
+    );
+    assert.equal(scalars.g_motor_mode.enumText, "MODE_RUN(1)");
+    assert.equal(scalars.g_active_sensor.pointerInfo.name, "g_sensors");
+    assert.equal(scalars.g_on_fault.pointerInfo.kind, "function");
+    assert.ok(scalars.g_banner.pointerString);
+    assert.equal(scalars.g_pending.value, 0);
+    assert.ok(sidebarData.layoutResult("g_active_sensor").layout.runtimeLayout, "scalar pointers expand at runtime");
+    assert.ok(sidebarData.layoutResult("missing").error);
+
+    const env = hostEnvironment();
+    const view = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
+    const sidebar = env.frame((message) => view.send(message));
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, { simulator });
+    try {
+        const names = ["g_app_state", "g_active_sensor", "g_on_fault", "g_pending", "g_motor"];
+        env.deliver(sidebar, { type: "saveSidebarWatch", items: names.map((name) => sidebarData.watchItem(name)) });
+        env.deliver(sidebar, { type: "initCheck" });
+        env.deliver(sidebar, { type: "liveToggle" });
+        env.advance(600);
+        const text = view.document.getElementById("liveValues").textContent;
+        for (const expected of [".Active / .Ready(3)", "&g_sensors[1]", "fault_handler()", "NULL", '"left-wheel"'])
+            assert.ok(text.includes(expected), expected);
+        assert.match(text, /已隐藏 \d+ 个内部成员/);
+        view.assertHealthy();
+    } finally {
+        host.destroy();
+        view.close();
+    }
+}
+
 function testArchive() {
     const env = hostEnvironment();
     const frame = env.frame();
@@ -829,6 +866,7 @@ async function testServer() {
     testSimulatorAndRegisters();
     testMockUnlimitedPreset();
     testHostsAndRenderer();
+    testTypeShowcase();
     testArchive();
     testReadableArchiveHeaders();
     testSamplingFollowsDebugSession();

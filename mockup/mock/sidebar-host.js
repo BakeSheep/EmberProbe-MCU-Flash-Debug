@@ -87,20 +87,7 @@
             send({
                 type: "availableVariableTypes",
                 version: data.VERSION,
-                symbols: symbols.map(function (symbol) {
-                    return {
-                        name: symbol.name,
-                        displayName: symbol.displayName,
-                        typeName: symbol.typeName,
-                        watchType: symbol.watchType,
-                        isComposite: symbol.isComposite,
-                        hasRuntimeLayout: !!symbol.hasRuntimeLayout,
-                        unsupportedReason: symbol.unsupportedReason || "",
-                        hasDwarfWriteType: !!symbol.hasDwarfWriteType,
-                        isBoolean: !!symbol.isBoolean,
-                        isConst: !!symbol.isConst
-                    };
-                })
+                symbols: data.variableTypes()
             });
             send({ type: "availableTypesDone", version: data.VERSION });
         }
@@ -676,23 +663,12 @@
                     send(data.rtosDebugStatus(debugState, stopEpoch));
                     break;
                 case "resolveCompositeLayout": {
-                    var symbol = data.SYMBOLS.filter(function (item) {
-                        return item.name === message.name;
-                    })[0];
-                    if (symbol && symbol.isComposite)
-                        send({
-                            type: "compositeLayoutResult",
-                            name: message.name,
-                            version: message.version,
-                            layout: symbol.compositeLayout
-                        });
-                    else
-                        send({
-                            type: "compositeLayoutResult",
-                            name: message.name,
-                            version: message.version,
-                            error: "未找到复合布局"
-                        });
+                    send(
+                        Object.assign(
+                            { type: "compositeLayoutResult", name: message.name, version: message.version },
+                            data.layoutResult(message.name)
+                        )
+                    );
                     break;
                 }
                 case "refreshVariables":

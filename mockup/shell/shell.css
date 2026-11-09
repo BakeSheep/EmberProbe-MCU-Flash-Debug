@@ -622,15 +622,6 @@ button {
     font-size: 11px;
 }
 
-.debug-tree .stl-badge {
-    padding: 0 4px;
-    border-radius: 3px;
-    background: rgba(117, 190, 255, 0.16);
-    color: var(--vscode-symbolIcon-classForeground);
-    font-size: 9px;
-    font-family: var(--vscode-font-family);
-}
-
 .stack-row.active {
     background: var(--vscode-list-inactiveSelectionBackground);
 }

@@ -23,6 +23,24 @@ node test/mockup.test.js
 
 `content.js` 的章节 `id` 同时是 `website/capture/scenes.js` 中的场景名，录屏进度条的分段取自 `timeline.json` 中该场景的 `steps`。
 
+### 采样专题区
+
+采样是核心功能，在首页是一个带 `zone` 字段的章节（`id: "sampling"`），由 `template.js` 的 `samplingZone` 渲染，导航只占一个入口。区内有吸顶子导航和四个小节：
+
+- `modes`（`#sampling-modes`）：侧栏观测与波形图采样两张对比卡，每张以真实界面截图（`mode-sidebar`、`mode-chart`）开头，波形卡附带静默采样说明。
+- `states`（`#sampling-states`）：独立运行、调试运行中、断点暂停时三行，每行有自己的录屏（`sampling-standalone`、`sampling-debug`、`sampling-break`）、图标、编号和颜色（青绿、琥珀、红），录屏左右交替。
+- `types`（`#variables`）：挂 `variables` 录屏，下方把各类型的真实界面截图（`type-*`）平铺成两列，按截图高度分列，让两列底部大致对齐。不放源码，也不做标签页。其中 `type-stl` 截的是内置调试器暂停时的变量视图（mockup 外壳 `shell-data.js` 的 `DEBUG.variables`，取值照 `src/debug/stl.js` 的摘要格式），文案写明属于调试器；实时采样不展开 vector、map 等容器。
+- `chart`（`#waveform`）：挂 `waveform` 录屏，另有功能网格和右键菜单、CSV 导出两张截图。
+
+文案只写卖点。采样率不写具体档位：波形窗口的采样率可自定义，也可选不限速。
+
+专题区使用青绿浅色主题：`.zone-sampling` 在区内重定义 `--accent`（`#0b8a7e`）、`--accent-dark`、`--tint`、`--line`，复用的要点、进度条、边缘光和标签自动变色；页面其他部分保持橙色。滚动进入专题区时，`motion.js` 让顶部导航下划线变成青绿色，并高亮子导航。区内的小动画都只在 `.motion` 下生效，减少动画模式下直接显示完整的静态页面：
+
+- 开头的波形先绘制出来，之后一条扫描光标循环扫过，光标后面的一段曲线加亮（SVG 遮罩 `#scope-sweep` 和 `.scope-cursor` 用同一套时序）；鼠标经过时，背景网格在指针附近变亮（`motion.js` 设置 `.zone-bg` 的 `--zx`/`--zy`）。
+- 数字卖点进入视口时文字上扫过一次高光；静默采样的圆点持续向外扩散。
+- 三种状态进入时，色条自上而下画出，图标弹出，编号滑入；之后图标循环演示各自的状态：曲线反复绘制、继续按钮前推、断点向外脉冲。
+- 支持悬停的设备上，卡片悬停时轻微上浮，方形标记转成菱形。上浮用 `translate`，不影响入场动画的 `transform`。
+
 新增文案出现新汉字时要重新生成字体子集，否则 `test/website.test.js` 会失败。源字体不在仓库中：
 
 ```sh
@@ -49,6 +67,7 @@ LIB=<目录> node website/capture/record.js
 - 场景的 `window` 是页面上的显示尺寸。录制使用 2 倍像素，编码时不缩放，所以静止时视频按 1:1 显示。
 - 单段不超过 2 MB，全部不超过 60 MB。超出时先缩短时长，再提高场景的 `crf`。
 - `still: true` 的场景（首图）只在 `poster` 秒截一张无光标的图，输出 `hero-<lang>.webp` 和窄屏图，不编码视频。首图展示完整编辑器，首页保留整张截图的轻微 3D 透视和鼠标响应，不另加局部浮层，不持续缩放，也不设置常驻 `will-change: transform`。窄屏和减少动画模式关闭鼠标响应。
+- 带 `cropTo: {on, to, pad}` 的静态场景按海报帧上选择器匹配元素的外接框裁剪（`on` 是 `sb` 侧栏、`lw` 波形窗口或 `page`），中英文排版不同也能裁准。`timeline.json` 中这类条目按语言分别记录 `zh`/`en` 尺寸，输出 `<场景>-<lang>.webp`。专题区的场景截图（`mode-sidebar`、`mode-chart`）、类型截图（`type-*`）和波形截图（`chart-menu`、`chart-export`）都用这种方式，变量来自 mockup 的“ELF 全部变量”，默认查看列表不变；`type-stl` 在页面上按 `#debugVariables` 中容器所在的行裁剪。
 - 社交分享图由 `website/capture/og.js` 生成，需要先构建站点。
 
 ## 引导教程

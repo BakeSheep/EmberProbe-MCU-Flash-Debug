@@ -60,6 +60,86 @@ const chartWindow = (session, seconds) =>
         span.dispatchEvent(new Event("change", { bubbles: true }));
     }, seconds);
 
+// Makes the sidebar watch list exactly these variables, in this order, through the variable browser's own buttons.
+const watchOnly = (names) => (session) =>
+    session.sb.evaluate((wanted) => {
+        const button = (name) => document.querySelector(`#availableVars .av-watch[data-selection-name="${name}"]`);
+        for (const on of document.querySelectorAll("#availableVars .av-watch.on"))
+            if (!wanted.includes(on.dataset.selectionName)) on.click();
+        for (const name of wanted) if (!button(name).classList.contains("on")) button(name).click();
+    }, names);
+
+// Opens a composite card, and optionally the nested members on the given paths.
+const expand =
+    (name, paths = []) =>
+    (session) =>
+        session.sb.evaluate(
+            ([card, nested]) => {
+                const row = document.querySelector(`#liveValues [data-reorder-key="${card}"]`);
+                if (!row.classList.contains("open")) row.querySelector(":scope > .sb-comp-head").click();
+                for (const path of nested)
+                    [...row.querySelectorAll(".sb-comp-name")]
+                        .find((label) => label.title === path)
+                        .closest(".sb-comp-head")
+                        .click();
+            },
+            [name, paths]
+        );
+
+// Opens a data pointer onto its target.
+const dereference = (name) => (session) =>
+    session.sb.evaluate((card) => {
+        const toggle = document.querySelector(`#liveValues [data-reorder-key="${card}"] .pointer-toggle`);
+        if (!toggle.classList.contains("open")) toggle.click();
+    }, name);
+
+// The containers in mock/shell-data.js, and the rows clicked open (or, for the default g_history, shut) for the still.
+const STL_ROWS = ["g_history", "g_fw_version", "g_params", "g_rx_queue", "g_offset", "g_driver", "g_last_error"];
+const STL_TOGGLES = ["g_history", "g_fw_version", "g_params", "g_params.[1]", "g_offset", "g_driver"];
+
+// One card type on the website's type gallery: these variables, sampled, cropped to the list.
+function typeStill(names, ...after) {
+    return {
+        still: true,
+        window: { width: 800, height: 760, sidebar: 440 },
+        poster: 2,
+        cursor: [700, 700],
+        cropTo: { on: "sb", to: "#liveValues", pad: 2 },
+        async prepare(session, { pump, openSections }) {
+            await openSections(session, ["liveValuesSection", "variableBrowser"]);
+            await watchOnly(names)(session);
+            await session.page.clock.runFor(100);
+            await openSections(session, ["liveValuesSection"]);
+            await startSampling(session);
+            await pump(session, 1200);
+            for (const step of after) await step(session);
+            await session.page.clock.runFor(200);
+            await scrollTo(session, "liveValuesSection");
+        },
+        operations: []
+    };
+}
+
+// A still of the waveform window after ten seconds of curves, with one dialog open.
+function chartStill(open, cropTo, pad = 1) {
+    return {
+        still: true,
+        window: { width: 1200, height: 700, sidebar: 300 },
+        poster: 1,
+        cursor: [1100, 650],
+        cropTo: { on: "lw", to: cropTo, pad },
+        async prepare(session, { pump, openSections }) {
+            await openSections(session, ["liveValuesSection"]);
+            await chartWindow(session, "10");
+            await session.lw.evaluate(() => document.getElementById("run").click());
+            await pump(session, 11000);
+            await open(session);
+            await session.page.clock.runFor(300);
+        },
+        operations: []
+    };
+}
+
 const scenes = {
     // The homepage's first image: a still of the full editor without a cursor.
     hero: {
@@ -223,15 +303,37 @@ const scenes = {
             { at: 12.6, on: "lw", to: "#exportApply", move: 1, click: true }
         ]
     },
-    sampling: {
+    // The three sampling states of the homepage's sampling zone, one clip each. All start with ten seconds of
+    // curves in the waveform window.
+    "sampling-standalone": {
         window: { width: 1200, height: 640, sidebar: 300 },
-        // Moving curves across the whole frame: the default quality exceeds the size limit.
+        query: "&unlimited=1",
         crf: 32,
-        duration: 16,
-        poster: 8,
+        duration: 10,
+        poster: 9,
         cursor: [900, 520],
         narrow: [348, 36, 852, 560],
-        steps: [0, 2.2, 10.4],
+        steps: [0, 3.4],
+        async prepare(session, { openSections }) {
+            await openSections(session, ["liveValuesSection"]);
+            await chartWindow(session, "10");
+            await session.lw.evaluate(() => document.getElementById("norm").click());
+        },
+        operations: [
+            { at: 0.8, on: "lw", to: "#frequencyToggle", move: 0.8, click: true },
+            { at: 1.8, on: "lw", to: "#frequencyPreset", point: [0.3, 0.5], move: 0.6, press: true },
+            { at: 2.6, on: "lw", to: "#frequencyPreset", point: [1, 0.5], move: 0.7, release: true },
+            { at: 3.4, on: "lw", to: "#run", move: 0.8, click: true }
+        ]
+    },
+    "sampling-debug": {
+        window: { width: 1200, height: 640, sidebar: 300 },
+        crf: 32,
+        duration: 11,
+        poster: 10,
+        cursor: [900, 520],
+        narrow: [348, 36, 852, 560],
+        steps: [0, 4.8],
         async prepare(session, { pump, openSections }) {
             await openSections(session, ["flashDebugSection", "liveValuesSection"]);
             await chartWindow(session, "10");
@@ -248,15 +350,57 @@ const scenes = {
             await pump(session, 11000);
         },
         operations: [
-            { at: 1.6, to: command("attachDebug"), move: 0.8, click: true },
-            { at: 2.4, skip: 2300, run: backToEmberProbe },
-            { at: 4.2, on: "page", to: "#dbgContinue", move: 0.9, click: true },
-            { at: 5.4, on: "page", to: () => document.querySelectorAll(".tab")[2], move: 0.8, click: true },
-            { at: 10.2, on: "page", to: "#dbgContinue", move: 0.9, click: true },
-            { at: 12.4, on: "page", to: "#dbgStepOver", move: 0.7, click: true },
-            { at: 14, on: "page", to: "#dbgStepOver", move: 0.3, click: true }
+            { at: 1, to: command("attachDebug"), move: 0.8, click: true },
+            { at: 1.8, skip: 2300, run: backToEmberProbe },
+            { at: 2.4, on: "page", to: () => document.querySelectorAll(".tab")[2], move: 0.8, click: true },
+            { at: 4.8, on: "page", to: "#dbgContinue", move: 0.9, click: true }
         ]
     },
+    "sampling-break": {
+        window: { width: 1200, height: 640, sidebar: 300 },
+        crf: 32,
+        duration: 11,
+        poster: 10,
+        cursor: [900, 520],
+        narrow: [348, 36, 852, 560],
+        steps: [0, 7.4],
+        async prepare(session, { pump, openSections }) {
+            await openSections(session, ["flashDebugSection", "liveValuesSection"]);
+            await chartWindow(session, "10");
+            await session.lw.evaluate(() => {
+                document.getElementById("run").click();
+                document.getElementById("norm").click();
+            });
+            await pump(session, 11000);
+            // Attached and stopped where the target was, with the default breakpoint ahead.
+            await session.sb.evaluate((selector) => document.querySelector(selector).click(), command("attachDebug"));
+            await pump(session, 2400);
+            await backToEmberProbe(session);
+        },
+        operations: [
+            { at: 1, on: "page", to: "#dbgContinue", move: 0.8, click: true },
+            { at: 2.8, on: "page", to: "#dbgStepOver", move: 0.7, click: true },
+            { at: 4, on: "page", to: "#dbgStepOver", move: 0.3, click: true },
+            { at: 5.2, on: "page", to: "#dbgContinue", move: 0.4, click: true },
+            { at: 7.4, on: "page", to: () => document.querySelectorAll(".tab")[2], move: 0.8, click: true }
+        ]
+    },
+    // The two ways to watch, side by side in the zone: the sidebar's current values and the waveform window.
+    "mode-sidebar": {
+        still: true,
+        window: { width: 800, height: 760, sidebar: 440 },
+        poster: 2,
+        cursor: [700, 700],
+        cropTo: { on: "sb", to: "#liveValuesSection", pad: 2 },
+        async prepare(session, { pump, openSections }) {
+            await openSections(session, ["liveValuesSection"]);
+            await startSampling(session);
+            await pump(session, 1200);
+            await scrollTo(session, "liveValuesSection");
+        },
+        operations: []
+    },
+    "mode-chart": chartStill((session) => session.lw.evaluate(() => document.getElementById("norm").click()), "body"),
     agent: {
         window: { width: 800, height: 560, sidebar: 440 },
         duration: 10,
@@ -341,6 +485,58 @@ const scenes = {
             { at: 4.2, to: ".memory-region:nth-of-type(3)", move: 0.6 }
         ]
     },
+    // The type gallery: how each kind of variable reads in the sidebar.
+    "type-basic": typeStill(["g_sensor_temp", "g_motor_rpm", "g_error_count", "g_motor_enabled", "g_temp_limit"]),
+    "type-struct": typeStill(
+        ["g_imu", "g_sensors"],
+        expand("g_imu", ["g_imu.accel"]),
+        expand("g_sensors", ["g_sensors[1]"])
+    ),
+    "type-enum": typeStill(["g_motor_mode", "g_app_state"]),
+    "type-pointer": typeStill(
+        ["g_active_sensor", "g_on_fault", "g_banner", "g_pending"],
+        dereference("g_active_sensor")
+    ),
+    "type-class": typeStill(["g_motor"], expand("g_motor")),
+    // STL containers belong to the built-in debugger: its Variables view while paused, cropped to the container rows.
+    "type-stl": {
+        still: true,
+        window: { width: 800, height: 760, sidebar: 440 },
+        poster: 1,
+        cursor: [700, 700],
+        cropTo: { on: "page", to: STL_ROWS.map((name) => `#debugVariables [data-var-path^="${name}"]`), pad: 2 },
+        async prepare(session) {
+            await session.page.evaluate((paths) => {
+                document.querySelector('.activity-item[data-view="debug"]').click();
+                for (const path of paths)
+                    document.querySelector(`#debugVariables [data-var-path="${CSS.escape(path)}"]`).click();
+            }, STL_TOGGLES);
+            await session.page.clock.runFor(200);
+        },
+        operations: []
+    },
+    // The waveform window's series menu and CSV export, each cropped to the dialog.
+    "chart-menu": chartStill(
+        (session) =>
+            session.lw.evaluate(() => {
+                const card = document.querySelector('[data-series-name="g_motor_rpm"]');
+                const box = card.getBoundingClientRect();
+                card.dispatchEvent(
+                    new MouseEvent("contextmenu", {
+                        bubbles: true,
+                        clientX: box.left + box.width * 0.6,
+                        clientY: box.top + box.height * 0.5
+                    })
+                );
+                document.activeElement.blur();
+            }),
+        ".series-menu",
+        0
+    ),
+    "chart-export": chartStill(
+        (session) => session.lw.evaluate(() => document.getElementById("export").click()),
+        ".export-panel"
+    ),
     chip: {
         ...PANEL,
         duration: 7,

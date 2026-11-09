@@ -435,11 +435,11 @@
                     { name: "timestamp", value: "0x1F4A03C2", type: "uint32_t" }
                 ]
             },
+            // Values follow the built-in debugger's STL summaries (src/debug/stl.js).
             {
                 name: "g_history",
-                value: "size=10",
+                value: "vector length 10, capacity 16",
                 type: "std::vector<float>",
-                stl: true,
                 children: [
                     { name: "[0]", value: "36.41", type: "float" },
                     { name: "[1]", value: "36.42", type: "float" },
@@ -455,13 +455,84 @@
             },
             {
                 name: "g_fw_version",
-                value: '"1.4.2"',
+                value: '"1.4.2" (length 5)',
                 type: "std::string",
-                stl: true,
                 children: [
-                    { name: "size", value: "5", type: "size_type" },
-                    { name: "capacity", value: "15", type: "size_type" }
+                    { name: "[0]", value: "49 '1'", type: "char" },
+                    { name: "[1]", value: "46 '.'", type: "char" },
+                    { name: "[2]", value: "52 '4'", type: "char" },
+                    { name: "[3]", value: "46 '.'", type: "char" },
+                    { name: "[4]", value: "50 '2'", type: "char" }
                 ]
+            },
+            {
+                name: "g_params",
+                value: "map length 3",
+                type: "std::map<unsigned short, float>",
+                children: [
+                    {
+                        name: "[0]",
+                        value: "1",
+                        children: [
+                            { name: "key", value: "1", type: "const unsigned short" },
+                            { name: "value", value: "1.85", type: "float" }
+                        ]
+                    },
+                    {
+                        name: "[1]",
+                        value: "2",
+                        children: [
+                            { name: "key", value: "2", type: "const unsigned short" },
+                            { name: "value", value: "0.42", type: "float" }
+                        ]
+                    },
+                    {
+                        name: "[2]",
+                        value: "3",
+                        children: [
+                            { name: "key", value: "3", type: "const unsigned short" },
+                            { name: "value", value: "0.06", type: "float" }
+                        ]
+                    }
+                ]
+            },
+            {
+                name: "g_rx_queue",
+                value: "deque length 3",
+                type: "std::deque<unsigned short>",
+                children: [
+                    { name: "[0]", value: "1447", type: "unsigned short" },
+                    { name: "[1]", value: "1452", type: "unsigned short" },
+                    { name: "[2]", value: "1449", type: "unsigned short" }
+                ]
+            },
+            {
+                name: "g_offset",
+                value: "optional engaged",
+                type: "std::optional<float>",
+                children: [{ name: "value", value: "0.125", type: "float" }]
+            },
+            {
+                name: "g_driver",
+                value: "unique_ptr 0x20001a40",
+                type: "std::unique_ptr<Driver>",
+                children: [
+                    {
+                        name: "value",
+                        value: "{…}",
+                        type: "Driver",
+                        children: [
+                            { name: "duty", value: "0.62", type: "float" },
+                            { name: "fault", value: "false", type: "bool" }
+                        ]
+                    }
+                ]
+            },
+            {
+                name: "g_last_error",
+                value: "variant index 0: int",
+                type: "std::variant<int, float>",
+                children: [{ name: "value", value: "0", type: "int" }]
             },
             {
                 name: "g_telemetry_frame",
