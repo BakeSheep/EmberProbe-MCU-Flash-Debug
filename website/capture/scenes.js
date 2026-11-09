@@ -61,14 +61,13 @@ const chartWindow = (session, seconds) =>
     }, seconds);
 
 const scenes = {
+    // The homepage's first image: a still of the full editor without a cursor.
     hero: {
+        still: true,
         window: { width: 1200, height: 660, sidebar: 320 },
-        duration: 12,
         poster: 10,
-        crf: 29,
         cursor: [760, 560],
         narrow: [652, 142, 548, 426],
-        steps: [0],
         async prepare(session, { pump, openSections }) {
             await openSections(session, ["liveValuesSection"]);
             await session.lw.evaluate(() => {

@@ -24,11 +24,13 @@ function testPages() {
         const doc = dom.window.document;
         assert.equal(doc.documentElement.lang, content[lang].htmlLang);
         assert.equal(doc.querySelectorAll("h1").length, 1);
-        assert.equal(doc.querySelectorAll("[data-seek]").length, stepCount(content[lang]));
+        assert.equal(doc.querySelectorAll(".points li").length, pointCount(content[lang]));
+        assert.equal(doc.querySelectorAll(".pills li:not([aria-hidden])").length, supportCount(content[lang]));
+        assert.ok(doc.querySelector(".hero-card img").getAttribute("alt"), "the first image is described");
         assert.ok(doc.querySelector(".footer").textContent.includes("1.2.3-test"));
         assert.equal(doc.querySelectorAll("iframe").length, 0, "homepage does not load the editor");
         const videos = [...doc.querySelectorAll("video")];
-        assert.equal(videos.length, content[lang].chapters.length + content[lang].tools.items.length + 1);
+        assert.equal(videos.length, content[lang].chapters.length + content[lang].tools.items.length);
         for (const video of videos) {
             assert.equal(video.getAttribute("preload"), "none");
             assert.ok(video.hasAttribute("poster") || video.hasAttribute("data-poster"));
@@ -46,17 +48,97 @@ function testPages() {
     }
 }
 
-const stepCount = (c) => c.chapters.reduce((total, chapter) => total + chapter.steps.length, 0);
+const pointCount = (c) => c.chapters.reduce((total, chapter) => total + (chapter.points?.length ?? 0), 0);
+const supportCount = (c) =>
+    c.chapters.reduce(
+        (total, chapter) =>
+            total + (chapter.support ? chapter.support.probes.items.length + chapter.support.chips.items.length : 0),
+        0
+    );
+
+function testChapterPresentation() {
+    for (const lang of ["zh", "en"]) {
+        const dom = new JSDOM(home(lang, "1.2.3-test"));
+        try {
+            const doc = dom.window.document;
+            assert.ok(doc.querySelector("#config .support > h3").textContent.includes("OpenOCD"));
+            assert.equal(doc.querySelectorAll("#config .support-group > h4").length, 2);
+            const flash = doc.querySelector("#flash");
+            assert.equal(flash.querySelector(".chapter-side"), null);
+            assert.equal(flash.querySelector(".points"), null);
+            assert.ok(flash.querySelector(".chapter-body.solo video"));
+            assert.equal(flash.querySelectorAll(".controls button").length, 2);
+        } finally {
+            dom.window.close();
+        }
+    }
+}
+
+function testHeroAndSupportPresentation() {
+    for (const lang of ["zh", "en"]) {
+        const dom = new JSDOM(home(lang, "1.2.3-test"));
+        try {
+            const doc = dom.window.document;
+            assert.equal(doc.querySelectorAll(".hero-card picture").length, 1);
+            assert.equal(doc.querySelectorAll(".hero-layer, .hero-layers").length, 0);
+            assert.equal(doc.querySelector(".hero-visual figcaption"), null);
+            for (const list of doc.querySelectorAll("#config .pills")) {
+                assert.equal(list.lastElementChild.textContent, "…");
+                assert.equal(list.lastElementChild.getAttribute("aria-hidden"), "true");
+            }
+        } finally {
+            dom.window.close();
+        }
+    }
+}
 
 function testChaptersMatchRecordings() {
     for (const c of Object.values(content)) {
-        for (const chapter of c.chapters) {
-            assert.equal(chapter.steps.length, timeline[chapter.id].steps.length, chapter.id);
-            assert.equal(chapter.steps.length, scenes[chapter.id].steps.length, chapter.id);
-        }
+        for (const chapter of c.chapters) assert.ok(timeline[chapter.id]?.steps, chapter.id);
         for (const tool of c.tools.items) assert.ok(timeline[tool.id], tool.id);
     }
     assert.deepStrictEqual(Object.keys(timeline).sort(), Object.keys(scenes).sort());
+    for (const [name, scene] of Object.entries(scenes)) {
+        if (scene.still) {
+            assert.ok(timeline[name].still, name);
+            assert.equal(timeline[name].width, scene.window.width, name);
+            assert.equal(timeline[name].height, scene.window.height, name);
+        } else {
+            assert.equal(timeline[name].steps.length, scene.steps.length, name);
+        }
+    }
+}
+
+function testHeroMotion() {
+    for (const mode of ["desktop", "narrow", "touch", "reduced"]) {
+        const markup = `<html class="${mode === "reduced" ? "" : "motion"}"><body><section data-hero><div data-hero-scene><div data-hero-card></div></div></section></body></html>`;
+        const view = render(
+            markup,
+            {},
+            {
+                beforeParse(window) {
+                    window.matchMedia = (query) => ({
+                        matches: query.includes("min-width") ? mode !== "narrow" : mode !== "touch"
+                    });
+                }
+            }
+        );
+        try {
+            const scene = view.document.querySelector("[data-hero-scene]");
+            const card = view.document.querySelector("[data-hero-card]");
+            scene.getBoundingClientRect = () => ({ left: 0, top: 0, width: 640, height: 440 });
+            view.window.eval(fs.readFileSync(path.join(__dirname, "../website/motion.js"), "utf8"));
+            scene.dispatchEvent(new view.window.MouseEvent("pointermove", { clientX: 640, clientY: 0 }));
+            assert.equal(Boolean(card.style.getPropertyValue("--hero-ry")), mode === "desktop");
+            assert.equal(card.style.willChange, "", "do not pin the screenshot to a fixed raster scale");
+            scene.dispatchEvent(new view.window.MouseEvent("pointerleave"));
+            assert.equal(card.style.getPropertyValue("--hero-rx"), "");
+            assert.equal(card.style.getPropertyValue("--hero-ry"), "");
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    }
 }
 
 function testTourTargetsExist() {
@@ -151,7 +233,13 @@ async function testServer() {
 
 (async () => {
     scenario("both languages render complete static pages under the project base", testPages);
+    scenario("compatibility has a heading and flashing keeps a standalone playable demo", testChapterPresentation);
+    scenario(
+        "hero uses one complete screenshot and both compatibility lists end with an ellipsis",
+        testHeroAndSupportPresentation
+    );
     scenario("every chapter has its recording and matching steps", testChaptersMatchRecordings);
+    scenario("hero tilt responds on desktop and respects narrow, touch and reduced motion", testHeroMotion);
     scenario("guided tour targets exist in the real pages", testTourTargetsExist);
     scenario("the font subset covers both pages and the tour", testFontsCoverPages);
     scenario("demo validates language and resets without changing stored preferences", testDemoReset);

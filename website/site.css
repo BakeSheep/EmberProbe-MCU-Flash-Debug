@@ -63,6 +63,7 @@ body {
 h1,
 h2,
 h3,
+h4,
 p,
 ol {
     margin: 0;
@@ -192,28 +193,116 @@ button {
         radial-gradient(460px 340px at var(--gx, 50%) var(--gy, 120px), #000 0, transparent 100%),
         linear-gradient(rgb(0 0 0 / 28%), transparent 420px);
 }
-.hero-head {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 48px;
-    margin-bottom: 28px;
+.hero-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr);
+    grid-template-areas: "visual copy";
+    align-items: center;
+    gap: 56px;
+    min-height: min(78vh, 680px);
+}
+.hero-copy {
+    grid-area: copy;
+}
+.eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 70%);
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 20px;
+}
+.eyebrow::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px rgb(217 72 15 / 16%);
 }
 h1 {
+    margin-top: 18px;
     color: var(--ink);
-    font-size: 42px;
+    font-size: clamp(48px, 6.2vw, 80px);
     font-weight: 600;
-    line-height: 1.25;
+    line-height: 1.05;
+    letter-spacing: -0.035em;
 }
-.hero-head p {
-    max-width: 760px;
-    margin-top: 10px;
-    font-size: 16px;
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+.title-letters {
+    display: inline-flex;
+}
+/* Each letter carries a slice of one wide gradient: a glint that sweeps across the word after it lands. */
+.title-letters span {
+    display: inline-block;
+    background: linear-gradient(100deg, var(--ink) 42%, #f76707 49%, var(--accent) 52%, var(--ink) 60%) 100% 0 / 400%
+        100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+.subtitle {
+    max-width: 440px;
+    margin-top: 18px;
+    color: var(--text);
+    font-size: 21px;
+    line-height: 1.5;
 }
 .hero-actions {
     display: flex;
-    flex: none;
+    flex-wrap: wrap;
     gap: 10px;
+    margin-top: 32px;
+}
+.hero-visual {
+    grid-area: visual;
+    margin: 0;
+}
+.hero-scene {
+    position: relative;
+    perspective: 2200px;
+}
+.hero-glow {
+    position: absolute;
+    inset: 12% 2% -8% 6%;
+    border-radius: 40px;
+    background:
+        radial-gradient(60% 70% at 30% 40%, rgb(0 103 192 / 22%), transparent 70%),
+        radial-gradient(60% 70% at 75% 70%, rgb(217 72 15 / 30%), transparent 70%);
+    filter: blur(48px);
+    pointer-events: none;
+}
+/* One high-resolution screenshot, with a gentle perspective and no extra overlay cards. */
+.hero-card {
+    position: relative;
+    aspect-ratio: var(--shot);
+    border-radius: 12px;
+    background: var(--tint);
+    box-shadow:
+        0 0 0 1px rgb(24 24 27 / 8%),
+        0 30px 60px -24px rgb(24 24 27 / 38%),
+        0 12px 24px -12px rgb(24 24 27 / 18%);
+    transform: rotateX(var(--hero-rx, 3deg)) rotateY(var(--hero-ry, 8deg));
+    transition: transform 0.4s var(--ease);
+}
+.hero-card picture,
+.hero-card img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
 }
 .button {
     position: relative;
@@ -261,12 +350,6 @@ h1 {
     transform: translateX(110%);
     transition: transform 0.7s var(--ease);
 }
-.notice {
-    margin-top: 26px;
-    color: var(--muted);
-    font-size: 13px;
-}
-
 /* Recording stage */
 .float {
     position: relative;
@@ -279,11 +362,6 @@ h1 {
     filter: blur(38px);
     pointer-events: none;
     will-change: transform;
-}
-[data-float="hero"] .float-shadow {
-    inset: 5% 3% -5%;
-    background: linear-gradient(100deg, rgb(0 103 192 / 34%), rgb(24 24 27 / 22%) 45%, rgb(217 72 15 / 38%));
-    filter: blur(52px);
 }
 .stage {
     position: relative;
@@ -391,7 +469,8 @@ h1 {
     column-gap: 48px;
     margin-bottom: 24px;
 }
-.chapter-head h2 {
+.chapter-head h2,
+.support-title {
     color: var(--ink);
     font-size: 28px;
     font-weight: 600;
@@ -408,84 +487,87 @@ h1 {
     gap: 48px;
     align-items: start;
 }
-.steps {
+.chapter-body.solo {
+    grid-template-columns: minmax(0, 1fr);
+    width: min(100%, 800px);
+    margin-inline: auto;
+}
+.points {
+    margin: 0;
+    padding: 0;
     list-style: none;
 }
-.steps li + li {
+.points li {
+    position: relative;
+    padding: 14px 0 14px 20px;
+}
+.points li + li {
     border-top: 1px solid var(--line);
 }
-.steps button {
-    position: relative;
-    display: grid;
-    grid-template-columns: 28px minmax(0, 1fr);
-    width: 100%;
-    padding: 14px 0 14px 16px;
-    text-align: left;
-}
-/* The current step's rule fills while the recording plays through it. */
-.steps button::before,
-.steps button::after {
+.points li::before {
     content: "";
     position: absolute;
     left: 0;
-    top: 14px;
-    bottom: 14px;
-    width: 2px;
-    opacity: 0;
-    transition: opacity 0.3s;
-}
-.steps button::before {
-    background: var(--line);
-}
-.steps button::after {
+    top: 23px;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
     background: var(--accent);
-    transform: scaleY(var(--fill, 0));
-    transform-origin: top;
+    transform: rotate(45deg);
 }
-.steps [aria-current]::before,
-.steps [aria-current]::after {
-    opacity: 1;
-}
-.steps button:hover strong {
-    color: var(--accent);
-}
-.number {
-    color: var(--muted);
-    font: 500 14px/24px var(--mono);
-    transition: color 0.3s;
-}
-.step-copy {
-    display: block;
-    transition: color 0.3s;
-    color: var(--muted);
-    font-size: 14px;
-    line-height: 1.55;
-}
-.step-copy strong {
+.points strong {
     display: block;
     margin-bottom: 2px;
     color: var(--ink);
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 26px;
+}
+.points span {
+    display: block;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.6;
+}
+.support {
+    display: grid;
+    gap: 26px;
+}
+.support h4 {
+    margin-bottom: 12px;
+    color: var(--ink);
     font-size: 15px;
-    font-weight: 500;
+    font-weight: 600;
     line-height: 24px;
-    transition: color 0.3s;
 }
-.steps [aria-current] .number {
+.pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.pills li {
+    padding: 5px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--paper);
+    color: var(--ink);
+    font: 500 13px/20px var(--mono);
+    transition:
+        border-color 0.2s,
+        color 0.2s,
+        transform 0.3s var(--ease);
+}
+.pills li:hover {
+    border-color: var(--accent);
     color: var(--accent);
+    transform: translateY(-1px);
 }
-.steps [aria-current] .step-copy {
-    color: var(--text);
-}
-.steps [aria-current] strong {
-    color: var(--accent);
-}
-.limit {
-    margin-top: 8px;
-    padding-top: 14px;
-    border-top: 1px solid var(--line);
+.support-note {
     color: var(--muted);
     font-size: 13px;
-    line-height: 1.6;
 }
 
 /* A chapter with a full-width recording: its steps run in columns underneath. */
@@ -499,16 +581,13 @@ h1 {
 .wide .chapter-head p {
     max-width: 800px;
 }
-.wide .steps {
+.wide .points {
     display: grid;
     grid-template-columns: repeat(var(--count), minmax(0, 1fr));
     gap: 24px;
 }
-.wide .steps li + li {
+.wide .points li + li {
     border-top: 0;
-}
-.wide .limit {
-    margin-top: 14px;
 }
 
 /* Agent conversation */
@@ -631,7 +710,7 @@ h1 {
     line-height: 1.55;
 }
 
-/* More tools */
+/* More tools: a plain grid, which motion.js turns into a deck that scrolling moves through. */
 .tool-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -640,6 +719,9 @@ h1 {
 .tool {
     min-width: 0;
 }
+.tool-copy {
+    margin-bottom: 14px;
+}
 .tool h3 {
     color: var(--ink);
     font-size: 18px;
@@ -647,13 +729,70 @@ h1 {
     line-height: 1.4;
 }
 .tool-lead {
-    margin: 2px 0 14px;
+    margin-top: 2px;
     font-size: 14px;
 }
-.tool .limit {
-    margin-top: 14px;
-    padding-top: 0;
-    border-top: 0;
+.deck-dots {
+    display: none;
+}
+.deck-on {
+    --card: min(620px, 56vw, calc((100vh - 290px) * 540 / 372));
+    height: calc(100vh + var(--count) * 70vh);
+}
+.deck-on .tool-deck {
+    position: sticky;
+    top: 57px;
+    height: calc(100vh - 57px);
+    overflow: hidden;
+}
+.deck-on .tool-deck > .wrap {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+}
+.deck-on .tool-grid {
+    position: relative;
+    display: block;
+    height: calc(var(--card) * 372 / 540 + 120px);
+    perspective: 1800px;
+}
+.deck-on .tool {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: var(--card);
+    margin-left: calc(var(--card) / -2);
+    will-change: transform, opacity;
+}
+.deck-on .tool-copy {
+    text-align: center;
+    opacity: var(--front, 0);
+}
+.deck-on .deck-dots {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 12px;
+}
+.deck-dots button {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 24px;
+}
+.deck-dots i {
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line);
+    transition:
+        background-color 0.3s,
+        width 0.3s var(--ease);
+}
+.deck-dots [aria-current] i {
+    width: 30px;
+    background: var(--accent);
 }
 
 /* Requirements */
@@ -696,6 +835,24 @@ h1 {
 }
 .start ol {
     list-style: none;
+}
+.number {
+    color: var(--accent);
+    font: 500 14px/24px var(--mono);
+}
+.step-copy {
+    display: block;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+}
+.step-copy strong {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 24px;
 }
 .start li {
     display: grid;
@@ -1076,6 +1233,27 @@ body:not(.tour-on) .tour {
 .motion .float-shadow {
     opacity: 0;
 }
+.motion .title-letters span {
+    animation:
+        letter-in 0.9s var(--ease) both,
+        letter-glint 1.4s ease-in-out both;
+    animation-delay: calc(260ms + var(--i) * 55ms), calc(1300ms + var(--i) * 70ms);
+}
+@keyframes letter-in {
+    from {
+        opacity: 0;
+        filter: blur(10px);
+        transform: translateY(0.45em) rotateX(-70deg);
+    }
+}
+@keyframes letter-glint {
+    from {
+        background-position: 100% 0;
+    }
+    to {
+        background-position: 0 0;
+    }
+}
 
 @media (max-width: 1240px) {
     .chapter-head,
@@ -1097,8 +1275,26 @@ body:not(.tour-on) .tour {
     .wide .chapter-body {
         max-width: none;
     }
-    .wide .steps {
+    .wide .points {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 1100px) {
+    .hero-row {
+        gap: 36px;
+    }
+}
+
+@media (max-width: 900px) {
+    .hero-row {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "copy" "visual";
+        min-height: 0;
+        gap: 40px;
+    }
+    .hero-card {
+        transform: none;
     }
 }
 
@@ -1125,17 +1321,20 @@ body:not(.tour-on) .tour {
         padding-top: 28px;
         padding-bottom: 48px;
     }
-    .hero-head {
-        display: block;
-    }
     h1 {
-        font-size: 28px;
+        font-size: 44px;
+    }
+    .subtitle {
+        font-size: 18px;
     }
     .hero-grid {
         display: none;
     }
     .hero-actions {
-        margin-top: 18px;
+        margin-top: 24px;
+    }
+    .hero-card {
+        aspect-ratio: var(--shot-narrow);
     }
     .screen {
         aspect-ratio: var(--clip-narrow);
@@ -1143,14 +1342,15 @@ body:not(.tour-on) .tour {
     .chapter {
         padding-block: 44px;
     }
-    .chapter-head h2 {
+    .chapter-head h2,
+    .support-title {
         font-size: 24px;
     }
-    .wide .steps {
+    .wide .points {
         grid-template-columns: minmax(0, 1fr);
         gap: 0;
     }
-    .wide .steps li + li {
+    .wide .points li + li {
         border-top: 1px solid var(--line);
     }
     .talk-row {

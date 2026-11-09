@@ -33,6 +33,8 @@ async function openWindow(browser, url, scene, windowSize, lang) {
     const { width, height, sidebar } = windowSize;
     const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: SCALE });
     await context.clock.install({ time: new Date("2026-11-05T10:00:00") });
+    // Pause before creating a page: browser startup and font loading must not race a short future deadline.
+    await context.clock.pauseAt(new Date("2026-11-05T10:00:10"));
     const page = await context.newPage();
     const failures = [];
     page.on("pageerror", (error) => failures.push(error.message));
@@ -44,8 +46,7 @@ async function openWindow(browser, url, scene, windowSize, lang) {
         sidebar
     );
     await page.clock.runFor(300);
-    // From here only runFor moves time: a screenshot takes longer than a frame.
-    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
+    // Only runFor moves time: a screenshot takes longer than a frame.
     const frames = {
         page: page.mainFrame(),
         sb: page.frames().find((frame) => /sidebar/.test(frame.url())),
@@ -111,9 +112,11 @@ async function drawCursor(session, position, ringAge) {
 }
 
 // Runs the scene's operations with real mouse and keyboard input while stepping the clock one frame at a time.
+// A still scene runs the same operations but stops at its poster frame, without a cursor.
 async function take(session, scene, directory, every) {
     const { page } = session;
-    const total = Math.round(scene.duration * FPS);
+    const posterFrame = Math.round(scene.poster * FPS);
+    const total = scene.still ? posterFrame + 1 : Math.round(scene.duration * FPS);
     const operations = scene.operations.map((operation) => ({ move: 0.5, ...operation }));
     let cursor = { x: scene.cursor[0], y: scene.cursor[1] };
     let from = cursor;
@@ -122,7 +125,7 @@ async function take(session, scene, directory, every) {
     let moveEnd = 0;
     let ring = -9;
     const typing = [];
-    await addCursor(session);
+    if (!scene.still) await addCursor(session);
     for (let index = 0; index < total; index++) {
         const time = index / FPS;
         for (const operation of operations) {
@@ -156,8 +159,8 @@ async function take(session, scene, directory, every) {
             if (operation.run) await operation.run(session);
         }
         if (typing.length && index % 2 === 0) await page.keyboard.type(typing.shift());
-        await drawCursor(session, cursor, (time - ring) / 0.35);
-        if (index % every === 0) {
+        if (!scene.still) await drawCursor(session, cursor, (time - ring) / 0.35);
+        if (scene.still ? index === posterFrame : index % every === 0) {
             await page.screenshot({ path: path.join(directory, `${String(index).padStart(4, "0")}.png`) });
         }
         await page.clock.runFor(Math.round(((index + 1) * 1000) / FPS) - Math.round((index * 1000) / FPS));
@@ -218,24 +221,28 @@ async function record(browser, url, name, lang, preview) {
     const framePath = (directory) =>
         path.join(directory, `${String(Math.round(scene.poster * FPS)).padStart(4, "0")}.png`);
     const crf = scene.crf || 24;
-    encode(main.directory, path.join(media, `${name}-${lang}.mp4`), crf, scene.crop);
+    if (!scene.still) encode(main.directory, path.join(media, `${name}-${lang}.mp4`), crf, scene.crop);
     poster(framePath(main.directory), path.join(media, `${name}-${lang}.webp`), scene.crop);
     const narrowSource = second || (scene.narrow && main);
     const narrowCrop = scene.compact ? scene.compact.crop : scene.narrow;
     if (narrowSource) {
-        encode(narrowSource.directory, path.join(media, `${name}-${lang}-narrow.mp4`), crf, narrowCrop);
+        if (!scene.still)
+            encode(narrowSource.directory, path.join(media, `${name}-${lang}-narrow.mp4`), crf, narrowCrop);
         poster(framePath(narrowSource.directory), path.join(media, `${name}-${lang}-narrow.webp`), narrowCrop);
     }
     const timeline = fs.existsSync(timelineFile) ? JSON.parse(fs.readFileSync(timelineFile, "utf8")) : {};
-    timeline[name] = {
-        duration: main.frames / FPS,
+    const size = {
         width: scene.crop ? scene.crop[2] : scene.window.width,
         height: scene.crop ? scene.crop[3] : scene.window.height,
-        narrow: narrowCrop ? narrowCrop.slice(2) : undefined,
-        steps: scene.steps
+        narrow: narrowCrop ? narrowCrop.slice(2) : undefined
     };
+    // A still needs only its dimensions; a clip also keeps its duration and steps.
+    timeline[name] = scene.still
+        ? { still: true, ...size }
+        : { duration: main.frames / FPS, ...size, steps: scene.steps };
     fs.writeFileSync(timelineFile, `${JSON.stringify(timeline, null, 4)}\n`);
-    for (const suffix of narrowCrop ? ["", "-narrow"] : [""]) {
+    if (scene.still) console.log(`${name}-${lang}: still written`);
+    for (const suffix of scene.still ? [] : narrowCrop ? ["", "-narrow"] : [""]) {
         const file = path.join(media, `${name}-${lang}${suffix}.mp4`);
         console.log(`${path.basename(file)}: ${(fs.statSync(file).size / 1048576).toFixed(2)} MB`);
     }
@@ -252,7 +259,7 @@ async function main() {
     const server = createMockServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${server.address().port}/index.html`;
-    const browser = await playwright().chromium.launch();
+    const browser = await playwright().chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
     try {
         for (const name of names.length ? names : Object.keys(scenes)) {
             for (const lang of langs.length ? langs : ["zh", "en"]) await record(browser, url, name, lang, preview);

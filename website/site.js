@@ -9,29 +9,20 @@
         const toggle = figure.querySelector("[data-toggle]");
         const enlarge = figure.querySelector("[data-enlarge]");
         const bars = [...figure.querySelectorAll(".progress i")];
-        const chapter = figure.closest("[data-chapter]");
-        const seeks = chapter ? [...chapter.querySelectorAll("[data-seek]")] : [];
         const starts = figure.dataset.steps.split(",").map(Number);
         const duration = Number(figure.dataset.duration);
         let userPaused = reduced.matches;
         let inView = false;
+        // In the tools deck only the card in the middle plays; motion.js says which one that is.
+        let front = true;
         let frame = 0;
 
         function showTime() {
             const time = video.currentTime;
-            let current = 0;
-            starts.forEach((start, index) => {
-                if (time >= start) current = index;
-            });
             starts.forEach((start, index) => {
                 const end = starts[index + 1] ?? duration;
                 const filled = Math.min(1, Math.max(0, (time - start) / (end - start)));
                 bars[index].style.transform = `scaleX(${filled})`;
-                if (seeks[index]) seeks[index].style.setProperty("--fill", filled.toFixed(3));
-            });
-            seeks.forEach((seek, index) => {
-                if (index === current) seek.setAttribute("aria-current", "step");
-                else seek.removeAttribute("aria-current");
             });
         }
         function tick() {
@@ -41,13 +32,8 @@
         function showState() {
             toggle.textContent = video.paused ? toggle.dataset.play : toggle.dataset.pause;
         }
-        // A clip that has not loaded yet ignores currentTime until its metadata arrives.
-        function seekTo(time) {
-            if (video.readyState > 0) video.currentTime = time;
-            else video.addEventListener("loadedmetadata", () => (video.currentTime = time), { once: true });
-        }
         function sync() {
-            if (inView && !userPaused) video.play().catch(() => {});
+            if (inView && front && !userPaused) video.play().catch(() => {});
             else video.pause();
         }
 
@@ -61,15 +47,10 @@
             userPaused = !video.paused;
             sync();
         });
-        seeks.forEach((seek, index) =>
-            seek.addEventListener("click", () => {
-                seekTo(starts[index]);
-                userPaused = false;
-                inView = true;
-                sync();
-                showTime();
-            })
-        );
+        figure.addEventListener("deck:front", (event) => {
+            front = event.detail;
+            sync();
+        });
         enlarge.addEventListener("click", () => {
             if (document.fullscreenElement) document.exitFullscreen();
             else if (figure.requestFullscreen) figure.requestFullscreen();

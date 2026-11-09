@@ -1,14 +1,11 @@
 {
     "hero": {
-        "duration": 12,
+        "still": true,
         "width": 1200,
         "height": 660,
         "narrow": [
             548,
             426
-        ],
-        "steps": [
-            0
         ]
     },
     "flash": {

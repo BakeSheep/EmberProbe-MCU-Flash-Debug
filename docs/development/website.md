@@ -19,9 +19,9 @@ node test/mockup.test.js
 
 ## 内容
 
-双语文案在 `website/content.js`，HTML 模板在 `website/template.js`，样式和交互在 `site.css`、`site.js`、`motion.js`。版本读取根 `package.json`，不在页面内复制版本号。文案只写功能、条件和能力边界，每条描述对照 `docs/guide/`。
+双语文案在 `website/content.js`，HTML 模板在 `website/template.js`，样式和交互在 `site.css`、`site.js`、`motion.js`。版本读取根 `package.json`，不在页面内复制版本号。文案写用户得到什么，不写操作步骤和实现细节（时序、协议、内部回退等留给 `docs/guide/`）；事实仍以 `docs/guide/` 为准。
 
-`content.js` 的章节 `id` 同时是 `website/capture/scenes.js` 中的场景名，每章的步骤数必须等于场景的 `steps` 数。
+`content.js` 的章节 `id` 同时是 `website/capture/scenes.js` 中的场景名，录屏进度条的分段取自 `timeline.json` 中该场景的 `steps`。
 
 新增文案出现新汉字时要重新生成字体子集，否则 `test/website.test.js` 会失败。源字体不在仓库中：
 
@@ -41,11 +41,14 @@ LIB=<目录> node website/capture/record.js --lang=zh waveform
 LIB=<目录> node website/capture/record.js
 ```
 
+需要指定已安装的 Chromium 时，可设置 `CHROMIUM=<可执行文件路径>`；未设置时使用 Playwright 默认浏览器。
+
 `--preview` 每 0.5 秒存一帧到 `test-results/website-capture/`，用来核对操作时序。不写语言时录中英文，不写场景时录全部，约需 30 分钟。
 
 - 时钟由 Playwright 控制并逐帧推进，等待时间可以在场景中用 `skip` 缩短。场景只用选择器定位，中英文共用同一份脚本。
 - 场景的 `window` 是页面上的显示尺寸。录制使用 2 倍像素，编码时不缩放，所以静止时视频按 1:1 显示。
 - 单段不超过 2 MB，全部不超过 60 MB。超出时先缩短时长，再提高场景的 `crf`。
+- `still: true` 的场景（首图）只在 `poster` 秒截一张无光标的图，输出 `hero-<lang>.webp` 和窄屏图，不编码视频。首图展示完整编辑器，首页保留整张截图的轻微 3D 透视和鼠标响应，不另加局部浮层，不持续缩放，也不设置常驻 `will-change: transform`。窄屏和减少动画模式关闭鼠标响应。
 - 社交分享图由 `website/capture/og.js` 生成，需要先构建站点。
 
 ## 引导教程

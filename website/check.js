@@ -14,11 +14,13 @@ function checkSite(directory) {
         const dom = new JSDOM(fs.readFileSync(path.join(directory, name), "utf8"));
         const document = dom.window.document;
         assert.ok(document.title, `${name}: missing title`);
-        const linked = "[src], [poster], [data-poster], [data-poster-narrow], link[href], a[href]";
+        const linked = "[src], [srcset], [poster], [data-poster], [data-poster-narrow], link[href], a[href]";
         const links = [...document.querySelectorAll(linked)].flatMap((element) =>
-            ["src", "href", "poster", "data-poster", "data-poster-narrow"]
+            ["src", "href", "poster", "data-poster", "data-poster-narrow", "srcset"]
                 .map((name) => element.getAttribute(name))
                 .filter(Boolean)
+                // A srcset lists "url width" candidates; each url is checked.
+                .flatMap((value) => value.split(",").map((candidate) => candidate.trim().split(/\s+/)[0]))
         );
         for (const link of links) {
             if (link.startsWith("data:")) continue;

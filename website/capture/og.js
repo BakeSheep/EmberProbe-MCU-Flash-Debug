@@ -1,6 +1,6 @@
 "use strict";
 
-// Writes the social cards, assets/media/og-<lang>.jpg, from the built site. The recording's poster is the real UI.
+// Writes the social cards, assets/media/og-<lang>.jpg, from the built site. The hero still is the real UI.
 // Needs `node website/build.js` first and the same LIB as record.js.
 const path = require("path");
 const { output } = require("../build");
@@ -17,7 +17,7 @@ body{width:1200px;height:630px;margin:0;overflow:hidden;background:#fff}
 h1{position:absolute;left:64px;top:104px;margin:0;color:var(--ink);font-size:48px;font-weight:600;line-height:1.2}
 img.shot{position:absolute;left:64px;top:196px;width:1072px;border:1px solid var(--line);border-radius:10px}
 </style></head><body><div class="title"><img src="assets/icon.png" width="36" height="36" alt="">EmberProbe</div>
-<h1>${content[lang].headline}</h1><img class="shot" src="assets/media/hero-${lang}.webp" alt=""></body></html>`;
+<h1>${content[lang].subtitle}</h1><img class="shot" src="assets/media/hero-${lang}.webp" alt=""></body></html>`;
 
 (async () => {
     const server = createSiteServer(output);
