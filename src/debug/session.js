@@ -16,7 +16,7 @@ const {
 } = require("@vscode/debugadapter");
 const { MiClient, quote } = require("./mi");
 const { DebugVariables } = require("./variables");
-const { DebugDataBreakpoints } = require("./dataBreakpoints");
+const { DebugDataBreakpointGroups } = require("./dataBreakpointGroups");
 const { debugError, adapterLanguage, localizeError } = require("./errors");
 const { SymbolDirectory } = require("./symbolDirectory");
 const { FreeRtosSnapshot } = require("../services/freeRtosSnapshot");
@@ -76,7 +76,7 @@ class EmberDebugSession extends DebugSession {
         this.clientCapabilities = {};
         this.breakpoints = new Map();
         this.nextBreakpoint = 1;
-        this.dataBreakpoints = new DebugDataBreakpoints(this);
+        this.dataBreakpoints = new DebugDataBreakpointGroups(this);
         this.entryBreakpoint = null;
         this.breakpointSyncPending = false;
         this.breakpointSyncScheduled = false;
@@ -1166,6 +1166,8 @@ class EmberDebugSession extends DebugSession {
                 return this.dataBreakpoints.info(args);
             case "setDataBreakpoints":
                 return this.dataBreakpoints.set(args);
+            case "emberprobe.sidebarDataBreakpoints":
+                return this.dataBreakpoints.request(args);
             case "threads": {
                 const result = await this.mi.command("-thread-info");
                 this.checkRequest();

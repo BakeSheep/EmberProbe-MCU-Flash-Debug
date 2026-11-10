@@ -112,10 +112,20 @@ const valueTree = EmberProbeValueTree.create({
         api.postMessage({ type: "resolveCompositeLayout", name, version: state.version });
     },
     togglePointee: (entry) => sbTogglePointee(entry),
-    decorateLeaf: (row, name) => name,
+    decorateLeaf: (row, name, leaf) => {
+        dataBreakpoints.decorate(row, leaf.path);
+        return name;
+    },
     scalarCell: (cell, name) => {
         cell.dataset.valueName = name;
     }
+});
+const dataBreakpoints = EmberProbeSidebarDataBreakpoints.create({
+    state,
+    box: liveBox,
+    post: (message) => api?.postMessage(message),
+    t: (key, params) => t(key, params),
+    notice: (message) => setNotice("live", "dataBreakpoint", { level: "error", title: message })
 });
 const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
 const writes = EmberProbeWriteList.create({
@@ -696,6 +706,7 @@ function sbToggle(entry) {
     saveSbUi();
 }
 function renderValues() {
+    dataBreakpoints.close();
     valueTree.reset();
     liveBox.textContent = "";
     // Expanded pointees render inside their pointer rows while composites and rows are built.
@@ -737,11 +748,13 @@ function renderValues() {
         state.watch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
     );
     sbWatchReorder?.refresh();
+    dataBreakpoints.refreshMarks();
     valueTree.syncRuntimeExpansions();
 }
 function sbRenderScalarRow(item) {
     const row = document.createElement("div");
     row.className = "value-row";
+    dataBreakpoints.decorate(row, item.name);
     const n = document.createElement("span");
     n.className = "value-name";
     EmberProbeRuntime.renderVariableName(n, sbDisplayName(item), item.name);
@@ -1111,6 +1124,7 @@ function sbRenderComposite(item) {
     row.className = "value-row composite" + (state.expanded[item.name] ? " open" : "");
     const head = document.createElement("div");
     head.className = "sb-comp-head";
+    dataBreakpoints.decorate(head, item.name);
     const arrow = document.createElement("span");
     arrow.className = "sb-arrow" + (state.expanded[item.name] ? " open" : "");
     arrow.textContent = "\u25B6";
@@ -1182,6 +1196,7 @@ function updateValues(samples) {
     valueRefresh.schedule();
 }
 function refreshDisplayedValues() {
+    dataBreakpoints.refreshMarks();
     const items = new Map(state.watch.map((item) => [item.name, item]));
     document.querySelectorAll("[data-value-name]").forEach((el) => {
         EmberProbeRuntime.setValueCell(
@@ -1481,6 +1496,8 @@ EmberProbePageZoom.create({
     }
 });
 window.EmberProbeMessages.connect(window, {
+    sidebarDataBreakpoints: (message) => dataBreakpoints.receive(message),
+    sidebarDataBreakpointError: (message) => dataBreakpoints.receive(message),
     memoryAnalysis: function (m) {
         memoryView?.receive(m);
     },

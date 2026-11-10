@@ -485,22 +485,18 @@ async function queuedWrites() {
     assert(failure.diagnostic.message.includes("_ZN3lab7pointerE"), "raw symbols remain in diagnostic details");
 }
 
-// A sidebar message whose handler fails is logged; it must not reject the listener, where nothing would catch it.
+// Failed sidebar saves restore the displayed list and report the original error without rejecting the listener.
 async function failedMessages() {
     const f = fixture();
     f.provider._saveWatchList = async () => {
         throw new Error("workspace state is read-only");
     };
-    const logged = [];
-    const consoleError = console.error;
-    console.error = (...args) => logged.push(args);
-    try {
-        await f.dispatch({ type: "saveSidebarWatch", items: [] });
-    } finally {
-        console.error = consoleError;
-    }
-    assert.strictEqual(logged.length, 1);
-    assert.match(logged[0][1].message, /read-only/);
+    let restored = 0;
+    f.provider._syncSidebarTarget = () => restored++;
+    await f.dispatch({ type: "saveSidebarWatch", items: [] });
+    assert.strictEqual(restored, 1);
+    const failure = f.messages.findLast((message) => message.type === "sidebarDataBreakpointError");
+    assert.match(failure.message, /read-only/);
 }
 
 (async () => {

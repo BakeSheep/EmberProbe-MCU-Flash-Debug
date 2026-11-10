@@ -649,3 +649,241 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .rtt-channels{display:grid;gap:3px}.rtt-ch{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;min-width:0;padding:5px 7px;border:1px solid var(--vscode-widget-border,transparent);border-radius:4px;background:var(--vscode-editor-background);font-size:10px}.rtt-ch-index{flex:none;color:var(--vscode-descriptionForeground);font-weight:700}.rtt-ch-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtt-ch .tag{flex:none;white-space:nowrap;margin-left:auto}.rtt-ch-io{flex:none;width:11px;height:11px;fill:none;stroke:var(--vscode-descriptionForeground);stroke-width:1.2;stroke-linecap:round;stroke-linejoin:round}.rtt-ch-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--vscode-testing-iconPassed)}.rtt-ch-dot.off{background:var(--vscode-descriptionForeground);opacity:.5}.rtt-ch-diagnostics{flex-basis:100%;min-width:0;display:flex;flex-direction:column;gap:4px;padding-top:4px;border-top:1px solid var(--vscode-widget-border,var(--vscode-sideBarSectionHeader-border,transparent))}.rtt-ch-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 10px}@media(min-width:380px){.rtt-ch-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}}.rtt-metric{display:flex;flex-direction:column;gap:1px;min-width:0}.rtt-metric-k{overflow:hidden;color:var(--vscode-descriptionForeground);font-size:9px;font-weight:700;letter-spacing:.03em;text-overflow:ellipsis;white-space:nowrap}.rtt-metric-v{overflow:hidden;color:var(--vscode-foreground);font:600 11px var(--vscode-editor-font-family);font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}.rtt-metric-v.muted{color:var(--vscode-descriptionForeground);font-weight:400}
 
 #rttSection .mini:disabled{opacity:.5;cursor:default}.rtt-options{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 7px}
+/* Data breakpoint menu: workbench menu palette (incl. high contrast), VS Code menu metrics. */
+.data-breakpoint-menu {
+    position: fixed;
+    z-index: 10000;
+    min-width: 220px;
+    max-width: min(320px, calc(100vw - 8px));
+    max-height: calc(100vh - 8px);
+    overflow: auto;
+    padding: 4px;
+    border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, #454545));
+    border-radius: 6px;
+    color: var(--vscode-menu-foreground, var(--vscode-foreground, #ccc));
+    background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+    box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+    font: 12px/18px var(--vscode-font-family, "Segoe UI", sans-serif);
+    outline: none;
+}
+.data-breakpoint-head {
+    padding: 4px 8px 5px;
+    min-width: 0;
+}
+.data-breakpoint-head-name {
+    overflow: hidden;
+    font: 600 12px/18px var(--vscode-editor-font-family, monospace);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.data-breakpoint-head-meta {
+    overflow-wrap: anywhere;
+    color: var(--vscode-descriptionForeground, #999);
+    font-size: 11px;
+    line-height: 15px;
+}
+.data-breakpoint-separator {
+    height: 1px;
+    margin: 4px 0;
+    background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border, #454545));
+}
+.data-breakpoint-section {
+    padding: 2px 8px 2px;
+    color: var(--vscode-descriptionForeground, #999);
+    font-size: 11px;
+}
+.data-breakpoint-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    min-height: 24px;
+    padding: 0 10px 0 4px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.data-breakpoint-gutter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 20px;
+    height: 16px;
+}
+.data-breakpoint-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.data-breakpoint-icon {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.data-breakpoint-item:disabled {
+    color: var(--vscode-disabledForeground, rgba(204, 204, 204, 0.5));
+    cursor: default;
+}
+/* An access type that is already set reads as a checked, non-actionable item, not as unavailable. */
+.data-breakpoint-item[aria-checked="true"]:disabled {
+    color: inherit;
+}
+.data-breakpoint-item[aria-checked="true"] .data-breakpoint-icon {
+    stroke: var(--vscode-debugIcon-breakpointForeground, #e51400);
+    stroke-width: 1.6;
+}
+.data-breakpoint-item:hover:not(:disabled),
+.data-breakpoint-item:focus-visible,
+.data-breakpoint-tool:hover,
+.data-breakpoint-tool:focus-visible {
+    outline: none;
+    border-color: var(--vscode-menu-selectionBorder, transparent);
+    color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground, #fff));
+    background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground, #04395e));
+}
+.data-breakpoint-note {
+    margin: 2px 4px 2px 28px;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+    line-height: 15px;
+}
+.data-breakpoint-note.loading {
+    color: var(--vscode-descriptionForeground, #999);
+}
+.data-breakpoint-note.warn {
+    color: var(--vscode-editorWarning-foreground, #cca700);
+}
+.data-breakpoint-entry {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 26px;
+    padding: 0 2px 0 4px;
+    border-radius: 4px;
+}
+.data-breakpoint-entry:hover {
+    background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+.data-breakpoint-dot {
+    flex: none;
+    width: 20px;
+    height: 16px;
+}
+.data-breakpoint-dot::before,
+.data-breakpoint-mark {
+    /* Hexagon: the shape VS Code uses for data breakpoints. */
+    clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%);
+    background: var(--vscode-debugIcon-breakpointForeground, #e51400);
+}
+.data-breakpoint-dot::before {
+    content: "";
+    display: block;
+    width: 10px;
+    height: 9px;
+    margin: 3.5px 5px;
+}
+.data-breakpoint-entry.disabled .data-breakpoint-dot::before,
+.data-breakpoint-mark.disabled {
+    background: var(--vscode-debugIcon-breakpointDisabledForeground, #848484);
+}
+.data-breakpoint-entry.failed .data-breakpoint-dot::before,
+.data-breakpoint-mark.failed {
+    background: var(--vscode-editorWarning-foreground, #cca700);
+}
+.data-breakpoint-entry-copy {
+    display: flex;
+    align-items: baseline;
+    flex: 1;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.data-breakpoint-entry.disabled .data-breakpoint-entry-title {
+    color: var(--vscode-disabledForeground, rgba(204, 204, 204, 0.5));
+}
+.data-breakpoint-condition,
+.data-breakpoint-entry-state {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--vscode-descriptionForeground, #999);
+    font-size: 11px;
+    text-overflow: ellipsis;
+}
+.data-breakpoint-condition {
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+.data-breakpoint-entry.failed .data-breakpoint-entry-state {
+    color: var(--vscode-editorWarning-foreground, #cca700);
+}
+.data-breakpoint-tools {
+    display: inline-flex;
+    flex: none;
+    gap: 1px;
+}
+.data-breakpoint-tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--vscode-icon-foreground, inherit);
+    background: transparent;
+    cursor: pointer;
+}
+.data-breakpoint-tool.danger:hover,
+.data-breakpoint-tool.danger:focus-visible {
+    color: var(--vscode-errorForeground, #f48771);
+    background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.data-breakpoint-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+[data-breakpoint-path] {
+    position: relative;
+}
+[data-breakpoint-path]:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: -1px;
+}
+.value-row.has-data-breakpoint {
+    padding-left: 16px;
+}
+.sb-mrow.has-data-breakpoint,
+.sb-comp-head.has-data-breakpoint {
+    padding-left: 13px;
+}
+.data-breakpoint-mark {
+    position: absolute;
+    top: 50%;
+    left: 4px;
+    width: 8px;
+    height: 7px;
+    transform: translateY(-50%);
+    pointer-events: auto;
+}
+.sb-mrow > .data-breakpoint-mark,
+.sb-comp-head > .data-breakpoint-mark {
+    left: 2px;
+}
+.value-row:not(.composite) > .data-breakpoint-mark {
+    top: 13px;
+}

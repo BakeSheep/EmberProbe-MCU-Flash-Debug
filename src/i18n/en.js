@@ -1,6 +1,25 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "sb.dataWrite": "Break on Value Change",
+    "sb.dataRead": "Break on Read",
+    "sb.dataAccess": "Break on Access",
+    "sb.dataMenu": "Data Breakpoints",
+    "sb.dataPause": "Pause to Set / Manage Data Breakpoints",
+    "sb.dataLoading": "Checking available data breakpoints…",
+    "sb.dataNoSession": "Select an available EmberProbe built-in debug session",
+    "sb.dataUnsupported": "Storage cannot be confirmed for this display item; select an addressable scalar or member",
+    "sb.dataStale": "The debug session or variable changed; reopen the menu",
+    "sb.dataEnable": "Enable Data Breakpoint",
+    "sb.dataDisable": "Disable Data Breakpoint",
+    "sb.dataCondition": "Edit Condition…",
+    "sb.dataConditionPrompt": "Data breakpoint condition (leave empty to remove)",
+    "sb.dataRemove": "Delete Data Breakpoint",
+    "sb.dataEnabled": "Enabled",
+    "sb.dataDisabled": "Disabled",
+    "sb.dataFailed": "Could not enable",
+    "sb.dataActive": "Active",
+    "sb.dataStorage": "{address} · {bytes} bytes",
     "dbg.dataBreakpointUnsafe":
         "Cannot continue while an unconfirmed software watchpoint remains enabled. Delete or disable it in the GDB console, then retry.",
     "debug.dataBreakpointInvalid": "Invalid, stale, ambiguous, or unavailable data breakpoint target.",

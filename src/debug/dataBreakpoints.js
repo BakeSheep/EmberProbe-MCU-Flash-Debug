@@ -155,7 +155,8 @@ class DebugDataBreakpoints {
             const identity = `${memory}:${width}`;
             let dataId = this.identities.get(identity);
             if (!dataId) {
-                if (this.issued.size >= LIMIT) throw new Error(this.message("debug.dataBreakpointLimit"));
+                if (this.issued.size >= LIMIT || this.session.dataBreakpoints?.issuedCount >= LIMIT)
+                    throw new Error(this.message("debug.dataBreakpointLimit"));
                 dataId = `${this.prefix}:${++this.sequence}`;
                 // A dataId intentionally keeps this fixed storage across stops, frame changes,
                 // and checkbox disable/re-enable. It never re-evaluates a local or pointer.
@@ -174,7 +175,10 @@ class DebugDataBreakpoints {
                     bytes: width
                 }),
                 accessTypes: [...ACCESS],
-                canPersist: false
+                canPersist: false,
+                // Not DAP fields: the sidebar menu shows the resolved storage compactly.
+                address: memory,
+                bytes: width
             };
         } catch (error) {
             return {

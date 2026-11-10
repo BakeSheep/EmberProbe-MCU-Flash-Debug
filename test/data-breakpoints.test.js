@@ -4,6 +4,7 @@ const assert = require("assert");
 const { EventEmitter } = require("events");
 const { EmberDebugSession } = require("../src/debug/session");
 const { DebugDataBreakpoints } = require("../src/debug/dataBreakpoints");
+const { DebugDataBreakpointGroups } = require("../src/debug/dataBreakpointGroups");
 const { scenario } = require("./helpers/scenario");
 
 class WatchMi extends EventEmitter {
@@ -544,6 +545,191 @@ const watchCommands = (mi) => mi.commands.filter((command) => command.startsWith
         manager.clear();
         assert.strictEqual(manager.size, 0);
         assert.strictEqual(manager.issued.size, 0);
+    });
+    await scenario("sidebar ownership survives standard whole-set replacement and vice versa", async () => {
+        const { session, mi } = setup();
+        const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+        const native = await groups.info({ name: "counter" });
+        await groups.set({ breakpoints: [bp(native.dataId)] });
+        const prepared = await groups.request({ action: "info", name: "counter" });
+        const add = {
+            action: "add",
+            name: "counter",
+            dataId: prepared.info.dataId,
+            generation: prepared.generation,
+            accessType: "read"
+        };
+        const result = await groups.request(add);
+        assert(result.entries[0].verified);
+        assert.strictEqual(groups.size, 2);
+        await groups.request(add);
+        assert.strictEqual(groups.size, 2, "duplicate adds do not consume hardware slots");
+        await groups.set({ breakpoints: [] });
+        assert.strictEqual(groups.size, 1);
+        assert(mi.watchpoints.has("11"));
+        await groups.set({ breakpoints: [bp(native.dataId)] });
+        await groups.request({ action: "remove", id: result.entries[0].id, generation: prepared.generation });
+        assert.strictEqual(groups.size, 1);
+        assert.strictEqual(groups.native.size, 1);
+        groups.clear();
+        assert.strictEqual(groups.size, 0);
+        assert.deepStrictEqual(groups.snapshot().entries, []);
+    });
+    await scenario(
+        "sidebar conditions and disabled storage survive stops without resolving a new pointer",
+        async () => {
+            const { session, mi } = setup();
+            const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+            const prepared = await groups.request({ action: "info", name: "counter" });
+            let result = await groups.request({
+                action: "add",
+                name: "counter",
+                ...bp(prepared.info.dataId),
+                generation: prepared.generation
+            });
+            const id = result.entries[0].id;
+            result = await groups.request({
+                action: "condition",
+                id,
+                condition: "counter > 7",
+                generation: result.generation
+            });
+            assert(mi.commands.some((command) => command.includes('"counter > 7"')));
+            result = await groups.request({ action: "enable", id, enabled: false, generation: result.generation });
+            assert.strictEqual(groups.size, 0);
+            assert.strictEqual(result.entries[0].enabled, false);
+            session.executionEpoch++;
+            mi.address = "0x20004000";
+            const list = await groups.request({ action: "list" });
+            await groups.request({ action: "enable", id, enabled: true, generation: list.generation });
+            assert(watchCommands(mi).at(-1).includes("0x20000000"));
+            const point = [...groups.sidebar.owned.values()][0];
+            assert.deepStrictEqual(
+                groups.stop({ reason: "read-watchpoint-trigger", wpt: { number: point.number } }).hitBreakpointIds,
+                [point.dap.id]
+            );
+            groups.executionFailed(new Error("Could not insert hardware watchpoint"));
+            assert.strictEqual(groups.snapshot().entries[0].verified, false);
+            groups.onRecord({
+                kind: "=",
+                class: "breakpoint-modified",
+                data: { bkpt: { number: point.number, enabled: "n" } }
+            });
+            groups.reconcile(new Map());
+            assert.strictEqual(groups.size, 0);
+            assert.strictEqual(groups.stop({ reason: "other" }), null);
+        }
+    );
+    await scenario("sidebar refuses stale, foreign and malformed operations before changing hardware", async () => {
+        const { session, mi } = setup();
+        const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+        const prepared = await groups.request({ action: "info", name: "counter" });
+        const add = { action: "add", name: "counter", ...bp(prepared.info.dataId), generation: prepared.generation };
+        await assert.rejects(groups.request({ ...add, name: "another" }), /invalid/i);
+        await assert.rejects(groups.request({ ...add, accessType: "execute" }), /invalid/i);
+        await assert.rejects(
+            groups.request({ action: "remove", id: "missing", generation: prepared.generation }),
+            /invalid/i
+        );
+        await assert.rejects(
+            groups.request({ action: "removeNames", names: null, generation: prepared.generation }),
+            /invalid/i
+        );
+        session.variableStore.generation++;
+        await assert.rejects(groups.request(add), /invalid/i);
+        assert.strictEqual(watchCommands(mi).length, 0);
+        session.running = true;
+        await assert.rejects(groups.request({ action: "info", name: "counter" }), /paused/i);
+        assert((await groups.request({ action: "list" })).entries.length === 0);
+    });
+    await scenario("failed sidebar removals stay visible and software watchpoints block execution", async () => {
+        const { session, mi } = setup();
+        const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+        const prepared = await groups.request({ action: "info", name: "counter" });
+        let result = await groups.request({
+            action: "add",
+            name: "counter",
+            ...bp(prepared.info.dataId),
+            generation: prepared.generation
+        });
+        const number = [...groups.sidebar.owned.keys()][0];
+        mi.deleteFailures.add(number);
+        await assert.rejects(
+            groups.request({ action: "removeNames", names: ["counter"], generation: result.generation }),
+            /delete denied/
+        );
+        assert.strictEqual(groups.snapshot().entries.length, 1);
+        mi.deleteFailures.clear();
+        result = await groups.request({ action: "removeNames", names: ["counter"], generation: result.generation });
+        assert.strictEqual(result.entries.length, 0);
+        mi.type = "watchpoint";
+        mi.deleteFailures.add(String(mi.next));
+        mi.disableError = new Error("disable denied");
+        result = await groups.request({
+            action: "add",
+            name: "counter",
+            ...bp(prepared.info.dataId),
+            generation: result.generation
+        });
+        assert.strictEqual(result.entries[0].verified, false);
+        assert(groups.unsafe);
+        await assert.rejects(session.execute("-exec-continue"), /unconfirmed software watchpoint/i);
+    });
+    await scenario("watch-list cleanup removes sidebar watchpoints while running and resumes", async () => {
+        const { session, mi } = setup();
+        const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+        const prepared = await groups.request({ action: "info", name: "counter" });
+        await groups.request({
+            action: "add",
+            name: "counter",
+            ...bp(prepared.info.dataId),
+            generation: prepared.generation
+        });
+        const number = [...groups.sidebar.owned.keys()][0];
+        const resumed = [];
+        session.running = true;
+        session.interrupt = async () => {
+            session.running = false;
+            session.internalStop.interrupted = true;
+        };
+        session.execute = async (command) => {
+            resumed.push(command);
+            session.running = true;
+        };
+        const result = await groups.request({ action: "removeNames", names: ["counter"] });
+        assert.deepStrictEqual(result.entries, []);
+        assert(!mi.watchpoints.has(number));
+        assert.deepStrictEqual(resumed, ["-exec-continue"]);
+        assert.strictEqual(session.running, true);
+        assert.deepStrictEqual((await groups.request({ action: "removeNames", names: ["other"] })).entries, []);
+        assert.deepStrictEqual(resumed, ["-exec-continue"], "nothing to remove never interrupts");
+    });
+    await scenario("a failed update never leaves a hardware watchpoint without a sidebar row", async () => {
+        const { session, mi } = setup();
+        const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+        const prepared = await groups.request({ action: "info", name: "counter" });
+        let result = await groups.request({
+            action: "add",
+            name: "counter",
+            ...bp(prepared.info.dataId),
+            generation: prepared.generation
+        });
+        const id = result.entries[0].id;
+        mi.deleteFailures.add([...groups.sidebar.owned.keys()][0]);
+        await assert.rejects(
+            groups.request({ action: "condition", id, condition: "counter > 7", generation: result.generation }),
+            /delete denied/
+        );
+        const entries = groups.snapshot().entries;
+        assert.strictEqual(groups.sidebar.owned.size, 2);
+        assert.strictEqual(entries.length, 2, "both the surviving and the new watchpoint keep a row");
+        for (const point of groups.sidebar.owned.values())
+            assert(entries.some((entry) => entry.enabled && entry.identity === point.identity));
+        assert.deepStrictEqual(entries.map((entry) => entry.condition).sort(), ["", "counter > 7"]);
+        mi.deleteFailures.clear();
+        result = await groups.request({ action: "removeNames", names: ["counter"] });
+        assert.deepStrictEqual(result.entries, []);
+        assert.strictEqual(groups.sidebar.owned.size, 0);
     });
     console.log("data breakpoint tests passed");
 })().catch((error) => {

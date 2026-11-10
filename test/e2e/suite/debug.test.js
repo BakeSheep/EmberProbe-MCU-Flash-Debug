@@ -150,9 +150,31 @@ async function run() {
         assert.deepStrictEqual(dataStop.body.hitBreakpointIds, [dataPoints.breakpoints[0].id]);
         assert.match(dataStop.body.text, /3/);
         assert.match(dataStop.body.text, /4/);
+        const sidebarInfo = await session.customRequest("emberprobe.sidebarDataBreakpoints", {
+            action: "info",
+            name: "counter"
+        });
+        const sidebarPoints = await session.customRequest("emberprobe.sidebarDataBreakpoints", {
+            action: "add",
+            name: "counter",
+            dataId: sidebarInfo.info.dataId,
+            accessType: "read",
+            generation: sidebarInfo.generation
+        });
+        assert.strictEqual(sidebarPoints.entries[0].verified, true);
         assert.deepStrictEqual(await session.customRequest("setDataBreakpoints", { breakpoints: [] }), {
             breakpoints: []
         });
+        const sidebarAfterNativeClear = await session.customRequest("emberprobe.sidebarDataBreakpoints", {
+            action: "list"
+        });
+        assert.strictEqual(sidebarAfterNativeClear.entries[0].verified, true);
+        const sidebarCleared = await session.customRequest("emberprobe.sidebarDataBreakpoints", {
+            action: "remove",
+            id: sidebarAfterNativeClear.entries[0].id,
+            generation: sidebarAfterNativeClear.generation
+        });
+        assert.deepStrictEqual(sidebarCleared.entries, []);
         const afterDataStack = await session.customRequest("stackTrace", { threadId: 1 });
         const vector = await session.customRequest("evaluate", {
             expression: "numbers",

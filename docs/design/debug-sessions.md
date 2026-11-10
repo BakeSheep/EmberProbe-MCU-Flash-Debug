@@ -26,7 +26,11 @@ GDB 的 `enable`／`disable` 无法直接映射到 VS Code 的断点勾选状态
 
 ## 数据断点
 
-`src/debug/dataBreakpoints.js` 实现 DAP `dataBreakpointInfo` / `setDataBreakpoints`，适配器声明 `supportsDataBreakpoints`，由 VS Code 提供变量菜单及断点列表，无独立 Webview 状态。
+`src/debug/dataBreakpoints.js` 实现 DAP `dataBreakpointInfo` / `setDataBreakpoints`，适配器声明 `supportsDataBreakpoints`。`dataBreakpointGroups` 分别持有 VS Code 和侧边栏的监视点管理器，标准 DAP 整批替换仅作用于 VS Code 集合；内部 `emberprobe.sidebarDataBreakpoints` 请求管理侧边栏集合，两者共享会话请求队列、硬件资源与执行安全检查，不互相删除。命中按 GDB 编号路由到所属管理器。
+
+侧边栏服务由 composition 构造，消息走侧边栏路由，菜单和状态保存在页面 state。内部请求支持 list/info/add/enable/condition/remove，以及保存查看列表前使用的 removeNames；`emberprobe.sidebarDataBreakpointsChanged` 事件发布逻辑 ID、固定存储描述和验证状态。逻辑 ID 在启停与条件修改时保持稳定，硬件编号可以变化。除 removeNames 外的修改要求暂停，绑定所选会话、停止与检查代次及 ELF 代次；适配器再次验证执行和变量代次。查询复用 GDB 的无副作用路径校验，侧栏先根据当前 ELF 归一化变量，拒绝合成的运行时路径，不接受 Webview 地址。
+
+运行中的菜单操作显式暂停目标，查询后保持暂停，不自动恢复。移除查看列表项前清理它及所移除子项的侧栏断点：removeNames 按名称匹配、不需要代次，也不显式暂停，运行中由整批更新内部中断并自动继续（与 VS Code 原生移除相同），因此 Agent 的 watch_remove 不会停下目标。清理失败保留断点记录并恢复查看列表。任何更新失败后，条目按 GDB 仍持有的监视点重新对齐，不会留下没有对应行的硬件监视点。服务对适配器的请求按到达顺序排队执行，条件输入框在入队前完成，不阻塞其他请求。Webview 重建重新查询适配器；调试结束后清空，禁用断点保留固定存储身份。VS Code 没有公开的数据断点创建 API，因此本次不向其断点列表镜像侧栏断点，也不使用依赖系统变量视图隐藏上下文的内置添加命令。两处断点可以共存，但可能各自消耗硬件监视资源。
 
 信息查询使用当前停止代次的变量容器、成员映射和真实节点身份，复用变量元数据及线程／栈帧绑定；表达式查询限制为无副作用的可寻址路径。仅发布已确认地址、自然对齐且宽度为 1/2/4 字节的存储身份。会话内不透明 ID 有数量上限，`canPersist: false`；带变量／栈帧引用但尚未激活的 ID 在继续执行后失效。已激活的监视点绑定固定地址，可跨停止代次启停，不追踪局部变量寿命、容器搬迁或指针重定向。
 

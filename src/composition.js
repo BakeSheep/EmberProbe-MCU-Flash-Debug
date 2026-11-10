@@ -53,6 +53,7 @@ const { SvdPeripheralService } = require("./services/svdPeripheralService");
 const { PeripheralViewService } = require("./services/peripheralViewService");
 const { RtosViewService } = require("./services/rtosViewService");
 const { DebugControlService } = require("./services/debugControlService");
+const { SidebarDataBreakpoints } = require("./services/sidebarDataBreakpoints");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService } = require("./services/chartHistoryService");
 const { RttController } = require("./services/rttController");
@@ -214,6 +215,7 @@ function createSamplingServices(host, context, vscode) {
         onSamples: (samples, t) => host._sampling.handleRawSamples(samples, t),
         onStatus: (status) => {
             host._syncDebugSampleContext();
+            host._sidebarDataBreakpoints?.changed();
             host._postProbeOperationStatus();
             host._postConsumerStatuses(status, !!status.error);
             host._postPeripheralDebugStatus();
@@ -538,7 +540,8 @@ function createServices(host, context, { vscode }) {
                 }
             },
             waitForRelease: (session) => host.debugLaunch.sessionReleased(session)
-        })
+        }),
+        sidebarDataBreakpoints: new SidebarDataBreakpoints({ host, bridge: debugBridge, vscode })
     };
 }
 

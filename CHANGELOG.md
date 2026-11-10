@@ -31,6 +31,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 数据断点 / Data breakpoints
 
+- 侧边栏查看列表新增变量右键菜单，可添加值变化、读取、访问数据断点，启停、编辑条件及删除，并显示状态标记。运行中可先暂停再设置；移除查看项时清理其侧栏断点，运行中的目标清理后自动继续运行。侧栏断点与 VS Code 原生断点分别管理、互不覆盖，仅当前内置调试会话有效。
+- Add a variable context menu to the sidebar watch list for creating value-change, read and access data breakpoints, enabling/disabling, editing conditions and deleting them, with inline status marks. Pause running targets before configuration and clean up sidebar watchpoints when their watch entries are removed, resuming a running target afterwards. Sidebar and native VS Code breakpoints are managed separately without replacing each other, within the current built-in debug session.
 - 内置调试器接入 VS Code 原生数据断点：在变量或成员上右键设置值变化、读取或访问断点，在断点列表中启停、删除及设置条件；命中时显示数据断点原因及 GDB 提供的旧值、新值。
 - 支持地址明确、自然对齐的 1/2/4 字节存储，仅使用硬件监视点；资源不足和不支持的对象明确报错。监视固定地址，仅当前调试会话有效，见 `docs/guide/flash-debug.md`。
 - Add native VS Code data breakpoints to the built-in debugger: right-click a variable or member to break on value changes, reads or accesses; manage enablement, removal and conditions in the Breakpoints view. Stops identify data breakpoints and include old/new values when GDB supplies them.

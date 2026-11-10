@@ -857,6 +857,7 @@ class DebugLaunch {
         this.host._samplingCoordinator?.setDebugIntent(this.host._debugBridge, this.host._sampling.intent);
     }
     handleAdapterMessage(session, message) {
+        this.host._sidebarDataBreakpoints?.adapterMessage(session, message);
         void this.host._externalDebug?.message(session, message).catch(console.error);
         if (
             message?.type === "event" &&

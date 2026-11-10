@@ -1,6 +1,25 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "sb.dataWrite": "值变化时中断",
+    "sb.dataRead": "读取时中断",
+    "sb.dataAccess": "访问时中断",
+    "sb.dataMenu": "数据断点",
+    "sb.dataPause": "暂停后设置／管理数据断点",
+    "sb.dataLoading": "正在查询可用的数据断点…",
+    "sb.dataNoSession": "需要选择一个可用的 EmberProbe 内置调试会话",
+    "sb.dataUnsupported": "此显示项无法确认真实存储位置，请选择可寻址的标量变量或成员",
+    "sb.dataStale": "调试会话或变量状态已改变，请重新打开菜单",
+    "sb.dataEnable": "启用数据断点",
+    "sb.dataDisable": "禁用数据断点",
+    "sb.dataCondition": "编辑条件…",
+    "sb.dataConditionPrompt": "数据断点条件（留空移除条件）",
+    "sb.dataRemove": "删除数据断点",
+    "sb.dataEnabled": "已启用",
+    "sb.dataDisabled": "已禁用",
+    "sb.dataFailed": "未成功启用",
+    "sb.dataActive": "已设置",
+    "sb.dataStorage": "{address} · {bytes} 字节",
     "dbg.dataBreakpointUnsafe":
         "未确认的监视点仍处于启用状态，无法继续运行。请先在 GDB 控制台删除或禁用此监视点，再重试。",
     "debug.dataBreakpointInvalid": "数据断点目标无效、已过期、存在歧义或不可用。",

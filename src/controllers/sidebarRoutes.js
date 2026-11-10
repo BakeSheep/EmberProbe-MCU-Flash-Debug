@@ -44,6 +44,7 @@ async function executeCommand({ host, post }, message) {
 function initCheck({ host, post }) {
     host._getMemoryAnalysisController().refresh();
     host._sidebarReady = true;
+    host._sidebarDataBreakpoints?.changed();
     // Acknowledge the webview's init check directly
     post({ type: "initSuccess" });
     if (host._connectedProbes.driverSwitching) post({ type: "probeDriverSwitch", busy: true });
@@ -270,10 +271,23 @@ const SIDEBAR_ROUTES = {
             host._postLive({ type: "liveError", ...toUiError(error) });
         }
     },
-    saveSidebarWatch: ({ host }, message) =>
-        host._saveWatchList(CACHE_KEYS.sidebarWatchList, Array.isArray(message.items) ? message.items : [], {
-            syncSidebar: false
-        }),
+    sidebarDataBreakpoint: async ({ host, post }, message) => {
+        try {
+            await host._sidebarDataBreakpoints.request(message);
+        } catch (error) {
+            post({ type: "sidebarDataBreakpointError", requestId: message.requestId, message: error.message });
+        }
+    },
+    saveSidebarWatch: async ({ host, post }, message) => {
+        try {
+            await host._saveWatchList(CACHE_KEYS.sidebarWatchList, Array.isArray(message.items) ? message.items : [], {
+                syncSidebar: false
+            });
+        } catch (error) {
+            host._syncSidebarTarget(post, true);
+            post({ type: "sidebarDataBreakpointError", message: error.message });
+        }
+    },
     saveSidebarWrite: ({ host }, message) =>
         host._saveWatchList(CACHE_KEYS.sidebarWriteList, Array.isArray(message.items) ? message.items : [], {
             syncSidebar: false

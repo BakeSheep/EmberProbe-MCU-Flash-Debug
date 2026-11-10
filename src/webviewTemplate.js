@@ -38,7 +38,8 @@ const PAGE_PRELUDE = {
         "rtt.js",
         "rtos.js",
         "writeList.js",
-        "agentControls.js"
+        "agentControls.js",
+        "dataBreakpoints.js"
     ],
     rttPanel: ["ansi.js"],
     liveWatch: [

@@ -210,6 +210,7 @@ class MainViewProvider {
         this._svdPeripheralService = services.svdPeripheralService;
         this._peripheralViewService = services.peripheralViewService;
         this._debugControlService = services.debugControlService;
+        this._sidebarDataBreakpoints = services.sidebarDataBreakpoints;
         this._agentFlashService = services.agentFlashService;
         this._bridgeRegistry = services.bridgeRegistry;
         this._agentService = services.agentService;
@@ -839,6 +840,7 @@ class MainViewProvider {
             ? this._watchLists.normalize(selected, this.readElfSymbols().symbols, key)
             : selected;
         const persisted = this._watchIdentities(normalized);
+        if (key === CACHE_KEYS.sidebarWatchList) await this._sidebarDataBreakpoints?.pruneWatchList(normalized);
         await this._watchLists.save(key, persisted);
         this._sampling.pruneSampleMap(this._latestSidebarSamples, [
             CACHE_KEYS.sidebarWatchList,
