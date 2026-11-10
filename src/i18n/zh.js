@@ -862,6 +862,8 @@ module.exports = Object.freeze({
     "approval.denied": "用户未批准此操作",
     "approval.skills": "工作区技能与扩展提供的版本不同，是否允许当前内容调用 Agent Bridge？",
     "approval.skillsAllow": "本会话允许当前版本",
+    "approval.skillsUpdated": "工作区 EmberProbe skills 已自动更新到扩展提供的版本，本次调用来自旧脚本，未执行",
+    "approval.skillsUpdatedAction": "重新运行同一条 skill 命令即可，会使用更新后的脚本。",
     "approval.skillsCustom":
         "Agent 正在从扩展未管理的位置运行 EmberProbe skills 脚本，是否允许当前内容调用 Agent Bridge？",
     "agent.auditChannel": "EmberProbe Agent Bridge",

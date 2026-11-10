@@ -229,6 +229,83 @@ const { createFixture } = require("./helpers/service-fixture");
         }
     });
 
+    await scenario("Reinstall a lagging workspace copy instead of prompting", async () => {
+        const workspaceRoot = path.join(os.tmpdir(), "emberprobe-lagging", ".agents", "skills");
+        const customRoot = path.join(os.tmpdir(), "emberprobe-lagging-custom");
+        const workspace = { scope: "workspace", root: workspaceRoot, state: "outdated", fingerprint: "old" };
+        const installs = [];
+        const dialogs = [];
+        let failInstall = false;
+        const skills = new SkillStatusService({
+            context: {},
+            getLang: () => "en",
+            installer: {
+                inspectSkills: async () => ({ state: workspace.state, scopes: { workspace: { ...workspace } } }),
+                inspectSkillRoot: async (_context, root, scope) => ({
+                    scope,
+                    root,
+                    state: "outdated",
+                    fingerprint: "c"
+                }),
+                installSkill: async (_vscode, _context, _lang, scope) => {
+                    installs.push(scope);
+                    if (failInstall) throw new Error("disk full");
+                    Object.assign(workspace, { state: "installed", fingerprint: "new" });
+                    return { state: "installed", scopes: { workspace: { ...workspace } } };
+                }
+            },
+            onStatus() {},
+            t: (key) => key,
+            vscode: {
+                window: {
+                    showWarningMessage: async (message) => {
+                        dialogs.push(message);
+                        return "approval.skillsAllow";
+                    }
+                }
+            }
+        });
+        const meta = { channel: "skill", skillRoot: workspaceRoot };
+        for (const state of ["outdated", "partial"]) {
+            Object.assign(workspace, { state, fingerprint: "old" });
+            await assert.rejects(skills.checkForCall(meta), { code: "SKILLS_UPDATED", retryable: true });
+            await skills.checkForCall(meta);
+        }
+        assert.deepStrictEqual(installs, ["workspace", "workspace"]);
+        assert.deepStrictEqual(dialogs, [], "a lagging workspace copy never opens the approval dialog");
+
+        // Old scripts without metadata use the merged view and are updated the same way
+        workspace.state = "outdated";
+        await assert.rejects(skills.checkForCall(), { code: "SKILLS_UPDATED" });
+        await skills.checkForCall();
+        assert.strictEqual(installs.length, 3);
+
+        // Local edits are never overwritten during a call
+        workspace.state = "modified";
+        await skills.checkForCall(meta);
+        assert.strictEqual(installs.length, 3);
+        assert.deepStrictEqual(dialogs, ["approval.skills"]);
+
+        // Copies outside the managed roots keep their approval
+        await skills.checkForCall({ channel: "skill", skillRoot: customRoot });
+        assert.strictEqual(installs.length, 3);
+        assert.strictEqual(dialogs.at(-1), "approval.skillsCustom");
+
+        // A failed reinstall falls back to the approval dialog
+        failInstall = true;
+        Object.assign(workspace, { state: "outdated", fingerprint: "old-2" });
+        const warn = console.warn;
+        console.warn = () => {};
+        try {
+            await skills.checkForCall(meta);
+        } finally {
+            console.warn = warn;
+        }
+        assert.strictEqual(installs.length, 4);
+        assert.strictEqual(dialogs.at(-1), "approval.skills");
+        assert.strictEqual(skills.busy, false);
+    });
+
     await scenario("Flag legacy global copies that still ship scripts", () => {
         const status = (global) => ({ scopes: { workspace: null, global } });
         assert.strictEqual(legacyGlobalSkills(status({ state: "outdated", hasScripts: false })), null);

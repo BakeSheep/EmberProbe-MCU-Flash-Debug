@@ -73,8 +73,11 @@ operation-bound ID cannot program Flash. Custom SVDs remain supported: their act
 digest, register addresses and write semantics appear in peripheral approval. Device/vendor
 matching is compatibility evidence rather than proof of provenance.
 
-Installed skills are hashed before Bridge calls. Modified/partial/outdated contents require
-a decision for the current content; another change invalidates approval. Skill scripts send
+Installed skills are hashed before Bridge calls. A workspace copy that is only outdated or
+partial is reinstalled from the extension (as at startup) and the call is rejected with the
+retryable `SKILLS_UPDATED`, because the running script is still the old copy; the retry runs
+the new scripts. Modified workspace contents, the legacy global copy and copies outside both
+roots require a decision for the current content; another change invalidates approval. Skill scripts send
 `X-EmberProbe-Channel: skill` and `X-EmberProbe-Skill-Root` with each request, and the check
 applies to the copy that issued the call: the workspace copy, the legacy global copy, or a
 copy outside both roots, which always needs approval and shows its real path. Approval is

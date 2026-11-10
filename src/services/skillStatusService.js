@@ -1,6 +1,8 @@
 "use strict";
 const { canonicalPath } = require("../../skills/_emberprobe/bridge-locator");
 
+const LAGGING_STATES = ["outdated", "partial"];
+
 function hasWorkspaceSkills(status) {
     const workspace = status?.scopes?.workspace;
     return !!workspace && workspace.state !== "notInstalled";
@@ -94,8 +96,33 @@ class SkillStatusService {
         return { actual, scope, custom: true };
     }
 
+    // An installed workspace copy that only lags behind the extension (outdated/partial) is reinstalled instead of
+    // prompting. The running script is still the old copy, so its call is rejected as retryable; the retry runs the
+    // reinstalled scripts. Modified content keeps the approval dialog, so local edits are never overwritten mid-session.
+    async updateLaggingWorkspace() {
+        let status;
+        try {
+            status = await this.refresh(true);
+        } catch (error) {
+            console.warn("Agent Skills auto-update failed:", error.message);
+            return;
+        }
+        if (status?.scopes?.workspace?.state !== "installed") return;
+        throw Object.assign(new Error(this.t("approval.skillsUpdated")), {
+            code: "SKILLS_UPDATED",
+            category: "configuration",
+            retryable: true,
+            suggestedActions: [this.t("approval.skillsUpdatedAction")]
+        });
+    }
+
     async checkSkillRoot(skillRoot) {
-        const { actual, scope, custom } = await this.inspectCallerRoot(skillRoot);
+        let caller = await this.inspectCallerRoot(skillRoot);
+        if (!caller.custom && caller.scope.scope === "workspace" && LAGGING_STATES.includes(caller.scope.state)) {
+            await this.updateLaggingWorkspace();
+            caller = await this.inspectCallerRoot(skillRoot);
+        }
+        const { actual, scope, custom } = caller;
         // Custom copies (outside the known workspace/global roots) always need approval; known roots only when their
         // content deviates.
         if (!custom && !["modified", "partial", "outdated", "notInstalled"].includes(scope.state)) return;
@@ -131,7 +158,11 @@ class SkillStatusService {
     }
 
     async checkMerged() {
-        const status = await this.refresh(false);
+        let status = await this.refresh(false);
+        if (LAGGING_STATES.includes(status.scopes?.workspace?.state)) {
+            await this.updateLaggingWorkspace();
+            status = await this.refresh(false);
+        }
         const key = JSON.stringify(status.scopes);
         if (!["modified", "partial", "outdated"].includes(status.state) || this.approvedContents === key) return;
         const allow = this.t("approval.skillsAllow");

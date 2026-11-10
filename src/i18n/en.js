@@ -922,6 +922,9 @@ module.exports = Object.freeze({
     "approval.skills":
         "Workspace skills differ from the extension version. Allow the current contents to call the Agent Bridge?",
     "approval.skillsAllow": "Allow this version for this session",
+    "approval.skillsUpdated":
+        "Workspace EmberProbe skills were updated to the extension's version; this call came from the old scripts and was not run",
+    "approval.skillsUpdatedAction": "Run the same skill command again; it will use the updated scripts.",
     "approval.skillsCustom":
         "An agent is running EmberProbe skill scripts from a location the extension does not manage. Allow the current contents to call the Agent Bridge?",
     "agent.auditChannel": "EmberProbe Agent Bridge",
