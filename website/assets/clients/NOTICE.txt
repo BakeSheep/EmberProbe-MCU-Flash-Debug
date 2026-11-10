@@ -1,0 +1,5 @@
+Client brand marks from Lobe Icons (MIT).
+Source: https://github.com/lobehub/lobe-icons/tree/ea434b96e75813517b377825e01c0df61dee8836/packages/static-svg/icons
+Upstream files: claudecode-color.svg, codex.svg, geminicli-color.svg, opencode.svg, githubcopilot.svg, cursor.svg, antigravity-color.svg, deepseek-color.svg
+DeepSeek Harness is represented by the DeepSeek brand mark.
+Brand marks belong to their respective owners; inclusion indicates client compatibility, not endorsement.

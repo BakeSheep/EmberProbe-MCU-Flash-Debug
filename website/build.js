@@ -32,6 +32,8 @@ function buildSite() {
     const credits = [
         "EmberProbe website — MIT. Recordings: EmberProbe mockup, simulated data, not hardware measurements.",
         "The editor shell approximates VS Code and is not affiliated with Microsoft.",
+        fs.readFileSync(path.join(__dirname, "assets/clients/NOTICE.txt"), "utf8"),
+        fs.readFileSync(path.join(__dirname, "assets/clients/LICENSE"), "utf8"),
         fs.readFileSync(path.join(root, "mockup/vendor/README.md"), "utf8")
     ];
     for (const file of ["LICENSE-CODE", "LICENSE-ICONS", "LICENSE-VSCODE", "SETI-NOTICES.txt"])

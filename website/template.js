@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { content, links } = require("./content");
+const { content, links, agentClients, mcpTools } = require("./content");
 
 const origin = "https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/";
 const timeline = JSON.parse(fs.readFileSync(path.join(__dirname, "assets/media/timeline.json"), "utf8"));
@@ -53,10 +53,10 @@ function clip(c, prefix, lang, scene, alt) {
 // A chapter's side says what the visitor gets: short points, or for setup the probes and chips it works with.
 function chapterSide(section) {
     if (section.support) {
-        const { title, probes, chips, note } = section.support;
-        const group = (item, i) =>
-            `<div class="support-group" data-reveal style="--i:${i}"><h4>${escape(item.label)}</h4><ul class="pills">${item.items.map((name) => `<li>${escape(name)}</li>`).join("")}<li aria-hidden="true">…</li></ul></div>`;
-        return `<div class="chapter-side support"><h3 class="support-title" data-reveal>${escape(title)}</h3>${group(probes, 1)}${group(chips, 2)}<p class="support-note" data-reveal style="--i:3">${escape(note)}</p></div>`;
+        const { title, probes, chips, systems, note } = section.support;
+        const group = (item, i, more = true) =>
+            `<div class="support-group" data-reveal style="--i:${i}"><h4>${escape(item.label)}</h4><ul class="pills">${item.items.map((name) => `<li>${escape(name)}</li>`).join("")}${more ? '<li aria-hidden="true">…</li>' : ""}</ul></div>`;
+        return `<div class="chapter-side support"><h3 class="support-title" data-reveal>${escape(title)}</h3>${group(probes, 1)}${group(chips, 2)}${group(systems, 3, false)}<p class="support-note" data-reveal style="--i:4">${escape(note)}</p></div>`;
     }
     if (!section.points?.length) return "";
     return `<div class="chapter-side"><ul class="points" style="--count:${section.points.length}">${section.points.map(([title, text], i) => `<li data-reveal style="--i:${i}"><strong>${escape(title)}</strong><span>${escape(text)}</span></li>`).join("")}</ul></div>`;
@@ -66,7 +66,7 @@ function chapter(c, prefix, lang, section) {
     const side = chapterSide(section);
     return `<section class="chapter${section.wide ? " wide" : ""}" id="${section.id}"><div class="wrap"><header class="chapter-head" data-reveal><h2>${escape(section.title)}</h2><p>${escape(section.lead)}</p></header>
 <div class="chapter-body${side ? "" : " solo"}">${clip(c, prefix, lang, section.id, section.alt)}
-${side}</div>${section.id === "agent" ? agentDetail(c.agent) : ""}</div></section>`;
+${side}</div>${section.id === "agent" ? agentDetail(c.agent, prefix) : ""}</div></section>`;
 }
 
 // A cropped still of the real UI at the size it was recorded, so its text matches the frontend's.
@@ -103,13 +103,38 @@ const listItems = (items) =>
         )
         .join("");
 
-// Each way to watch shows its real UI above what it is for.
+const FEATURE_ICONS = {
+    setup: '<path d="M4 7h16M4 17h16M8 4v6m8 4v6"/>',
+    flash: '<path d="m13 2-9 12h7l-1 8 10-13h-7z"/>',
+    watch: '<path d="M2 12h4l3-8 6 16 3-8h4"/>',
+    debug: '<path d="M5 4v16l15-8z"/><path d="M2 4v16"/>',
+    peripherals:
+        '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/>',
+    cubemx: '<path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/>',
+    data: '<path d="M4 4h16v16H4zM8 8h8M8 12h4M8 16h6"/>',
+    history: '<path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-5v6l4 2"/>',
+    window: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
+    hidden: '<path d="m3 3 18 18M10 5c5-1 10 7 10 7l-3 4M6 6l-4 6s5 8 11 7m-3-9a3 3 0 0 0 4 4"/>',
+    record: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>'
+};
+
+const featureIcon = (id) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${FEATURE_ICONS[id]}</svg>`;
+
+// Matched data, history and window rows make the two modes directly comparable.
 function modeCard(prefix, lang, card, index) {
-    const silent = card.silent
-        ? `<div class="mode-silent"><strong>${escape(card.silent[0])}</strong><span>${escape(card.silent[1])}</span></div>`
-        : "";
+    const facts = card.facts
+        .map(
+            ([label, value, text], i) =>
+                `<div><dt>${featureIcon(["data", "history", "window"][i])}${escape(label)}</dt><dd><strong>${escape(value)}</strong><span>${escape(text)}</span></dd></div>`
+        )
+        .join("");
     return `<article class="mode-card mode-${card.kind}" data-reveal style="--i:${index}"><div class="mode-shot shot-frame">${still(prefix, lang, card.shot, card.alt)}</div>
-<div class="mode-copy"><header><h4>${escape(card.name)}</h4><p class="mode-fit">${escape(card.fit)}</p></header><p class="mode-rate"><strong>${escape(card.rate)}</strong><span>${escape(card.rateNote)}</span></p><ul class="mode-points">${card.points.map((point) => `<li>${escape(point)}</li>`).join("")}</ul>${silent}</div></article>`;
+<div class="mode-copy"><header><h4>${escape(card.name)}</h4><p class="mode-fit">${escape(card.fit)}</p></header><p class="mode-rate"><strong>${escape(card.rate)}</strong><span>${escape(card.rateNote)}</span></p><dl class="mode-facts">${facts}</dl></div></article>`;
+}
+
+function silentSampling(silent) {
+    return `<aside class="mode-silent" aria-labelledby="silent-title"><div><h4 id="silent-title">${escape(silent.title)}<span>${escape(silent.scope)}</span></h4><p>${escape(silent.text)}</p></div><ol class="silent-flow">${silent.steps.map((step, i) => `<li>${featureIcon(["hidden", "record", "history"][i])}<span>${escape(step)}</span></li>`).join("")}</ol></aside>`;
 }
 
 // One mark per target state: a free-running trace, the debugger's Continue, a breakpoint.
@@ -148,11 +173,10 @@ function typeGrid(prefix, lang, gallery) {
     return `<div class="type-grid">${column(gallery.slice(0, split), 0)}${column(gallery.slice(split), 1)}</div>`;
 }
 
-// The sampling zone: one homepage section in its own colour, with parts for scenarios, states, types and plotting.
+// The sampling chapter groups scenarios, target states, variable types and plotting.
 function samplingZone(c, prefix, lang, section) {
     const { zone } = section;
     const { modes, states, types, chart } = zone;
-    const parts = [modes, states, types, chart];
     const partHead = (part) =>
         `<header class="part-head" data-reveal><h3>${escape(part.title)}</h3><p>${escape(part.lead)}</p></header>`;
     const stats = zone.stats
@@ -161,7 +185,6 @@ function samplingZone(c, prefix, lang, section) {
                 `<li data-reveal style="--i:${i}"><strong>${escape(value)}</strong><span>${escape(label)}</span></li>`
         )
         .join("");
-    const subnav = parts.map((part) => `<a href="#${part.id}">${escape(part.nav)}</a>`).join("");
     const features = chart.features
         .map(
             ([title, text], i) =>
@@ -171,33 +194,34 @@ function samplingZone(c, prefix, lang, section) {
     const shots = chart.shots
         .map(
             (shot, i) =>
-                `<figure class="chart-shot" data-reveal style="--i:${i}"><div class="shot-frame">${still(prefix, lang, shot.id, shot.alt)}</div><figcaption>${escape(shot.caption)}</figcaption></figure>`
+                `<figure class="chart-shot" data-reveal style="--i:${i}"><div class="shot-frame">${still(prefix, lang, shot.id, shot.alt)}</div></figure>`
         )
         .join("");
-    return `<section class="chapter zone zone-sampling" id="${section.id}" data-zone><div class="zone-bg" aria-hidden="true"></div>
+    return `<section class="chapter zone zone-sampling" id="${section.id}"><div class="zone-bg" aria-hidden="true"></div>
 <div class="wrap zone-intro"><header class="zone-head"><h2 data-reveal>${escape(zone.title)}</h2><p class="zone-lead" data-reveal style="--i:1">${escape(zone.lead)}</p></header>${scopeTrace()}<ul class="zone-stats">${stats}</ul></div>
-<nav class="zone-nav" aria-label="${escape(zone.subnav)}"><div class="wrap">${subnav}</div></nav>
-<div class="zone-part" id="${modes.id}"><div class="wrap">${partHead(modes)}<div class="mode-cards">${modes.cards.map((card, i) => modeCard(prefix, lang, card, i)).join("")}</div></div></div>
+<div class="zone-part" id="${modes.id}"><div class="wrap">${partHead(modes)}<div class="mode-cards">${modes.cards.map((card, i) => modeCard(prefix, lang, card, i)).join("")}</div>${silentSampling(modes.silent)}</div></div>
 <div class="zone-part" id="${states.id}"><div class="wrap">${partHead(states)}${samplingStates(c, prefix, lang, states)}</div></div>
 <div class="zone-part" id="${types.id}"><div class="wrap">${partHead(types)}<div class="chapter-body">${clip(c, prefix, lang, "variables", types.alt)}<div class="chapter-side"><ul class="points">${listItems(types.points)}</ul></div></div>${typeGrid(prefix, lang, types.gallery)}</div></div>
 <div class="zone-part" id="${chart.id}"><div class="wrap">${partHead(chart)}<div class="chapter-body wide-body">${clip(c, prefix, lang, "waveform", chart.alt)}</div><ul class="feature-grid">${features}</ul><div class="chart-shots">${shots}</div></div></div>
 </section>`;
 }
 
-// Not a client's interface: tool names are real, the layout belongs to this page and carries a visible label.
-function talkRow(agent, row, index) {
-    const label = `<span class="talk-role">${escape(agent.roles[row.role])}</span>`;
-    const name = row.name ? `<code>${escape(row.name)}</code>` : "";
-    const text = row.text ? `<p>${escape(row.text)}</p>` : "";
-    const rows = row.rows
-        ? `<dl>${row.rows.map(([key, value]) => `<div><dt>${escape(key)}</dt><dd>${escape(value)}</dd></div>`).join("")}</dl>`
-        : "";
-    return `<li class="talk-row talk-${row.role}" data-reveal style="--i:${index}">${label}<div class="talk-body">${name}${text}${rows}</div></li>`;
-}
-
-function agentDetail(agent) {
-    return `<div class="agent-detail"><figure class="talk"><figcaption><span class="talk-tag">${escape(agent.sample)}</span>${escape(agent.caption)}</figcaption><ol>${agent.talk.map((row, index) => talkRow(agent, row, index)).join("")}</ol></figure>
-<dl class="facts">${agent.facts.map(([key, value], i) => `<div data-reveal style="--i:${i}"><dt>${escape(key)}</dt><dd>${escape(value)}</dd></div>`).join("")}</dl></div>`;
+function agentDetail(agent, prefix) {
+    const clients = agentClients
+        .map(
+            ([id, name]) =>
+                `<li><img src="${prefix}assets/clients/${id}.svg" width="40" height="40" alt="" loading="lazy" decoding="async"><span>${escape(name)}</span></li>`
+        )
+        .join("");
+    const cards = agent.groups
+        .map(([id, title, text, members]) => {
+            const tools = members.flatMap((member) => mcpTools[member]);
+            const capabilities = members.map((member) => agent.capabilities.find(([key]) => key === member));
+            return `<article class="capability-card capability-${id}"><header><span class="capability-icon">${featureIcon(id)}</span><span class="capability-count">${tools.length} ${escape(agent.toolsLabel)}</span></header><h4>${escape(title)}</h4><p>${escape(text)}</p><ul class="capability-tags">${capabilities.map(([, name]) => `<li>${escape(name)}</li>`).join("")}</ul><details class="capability-tools"><summary>${escape(agent.detailsLabel)}<span aria-hidden="true">+</span></summary>${capabilities.map(([key, name, description]) => `<div class="capability-tool-group"><h5>${escape(name)}</h5><p>${escape(description)}</p><ul>${mcpTools[key].map((tool) => `<li><code>${escape(tool)}</code></li>`).join("")}</ul></div>`).join("")}</details></article>`;
+        })
+        .join("");
+    return `<div class="agent-detail"><section class="agent-clients" aria-labelledby="agent-clients-title"><h3 id="agent-clients-title">${escape(agent.clientsTitle)}</h3><ul class="client-logos">${clients}</ul><p class="agent-note">${escape(agent.clientsNote)}</p></section>
+<section class="agent-capabilities" aria-labelledby="agent-capabilities-title"><h3 id="agent-capabilities-title">${escape(agent.capabilitiesTitle)}</h3><div class="capability-grid">${cards}</div><p class="agent-note">${escape(agent.permissionNote)}</p></section></div>`;
 }
 
 // motion.js turns the grid into a deck that scrolling moves through: cards wait stacked on the right, pass through

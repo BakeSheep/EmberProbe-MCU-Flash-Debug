@@ -25,18 +25,18 @@ node test/mockup.test.js
 
 ### 采样专题区
 
-采样是核心功能，在首页是一个带 `zone` 字段的章节（`id: "sampling"`），由 `template.js` 的 `samplingZone` 渲染，导航只占一个入口。区内有吸顶子导航和四个小节：
+采样是核心功能，在首页是一个带 `zone` 字段的章节（`id: "sampling"`），由 `template.js` 的 `samplingZone` 渲染，顶部导航只占一个入口。区内直接展示四个小节，不另设子导航：
 
-- `modes`（`#sampling-modes`）：侧栏观测与波形图采样两张对比卡，每张以真实界面截图（`mode-sidebar`、`mode-chart`）开头，波形卡附带静默采样说明。
+- `modes`（`#sampling-modes`）：侧栏观测与波形图采样两张等宽对比卡，每张以真实界面截图（`mode-sidebar`、`mode-chart`）开头，按数据、记录、窗口三项对照。静默采样放在卡片下方独立的通栏区域，以隐藏、记录、重新显示三步说明，并注明只属于波形窗口。
 - `states`（`#sampling-states`）：独立运行、调试运行中、断点暂停时三行，每行有自己的录屏（`sampling-standalone`、`sampling-debug`、`sampling-break`）、图标、编号和颜色（青绿、琥珀、红），录屏左右交替。
 - `types`（`#variables`）：挂 `variables` 录屏，下方把各类型的真实界面截图（`type-*`）平铺成两列，按截图高度分列，让两列底部大致对齐。不放源码，也不做标签页。其中 `type-stl` 截的是内置调试器暂停时的变量视图（mockup 外壳 `shell-data.js` 的 `DEBUG.variables`，取值照 `src/debug/stl.js` 的摘要格式），文案写明属于调试器；实时采样不展开 vector、map 等容器。
-- `chart`（`#waveform`）：挂 `waveform` 录屏，另有功能网格和右键菜单、CSV 导出两张截图。
+- `chart`（`#waveform`）：挂 `waveform` 录屏，另有功能网格和右键菜单、CSV 导出两张截图；截图保留替代文本，不显示图下注释。
 
 文案只写卖点。采样率不写具体档位：波形窗口的采样率可自定义，也可选不限速。
 
-专题区使用青绿浅色主题：`.zone-sampling` 在区内重定义 `--accent`（`#0b8a7e`）、`--accent-dark`、`--tint`、`--line`，复用的要点、进度条、边缘光和标签自动变色；页面其他部分保持橙色。滚动进入专题区时，`motion.js` 让顶部导航下划线变成青绿色，并高亮子导航。区内的小动画都只在 `.motion` 下生效，减少动画模式下直接显示完整的静态页面：
+专题区沿用全站的白底、灰色边框、中性截图背景和阴影，不另设绿色章节边界。开场只保留局部淡青绿光晕，标题略大于普通章节；其他小节沿用全站字号与间距。独立的 `--sampling-accent`（`#0b8a7e`）与 `--sampling-dark` 用于波形、采样率、功能图标和标记，不覆盖全站品牌色变量；导航和播放控件沿用橙色。区内的小动画都只在 `.motion` 下生效，减少动画模式下直接显示完整的静态页面：
 
-- 开头的波形先绘制出来，之后一条扫描光标循环扫过，光标后面的一段曲线加亮（SVG 遮罩 `#scope-sweep` 和 `.scope-cursor` 用同一套时序）；鼠标经过时，背景网格在指针附近变亮（`motion.js` 设置 `.zone-bg` 的 `--zx`/`--zy`）。
+- 开头的波形先绘制出来，之后一条扫描光标循环扫过，光标后面的一段曲线加亮（SVG 遮罩 `#scope-sweep` 和 `.scope-cursor` 用同一套时序）。背景光晕保持静态，不再使用网格或指针照明。
 - 数字卖点进入视口时文字上扫过一次高光；静默采样的圆点持续向外扩散。
 - 三种状态进入时，色条自上而下画出，图标弹出，编号滑入；之后图标循环演示各自的状态：曲线反复绘制、继续按钮前推、断点向外脉冲。
 - 支持悬停的设备上，卡片悬停时轻微上浮，方形标记转成菱形。上浮用 `translate`，不影响入场动画的 `transform`。
@@ -46,6 +46,12 @@ node test/mockup.test.js
 ```sh
 FONTS=<源字体目录> node website/capture/fonts.js
 ```
+
+### Agent 客户端与 MCP 能力
+
+Agent 配置录屏下方平铺支持的客户端 Logo，再按六种任务展示 MCP 能力卡片。每张卡片显示图标、任务说明、能力标签与工具数量，使用原生 `details` 展开完整能力说明和工具名，支持键盘操作，不依赖 JavaScript。`content.js` 的 `agentClients` 和 `mcpTools` 供两种语言共用；具体能力说明放在各语言的 `agent.capabilities`，任务分组在 `agent.groups`。分组需覆盖 `src/mcp/tools.js` 的所有工具且不重复，网站测试会检查两种语言渲染出的完整工具列表。
+
+Logo 在 `website/assets/clients/`，来源版本、品牌说明与 MIT 许可分别记录于 `NOTICE.txt` 和 `LICENSE`，构建时合并到 `credits.txt`。新增客户端时需同步更新本地 SVG、来源记录和客户端列表。
 
 ## 录屏
 

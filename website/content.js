@@ -9,6 +9,45 @@ const links = {
     docsEn: `${repository}/blob/master/README_EN.md`
 };
 
+const agentClients = [
+    ["claudecode", "Claude Code"],
+    ["codex", "Codex"],
+    ["geminicli", "Gemini CLI"],
+    ["opencode", "OpenCode"],
+    ["githubcopilot", "GitHub Copilot"],
+    ["cursor", "Cursor"],
+    ["antigravity", "Antigravity"],
+    ["deepseek", "DeepSeek Harness"]
+];
+
+const mcpTools = {
+    config: ["config_get", "config_set", "probe_list"],
+    target: ["chip_read", "target_control", "fault_read"],
+    flash: ["flash_program", "flash_verify"],
+    variables: ["variables_list", "variables_read", "variables_write"],
+    watch: ["watch_add", "watch_list", "watch_remove"],
+    sampling: ["variables_sample", "sampling_status", "sampling_control", "variables_export_csv"],
+    debug: ["debug_status", "debug_select", "debug_start", "debug_control"],
+    inspect: ["debug_inspect", "debug_evaluate", "memory_read", "debug_breakpoints_list", "debug_breakpoints_update"],
+    rtos: ["rtos_status", "rtos_snapshot"],
+    peripherals: ["peripherals_list", "peripherals_read", "peripherals_write"],
+    rtt: ["rtt_status", "rtt_read", "rtt_control"],
+    elf: ["elf_analyze"],
+    cubemx: [
+        "cubemx_detect",
+        "cubemx_inspect",
+        "cubemx_query",
+        "cubemx_candidate",
+        "cubemx_check",
+        "cubemx_prepare",
+        "cubemx_start",
+        "cubemx_execute",
+        "cubemx_status",
+        "cubemx_cancel"
+    ],
+    permission: ["permission_get", "permission_reset"]
+};
+
 // Copy says what the visitor gets, not how to operate it or how it works; facts still follow docs/guide/.
 // `chapters` runs in the order of use. A chapter's id is also its recording in website/capture/scenes.js.
 const content = {
@@ -32,7 +71,7 @@ const content = {
             {
                 id: "config",
                 nav: "配置",
-                title: "一键启动，何须 launch.json",
+                title: "一键配置，何须 launch.json",
                 lead: "插上 Link、打开工程，自动识别固件，完成调试器和芯片配置。",
                 alt: "点击自动检测配置后填入固件和脚本，刷新探针列表显示内核型号，再选择探针",
                 support: {
@@ -67,6 +106,7 @@ const content = {
                             "RP2040/RP2350"
                         ]
                     },
+                    systems: { label: "操作系统", items: ["Windows", "Linux", "macOS"] },
                     note: "以及 OpenOCD 支持的其他调试器和芯片"
                 }
             },
@@ -96,7 +136,7 @@ const content = {
                 zone: {
                     title: "实时采样与波形",
                     lead: "零代码、非侵入，在程序运行时读取变量。C/C++ 的各种类型都能看懂，画成曲线，整段历史随时回看、随时导出。",
-                    subnav: "采样专题",
+
                     stats: [
                         ["不限速", "采样率自定义"],
                         ["C / C++", "全类型解析"],
@@ -105,7 +145,6 @@ const content = {
                     ],
                     modes: {
                         id: "sampling-modes",
-                        nav: "场景",
                         title: "侧栏与波形窗口，按需选择",
                         lead: "随手看一眼用侧栏，细看和留存用波形窗口。",
                         cards: [
@@ -117,10 +156,10 @@ const content = {
                                 rateNote: "固定频率，只显示当前值",
                                 shot: "mode-sidebar",
                                 alt: "侧栏实时读写：查看列表显示 g_sensor_temp、g_motor_rpm、g_bus_voltage 的当前值，写入列表可调 g_target_rpm 和 g_pid_kp",
-                                points: [
-                                    "实时显示当前值，随时写入并回读确认",
-                                    "结构体展开才读、折叠即停，不占带宽",
-                                    "与调试器并排，不用切换窗口"
+                                facts: [
+                                    ["数据", "当前数值", "实时读写，写后自动回读"],
+                                    ["记录", "即时观测", "结构体展开才读，折叠即停"],
+                                    ["窗口", "侧栏常驻", "与调试器并排，无需切换"]
                                 ]
                             },
                             {
@@ -131,19 +170,23 @@ const content = {
                                 rateNote: "采样率自定义，整段历史保留",
                                 shot: "mode-chart",
                                 alt: "波形窗口：左侧是三个变量的当前值，右侧是归一化后的历史曲线和时间轴",
-                                points: [
-                                    "曲线实时绘制，整段历史随时回看",
-                                    "任选变量和时间段导出 CSV",
-                                    "多个波形窗口各自独立"
-                                ],
-                                silent: ["静默采样", "隐藏的曲线和结构体成员照常记录，重新显示即可看到隐藏期间的历史。"]
+                                facts: [
+                                    ["数据", "实时曲线", "当前值与历史波形同时看"],
+                                    ["记录", "完整历史", "任选变量和时间段导出 CSV"],
+                                    ["窗口", "独立波形窗口", "多个窗口，各自独立"]
+                                ]
                             }
-                        ]
+                        ],
+                        silent: {
+                            title: "静默采样",
+                            scope: "仅波形窗口",
+                            text: "隐藏的曲线和结构体成员照常记录，重新显示即可看到隐藏期间的历史。",
+                            steps: ["隐藏曲线", "持续记录", "显示历史"]
+                        }
                     },
                     states: {
                         id: "sampling-states",
-                        nav: "状态",
-                        title: "调试前后，采样不断",
+                        title: "全场景采样",
                         lead: "不开调试、调试运行、断点暂停，三种状态都能采样。",
                         items: [
                             {
@@ -171,7 +214,6 @@ const content = {
                     },
                     types: {
                         id: "variables",
-                        nav: "类型",
                         title: "看懂 C/C++ 的每一种类型",
                         lead: "从固件的调试信息自动解析地址和类型，按名称搜索即可添加，无需任何配置。",
                         alt: "搜索 g_target_rpm 并加入查看和写入列表，开始采样后写入 2400，转速随之上升",
@@ -221,7 +263,6 @@ const content = {
                     },
                     chart: {
                         id: "waveform",
-                        nav: "波形",
                         title: "完整的绘图工具",
                         lead: "把变量画成实时曲线，看、比、存一应俱全。",
                         alt: "把采样率调到不限速，冻结图表，拖动历史时间轴，再选择曲线和范围导出 CSV",
@@ -239,12 +280,12 @@ const content = {
                         shots: [
                             {
                                 id: "chart-menu",
-                                caption: "右键曲线：类型、进制、增益、颜色和线型",
+
                                 alt: "波形窗口中 g_motor_rpm 的右键菜单，含类型、进制 DEC/HEX/BIN、增益和曲线样式"
                             },
                             {
                                 id: "chart-export",
-                                caption: "导出 CSV：任选曲线和时间范围",
+
                                 alt: "导出 CSV 对话框，勾选三条曲线并选择时间范围"
                             }
                         ]
@@ -265,44 +306,47 @@ const content = {
             }
         ],
         agent: {
-            sample: "示意",
-            caption: "烧录并写入变量的过程。对话内容为示意，不代表任何客户端的界面。",
-            roles: { user: "用户", agent: "Agent", tool: "工具调用", plan: "等待确认" },
-            talk: [
-                { role: "user", text: "烧录当前固件，把 g_target_rpm 改为 2400，然后确认转速。" },
-                { role: "tool", name: "config_get, chip_read", text: "读取配置和目标芯片，不需要确认。" },
-                {
-                    role: "plan",
-                    name: "flash_program",
-                    rows: [
-                        ["固件", "EmberProbeDemo.elf · sha256 3fa1…c07e"],
-                        ["目标", "stm32f4x.cfg · J-Link 801012345"],
-                        ["操作", "擦除、写入、校验、复位运行"]
-                    ]
-                },
-                { role: "user", text: "确认。" },
-                { role: "tool", name: "flash_program", text: "校验通过，目标已复位运行。" },
-                {
-                    role: "plan",
-                    name: "variables_write",
-                    rows: [
-                        ["变量", "g_target_rpm"],
-                        ["新值", "1500 → 2400"]
-                    ]
-                },
-                { role: "user", text: "确认。" },
-                { role: "tool", name: "variables_write", text: "已写入，回读值为 2400。" },
-                { role: "tool", name: "variables_sample", text: "g_motor_rpm 正在上升，当前 2388。" },
-                { role: "agent", text: "烧录完成。g_target_rpm 已改为 2400，g_motor_rpm 已升至 2388。" }
-            ],
-            facts: [
+            clientsTitle: "支持的 Agent 客户端",
+            clientsNote:
+                "Claude Code、Codex、Gemini CLI、OpenCode、Antigravity、DeepSeek Harness 一键安装；GitHub Copilot 和 Cursor 自动识别。其他支持 MCP 的客户端可复制配置接入。",
+            capabilitiesTitle: "MCP 能力",
+            capabilities: [
+                ["config", "工程配置", "读取与更新工程配置，列出已连接的调试器。"],
+                ["target", "芯片与运行状态", "读取芯片信息与故障现场，独立暂停、继续或复位目标。"],
+                ["flash", "固件烧录与校验", "烧录 ELF 固件、校验 Flash 内容，并复位运行。"],
+                ["variables", "变量读写", "搜索全局与静态变量，读取数值，写入 RAM 标量并回读。"],
+                ["watch", "观测列表", "添加、查看或移除侧栏与波形窗口中的观测变量。"],
+                ["sampling", "实时采样与导出", "多次读取变量，控制持续采样、查看采样状态，导出波形历史 CSV。"],
+                ["debug", "调试控制", "查看和选择会话，启动或附加调试，暂停、继续、单步、重启与停止。"],
+                ["inspect", "断点与现场查看", "管理断点，暂停时查看线程、调用栈、变量与原始内存。"],
+                ["rtos", "FreeRTOS 任务", "查看 RTOS 支持状态，暂停时读取任务状态、优先级与栈使用。"],
+                ["peripherals", "外设寄存器", "按 SVD 搜索外设、寄存器与位域，读取或写入数值。"],
+                ["rtt", "RTT 日志", "启动或停止 RTT，查看连接状态，读取固件输出。"],
+                ["elf", "内存占用", "分析 ELF 的 Flash、RAM、内存区域、段与大符号占用。"],
                 [
-                    "支持的客户端",
-                    "Claude Code、Codex、Gemini CLI、OpenCode、Antigravity、DeepSeek Harness 一键安装，GitHub Copilot 和 Cursor 自动识别，其他支持 MCP 的客户端复制配置即可。"
+                    "cubemx",
+                    "CubeMX 代码生成",
+                    "查看与检查工程，准备配置改动并生成代码，跟踪或取消操作；支持 .ioc 与 .ioc2。"
                 ],
-                ["CubeMX 代码生成", "让 Agent 修改 CubeMX 配置并重新生成代码，写回前先比对并备份。"],
-                ["完全允许 Agent 操作", "默认关闭，只能由你在侧栏开启。开启后免去逐次确认，安全检查依然保留。"]
-            ]
+                ["permission", "操作权限", "查看或清除已记住的工程授权与待确认请求。"]
+            ],
+            permissionNote:
+                "烧录、写入与代码生成等操作按各自规则请求确认。完全允许 Agent 操作默认关闭，只能由你在侧栏开启；安全检查始终保留。",
+            groups: [
+                [
+                    "setup",
+                    "连接与配置",
+                    "从识别调试器到检查芯片和内存，为操作做好准备。",
+                    ["config", "target", "elf", "permission"]
+                ],
+                ["flash", "烧录与校验", "把固件写入目标芯片，校验结果，再复位运行。", ["flash"]],
+                ["watch", "变量与波形", "读写变量、持续采样，回看波形并导出记录。", ["variables", "watch", "sampling"]],
+                ["debug", "断点与调试", "控制程序执行，查看断点现场与 FreeRTOS 任务。", ["debug", "inspect", "rtos"]],
+                ["peripherals", "外设与日志", "查看和修改外设寄存器，通过 RTT 读取固件输出。", ["peripherals", "rtt"]],
+                ["cubemx", "CubeMX 代码生成", "检查工程、准备配置改动，并跟踪代码生成。", ["cubemx"]]
+            ],
+            toolsLabel: "MCP 工具",
+            detailsLabel: "查看工具明细"
         },
         tools: {
             id: "tools",
@@ -397,7 +441,7 @@ const content = {
             {
                 id: "config",
                 nav: "Setup",
-                title: "One click to start. No launch.json.",
+                title: "One-click setup. No launch.json.",
                 lead: "Plug in your probe and open the project. EmberProbe finds the firmware and sets up the debugger and chip for you.",
                 alt: "Auto-detect fills in the firmware and scripts, a refresh shows each probe's core, then a probe is selected",
                 support: {
@@ -432,6 +476,7 @@ const content = {
                             "RP2040/RP2350"
                         ]
                     },
+                    systems: { label: "Operating systems", items: ["Windows", "Linux", "macOS"] },
                     note: "plus the other probes and chips OpenOCD supports"
                 }
             },
@@ -470,7 +515,7 @@ const content = {
                 zone: {
                     title: "Live sampling and waveforms",
                     lead: "No code changes, no intrusion: read variables while the program runs. Every C/C++ type is understood and plotted, with the whole history ready to review or export.",
-                    subnav: "Sampling topics",
+
                     stats: [
                         ["Unlimited", "Any sample rate you set"],
                         ["C / C++", "Every type parsed"],
@@ -479,7 +524,6 @@ const content = {
                     ],
                     modes: {
                         id: "sampling-modes",
-                        nav: "Scenarios",
                         title: "Sidebar or waveform window, as the job needs",
                         lead: "Glance at values in the sidebar; study and keep them in the waveform window.",
                         cards: [
@@ -491,10 +535,10 @@ const content = {
                                 rateNote: "Fixed rate, current values only",
                                 shot: "mode-sidebar",
                                 alt: "Sidebar live read and write: the watch list shows current values of g_sensor_temp, g_motor_rpm and g_bus_voltage, and the write list adjusts g_target_rpm and g_pid_kp",
-                                points: [
-                                    "Live current values, with writes read back to confirm",
-                                    "Structs are read only while open, so folded ones cost no bandwidth",
-                                    "Sits beside the debugger, no window switching"
+                                facts: [
+                                    ["Data", "Current values", "Live reads and writes, with readback"],
+                                    ["History", "Live view only", "Read structs while open; stop when folded"],
+                                    ["Window", "In the sidebar", "Beside the debugger, no switching"]
                                 ]
                             },
                             {
@@ -505,22 +549,23 @@ const content = {
                                 rateNote: "Any sample rate you set, full history kept",
                                 shot: "mode-chart",
                                 alt: "Waveform window: current values of three variables on the left, normalized history curves and a timeline on the right",
-                                points: [
-                                    "Curves drawn live, the whole history ready to review",
-                                    "Export any variables and time range to CSV",
-                                    "Several waveform windows, each independent"
-                                ],
-                                silent: [
-                                    "Silent sampling",
-                                    "Hidden curves and struct members keep recording. Show them again to see what happened while they were hidden."
+                                facts: [
+                                    ["Data", "Live curves", "Current values and history together"],
+                                    ["History", "Full recording", "Export any variables and time range as CSV"],
+                                    ["Window", "Separate charts", "Several windows, each independent"]
                                 ]
                             }
-                        ]
+                        ],
+                        silent: {
+                            title: "Silent sampling",
+                            scope: "Waveform window",
+                            text: "Hidden curves and struct members keep recording. Show them again to see the history you missed.",
+                            steps: ["Hide curves", "Keep recording", "Reveal history"]
+                        }
                     },
                     states: {
                         id: "sampling-states",
-                        nav: "States",
-                        title: "Sampling that carries on through debugging",
+                        title: "Sampling in every state",
                         lead: "Without a debugger, while debugging, at a breakpoint: all three states sample.",
                         items: [
                             {
@@ -548,7 +593,6 @@ const content = {
                     },
                     types: {
                         id: "variables",
-                        nav: "Types",
                         title: "Every C/C++ type, understood",
                         lead: "Addresses and types come from the firmware's debug information. Search by name to add a variable, with nothing to configure.",
                         alt: "g_target_rpm is found and added to the watch and write lists, sampling starts, 2400 is written, and the speed rises",
@@ -604,7 +648,6 @@ const content = {
                     },
                     chart: {
                         id: "waveform",
-                        nav: "Waveform",
                         title: "A complete plotting toolkit",
                         lead: "Plot variables as live curves, with everything you need to read, compare and keep them.",
                         alt: "The sample rate is set to unlimited, the chart is frozen, the history timeline is dragged, and curves and a range are chosen for CSV export",
@@ -643,12 +686,12 @@ const content = {
                         shots: [
                             {
                                 id: "chart-menu",
-                                caption: "Right-click a curve: type, base, gain, color and line",
+
                                 alt: "The right-click menu for g_motor_rpm in the waveform window, with type, DEC/HEX/BIN base, gain and curve style"
                             },
                             {
                                 id: "chart-export",
-                                caption: "CSV export: any curves, any time range",
+
                                 alt: "The CSV export dialog with three curves selected and a time range"
                             }
                         ]
@@ -675,58 +718,99 @@ const content = {
             }
         ],
         agent: {
-            sample: "Illustration",
-            caption:
-                "Flashing and writing a variable. The conversation is an illustration and does not represent any client's interface.",
-            roles: { user: "User", agent: "Agent", tool: "Tool call", plan: "Awaiting confirmation" },
-            talk: [
-                { role: "user", text: "Flash the current firmware, set g_target_rpm to 2400, then check the speed." },
-                {
-                    role: "tool",
-                    name: "config_get, chip_read",
-                    text: "Reads the configuration and target chip. No confirmation needed."
-                },
-                {
-                    role: "plan",
-                    name: "flash_program",
-                    rows: [
-                        ["Firmware", "EmberProbeDemo.elf · sha256 3fa1…c07e"],
-                        ["Target", "stm32f4x.cfg · J-Link 801012345"],
-                        ["Operation", "Erase, write, verify, reset and run"]
-                    ]
-                },
-                { role: "user", text: "Confirm." },
-                { role: "tool", name: "flash_program", text: "Verified. The target has been reset and is running." },
-                {
-                    role: "plan",
-                    name: "variables_write",
-                    rows: [
-                        ["Variable", "g_target_rpm"],
-                        ["New value", "1500 → 2400"]
-                    ]
-                },
-                { role: "user", text: "Confirm." },
-                { role: "tool", name: "variables_write", text: "Written. Read-back value is 2400." },
-                { role: "tool", name: "variables_sample", text: "g_motor_rpm is rising, currently 2388." },
-                {
-                    role: "agent",
-                    text: "Flashing is complete. g_target_rpm is now 2400, and g_motor_rpm has reached 2388."
-                }
-            ],
-            facts: [
+            clientsTitle: "Supported Agent clients",
+            clientsNote:
+                "One-click install for Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, and DeepSeek Harness. GitHub Copilot and Cursor are detected automatically. Other MCP clients can copy the configuration.",
+            capabilitiesTitle: "MCP capabilities",
+            capabilities: [
+                ["config", "Workspace setup", "Read and update workspace settings, and list connected debug probes."],
                 [
-                    "Supported clients",
-                    "One-click install for Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, and DeepSeek Harness. GitHub Copilot and Cursor are detected automatically, and any other MCP client can copy the configuration."
+                    "target",
+                    "Chip and target state",
+                    "Read chip identity and fault state; halt, resume, or reset outside a debug session."
+                ],
+                ["flash", "Flash and verify", "Program ELF firmware, verify Flash contents, then reset and run."],
+                [
+                    "variables",
+                    "Variable access",
+                    "Search global and static variables, read values, and write scalar RAM values with readback."
+                ],
+                ["watch", "Watch lists", "Add, list, or remove watched variables in the sidebar and live charts."],
+                [
+                    "sampling",
+                    "Sampling and export",
+                    "Capture repeated reads, control persistent sampling, check its state, and export chart history as CSV."
                 ],
                 [
-                    "CubeMX code generation",
-                    "Let the Agent change the CubeMX configuration and regenerate code. Results are compared and backed up before they are written."
+                    "debug",
+                    "Debug control",
+                    "Inspect and select sessions, launch or attach, pause, continue, step, restart, and stop."
                 ],
                 [
-                    "Allow all Agent operations",
-                    "Off by default, and only you can turn it on in the sidebar. It skips per-operation confirmation while the safety checks stay in place."
+                    "inspect",
+                    "Breakpoints and inspection",
+                    "Manage breakpoints; inspect threads, stacks, variables, and raw memory while paused."
+                ],
+                [
+                    "rtos",
+                    "FreeRTOS tasks",
+                    "Check RTOS awareness and read task states, priorities, and stack use while paused."
+                ],
+                [
+                    "peripherals",
+                    "Peripheral registers",
+                    "Search SVD peripherals, registers, and fields, then read or write their values."
+                ],
+                ["rtt", "RTT logs", "Start or stop RTT, check its connection state, and read firmware output."],
+                ["elf", "Memory usage", "Analyze ELF Flash, RAM, memory regions, sections, and largest symbols."],
+                [
+                    "cubemx",
+                    "CubeMX generation",
+                    "Inspect and check projects, prepare configuration changes, generate code, and track or cancel operations. Supports .ioc and .ioc2."
+                ],
+                [
+                    "permission",
+                    "Permissions",
+                    "Inspect or clear remembered workspace permissions and pending confirmations."
                 ]
-            ]
+            ],
+            permissionNote:
+                "Flashing, writes, and code generation request confirmation under their respective rules. Allow all Agent operations is off by default and can only be enabled in the sidebar. Safety checks always remain in place.",
+            groups: [
+                [
+                    "setup",
+                    "Connect and configure",
+                    "Find probes, inspect the chip, and check memory before you begin.",
+                    ["config", "target", "elf", "permission"]
+                ],
+                ["flash", "Flash and verify", "Program firmware, verify the result, then reset and run.", ["flash"]],
+                [
+                    "watch",
+                    "Variables and waveforms",
+                    "Read and write values, capture samples, and export the history.",
+                    ["variables", "watch", "sampling"]
+                ],
+                [
+                    "debug",
+                    "Breakpoints and debugging",
+                    "Control execution and inspect paused state and FreeRTOS tasks.",
+                    ["debug", "inspect", "rtos"]
+                ],
+                [
+                    "peripherals",
+                    "Peripherals and logs",
+                    "Read and write peripheral registers, and follow firmware RTT output.",
+                    ["peripherals", "rtt"]
+                ],
+                [
+                    "cubemx",
+                    "CubeMX generation",
+                    "Check projects, prepare configuration changes, and track code generation.",
+                    ["cubemx"]
+                ]
+            ],
+            toolsLabel: "MCP tools",
+            detailsLabel: "Explore the tools"
         },
         tools: {
             id: "tools",
@@ -803,4 +887,4 @@ const content = {
     }
 };
 
-module.exports = { content, links };
+module.exports = { content, links, agentClients, mcpTools };

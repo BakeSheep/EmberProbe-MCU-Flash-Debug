@@ -590,124 +590,196 @@ h1 {
     border-top: 0;
 }
 
-/* Agent conversation */
+/* Supported clients and the MCP capability catalogue. */
 .agent-detail {
     display: grid;
-    grid-template-columns: 800px minmax(0, 1fr);
     gap: 48px;
-    align-items: start;
-    margin-top: 48px;
+    margin-top: 64px;
 }
-.talk {
+.agent-detail h3 {
+    margin-bottom: 24px;
+    color: var(--ink);
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+.client-logos {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 24px 12px;
     margin: 0;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--tint);
+    padding: 28px 0;
+    border-block: 1px solid var(--line);
+    list-style: none;
 }
-.talk figcaption {
+.client-logos li {
     display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--line);
-    color: var(--muted);
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    color: var(--ink);
     font-size: 13px;
+    font-weight: 500;
+    text-align: center;
 }
-.talk-tag {
-    flex: none;
-    padding: 0 7px;
+.client-logos img {
+    display: block;
+    object-fit: contain;
+}
+.agent-note {
+    max-width: 960px;
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.7;
+}
+.capability-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+    gap: 20px;
+}
+.capability-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 300px;
+    padding: 24px;
     border: 1px solid var(--line);
-    border-radius: 4px;
+    border-radius: 12px;
     background: var(--paper);
-    color: var(--text);
+}
+.capability-card > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.capability-icon {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: #fff2eb;
+    color: var(--accent);
+}
+.capability-icon svg {
+    width: 26px;
+    height: 26px;
+}
+.capability-count {
+    color: var(--muted);
+    font-size: 12px;
+}
+.capability-card h4 {
+    margin-top: 18px;
+    color: var(--ink);
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+.capability-card > p {
+    margin-top: 8px;
+    font-size: 14px;
+    line-height: 1.65;
+}
+.capability-tags {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-content: start;
+    gap: 6px;
+    margin: 18px 0;
+    padding: 0;
+    list-style: none;
+}
+.capability-tags li {
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--tint);
+    color: var(--muted);
     font-size: 12px;
     line-height: 20px;
 }
-.talk ol {
-    display: grid;
-    gap: 14px;
-    padding: 18px;
-    list-style: none;
-}
-.talk-row {
-    display: grid;
-    grid-template-columns: 88px minmax(0, 1fr);
-    gap: 12px;
-    font-size: 14px;
-    line-height: 1.55;
-}
-.talk-role {
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 22px;
-}
-.talk-body p {
-    color: var(--text);
-}
-.talk-user .talk-body p,
-.talk-agent .talk-body p {
-    color: var(--ink);
-}
-.talk-body code {
-    display: block;
-    color: var(--ink);
-    font: 500 13px/22px var(--mono);
-}
-.talk-tool .talk-body p {
-    color: var(--muted);
-    font-size: 13px;
-}
-.talk-plan .talk-role {
-    color: var(--accent);
-}
-.talk-plan .talk-body {
-    padding: 10px 14px;
-    border: 1px solid var(--line);
-    border-left: 2px solid var(--accent);
-    border-radius: 6px;
-    background: var(--paper);
-}
-.talk-body dl {
-    margin: 6px 0 0;
-}
-.talk-body dl div {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 8px;
-}
-.talk-body dt {
-    color: var(--muted);
-    font-size: 13px;
-}
-.talk-body dd {
-    margin: 0;
-    color: var(--ink);
-    font: 400 13px/1.6 var(--mono);
-    overflow-wrap: anywhere;
-}
-.facts {
-    margin: 0;
-}
-.facts > div {
-    padding: 14px 0;
-}
-.facts > div:first-child {
-    padding-top: 0;
-}
-.facts > div + div {
+.capability-tools {
     border-top: 1px solid var(--line);
 }
-.facts dt {
-    color: var(--ink);
-    font-size: 15px;
-    font-weight: 500;
-    line-height: 24px;
+.capability-tools summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 14px;
+    color: var(--accent-dark);
+    font-size: 13px;
+    list-style: none;
+    cursor: pointer;
 }
-.facts dd {
-    margin: 2px 0 0;
+.capability-tools summary::-webkit-details-marker {
+    display: none;
+}
+.capability-tools summary > span {
+    font-size: 20px;
+    line-height: 20px;
+    transition: transform 0.2s;
+}
+.capability-tools[open] summary > span {
+    transform: rotate(45deg);
+}
+.capability-tool-group {
+    padding-top: 18px;
+}
+.capability-tool-group h5 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 500;
+}
+.capability-tool-group p {
+    margin-top: 4px;
     color: var(--muted);
-    font-size: 14px;
-    line-height: 1.55;
+    font-size: 13px;
+    line-height: 1.6;
+}
+.capability-tool-group ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+}
+.capability-tools code {
+    color: var(--muted);
+    font: 400 11px/1.7 var(--mono);
+    overflow-wrap: anywhere;
+}
+@media (max-width: 1000px) {
+    .client-logos {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        row-gap: 28px;
+    }
+    .capability-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 600px) {
+    .agent-detail {
+        gap: 36px;
+        margin-top: 40px;
+    }
+    .client-logos {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .capability-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+    }
+    .capability-card {
+        min-height: 0;
+        padding: 20px;
+    }
 }
 
 /* More tools: a plain grid, which motion.js turns into a deck that scrolling moves through. */
@@ -1258,7 +1330,6 @@ body:not(.tour-on) .tour {
 @media (max-width: 1240px) {
     .chapter-head,
     .chapter-body,
-    .agent-detail,
     .spec-grid {
         grid-template-columns: minmax(0, 1fr);
     }
@@ -1267,7 +1338,6 @@ body:not(.tour-on) .tour {
         max-width: 760px;
     }
     .chapter-body,
-    .agent-detail,
     .spec-grid {
         gap: 24px;
         max-width: 800px;
@@ -1353,16 +1423,6 @@ body:not(.tour-on) .tour {
     .wide .points li + li {
         border-top: 1px solid var(--line);
     }
-    .talk-row {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 2px;
-    }
-    .talk ol {
-        padding: 14px;
-    }
-    .talk figcaption {
-        padding: 10px 14px;
-    }
     .spec th {
         width: 112px;
         padding-right: 12px;
@@ -1381,78 +1441,48 @@ body:not(.tour-on) .tour {
     }
 }
 
-/* Sampling zone: the core feature gets its own colour. Redefining the palette inside it turns the shared pieces
-   (point markers, progress bars, rim light, pills) teal with no extra rules. */
+/* Sampling shares the site's white surfaces and neutral borders; teal identifies data and sampling features. */
 .zone-sampling {
-    --accent: #0b8a7e;
-    --accent-dark: #08695f;
-    --tint: #effaf8;
-    --line: #cdeee8;
-    --zone-bg: #f6fcfb;
+    --sampling-accent: #0b8a7e;
+    --sampling-dark: #08695f;
     --zone-glow: rgb(11 138 126 / 16%);
     position: relative;
-    padding-block: 0 72px;
-    border-top: 0;
-    background: var(--zone-bg);
+    padding-block: 0 64px;
+    background: var(--paper);
 }
-.zone-sampling::before,
-.zone-sampling::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    height: 4px;
-    background: linear-gradient(90deg, #0b8a7e, #3cc3b2 45%, #0b8a7e);
-}
-.zone-sampling::before {
-    top: 0;
-}
-.zone-sampling::after {
-    bottom: 0;
-}
-/* An oscilloscope screen behind the opening: fine divisions, and major ones every five. */
+/* A faint, local glow fades out within the opening rather than tinting the whole chapter. */
 .zone-bg {
     position: absolute;
-    inset: 4px 0 auto;
-    height: 640px;
-    background-image:
-        linear-gradient(rgb(11 138 126 / 14%) 1px, transparent 1px),
-        linear-gradient(90deg, rgb(11 138 126 / 14%) 1px, transparent 1px),
-        linear-gradient(rgb(11 138 126 / 6%) 1px, transparent 1px),
-        linear-gradient(90deg, rgb(11 138 126 / 6%) 1px, transparent 1px);
-    background-size:
-        120px 120px,
-        120px 120px,
-        24px 24px,
-        24px 24px;
-    background-position: center top;
+    inset: 0 0 auto;
+    width: min(100%, 1280px);
+    height: 440px;
+    margin-inline: auto;
+    background: radial-gradient(ellipse 70% 75% at 50% 20%, rgb(11 138 126 / 5%), transparent 75%);
     pointer-events: none;
-    -webkit-mask-image: linear-gradient(#000, rgb(0 0 0 / 50%) 55%, transparent);
-    mask-image: linear-gradient(#000, rgb(0 0 0 / 50%) 55%, transparent);
 }
 .zone-intro {
     position: relative;
-    padding-top: 80px;
+    padding-top: 64px;
 }
 .zone-head {
     max-width: 800px;
 }
 .zone-head h2 {
     color: var(--ink);
-    font-size: clamp(32px, 4vw, 44px);
+    font-size: clamp(30px, 3.6vw, 36px);
     font-weight: 600;
     line-height: 1.2;
     letter-spacing: -0.02em;
 }
 .zone-lead {
-    margin-top: 14px;
+    margin-top: 12px;
     max-width: 720px;
-    font-size: 18px;
+    font-size: 16px;
     line-height: 1.6;
 }
 .scope {
-    height: 96px;
-    margin: 28px 0 8px;
+    height: 80px;
+    margin: 24px 0 12px;
 }
 .scope svg {
     display: block;
@@ -1466,7 +1496,7 @@ body:not(.tour-on) .tour {
     stroke-linejoin: round;
 }
 .scope-trace {
-    stroke: var(--accent);
+    stroke: var(--sampling-accent);
     stroke-width: 2;
 }
 .scope-glow {
@@ -1484,7 +1514,7 @@ body:not(.tour-on) .tour {
     border: 1px solid var(--line);
     border-radius: 12px;
     background: var(--paper);
-    box-shadow: 0 18px 40px -28px rgb(8 105 95 / 45%);
+    box-shadow: 0 12px 28px -24px rgb(24 24 27 / 20%);
 }
 .zone-stats li {
     padding: 20px 24px;
@@ -1494,7 +1524,7 @@ body:not(.tour-on) .tour {
 }
 .zone-stats strong {
     display: block;
-    color: var(--accent);
+    color: var(--sampling-accent);
     font: 600 26px/1.25 var(--mono);
     letter-spacing: -0.02em;
 }
@@ -1505,52 +1535,9 @@ body:not(.tour-on) .tour {
     font-size: 14px;
 }
 
-/* The zone's own contents line, held under the header while the zone scrolls by. */
-.zone-nav {
-    position: sticky;
-    top: 57px;
-    z-index: 5;
-    margin-top: 48px;
-    border-block: 1px solid var(--line);
-    background: rgb(246 252 251 / 92%);
-    backdrop-filter: blur(8px);
-}
-.zone-nav .wrap {
-    display: flex;
-    gap: 4px;
-    overflow-x: auto;
-    scrollbar-width: none;
-}
-.zone-nav a {
-    position: relative;
-    flex: none;
-    padding: 11px 14px;
-    color: var(--muted);
-    font-size: 14px;
-    line-height: 22px;
-    transition: color 0.2s;
-}
-.zone-nav a::after {
-    content: "";
-    position: absolute;
-    left: 14px;
-    right: 14px;
-    bottom: -1px;
-    height: 2px;
-    background: var(--accent);
-    transform: scaleX(0);
-    transition: transform 0.35s var(--ease);
-}
-.zone-nav a:hover,
-.zone-nav a[aria-current] {
-    color: var(--accent-dark);
-}
-.zone-nav a[aria-current]::after {
-    transform: none;
-}
 .zone-part {
     padding-top: 64px;
-    scroll-margin-top: 104px;
+    scroll-margin-top: 80px;
 }
 .part-head {
     max-width: 800px;
@@ -1571,15 +1558,13 @@ body:not(.tour-on) .tour {
     gap: 20px;
 }
 
-/* A still of the real UI on a dotted tint. */
+/* Screenshots use the same neutral surface as other page components. */
 .shot-frame {
     display: grid;
     place-items: center;
     padding: 14px;
     border-radius: 8px;
-    background:
-        radial-gradient(circle at 1px 1px, rgb(11 138 126 / 22%) 1px, transparent 0) 0 0 / 14px 14px,
-        var(--tint);
+    background: var(--tint);
 }
 .shot-frame img {
     display: block;
@@ -1591,10 +1576,10 @@ body:not(.tour-on) .tour {
         0 14px 30px -18px rgb(24 24 27 / 45%);
 }
 
-/* Scenarios: two ways to watch, side by side, each opening on its real UI. The waveform card is wider: its window is. */
+/* Scenarios: equal cards with matched data, history and window rows. */
 .mode-cards {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.45fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 24px;
 }
 .mode-card {
@@ -1605,10 +1590,6 @@ body:not(.tour-on) .tour {
     border-radius: 12px;
     background: var(--paper);
     overflow: hidden;
-}
-.mode-chart {
-    border-color: rgb(11 138 126 / 45%);
-    box-shadow: 0 20px 44px -30px rgb(8 105 95 / 55%);
 }
 .mode-card header {
     display: flex;
@@ -1627,7 +1608,7 @@ body:not(.tour-on) .tour {
     padding: 2px 10px;
     border-radius: 999px;
     background: var(--tint);
-    color: var(--accent-dark);
+    color: var(--sampling-dark);
     font-size: 13px;
     line-height: 22px;
 }
@@ -1641,7 +1622,7 @@ body:not(.tour-on) .tour {
     border-bottom: 1px dashed var(--line);
 }
 .mode-rate strong {
-    color: var(--accent);
+    color: var(--sampling-accent);
     font: 600 34px/1.15 var(--mono);
     letter-spacing: -0.03em;
 }
@@ -1649,53 +1630,123 @@ body:not(.tour-on) .tour {
     color: var(--muted);
     font-size: 14px;
 }
-.mode-points {
-    margin: 16px 0 0;
-    padding: 0;
-    list-style: none;
+.mode-facts {
+    margin: 0;
 }
-.mode-points li {
-    position: relative;
-    padding: 5px 0 5px 22px;
+.mode-facts > div {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+    min-height: 72px;
+    padding-block: 16px;
+}
+.mode-facts > div + div {
+    border-top: 1px solid var(--line);
+}
+.mode-facts dt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 24px;
+}
+.mode-facts svg {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    color: var(--sampling-accent);
+}
+.mode-facts dd {
+    margin: 0;
+}
+.mode-facts strong {
+    display: block;
+    color: var(--ink);
     font-size: 15px;
-    line-height: 1.55;
+    font-weight: 500;
+    line-height: 24px;
 }
-.mode-points li::before {
-    content: "";
-    position: absolute;
-    left: 2px;
-    top: 11px;
-    width: 10px;
-    height: 6px;
-    border-left: 2px solid var(--accent);
-    border-bottom: 2px solid var(--accent);
-    transform: rotate(-45deg);
+.mode-facts dd span {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
 }
 .mode-silent {
     position: relative;
-    margin-top: 18px;
-    padding: 14px 16px 14px 40px;
-    border-radius: 8px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
+    align-items: center;
+    gap: 32px;
+    margin-top: 20px;
+    padding: 24px 28px 24px 44px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
     background: var(--tint);
-    font-size: 14px;
-    line-height: 1.55;
 }
 .mode-silent::before {
     content: "";
     position: absolute;
-    left: 16px;
-    top: 20px;
+    left: 20px;
+    top: 32px;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--sampling-accent);
     box-shadow: 0 0 0 4px var(--zone-glow);
 }
-.mode-silent strong {
-    display: block;
-    color: var(--accent-dark);
+.mode-silent h4 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 12px;
+    color: var(--sampling-dark);
+    font-size: 16px;
     font-weight: 600;
+    line-height: 24px;
 }
+.mode-silent h4 span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+}
+.mode-silent p {
+    margin-top: 6px;
+    font-size: 13px;
+    line-height: 1.65;
+}
+.silent-flow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+    list-style: none;
+}
+.silent-flow li {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--sampling-dark);
+    font-size: 12px;
+    text-align: center;
+}
+.silent-flow svg {
+    width: 24px;
+    height: 24px;
+}
+.silent-flow li + li::before {
+    content: "→";
+    position: absolute;
+    left: -16px;
+    top: 0;
+    color: var(--sampling-accent);
+    font-size: 18px;
+}
+
 .mode-shot {
     display: flex;
     align-items: center;
@@ -1714,6 +1765,15 @@ body:not(.tour-on) .tour {
     flex: 1;
     flex-direction: column;
     padding: 24px 28px 28px;
+}
+
+@media (min-width: 901px) and (max-width: 1240px) {
+    .mode-card header,
+    .mode-rate {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
 }
 
 /* Target states: three rows, each with its own mark and colour, clips alternating sides. */
@@ -1837,7 +1897,7 @@ body:not(.tour-on) .tour {
     width: 8px;
     height: 8px;
     border-radius: 2px;
-    background: var(--accent);
+    background: var(--sampling-accent);
 }
 .type-card p {
     margin-top: 6px;
@@ -1880,7 +1940,7 @@ body:not(.tour-on) .tour {
     width: 8px;
     height: 8px;
     border-radius: 2px;
-    background: var(--accent);
+    background: var(--sampling-accent);
 }
 .feature-grid span {
     display: block;
@@ -1904,16 +1964,6 @@ body:not(.tour-on) .tour {
     flex: 1;
     min-height: 300px;
     padding: 24px;
-}
-.chart-shot figcaption {
-    margin-top: 10px;
-    color: var(--muted);
-    font-size: 14px;
-}
-
-/* The header's marker turns teal while the zone is in view. */
-.header.in-zone .nav-marker {
-    background: #0b8a7e;
 }
 
 /* Zone motion: the scope trace draws itself in. */
@@ -2007,30 +2057,10 @@ body:not(.tour-on) .tour {
     }
 }
 
-/* The screen's divisions light up around the pointer. */
-.zone-bg::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background-image:
-        linear-gradient(rgb(11 138 126 / 34%) 1px, transparent 1px),
-        linear-gradient(90deg, rgb(11 138 126 / 34%) 1px, transparent 1px),
-        linear-gradient(rgb(11 138 126 / 16%) 1px, transparent 1px),
-        linear-gradient(90deg, rgb(11 138 126 / 16%) 1px, transparent 1px);
-    background-size: inherit;
-    background-position: inherit;
-    opacity: 0;
-    transition: opacity 0.5s ease;
-    -webkit-mask-image: radial-gradient(280px 200px at var(--zx, 50%) var(--zy, 0), #000, transparent);
-    mask-image: radial-gradient(280px 200px at var(--zx, 50%) var(--zy, 0), #000, transparent);
-}
-.zone-bg.lit::after {
-    opacity: 1;
-}
-
 /* The headline figures catch a glint as they come in. */
 .motion .zone-stats strong {
-    background: linear-gradient(100deg, var(--accent) 40%, #5ad1c1 50%, var(--accent) 60%) 100% 0 / 250% 100%;
+    background: linear-gradient(100deg, var(--sampling-accent) 40%, #5ad1c1 50%, var(--sampling-accent) 60%) 100% 0 /
+        250% 100%;
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -2044,12 +2074,12 @@ body:not(.tour-on) .tour {
 .motion .mode-silent::after {
     content: "";
     position: absolute;
-    left: 16px;
-    top: 20px;
+    left: 20px;
+    top: 32px;
     box-sizing: border-box;
     width: 8px;
     height: 8px;
-    border: 1.5px solid var(--accent);
+    border: 1.5px solid var(--sampling-accent);
     border-radius: 50%;
     animation: ping 2.4s ease-out infinite;
 }
@@ -2180,8 +2210,8 @@ body:not(.tour-on) .tour {
     }
     .motion .mode-card:hover,
     .motion .type-card:hover {
-        border-color: rgb(11 138 126 / 45%);
-        box-shadow: 0 26px 50px -30px rgb(8 105 95 / 55%);
+        border-color: #d4d4d8;
+        box-shadow: 0 20px 40px -30px rgb(24 24 27 / 28%);
     }
     .motion .mode-shot img {
         transition: scale 0.6s var(--ease);
@@ -2197,7 +2227,7 @@ body:not(.tour-on) .tour {
         transition-delay: calc(var(--i, 0) * 70ms), calc(var(--i, 0) * 70ms), 0s;
     }
     .motion .feature-grid li:hover {
-        background-color: var(--zone-bg);
+        background-color: var(--tint);
     }
     .motion .type-card h4::before,
     .motion .feature-grid strong::before {
@@ -2246,6 +2276,7 @@ body:not(.tour-on) .tour {
 
 @media (max-width: 900px) {
     .mode-cards,
+    .mode-silent,
     .chart-shots,
     .type-grid {
         grid-template-columns: minmax(0, 1fr);
@@ -2300,16 +2331,6 @@ body:not(.tour-on) .tour {
     }
     .zone-stats strong {
         font-size: 20px;
-    }
-    .zone-nav {
-        margin-top: 32px;
-    }
-    .zone-nav a {
-        padding-inline: 10px;
-    }
-    .zone-nav a::after {
-        left: 10px;
-        right: 10px;
     }
     .zone-part {
         padding-top: 44px;

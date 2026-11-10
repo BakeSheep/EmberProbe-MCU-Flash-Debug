@@ -9,7 +9,8 @@ const { scenario } = require("./helpers/scenario");
 const { render } = require("./helpers/render-webview");
 const { home, demoPage, origin } = require("../website/template");
 const { createSiteServer, base } = require("../website/serve");
-const { content } = require("../website/content");
+const { content, agentClients, mcpTools } = require("../website/content");
+const { TOOLS } = require("../src/mcp/tools");
 const { chapters } = require("../website/tour-data");
 const { scenes } = require("../website/capture/scenes");
 const { cjkText, covered } = require("../website/capture/fonts");
@@ -64,7 +65,12 @@ const pointCount = (c) =>
 const supportCount = (c) =>
     c.chapters.reduce(
         (total, chapter) =>
-            total + (chapter.support ? chapter.support.probes.items.length + chapter.support.chips.items.length : 0),
+            total +
+            (chapter.support
+                ? chapter.support.probes.items.length +
+                  chapter.support.chips.items.length +
+                  chapter.support.systems.items.length
+                : 0),
         0
     );
 
@@ -74,7 +80,12 @@ function testChapterPresentation() {
         try {
             const doc = dom.window.document;
             assert.ok(doc.querySelector("#config .support > h3").textContent.includes("OpenOCD"));
-            assert.equal(doc.querySelectorAll("#config .support-group > h4").length, 2);
+            assert.equal(doc.querySelectorAll("#config .support-group > h4").length, 3);
+            const systems = doc.querySelector("#config .support-group:last-of-type .pills");
+            assert.deepStrictEqual(
+                [...systems.children].map((item) => item.textContent),
+                ["Windows", "Linux", "macOS"]
+            );
             const flash = doc.querySelector("#flash");
             assert.equal(flash.querySelector(".chapter-side"), null);
             assert.equal(flash.querySelector(".points"), null);
@@ -94,7 +105,7 @@ function testHeroAndSupportPresentation() {
             assert.equal(doc.querySelectorAll(".hero-card picture").length, 1);
             assert.equal(doc.querySelectorAll(".hero-layer, .hero-layers").length, 0);
             assert.equal(doc.querySelector(".hero-visual figcaption"), null);
-            for (const list of doc.querySelectorAll("#config .pills")) {
+            for (const list of [...doc.querySelectorAll("#config .pills")].slice(0, 2)) {
                 assert.equal(list.lastElementChild.textContent, "…");
                 assert.equal(list.lastElementChild.getAttribute("aria-hidden"), "true");
             }
@@ -148,10 +159,7 @@ function testSamplingZone() {
                 parts.map((part) => part.id),
                 ["sampling-modes", "sampling-states", "variables", "waveform"]
             );
-            assert.deepStrictEqual(
-                [...section.querySelectorAll(".zone-nav a")].map((a) => a.getAttribute("href")),
-                parts.map((part) => `#${part.id}`)
-            );
+            assert.equal(section.querySelector(".zone-nav"), null);
             for (const part of parts) assert.ok(section.querySelector(`#${part.id}.zone-part`), part.id);
             assert.equal(section.querySelectorAll(".zone-stats li").length, zone.stats.length);
             // The sweep's bright trace shows through a mask the page defines once.
@@ -169,6 +177,9 @@ function testSamplingZone() {
                 assert.ok(card.querySelector(`.mode-shot img[src$="${zone.modes.cards[i].shot}-${lang}.webp"]`))
             );
             assert.equal(section.querySelectorAll(".mode-silent").length, 1);
+            assert.equal(section.querySelector(".mode-card .mode-silent"), null);
+            for (const card of cards) assert.equal(card.querySelectorAll(".mode-facts > div").length, 3);
+            assert.equal(section.querySelectorAll(".silent-flow li").length, 3);
 
             // Each target state is its own row with its own recording.
             const states = [...section.querySelectorAll(".states > .state")];
@@ -192,6 +203,44 @@ function testSamplingZone() {
             assert.equal(section.querySelectorAll('[role="tab"], pre, code').length, 0);
             for (const shot of zone.chart.shots)
                 assert.ok(section.querySelector(`img[src$="${shot.id}-${lang}.webp"]`));
+            assert.equal(section.querySelector(".chart-shot figcaption"), null);
+        } finally {
+            dom.window.close();
+        }
+    }
+}
+
+function testAgentCapabilities() {
+    const toolNames = TOOLS.map((tool) => tool.name).sort();
+    assert.deepStrictEqual(Object.values(mcpTools).flat().sort(), toolNames, "cover every tool exactly once");
+    for (const lang of ["zh", "en"]) {
+        const dom = new JSDOM(home(lang, "1.2.3-test"));
+        try {
+            const doc = dom.window.document;
+            const agent = doc.getElementById("agent");
+            assert.equal(agent.querySelector(".talk"), null);
+            const clients = [...agent.querySelectorAll(".client-logos li")];
+            assert.deepStrictEqual(
+                clients.map((client) => client.textContent),
+                agentClients.map(([, name]) => name)
+            );
+            for (const client of clients) {
+                const image = client.querySelector("img");
+                const asset = path.join(__dirname, "../website", lang === "en" ? "en" : "", image.getAttribute("src"));
+                assert.ok(fs.existsSync(asset), asset);
+                assert.equal(image.getAttribute("alt"), "", "the adjacent client name labels the logo");
+            }
+            assert.deepStrictEqual(
+                [...agent.querySelectorAll(".capability-tools code")].map((code) => code.textContent).sort(),
+                toolNames,
+                "both languages render the complete MCP catalogue"
+            );
+            assert.equal(agent.querySelectorAll(".capability-card").length, 6);
+            assert.equal(agent.querySelectorAll(".capability-tool-group").length, Object.keys(mcpTools).length);
+            for (const details of agent.querySelectorAll("details.capability-tools")) {
+                assert.ok(details.querySelector("summary").textContent);
+                assert.equal(details.open, false, "tool details start collapsed");
+            }
         } finally {
             dom.window.close();
         }
@@ -329,6 +378,10 @@ async function testServer() {
     );
     scenario("every chapter has its recording and matching steps", testChaptersMatchRecordings);
     scenario("sampling is one themed zone with modes, states, tiled types and stills", testSamplingZone);
+    scenario(
+        "Agent clients have local logos and both languages show the complete MCP catalogue",
+        testAgentCapabilities
+    );
     scenario("hero tilt responds on desktop and respects narrow, touch and reduced motion", testHeroMotion);
     scenario("guided tour targets exist in the real pages", testTourTargetsExist);
     scenario("the font subset covers both pages and the tour", testFontsCoverPages);
