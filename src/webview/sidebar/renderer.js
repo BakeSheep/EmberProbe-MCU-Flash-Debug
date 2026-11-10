@@ -112,21 +112,12 @@ const valueTree = EmberProbeValueTree.create({
         api.postMessage({ type: "resolveCompositeLayout", name, version: state.version });
     },
     togglePointee: (entry) => sbTogglePointee(entry),
-    decorateLeaf: (row, name, leaf) => {
-        dataBreakpoints.decorate(row, leaf.path);
-        return name;
-    },
+    decorateLeaf: (row, name) => name,
     scalarCell: (cell, name) => {
         cell.dataset.valueName = name;
     }
 });
-const dataBreakpoints = EmberProbeSidebarDataBreakpoints.create({
-    state,
-    box: liveBox,
-    post: (message) => api?.postMessage(message),
-    t: (key, params) => t(key, params),
-    notice: (message) => setNotice("live", "dataBreakpoint", { level: "error", title: message })
-});
+const dataBreakpoints = EmberProbeSidebarDataBreakpoints.create({ state, box: liveBox, api, t, setNotice });
 const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
 const writes = EmberProbeWriteList.create({
     box: writeBox,
@@ -706,7 +697,6 @@ function sbToggle(entry) {
     saveSbUi();
 }
 function renderValues() {
-    dataBreakpoints.close();
     valueTree.reset();
     liveBox.textContent = "";
     // Expanded pointees render inside their pointer rows while composites and rows are built.
@@ -748,13 +738,11 @@ function renderValues() {
         state.watch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
     );
     sbWatchReorder?.refresh();
-    dataBreakpoints.refreshMarks();
     valueTree.syncRuntimeExpansions();
 }
 function sbRenderScalarRow(item) {
     const row = document.createElement("div");
     row.className = "value-row";
-    dataBreakpoints.decorate(row, item.name);
     const n = document.createElement("span");
     n.className = "value-name";
     EmberProbeRuntime.renderVariableName(n, sbDisplayName(item), item.name);
@@ -1196,7 +1184,6 @@ function updateValues(samples) {
     valueRefresh.schedule();
 }
 function refreshDisplayedValues() {
-    dataBreakpoints.refreshMarks();
     const items = new Map(state.watch.map((item) => [item.name, item]));
     document.querySelectorAll("[data-value-name]").forEach((el) => {
         EmberProbeRuntime.setValueCell(
@@ -1496,8 +1483,7 @@ EmberProbePageZoom.create({
     }
 });
 window.EmberProbeMessages.connect(window, {
-    sidebarDataBreakpoints: (message) => dataBreakpoints.receive(message),
-    sidebarDataBreakpointError: (message) => dataBreakpoints.receive(message),
+    ...dataBreakpoints.routes,
     memoryAnalysis: function (m) {
         memoryView?.receive(m);
     },

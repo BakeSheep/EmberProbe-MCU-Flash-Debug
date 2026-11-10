@@ -14,8 +14,10 @@
         remove: "M3.5 5h9M6.5 5V3.5h3V5M4.8 5l.6 7.5h5.2L11.2 5"
     };
     const stateOf = (entry) => (!entry.enabled ? "disabled" : entry.verified ? "enabled" : "failed");
-    function create({ state, box, post, t, notice }) {
+    function create({ state, box, api, t, setNotice }) {
         const doc = box.ownerDocument;
+        const post = (message) => api?.postMessage(message);
+        const notice = (title) => setNotice("live", "dataBreakpoint", { level: "error", title });
         state.dataBreakpoints = {
             entries: [],
             sessionId: null,
@@ -358,7 +360,21 @@
                 if (failed) notice(failed.message);
             }
         }
-        return { decorate, refreshMarks, receive, close };
+        // Rows are rebuilt by full renders and by lazy composite/pointer expansion. Watching the list
+        // keeps marks, leaf decoration and the open menu's anchor in step without hooks at each site.
+        function rendered() {
+            for (const row of box.querySelectorAll("[data-path]:not([data-breakpoint-path])"))
+                decorate(row, row.dataset.path);
+            // Scalar watch cards are identified by their value cell.
+            for (const cell of box.querySelectorAll(".value-row:not([data-breakpoint-path]) > [data-value-name]"))
+                decorate(cell.parentElement, cell.dataset.valueName);
+            const anchor = get().target?.anchor;
+            if (anchor && !anchor.isConnected) close();
+            refreshMarks();
+        }
+        new doc.defaultView.MutationObserver(rendered).observe(box, { childList: true, subtree: true });
+        const routes = { sidebarDataBreakpoints: receive, sidebarDataBreakpointError: receive };
+        return { decorate, refreshMarks, receive, close, routes };
     }
     return { create };
 });

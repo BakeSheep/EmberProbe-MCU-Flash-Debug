@@ -193,7 +193,7 @@ function serviceFixture() {
         assert.strictEqual(pauses, 0);
         assert.strictEqual(f.calls.length, 1);
     });
-    await scenario("variable menu handles paused creation, marks, keyboard navigation and stale replies", () => {
+    await scenario("variable menu handles paused creation, marks, keyboard navigation and stale replies", async () => {
         const view = render(getModernWebviewContent({}, "zh"));
         try {
             const status = {
@@ -206,6 +206,8 @@ function serviceFixture() {
                 entries: []
             };
             view.send({ type: "sidebarWatchList", items: [{ name: "counter", type: "u32", address: 0x20000000 }] });
+            // Rows are decorated by the list observer after each render.
+            await Promise.resolve();
             view.send(status);
             const row = view.document.querySelector('[data-breakpoint-path="counter"]');
             const open = () =>
@@ -274,7 +276,7 @@ function serviceFixture() {
             view.close();
         }
     });
-    await scenario("running menu pauses first, then queries storage; unsupported variables explain why", () => {
+    await scenario("running menu pauses first, then queries storage; unsupported variables explain why", async () => {
         const view = render(getModernWebviewContent({}, "en"));
         try {
             const status = {
@@ -286,6 +288,7 @@ function serviceFixture() {
                 entries: []
             };
             view.send({ type: "sidebarWatchList", items: [{ name: "counter", type: "u32" }] });
+            await Promise.resolve();
             view.send(status);
             const row = view.document.querySelector('[data-breakpoint-path="counter"]');
             row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
