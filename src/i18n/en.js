@@ -912,10 +912,7 @@ module.exports = Object.freeze({
     "approval.skillsCustom":
         "An agent is running EmberProbe skill scripts from a location the extension does not manage. Allow the current contents to call the Agent Bridge?",
     "agent.auditChannel": "EmberProbe Agent Bridge",
-    "agent.accessEnabled": "Agent access is enabled for this workspace",
-    "agent.accessDisabled": "Agent access is not enabled for this workspace",
-    "agent.enable": "Enable",
-    "agent.disable": "Disable",
+    "agent.workspaceAccess": "Workspace Agent access",
     "agent.legacyGlobal": "Legacy global EmberProbe skills found (version {version}); they are no longer maintained",
     "agent.cleanup": "Clean up",
     "mcp.pickClient": "Choose the client to install the EmberProbe MCP server into",

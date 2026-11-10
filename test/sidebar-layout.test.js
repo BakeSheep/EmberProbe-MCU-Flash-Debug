@@ -145,6 +145,59 @@ try {
 } finally {
     view.close();
 }
+scenario("Workspace access stays first, follows host state and can retry failed changes", () => {
+    const page = render(getModernWebviewContent({}, "zh"));
+    try {
+        const doc = page.document;
+        const control = doc.getElementById("agentWorkspaceAccess");
+        const row = doc.querySelector("#agentConfigSection .agent-block > :first-child");
+        assert.ok(row.contains(control));
+        assert.strictEqual(row.nextElementSibling.id, "mcpClientsSection");
+        assert.strictEqual(control.getAttribute("aria-labelledby"), "agentWorkspaceAccessLabel");
+        assert.strictEqual(doc.getElementById("agentWorkspaceAccessLabel").textContent, "工作区 Agent 访问");
+        assert.strictEqual(control.disabled, true, "wait for authoritative access and workspace availability");
+        page.send({ type: "agentAccess", access: "unset", enabled: false, card: "" });
+        assert.strictEqual(control.disabled, true);
+        page.send({ type: "agentPermissions", fullAccess: false, available: true });
+        assert.strictEqual(control.disabled, false, "the switch exists even without skills or MCP configuration");
+        control.click();
+        assert.deepStrictEqual(page.messages.at(-1), {
+            type: "executeCommand",
+            cmd: "mcu-vscode.enableAgentAccess"
+        });
+        const count = page.messages.length;
+        control.click();
+        assert.strictEqual(page.messages.length, count, "ignore repeated clicks while saving");
+        assert.strictEqual(control.getAttribute("aria-checked"), "false", "do not assume enabling succeeded");
+        page.send({ type: "agentPermissions", fullAccess: false, available: true });
+        assert.strictEqual(control.disabled, true, "permission refresh does not finish the access command");
+        page.send({ type: "commandError", cmd: "mcu-vscode.enableAgentAccess" });
+        assert.strictEqual(control.disabled, false, "failed changes can be retried");
+        control.click();
+        page.send({ type: "agentAccess", enabled: true, card: "enabled" });
+        page.send({ type: "commandSuccess", cmd: "mcu-vscode.enableAgentAccess" });
+        assert.strictEqual(control.getAttribute("aria-checked"), "true");
+        assert.strictEqual(control.disabled, false);
+        assert.strictEqual(doc.querySelector('#noticeGlobal [data-notice-id="agent-access"]'), null);
+        control.click();
+        assert.strictEqual(page.messages.at(-1).cmd, "mcu-vscode.disableAgentAccess");
+        page.send({ type: "agentAccess", enabled: false, card: "disabled" });
+        page.send({ type: "commandSuccess", cmd: "mcu-vscode.disableAgentAccess" });
+        assert.strictEqual(control.getAttribute("aria-checked"), "false");
+        page.send({ type: "agentAccess", access: "unset", enabled: true, card: "" });
+        assert.strictEqual(control.getAttribute("aria-checked"), "true", "show access enabled by skills or MCP");
+        page.send({ type: "agentPermissions", fullAccess: false, available: false });
+        assert.strictEqual(control.disabled, true, "no access changes without an open, trusted workspace");
+        page.send({ type: "setLang", lang: "en" });
+        assert.strictEqual(doc.getElementById("agentWorkspaceAccessLabel").textContent, "Workspace Agent access");
+        assert.strictEqual(control.getAttribute("aria-checked"), "true", "language changes preserve host state");
+        page.send({ type: "agentAccess", enabled: false, legacyGlobal: { version: "1.0.0" } });
+        assert.ok(doc.querySelector('#noticeGlobal [data-notice-id="agent-legacy"]'));
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+});
 scenario("Full-access switch uses confirmed host state and reports failure without retaining a grant", () => {
     const page = render(getModernWebviewContent({}, "zh"));
     try {

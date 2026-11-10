@@ -1233,6 +1233,10 @@ function renderAgentAccess(m) {
     lastAgentAccess = m || lastAgentAccess;
     agentControls.renderAccess(lastAgentAccess);
 }
+function finishCommand(m) {
+    agentControls.commandFinished(m);
+    setStat("ready", "sb.ready");
+}
 function chipStatus(m) {
     m = m || {};
     lastChip = m;
@@ -1515,15 +1519,9 @@ window.EmberProbeMessages.connect(window, {
         setProbeDriverBusy(!!m.busy);
     },
     // A command's outcome is a notice in its card; the footer only goes back to ready.
-    commandSuccess: function () {
-        setStat("ready", "sb.ready");
-    },
-    commandCancelled: function () {
-        setStat("ready", "sb.ready");
-    },
-    commandError: function () {
-        setStat("ready", "sb.ready");
-    },
+    commandSuccess: finishCommand,
+    commandCancelled: finishCommand,
+    commandError: finishCommand,
     sidebarWatchList: function (m) {
         const incoming = (m.items || []).slice();
         for (const item of state.watch)

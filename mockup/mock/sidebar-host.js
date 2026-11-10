@@ -39,6 +39,7 @@
         var rtt = { running: false, terminals: false, saving: false, timestamps: false };
         var initialized = false;
         var agentFullAccess = false;
+        var agentAccessEnabled = true;
         var mcpClientStates = {
             claude: "installed",
             codex: "outdated",
@@ -94,6 +95,7 @@
         }
 
         function sendInitialState() {
+            send({ type: "agentAccess", enabled: agentAccessEnabled });
             send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
             send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
             send({
@@ -530,10 +532,16 @@
                     sendMcpClients();
                     break;
                 case "getAgentPermissions":
-                    send({ type: "agentPermissions", fullAccess: agentFullAccess, available: true });
+                    send({
+                        type: "agentPermissions",
+                        fullAccess: agentFullAccess && agentAccessEnabled,
+                        available: true
+                    });
                     break;
                 case "setAgentFullAccess":
                     agentFullAccess = message.enabled === true;
+                    if (agentFullAccess) agentAccessEnabled = true;
+                    send({ type: "agentAccess", enabled: agentAccessEnabled });
                     send({ type: "agentPermissions", fullAccess: agentFullAccess, available: true });
                     break;
                 case "initCheck":
@@ -767,6 +775,12 @@
 
         function handleExecute(cmd) {
             switch (cmd) {
+                case "mcu-vscode.enableAgentAccess":
+                case "mcu-vscode.disableAgentAccess":
+                    agentAccessEnabled = cmd === "mcu-vscode.enableAgentAccess";
+                    send({ type: "agentAccess", enabled: agentAccessEnabled });
+                    send({ type: "commandSuccess", cmd: cmd });
+                    break;
                 case "mcu-vscode.download":
                     simulateDownload(cmd);
                     break;

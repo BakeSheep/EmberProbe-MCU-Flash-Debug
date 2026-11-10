@@ -853,10 +853,7 @@ module.exports = Object.freeze({
     "approval.skillsCustom":
         "Agent 正在从扩展未管理的位置运行 EmberProbe skills 脚本，是否允许当前内容调用 Agent Bridge？",
     "agent.auditChannel": "EmberProbe Agent Bridge",
-    "agent.accessEnabled": "此工作区已启用 Agent 访问",
-    "agent.accessDisabled": "此工作区未启用 Agent 访问",
-    "agent.enable": "启用",
-    "agent.disable": "停用",
+    "agent.workspaceAccess": "工作区 Agent 访问",
     "agent.legacyGlobal": "检测到旧版全局 EmberProbe skills（版本 {version}），已不再维护",
     "agent.cleanup": "清理",
     "mcp.pickClient": "选择要安装 EmberProbe MCP 服务器的客户端",

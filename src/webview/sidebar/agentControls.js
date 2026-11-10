@@ -6,7 +6,30 @@
     function create({ document, api, state, uiState, setNotice, clearNotice, t }) {
         const control = document.getElementById("agentFullAccess");
         const error = document.getElementById("agentPermissionError");
+        const access = document.getElementById("agentWorkspaceAccess");
+        state.agentAccess = null;
+        state.agentAccessBusy = false;
         state.agentPermissions = { fullAccess: false, available: false };
+        function updateAccess() {
+            access.classList.toggle("status-ready", !!state.agentAccess);
+            access.setAttribute("aria-checked", String(state.agentAccess?.enabled === true));
+            access.disabled = !state.agentAccess || !state.agentPermissions.available || state.agentAccessBusy;
+        }
+        access.onclick = () => {
+            if (access.disabled || !api) return;
+            state.agentAccessBusy = true;
+            access.classList.add("animate");
+            updateAccess();
+            api.postMessage({
+                type: "executeCommand",
+                cmd: state.agentAccess.enabled ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
+            });
+        };
+        function commandFinished(message) {
+            if (!["mcu-vscode.enableAgentAccess", "mcu-vscode.disableAgentAccess"].includes(message.cmd)) return;
+            state.agentAccessBusy = false;
+            updateAccess();
+        }
         control.onclick = () => {
             if (control.disabled || !api) return;
             control.disabled = true;
@@ -18,6 +41,7 @@
             control.disabled = !state.agentPermissions.available || message.busy === true;
             error.textContent = message.error || "";
             error.hidden = !message.error;
+            updateAccess();
         };
         const localized = (tag, key, className) => {
             const element = document.createElement(tag);
@@ -80,22 +104,8 @@
         }
         function renderAccess(message) {
             refresh();
-            const card = message?.card || "";
-            if (!card) clearNotice("global", "agent-access");
-            else
-                setNotice("global", "agent-access", {
-                    level: "info",
-                    text: { key: card === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
-                    actions: [
-                        {
-                            label: { key: card === "enabled" ? "agent.disable" : "agent.enable" },
-                            primary: card !== "enabled",
-                            command:
-                                card === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
-                        }
-                    ],
-                    dismissible: false
-                });
+            state.agentAccess = message ? { enabled: message.enabled === true } : null;
+            updateAccess();
             const old = message?.legacyGlobal;
             if (!old) clearNotice("global", "agent-legacy");
             else
@@ -127,7 +137,7 @@
         });
         refresh();
         api?.postMessage({ type: "getMcpClients" });
-        return { receive, renderSkills, renderAccess, renderClients };
+        return { receive, renderSkills, renderAccess, renderClients, commandFinished };
     }
     return { create };
 });
