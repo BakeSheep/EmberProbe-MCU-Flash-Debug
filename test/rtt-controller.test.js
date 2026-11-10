@@ -1669,8 +1669,11 @@ function makeController(host, options = {}) {
         await controller.start();
         assert.strictEqual(controller.state, "running");
         assert.deepStrictEqual(controller.status().missingChannels, [5]);
+        const listed = twoUp.up.map(({ index, name, size }) => ({ index, name, size }));
+        assert.deepStrictEqual(controller.status().firmwareChannels, listed, "every listed channel, read or not");
         await controller.stop();
         assert.deepStrictEqual(controller.status().missingChannels, []);
+        assert.deepStrictEqual(controller.status().firmwareChannels, listed, "the picker keeps them after stop");
     });
 
     await scenario("a shared host busy for one transaction does not fail the start", async () => {

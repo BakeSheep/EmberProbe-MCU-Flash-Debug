@@ -880,6 +880,7 @@ const panelChannels = (panel) =>
         const { service, posted } = makeService({ settings });
         service.postStatus();
         assert.deepStrictEqual(posted.at(-1).view, {
+            selectedChannels: [0],
             terminals: 0,
             timestamps: false,
             log: { enabled: false, directory: "C:/logs" }
@@ -1120,6 +1121,112 @@ const panelChannels = (panel) =>
         assert.deepStrictEqual(updates.at(-1), { key: "rtt.timestamps", value: false, target: 1 });
         service.dispose();
     });
+    await scenario(
+        "the channel picker offers firmware channels, keeps options and restarts a running RTT",
+        async () => {
+            const vscode = fakeVscode();
+            const values = { "rtt.channels": [{ index: 0, mode: "trim" }] };
+            const updates = [];
+            const picks = [];
+            let choose = () => undefined;
+            let typed;
+            vscode.ConfigurationTarget = { Workspace: 2, Global: 1 };
+            vscode.workspace = {
+                workspaceFolders: [{ uri: { fsPath: "C:/work" } }],
+                getConfiguration: () => ({
+                    get: (key, fallback) => values[key] ?? fallback,
+                    update: async (key, value, target) => {
+                        values[key] = value;
+                        updates.push({ key, value, target });
+                    }
+                })
+            };
+            vscode.window.showQuickPick = async (items, options) => {
+                picks.push({ items, options });
+                return choose(items);
+            };
+            vscode.window.showInputBox = async (options) => {
+                assert.strictEqual(options.validateInput("1, x"), "rtt.channelOtherInvalid");
+                assert.strictEqual(options.validateInput("3，4"), null, "a full-width comma also separates");
+                return typed;
+            };
+            const { service, controller, notices, posted } = makeService({
+                vscode,
+                channels: twoChannels,
+                settings: {
+                    get channels() {
+                        return values["rtt.channels"];
+                    }
+                }
+            });
+            const status = controller.status.bind(controller);
+            controller.status = () => ({ ...status(), firmwareChannels: [] });
+            // Before RTT ever ran only the configured channels and the free-entry item are offered.
+            assert.strictEqual(await service.selectChannels(), false, "a cancelled pick changes nothing");
+            assert.deepStrictEqual(
+                picks[0].items.map((item) => [item.label, item.picked === true]),
+                [
+                    ["rtt.channelPick", true],
+                    ["rtt.channelOther", false]
+                ]
+            );
+            assert.strictEqual(picks[0].options.placeHolder, "rtt.channelsPlaceholderUnknown");
+            assert.deepStrictEqual(updates, []);
+
+            await service.startCommand();
+            controller.status = () => ({
+                ...status(),
+                firmwareChannels: twoChannels.up.map(({ index, name, size }) => ({ index, name, size }))
+            });
+            let starts = 0;
+            const start = controller.start.bind(controller);
+            controller.start = (...args) => (starts++, start(...args));
+            choose = (items) => items.filter((item) => item.index !== undefined);
+            assert.strictEqual(await service.selectChannels(), true);
+            const offered = picks.at(-1).items;
+            assert.deepStrictEqual(
+                offered.map((item) => [item.index, item.description, item.picked]),
+                [
+                    [0, "Terminal", true],
+                    [2, "Log", false],
+                    [undefined, undefined, undefined]
+                ]
+            );
+            assert.strictEqual(offered[1].detail, "rtt.channelSize");
+            assert.deepStrictEqual(updates.pop(), {
+                key: "rtt.channels",
+                value: [{ index: 0, mode: "trim" }, 2],
+                target: 2
+            });
+            assert.strictEqual(starts, 1, "a running RTT restarts with the new channels");
+            assert.strictEqual(controller.status().state, "running");
+            assert.deepStrictEqual(posted.at(-1).view.selectedChannels, [0, 2], "the card shows the new selection");
+
+            assert.strictEqual(await service.selectChannels(), true, "the same selection is a no-op");
+            assert.deepStrictEqual(updates, []);
+            assert.strictEqual(starts, 1);
+
+            // A channel the firmware has not listed can still be typed in; it is marked as not listed.
+            typed = "5";
+            choose = (items) => items.filter((item) => item.index === 2 || item.other);
+            await service.stopCommand();
+            assert.strictEqual(await service.selectChannels(), true);
+            assert.deepStrictEqual(values["rtt.channels"], [2, 5]);
+            assert.strictEqual(starts, 1, "a stopped RTT is not started by the picker");
+            assert.strictEqual(await service.selectChannels(), true);
+            assert.strictEqual(picks.at(-1).items.find((item) => item.index === 5).description, "rtt.channelNotListed");
+
+            choose = () => [];
+            assert.strictEqual(await service.selectChannels(), false);
+            assert.deepStrictEqual(notices.at(-1), { level: "warning", key: "rtt.channelsNone", params: { max: 16 } });
+            typed = Array.from({ length: 17 }, (_, index) => index + 20).join(",");
+            choose = (items) => items.filter((item) => item.other);
+            assert.strictEqual(await service.selectChannels(), false);
+            assert.strictEqual(notices.at(-1).key, "rtt.channelsTooMany");
+            assert.deepStrictEqual(values["rtt.channels"], [2, 5], "a rejected selection leaves the setting alone");
+            service.dispose();
+        }
+    );
     await scenario("composition resolves workspace log paths and forwards lifecycle statuses", async () => {
         const vscode = fakeVscode();
         const values = { "rtt.logFile.enabled": true, "rtt.logFile.directory": "logs" };

@@ -137,6 +137,10 @@
         "title": "EmberProbe: 切换 RTT 时间戳"
       },
       {
+        "command": "mcu-vscode.rttSelectChannels",
+        "title": "EmberProbe: 选择 RTT 通道"
+      },
+      {
         "command": "mcu-vscode.rttClearTerminal",
         "title": "EmberProbe: 清空 RTT 终端",
         "icon": "$(clear-all)"

@@ -55,7 +55,9 @@
         svg.append(title, path);
         return svg;
     }
-    function create({ api, t, uiState }) {
+    // Telemetry that only says RTT has not sampled yet is not worth a notice; the cell's hover still says it.
+    const QUIET_TELEMETRY = new Set(["RTT_TELEMETRY_PENDING", "RTT_NOT_RUNNING"]);
+    function create({ api, t, uiState, setNotice, clearNotice }) {
         const section = document.getElementById("rttSection"),
             stateIcon = document.getElementById("rttState"),
             label = document.getElementById("rttLabel"),
@@ -63,12 +65,19 @@
             terminals = document.getElementById("rttTerminals"),
             saveLog = document.getElementById("rttSaveLog"),
             timestamps = document.getElementById("rttTimestamps"),
-            logPath = document.getElementById("rttLogPath"),
+            channelPick = document.getElementById("rttChannelPick"),
             channels = document.getElementById("rttChannels");
         if (!section || !label || !toggle || !channels) return null;
         uiState.rtt ||= { state: "stopped" };
         const state = uiState.rtt;
         let busy = false;
+        // Channel explanations go to the card's shared notice box, never as loose text in the list.
+        let shownNotices = new Set();
+        function syncNotices(next) {
+            for (const id of shownNotices) if (!next.has(id)) clearNotice?.("rtt", id);
+            for (const [id, notice] of next) setNotice?.("rtt", id, notice);
+            shownNotices = new Set(next.keys());
+        }
         // The reason lives in the notice box and the terminal; the label only names the state.
         function labelText(message, current) {
             if (current === "running") return t("rtt.running", { n: (message.channels?.up || []).length });
@@ -92,7 +101,7 @@
             const labels = MODE_LABELS[mode];
             return labels ? t(labels.label) : mode || t("rtt.metricUnknown");
         }
-        function channelDiagnostics(message, channel, buffer) {
+        function channelDiagnostics(message, channel, buffer, notices) {
             const diagnostic = document.createElement("div");
             diagnostic.className = "rtt-ch-diagnostics";
             const unknown = t("rtt.metricUnknown");
@@ -112,7 +121,6 @@
                 cell.append(key, shown);
                 metrics.append(cell);
             };
-            const notes = [];
             const rate = message.state === "running" ? buffer?.rateBytesPerSecond : null;
             metric("rtt.metric.rate", Number.isFinite(rate) && rate >= 0 ? `${Math.round(rate)} B/s` : null);
             const received = buffer?.receivedBytes;
@@ -138,11 +146,16 @@
                     t("rtt.targetOccupancyHint")
                 );
             } else {
-                // The reason is the same for every channel; the list shows it once below the channels.
+                // The reason is the same for every channel, so the notice box shows it once.
                 const reason = TELEMETRY_REASONS[telemetry?.reason];
-                const why = t("rtt.targetOccupancyUnknown", { reason: reason ? t(reason) : unknown });
-                metric("rtt.metric.occupancy", null, why);
-                diagnostic.dataset.occupancyNote = why;
+                const params = { reason: reason ? t(reason) : unknown };
+                metric("rtt.metric.occupancy", null, t("rtt.targetOccupancyUnknown", params));
+                if (message.state === "running" && !QUIET_TELEMETRY.has(telemetry?.reason))
+                    notices.set("rtt-occupancy", {
+                        level: "info",
+                        dismissible: false,
+                        text: { key: "rtt.targetOccupancyUnknown", params }
+                    });
             }
             const evicted = buffer?.start;
             metric(
@@ -150,28 +163,26 @@
                 Number.isSafeInteger(evicted) ? byteSize(evicted) : null,
                 t("rtt.targetLossUnknown")
             );
-            if (channel.modeState === "pending" || channel.modeState === "mismatch")
-                notes.push({
-                    warn: true,
-                    text: t(channel.modeState === "pending" ? "rtt.modePending" : "rtt.modeMismatch", {
-                        desired: modeText(channel.desiredMode),
-                        actual: modeText(channel.mode)
-                    })
+            if (message.state === "running" && (channel.modeState === "pending" || channel.modeState === "mismatch"))
+                notices.set(`rtt-mode-${channel.index}`, {
+                    level: "warning",
+                    dismissible: false,
+                    title: { key: "rtt.channel", params: { n: channel.index } },
+                    text: {
+                        key: channel.modeState === "pending" ? "rtt.modePending" : "rtt.modeMismatch",
+                        params: { desired: modeText(channel.desiredMode), actual: modeText(channel.mode) }
+                    }
                 });
             diagnostic.append(metrics);
-            for (const note of notes) {
-                const line = document.createElement("div");
-                line.className = "rtt-ch-note" + (note.warn ? " warn" : "");
-                line.textContent = note.text;
-                diagnostic.append(line);
-            }
             return diagnostic;
         }
         // Channel names come from the firmware, so they render as text nodes, never as markup.
         function renderChannels(message) {
             channels.replaceChildren();
+            const notices = new Map();
             const up = message.channels?.up || [];
             if (!up.length) {
+                syncNotices(notices);
                 const empty = document.createElement("div");
                 empty.className = "empty";
                 empty.dataset.i18n = "rtt.empty";
@@ -181,7 +192,6 @@
             }
             const down = new Map((message.channels?.down || []).map((channel) => [channel.index, channel]));
             const buffers = new Map((message.buffers || []).map((buffer) => [buffer.channel, buffer]));
-            const shared = new Set();
             for (const channel of up) {
                 const row = document.createElement("div");
                 row.className = "rtt-ch";
@@ -207,17 +217,10 @@
                 dot.setAttribute("role", "img");
                 dot.setAttribute("aria-label", link);
                 dot.title = link;
-                const diagnostics = channelDiagnostics(message, channel, buffer);
-                if (diagnostics.dataset.occupancyNote) shared.add(diagnostics.dataset.occupancyNote);
-                row.append(dot, diagnostics);
+                row.append(dot, channelDiagnostics(message, channel, buffer, notices));
                 channels.append(row);
             }
-            for (const text of shared) {
-                const note = document.createElement("div");
-                note.className = "rtt-ch-note rtt-channels-note";
-                note.textContent = text;
-                channels.append(note);
-            }
+            syncNotices(notices);
         }
         function renderOption(button, enabled) {
             if (!button) return;
@@ -229,12 +232,8 @@
             if (terminals) terminals.disabled = !(view.terminals > 0);
             renderOption(saveLog, view.log?.enabled === true);
             renderOption(timestamps, view.timestamps === true);
-            if (!logPath) return;
-            const directory = view.log?.directory || "";
-            logPath.hidden = view.log?.enabled !== true;
-            logPath.classList.toggle("warn", !directory);
-            logPath.textContent = directory ? t("rtt.logPath", { path: directory }) : t("rtt.logNoDirectory");
-            logPath.title = directory;
+            if (channelPick)
+                channelPick.textContent = t("rtt.channels", { list: (view.selectedChannels || [0]).join(", ") });
         }
         function render(message) {
             state.status = message = message || state.status || {};

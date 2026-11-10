@@ -19,6 +19,7 @@ const path = require("path");
 const { SYSTEM_CLOCK } = require("../samplingClock");
 const { AnsiStripper, createRttFormatter } = require("../rttLineFormatter");
 const { RttLogWriter } = require("./rttLogWriter");
+const { MAX_SERVER_COMMANDS: MAX_CHANNELS } = require("../rttControl");
 
 // Terminal responsiveness versus host wakeups; every read is a plain buffer access, so this stays cheap.
 const POLL_INTERVAL_MS = 50;
@@ -192,6 +193,73 @@ class RttTerminalService {
         this.settingsChanged();
     }
 
+    // Picks the up channels to read from what the firmware listed last plus the configured ones. Configured entries
+    // keep their object options; a running attachment restarts so the new set applies.
+    async selectChannels() {
+        const config = this._vscode.workspace.getConfiguration("emberprobe");
+        const configured = channelEntries(config.get("rtt.channels", [0]));
+        const firmware = new Map((this._controller().status()?.firmwareChannels || []).map((ch) => [ch.index, ch]));
+        const selected = new Set(configured.map((entry) => entry.index));
+        const indices = [...new Set([...firmware.keys(), ...selected])].sort((a, b) => a - b);
+        const items = indices.map((index) => {
+            const channel = firmware.get(index);
+            return {
+                label: this._t("rtt.channelPick", { n: index }),
+                description: channel
+                    ? channel.name || this._t("rtt.channelDefault")
+                    : firmware.size
+                      ? this._t("rtt.channelNotListed")
+                      : "",
+                detail: channel?.size ? this._t("rtt.channelSize", { size: channel.size }) : undefined,
+                picked: selected.has(index),
+                index
+            };
+        });
+        const other = { label: this._t("rtt.channelOther"), alwaysShow: true, other: true };
+        const picked = await this._vscode.window.showQuickPick([...items, other], {
+            canPickMany: true,
+            title: this._t("rtt.channelsTitle"),
+            placeHolder: this._t(firmware.size ? "rtt.channelsPlaceholder" : "rtt.channelsPlaceholderUnknown")
+        });
+        if (!picked) return false;
+        const next = new Set(picked.filter((item) => !item.other).map((item) => item.index));
+        if (picked.some((item) => item.other)) {
+            const typed = await this._vscode.window.showInputBox({
+                title: this._t("rtt.channelsTitle"),
+                prompt: this._t("rtt.channelOtherPrompt"),
+                validateInput: (value) => (parseTypedChannels(value) ? null : this._t("rtt.channelOtherInvalid"))
+            });
+            if (typed === undefined) return false;
+            for (const index of parseTypedChannels(typed)) next.add(index);
+        }
+        this._clearNotice("rtt-channels");
+        if (!next.size || next.size > MAX_CHANNELS) {
+            this._notice(
+                {
+                    level: "warning",
+                    key: next.size ? "rtt.channelsTooMany" : "rtt.channelsNone",
+                    params: { max: MAX_CHANNELS }
+                },
+                "rtt-channels"
+            );
+            return false;
+        }
+        const order = [...next].sort((a, b) => a - b);
+        if (order.length === selected.size && order.every((index) => selected.has(index))) return true;
+        const kept = new Map(configured.map((entry) => [entry.index, entry.raw]));
+        await config.update(
+            "rtt.channels",
+            order.map((index) => kept.get(index) ?? index),
+            this._configurationTarget()
+        );
+        this._postStatus();
+        if (this.state !== "stopped") {
+            await this.stopCommand();
+            await this.startCommand();
+        }
+        return true;
+    }
+
     _configurationTarget() {
         return this._vscode.workspace.workspaceFolders?.length
             ? this._vscode.ConfigurationTarget.Workspace
@@ -248,6 +316,7 @@ class RttTerminalService {
     _view() {
         const settings = this._settings();
         return {
+            selectedChannels: channelEntries(settings.channels ?? [0]).map((entry) => entry.index),
             terminals: this._channels.size,
             timestamps: settings.timestamps === true,
             log: { enabled: settings.logEnabled === true, directory: settings.logDirectory || "" }
@@ -719,6 +788,22 @@ class RttTerminalService {
             /* A notice consumer must not break the service. */
         }
     }
+}
+
+// The configured up channels as { index, raw }; malformed entries are left to the controller's validation.
+function channelEntries(value) {
+    return (Array.isArray(value) ? value : [])
+        .map((raw) => ({ index: typeof raw === "object" && raw ? raw.index : raw, raw }))
+        .filter((entry) => Number.isInteger(entry.index) && entry.index >= 0 && entry.index <= 255);
+}
+
+// "1, 3" -> [1, 3]; anything else, including an empty list, is null.
+function parseTypedChannels(value) {
+    const parts = String(value || "")
+        .split(/[\s,，]+/)
+        .filter(Boolean);
+    if (!parts.length || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
+    return parts.map(Number);
 }
 
 function rttStatusMessage(status, view) {

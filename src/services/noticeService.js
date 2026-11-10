@@ -20,7 +20,8 @@ const COMMAND_AREAS = Object.freeze({
     "mcu-vscode.stopRtt": "rtt",
     "mcu-vscode.showRttTerminals": "rtt",
     "mcu-vscode.rttSaveLog": "rtt",
-    "mcu-vscode.rttToggleTimestamps": "rtt"
+    "mcu-vscode.rttToggleTimestamps": "rtt",
+    "mcu-vscode.rttSelectChannels": "rtt"
 });
 // Title of the error box when a command fails, so the box says which operation failed.
 const COMMAND_FAILURE_TITLES = Object.freeze({

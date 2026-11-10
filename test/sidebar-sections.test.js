@@ -128,6 +128,8 @@ scenario("RTT diagnostics distinguish zero, unknown, stale target samples and ho
                 ])
             );
         const hint = (index) => view.document.querySelectorAll(".rtt-metric")[index].title;
+        const box = view.document.getElementById("noticeRtt");
+        const notice = (id) => box.querySelector(`[data-notice-id="${id}"]`);
         view.send(running);
         assert.deepStrictEqual(metrics(), {
             Rate: "0 B/s",
@@ -137,15 +139,14 @@ scenario("RTT diagnostics distinguish zero, unknown, stale target samples and ho
         });
         assert.strictEqual(hint(1), "12345 B", "the exact count is on hover");
         assert.match(hint(3), /target-side loss is unknown/);
-        assert.match(text(), /Mode pending: requested Block, actual Trim/);
-        assert.ok(view.document.querySelector(".rtt-ch-note.warn"), "a mode problem stands out");
-        assert.strictEqual(view.document.querySelector(".rtt-channels-note"), null);
+        assert.match(notice("rtt-mode-2").textContent, /ch 2.*Mode pending: requested Block, actual Trim/);
+        assert.ok(notice("rtt-mode-2").classList.contains("notice--warning"), "a mode problem stands out");
+        assert.strictEqual(notice("rtt-occupancy"), null);
+        assert.ok(!text().includes("Mode pending"), "the channel list carries no loose explanation text");
         assert.strictEqual(view.document.querySelector(".rtt-ch .tag").textContent, "Trim");
         assert.strictEqual(view.document.querySelector("#rttChannels img"), null);
         const rowStyle = view.window.getComputedStyle(view.document.querySelector(".rtt-ch"));
         assert.strictEqual(rowStyle.flexWrap, "wrap", "the diagnostics wrap below the compact channel header");
-        const noteStyle = view.window.getComputedStyle(view.document.querySelector(".rtt-ch-note"));
-        assert.strictEqual(noteStyle.overflowWrap, "anywhere", "localized reasons can wrap at narrow widths");
         view.send({
             ...running,
             buffers: [{ ...running.buffers[0], rateBytesPerSecond: 1234.567890123, receivedBytes: 5 * 1024 * 1024 }]
@@ -162,14 +163,15 @@ scenario("RTT diagnostics distinguish zero, unknown, stale target samples and ho
         assert.strictEqual(metrics()["Target used"], "—");
         assert.match(hint(2), /Target occupancy unknown: Set the RTT control-block address/);
         assert.match(
-            view.document.querySelector(".rtt-channels-note").textContent,
+            notice("rtt-occupancy").textContent,
             /Target occupancy unknown: Set the RTT control-block address/,
-            "the shared reason is shown once below the channels"
+            "the shared reason is shown once in the notice box"
         );
+        assert.ok(!text().includes("Target occupancy unknown"), "not as loose text in the channel list");
         assert.ok(!text().includes("0/1023"), "a failed sample cannot show the previous occupancy as current");
         view.send({ type: "setLang", lang: "zh" });
         assert.deepStrictEqual(Object.keys(metrics()), ["接收速率", "累计接收", "目标占用", "历史淘汰"]);
-        assert.match(text(), /目标占用未知：目标遥测和模式设置需要明确/);
+        assert.match(box.textContent, /目标占用未知：目标遥测和模式设置需要明确/);
         assert.strictEqual(metrics()["历史淘汰"], "42 B");
         assert.match(hint(3), /目标端的丢失量未知/);
         view.send({
@@ -177,16 +179,21 @@ scenario("RTT diagnostics distinguish zero, unknown, stale target samples and ho
             channels: { up: [{ ...running.channels.up[0], modeState: "mismatch" }], down: [] },
             targetTelemetry: { ...running.targetTelemetry, available: false, reason: "LIVE_READ_BUDGET_EXCEEDED" }
         });
-        assert.match(text(), /超过事务预算/);
-        assert.match(text(), /模式不符：请求阻塞，实际截断/);
+        assert.match(box.textContent, /超过事务预算/);
+        assert.match(box.textContent, /模式不符：请求阻塞，实际截断/);
         view.send({ ...running, targetTelemetry: { available: false, reason: "NEW_BACKEND_CODE", channels: [] } });
-        assert.match(text(), /目标占用未知：未知/);
-        assert.ok(!text().includes("NEW_BACKEND_CODE"));
+        assert.match(box.textContent, /目标占用未知：未知/);
+        assert.ok(!box.textContent.includes("NEW_BACKEND_CODE"));
+        view.send({ ...running, channels: { up: [{ ...running.channels.up[0], modeState: "applied" }], down: [] } });
+        assert.strictEqual(notice("rtt-mode-2"), null, "a settled mode clears its notice");
         view.send({ ...running, state: "stopped" });
         assert.strictEqual(metrics()["接收速率"], "—");
         assert.ok(!text().includes("0/1023"), "stopped status cannot present a running sample as current");
+        assert.strictEqual(box.hidden, true, "a stopped session leaves no channel notices behind");
         view.send({ ...running, targetTelemetry: { ...running.targetTelemetry, channels: [] } });
-        assert.match(text(), /目标占用未知：未知/, "a missing selected channel remains unknown");
+        assert.match(box.textContent, /目标占用未知：未知/, "a missing selected channel remains unknown");
+        view.send({ ...running, targetTelemetry: { available: false, reason: "RTT_TELEMETRY_PENDING", channels: [] } });
+        assert.strictEqual(notice("rtt-occupancy"), null, "waiting for the first sample is not worth a notice");
         view.assertHealthy();
     } finally {
         view.close();
@@ -238,22 +245,24 @@ scenario("RTT controls follow state, language and probe-driver ownership", async
         assert.strictEqual(view.document.querySelector(".rtt-ch .tag").textContent, "Block");
         assert.ok(view.document.querySelector(".rtt-ch .tag.warn"), "block mode stands out");
         const terminals = view.document.getElementById("rttTerminals");
-        const logPath = view.document.getElementById("rttLogPath");
         const saveLog = view.document.getElementById("rttSaveLog");
         assert.strictEqual(terminals.disabled, true, "no terminals yet");
-        assert.strictEqual(logPath.hidden, true);
         const running = view.window.eval("uiState.rtt.status");
         view.send({
             ...running,
-            view: { terminals: 1, timestamps: true, log: { enabled: true, directory: "C:/logs" } }
+            view: {
+                selectedChannels: [0, 2],
+                terminals: 1,
+                timestamps: true,
+                log: { enabled: true, directory: "C:/logs" }
+            }
         });
+        const channelPick = view.document.getElementById("rttChannelPick");
+        assert.strictEqual(channelPick.textContent, "Channels 0, 2", "the card names the channels it reads");
         assert.strictEqual(terminals.disabled, false);
         assert.strictEqual(saveLog.getAttribute("aria-pressed"), "true");
         assert.strictEqual(view.document.getElementById("rttTimestamps").getAttribute("aria-pressed"), "true");
-        assert.match(logPath.textContent, /C:\/logs/);
-        assert.strictEqual(logPath.title, "C:/logs");
-        view.send({ ...running, view: { terminals: 1, timestamps: false, log: { enabled: true, directory: "" } } });
-        assert.ok(logPath.classList.contains("warn"), "saving without a directory says so");
+        assert.strictEqual(view.document.getElementById("rttLogPath"), null, "the save path is not loose text");
         const box = view.document.getElementById("noticeRtt");
         const head = view.document.querySelector("#rttSection .live-head");
         assert.strictEqual(head.nextElementSibling, box, "notices sit right under the state they explain");
@@ -279,9 +288,11 @@ scenario("RTT controls follow state, language and probe-driver ownership", async
         view.send({ ...running, view: { terminals: 1, timestamps: false, log: { enabled: false, directory: "" } } });
         view.send({ type: "setLang", lang: "zh" });
         assert.strictEqual(toggle.textContent, "停止");
+        assert.strictEqual(channelPick.textContent, "通道 0", "an older view without a selection means channel 0");
         for (const command of [
             "mcu-vscode.rttSaveLog",
             "mcu-vscode.rttToggleTimestamps",
+            "mcu-vscode.rttSelectChannels",
             "mcu-vscode.showRttTerminals"
         ]) {
             view.document.querySelector(`[data-command="${command}"]`).click();

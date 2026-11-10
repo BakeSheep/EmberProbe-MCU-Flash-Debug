@@ -425,6 +425,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.showRttTerminals"] = async () => this._rttTerminals.showTerminals();
         this.commandHandlers["mcu-vscode.rttSaveLog"] = () => this._rttTerminals.saveLog();
         this.commandHandlers["mcu-vscode.rttToggleTimestamps"] = () => this._rttTerminals.toggleTimestamps();
+        this.commandHandlers["mcu-vscode.rttSelectChannels"] = () => this._rttTerminals.selectChannels();
     }
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();

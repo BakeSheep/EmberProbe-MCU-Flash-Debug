@@ -35,6 +35,7 @@ function activate(context) {
         vscode.commands.registerCommand("mcu-vscode.showRttTerminals", () => provider.commandHandlers["mcu-vscode.showRttTerminals"]()),
         vscode.commands.registerCommand("mcu-vscode.rttSaveLog", () => provider.commandHandlers["mcu-vscode.rttSaveLog"]()),
         vscode.commands.registerCommand("mcu-vscode.rttToggleTimestamps", () => provider.commandHandlers["mcu-vscode.rttToggleTimestamps"]()),
+        vscode.commands.registerCommand("mcu-vscode.rttSelectChannels", () => provider.commandHandlers["mcu-vscode.rttSelectChannels"]()),
         vscode.commands.registerCommand("mcu-vscode.selectChartBackgroundIcon", () => provider.chartBackground().select()),
         vscode.commands.registerCommand("mcu-vscode.removeChartBackgroundIcon", () => provider.chartBackground().remove()),
         // Chart tabs left open at shutdown come back with their state when VS Code restarts.

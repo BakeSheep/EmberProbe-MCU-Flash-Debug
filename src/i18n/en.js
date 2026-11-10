@@ -394,6 +394,20 @@ module.exports = Object.freeze({
     "rtt.saveLogTitle": "Choose a directory and keep saving the RTT log; click again to stop saving",
     "rtt.timestamps": "Timestamps",
     "rtt.timestampsTitle": "Show the host time at the start of each line",
+    "rtt.channels": "Channels {list}",
+    "rtt.channelsButtonTitle": "Choose the RTT up channels to read; a running RTT restarts",
+    "rtt.channelsTitle": "Choose RTT channels",
+    "rtt.channelsPlaceholder": "Check the channels to read; each gets its own terminal",
+    "rtt.channelsPlaceholderUnknown":
+        "The firmware's channel list is not known yet; start RTT once to list its channels here",
+    "rtt.channelPick": "Channel {n}",
+    "rtt.channelNotListed": "not listed by the firmware",
+    "rtt.channelSize": "{size} B buffer",
+    "rtt.channelOther": "Other channel numbers…",
+    "rtt.channelOtherPrompt": "Enter channel numbers separated by commas, e.g. 1, 2",
+    "rtt.channelOtherInvalid": "Enter channel numbers 0–255 separated by commas",
+    "rtt.channelsNone": "Select at least one RTT channel",
+    "rtt.channelsTooMany": "At most {max} RTT channels can be read at once",
     "rtt.pendingHost": "Paused, waiting for a session…",
     "rtt.failed": "Start failed",
     "rtt.stoppedHostEnded": "Stopped: the debug session ended",
@@ -411,7 +425,6 @@ module.exports = Object.freeze({
         "Full buffers stall the firmware until the host reads; stopping RTT leaves this mode in place and may stall the firmware",
     "rtt.termHostEnded": "RTT stopped: the debug session ended",
     "rtt.termHostLost": "RTT stopped: the probe connection was lost",
-    "rtt.logPath": "Saving to {path}",
     "rtt.logNoDirectory":
         "No log directory: open a workspace or set emberprobe.rtt.logFile.directory to an absolute path",
     "rtt.inputTooLong":

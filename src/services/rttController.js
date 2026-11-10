@@ -81,6 +81,8 @@ class RttController {
         this.reason = null;
         this.channels = null;
         this.missingChannels = []; // Selected up channels the firmware did not configure.
+        // The up channels the firmware listed last, kept after stop so the channel picker can offer them.
+        this.firmwareChannels = [];
         this.error = null;
         this._hostSession = null;
         this._ownSession = null;
@@ -138,6 +140,7 @@ class RttController {
                 : null,
             channels: this.channels,
             missingChannels: this.missingChannels,
+            firmwareChannels: this.firmwareChannels,
             configuredPollingIntervalMs: this._runSettings?.configuredPollingIntervalMs ?? null,
             pollingIntervalMs: this._runSettings?.pollingIntervalMs ?? null,
             targetDroppedBytes: null,
@@ -463,6 +466,8 @@ class RttController {
                 : await this._session().rttControl({ operation: "channels" });
             if (!result) return null;
             this.channels = result.channels;
+            if (result.channels?.up?.length)
+                this.firmwareChannels = result.channels.up.map(({ index, name, size }) => ({ index, name, size }));
             if (!result.channels?.up?.length)
                 return await this._scheduleStartRetry(run, false, "waiting for the firmware to configure its channels");
             const up = this._selectChannels(result.channels);

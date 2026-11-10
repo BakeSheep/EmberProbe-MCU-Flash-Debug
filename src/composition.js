@@ -84,6 +84,7 @@ function createRttTerminals(host, vscode) {
             const logEnabled = config.get("rtt.logFile.enabled", false) === true;
             const logRaw = config.get("rtt.logFile.raw", false) === true;
             return {
+                channels: config.get("rtt.channels", [0]),
                 timestamps: config.get("rtt.timestamps", false),
                 logEnabled,
                 logDirectory: resolved || "",

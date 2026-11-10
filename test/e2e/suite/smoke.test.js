@@ -36,6 +36,7 @@ async function run() {
         "mcu-vscode.showRttTerminals",
         "mcu-vscode.rttSaveLog",
         "mcu-vscode.rttToggleTimestamps",
+        "mcu-vscode.rttSelectChannels",
         "mcu-vscode.rttClearTerminal",
         "mcu-vscode.checkOpenOcd",
         "mcu-vscode.installMcpServer",
