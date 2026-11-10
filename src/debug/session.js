@@ -894,7 +894,7 @@ class EmberDebugSession extends DebugSession {
         } finally {
             const interrupted = this.internalStop?.interrupted;
             this.internalStop = null;
-            if (resume && interrupted && !this.ended) await this.execute("-exec-continue");
+            if (resume && interrupted && !this.ended) await this.resumeAfterInternalStop();
         }
     }
     async execute(command) {
@@ -911,6 +911,7 @@ class EmberDebugSession extends DebugSession {
             return await this.mi.command(command);
         } catch (error) {
             if (epoch === this.executionEpoch) this.running = wasRunning;
+            else if (this.running && !wasRunning) await this.settleAbortedExecution();
             this.dataBreakpoints.executionFailed(error);
             if (/breakpoint|hardware resource/i.test(error.message)) {
                 for (const group of this.breakpoints.values())
@@ -922,6 +923,37 @@ class EmberDebugSession extends DebugSession {
             }
             throw error;
         }
+    }
+    // Breakpoint updates hide their internal interrupt from the client, which still shows the
+    // target running. When the resume fails before GDB runs again, report that hidden stop.
+    async resumeAfterInternalStop() {
+        const epoch = this.executionEpoch;
+        try {
+            await this.execute("-exec-continue");
+        } catch (error) {
+            if (this.executionEpoch <= epoch + 1) this.reportHiddenStop();
+            throw error;
+        }
+    }
+    reportHiddenStop() {
+        if (!this.running && !this.ended && !this.disconnecting)
+            this.onRecord({ kind: "*", class: "stopped", data: { "thread-id": String(this.thread) } });
+    }
+    // GDB can emit *running, fail to insert breakpoints or watchpoints, and abort the command
+    // ("Command aborted.") without a matching *stopped. The client already saw continued, so
+    // confirm the real state and report the stop; otherwise pause would wait for a stop forever.
+    async settleAbortedExecution() {
+        const epoch = this.executionEpoch;
+        let info;
+        try {
+            info = await this.mi.command("-thread-info");
+        } catch {
+            return;
+        }
+        if (epoch !== this.executionEpoch || !this.running || this.ended) return;
+        const threads = threadList(info);
+        if (!threads.length || threads.some((thread) => thread.state !== "stopped")) return;
+        this.onRecord({ kind: "*", class: "stopped", data: { "thread-id": info["current-thread-id"] } });
     }
     mapSource(file, reverse = false) {
         const mappings = Object.entries(this.config.sourceFileMap || {}).map(([from, to]) =>

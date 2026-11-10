@@ -261,6 +261,7 @@ function serviceFixture() {
             });
             menu = view.document.querySelector('[role="menu"]');
             assert([...menu.querySelectorAll("button")].some((button) => button.textContent === "编辑条件…"));
+            assert.strictEqual(menu.querySelector(".data-breakpoint-note"), null);
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
             assert.strictEqual(view.document.activeElement.textContent, "删除数据断点");
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -271,6 +272,74 @@ function serviceFixture() {
             view.send({ ...status, requestId: late.requestId, info: { dataId: "old" } });
             assert.strictEqual(view.document.querySelector('[role="menu"]'), null);
             assert.strictEqual(row.querySelector(".data-breakpoint-mark"), null);
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    });
+    await scenario("variable menus display readable names while breakpoint requests keep raw paths", async () => {
+        const view = render(getModernWebviewContent({}, "zh"));
+        try {
+            const root = "_ZN3app5g_pidE";
+            view.send({
+                type: "sidebarWatchList",
+                items: [
+                    { name: "_ZN3app7counterE", displayName: "app::counter", type: "u32" },
+                    {
+                        name: root,
+                        displayName: "app::g_pid",
+                        isComposite: true,
+                        address: 0x20000000,
+                        compositeLayout: {
+                            kind: "class",
+                            members: [{ name: "integral_", offset: 4, watchType: "f32" }]
+                        }
+                    },
+                    { name: "counter", type: "u32" }
+                ]
+            });
+            await Promise.resolve();
+            const status = {
+                type: "sidebarDataBreakpoints",
+                sessionId: "one",
+                epoch: 1,
+                available: true,
+                paused: false,
+                entries: []
+            };
+            view.send(status);
+            const member = view.document.querySelector(`[data-breakpoint-path="${root}.integral_"]`);
+            member.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
+            const title = () => view.document.querySelector(".data-breakpoint-head-name").textContent;
+            assert.strictEqual(title(), "app::g_pid.integral_");
+            view.document.querySelector('[role="menu"] button').click();
+            const pause = view.messages.at(-1);
+            view.send({ ...status, epoch: 2, paused: true });
+            view.send({ ...status, epoch: 2, paused: true, requestId: pause.requestId });
+            const info = view.messages.at(-1);
+            assert.strictEqual(info.action, "info");
+            assert.strictEqual(info.name, root + ".integral_");
+            assert.strictEqual(title(), "app::g_pid.integral_");
+            view.send({
+                ...status,
+                epoch: 2,
+                paused: true,
+                requestId: info.requestId,
+                info: { dataId: "storage", accessTypes: ["write"] }
+            });
+            assert.strictEqual(title(), "app::g_pid.integral_");
+            view.document.querySelector('[role="menu"] button').click();
+            assert.strictEqual(view.messages.at(-1).action, "add");
+            assert.strictEqual(view.messages.at(-1).name, root + ".integral_");
+            for (const [name, label] of [
+                ["_ZN3app7counterE", "app::counter"],
+                ["counter", "counter"]
+            ]) {
+                const row = view.document.querySelector(`[data-breakpoint-path="${name}"]`);
+                row.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true }));
+                assert.strictEqual(title(), label);
+                assert.strictEqual(view.messages.at(-1).name, name);
+            }
             view.assertHealthy();
         } finally {
             view.close();

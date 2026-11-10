@@ -117,7 +117,10 @@ const valueTree = EmberProbeValueTree.create({
         cell.dataset.valueName = name;
     }
 });
-const dataBreakpoints = EmberProbeSidebarDataBreakpoints.create({ state, box: liveBox, api, t, setNotice });
+const dataBreakpoints = EmberProbeSidebarDataBreakpoints.create(
+    { state, box: liveBox, api, t, setNotice },
+    sbDisplayName
+);
 const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
 const writes = EmberProbeWriteList.create({
     box: writeBox,
@@ -654,11 +657,8 @@ function sbDisplayName(item) {
         get: (name) => {
             const symbol = state.symbols.get(name);
             if (symbol?.displayName && symbol.displayName !== symbol.name) return symbol;
-            return (
-                state.watch.find((entry) => entry.name === name) ||
-                state.writeList.find((entry) => entry.name === name) ||
-                symbol
-            );
+            const { watch, writeList } = state;
+            return watch.find((row) => row.name === name) || writeList.find((row) => row.name === name) || symbol;
         }
     });
 }

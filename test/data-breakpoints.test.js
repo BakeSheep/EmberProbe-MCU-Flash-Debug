@@ -227,15 +227,15 @@ const watchCommands = (mi) => mi.commands.filter((command) => command.startsWith
             mi.width = width;
             const { dataId } = await manager.info(args);
             session.nextBreakpoint = 42;
-            const result = await manager.set({
-                breakpoints: [bp(dataId), bp(dataId, "read"), bp(dataId, "readWrite")]
-            });
+            const results = [];
+            for (const access of ["write", "read", "readWrite"])
+                results.push((await manager.set({ breakpoints: [bp(dataId, access)] })).breakpoints[0]);
             assert.deepStrictEqual(
-                result.breakpoints.map((item) => item.verified),
+                results.map((item) => item.verified),
                 [true, true, true]
             );
             assert.deepStrictEqual(
-                result.breakpoints.map((item) => item.id),
+                results.map((item) => item.id),
                 [42, 43, 44]
             );
             assert.deepStrictEqual(watchCommands(mi), [
@@ -244,7 +244,7 @@ const watchCommands = (mi) => mi.commands.filter((command) => command.startsWith
                 `-break-watch -a "*((${type} *)0x20000000)"`
             ]);
             assert(mi.commands.includes("-break-info 10"));
-            assert.strictEqual(manager.size, 3);
+            assert.strictEqual(manager.size, 1);
         }
     });
     await scenario("software fallback is deleted before the operation returns", async () => {
@@ -302,12 +302,17 @@ const watchCommands = (mi) => mi.commands.filter((command) => command.startsWith
         "partial command and condition failures retain valid successes and original GDB diagnostics",
         async () => {
             const { mi, manager, args } = setup();
-            const { dataId } = await manager.info(args);
+            const ids = [];
+            for (const address of ["0x20000000", "0x20000004", "0x20000008"]) {
+                mi.address = address;
+                ids.push((await manager.info(args)).dataId);
+            }
+            const dataId = ids[0];
             mi.hook = (command) => {
                 if (command.startsWith("-break-watch -r")) throw new Error("Target has no free hardware watchpoints");
             };
             const result = await manager.set({
-                breakpoints: [bp(dataId), bp(dataId, "read"), bp(dataId, "readWrite")]
+                breakpoints: [bp(ids[0]), bp(ids[1], "read"), bp(ids[2], "readWrite")]
             });
             assert.deepStrictEqual(
                 result.breakpoints.map((item) => item.verified),
@@ -372,6 +377,81 @@ const watchCommands = (mi) => mi.commands.filter((command) => command.startsWith
         assert.strictEqual(events.at(-1).body.breakpoint.verified, false);
         assert.match(events.at(-1).body.breakpoint.message, /Could not insert hardware watchpoint 11/);
         assert(mi.watchpoints.has("11"));
+    });
+    await scenario("different access types at one address are refused before GDB, across groups", async () => {
+        const { mi, session, args } = setup();
+        const groups = (session.dataBreakpoints = new DebugDataBreakpointGroups(session));
+        const { dataId } = await groups.native.info(args);
+        const mixed = await groups.native.set({ breakpoints: [bp(dataId), bp(dataId, "read"), bp(dataId)] });
+        assert.deepStrictEqual(
+            mixed.breakpoints.map((item) => item.verified),
+            [true, false, true]
+        );
+        assert.match(mixed.breakpoints[1].message, /0x20000000 already has a "Break on Value Change"/);
+        assert.strictEqual(watchCommands(mi).length, 1);
+        assert.deepStrictEqual((await groups.native.info(args)).accessTypes, ["write"]);
+        const prepared = await groups.request({ action: "info", name: "counter" });
+        assert.deepStrictEqual(prepared.info.accessTypes, ["write"], "the sidebar menu sees the native watchpoint");
+        let result = await groups.request({
+            action: "add",
+            name: "counter",
+            ...bp(prepared.info.dataId, "readWrite"),
+            generation: prepared.generation
+        });
+        assert.strictEqual(result.entries[0].verified, false);
+        assert.match(result.entries[0].message, /Break on Access/);
+        assert.strictEqual(watchCommands(mi).length, 1);
+        // The same access type is deduplicated by GDB, so it remains allowed across groups.
+        result = await groups.request({ action: "remove", id: result.entries[0].id, generation: result.generation });
+        result = await groups.request({
+            action: "add",
+            name: "counter",
+            ...bp(prepared.info.dataId),
+            generation: result.generation
+        });
+        assert.strictEqual(result.entries[0].verified, true);
+        assert.strictEqual(groups.size, 2);
+    });
+    await scenario("continue aborted after *running reports the stop so pause is not stuck", async () => {
+        const { mi, session, events } = setup();
+        session.threads.add(1);
+        mi.hook = async (command) => {
+            if (command.startsWith("-exec-continue")) {
+                mi.emit("record", { kind: "*", class: "running", data: { "thread-id": "all" } });
+                throw new Error("Could not insert hardware watchpoint 4.");
+            }
+        };
+        const original = mi.command.bind(mi);
+        mi.command = async (command) =>
+            command === "-thread-info"
+                ? { threads: [{ id: "1", state: "stopped" }], "current-thread-id": "1" }
+                : original(command);
+        await assert.rejects(session.execute("-exec-continue"), /Could not insert/);
+        assert.strictEqual(session.running, false);
+        const names = events.map((event) => event.event);
+        assert(names.indexOf("continued") < names.lastIndexOf("stopped"));
+        assert.strictEqual(events.findLast((event) => event.event === "stopped").body.reason, "pause");
+        // A target that really kept running is left to the next *stopped.
+        mi.command = async (command) =>
+            command === "-thread-info" ? { threads: [{ id: "1", state: "running" }] } : original(command);
+        await assert.rejects(session.execute("-exec-continue"), /Could not insert/);
+        assert.strictEqual(session.running, true);
+    });
+    await scenario("a failed resume after a hidden update interrupt reports the hidden stop", async () => {
+        const { mi, session, manager, args, events } = setup();
+        const { dataId } = await manager.info(args);
+        await manager.set({ breakpoints: [bp(dataId)] });
+        session.running = true;
+        session.interrupt = async () => {
+            session.running = false;
+            session.internalStop.interrupted = true;
+        };
+        mi.hook = (command) => {
+            if (command.startsWith("-exec-continue")) throw new Error("Could not insert hardware watchpoint 11");
+        };
+        await assert.rejects(manager.set({ breakpoints: [bp(dataId, "read")] }), /Could not insert/);
+        assert.strictEqual(session.running, false);
+        assert.strictEqual(events.findLast((event) => event.event === "stopped")?.body.reason, "pause");
     });
     await scenario("software fallback surviving delete and disable prevents automatic continue", async () => {
         const { mi, session, manager, args } = setup();
@@ -557,7 +637,7 @@ const watchCommands = (mi) => mi.commands.filter((command) => command.startsWith
             name: "counter",
             dataId: prepared.info.dataId,
             generation: prepared.generation,
-            accessType: "read"
+            accessType: "write"
         };
         const result = await groups.request(add);
         assert(result.entries[0].verified);

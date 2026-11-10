@@ -14,7 +14,7 @@
         remove: "M3.5 5h9M6.5 5V3.5h3V5M4.8 5l.6 7.5h5.2L11.2 5"
     };
     const stateOf = (entry) => (!entry.enabled ? "disabled" : entry.verified ? "enabled" : "failed");
-    function create({ state, box, api, t, setNotice }) {
+    function create({ state, box, api, t, setNotice }, displayName) {
         const doc = box.ownerDocument;
         const post = (message) => api?.postMessage(message);
         const notice = (title) => setNotice("live", "dataBreakpoint", { level: "error", title });
@@ -197,7 +197,7 @@
             const menu = s.menu;
             menu.replaceChildren();
             const head = element("div", "data-breakpoint-head");
-            head.appendChild(element("div", "data-breakpoint-head-name", s.target.name));
+            head.appendChild(element("div", "data-breakpoint-head-name", displayName({ name: s.target.name })));
             const meta = element("div", "data-breakpoint-head-meta");
             head.appendChild(meta);
             menu.appendChild(head);

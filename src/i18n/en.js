@@ -34,6 +34,8 @@ module.exports = Object.freeze({
         "GDB did not confirm a hardware watchpoint. Software watchpoints are not supported.",
     "debug.dataBreakpointResources":
         "Cannot arm the hardware data breakpoint. The target may have too few watchpoint resources or may not support this access type. GDB: {error}",
+    "debug.dataBreakpointConflict":
+        'Address {address} already has a "{access}" data breakpoint. OpenOCD cannot arm hardware watchpoints of different types at one address; remove it first, or keep a single "Break on Access".',
     "debug.dataBreakpointRemove": "Could not remove the previous data breakpoint; it remains tracked. GDB: {error}",
     "debug.dataBreakpointChanged": "GDB changed or disabled this data breakpoint; refresh or re-enable it in VS Code.",
     "debug.dataBreakpointStopped": "Data breakpoint: {name}",

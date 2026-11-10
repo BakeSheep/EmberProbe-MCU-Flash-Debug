@@ -9,6 +9,7 @@ const { safePath, gdbVariablePath } = require("./stl");
 const LIMIT = 1024;
 const ACCESS = ["write", "read", "readWrite"];
 const TYPES = { 1: "unsigned char", 2: "unsigned short", 4: "unsigned int" };
+const ACCESS_LABELS = { write: "sb.dataWrite", read: "sb.dataRead", readWrite: "sb.dataAccess" };
 const WATCH_REASONS = new Set([
     "watchpoint-trigger",
     "read-watchpoint-trigger",
@@ -174,7 +175,8 @@ class DebugDataBreakpoints {
                     address: memory,
                     bytes: width
                 }),
-                accessTypes: [...ACCESS],
+                // VS Code and the sidebar menu offer only types that can coexist with what is armed.
+                accessTypes: ACCESS.filter((access) => !this.conflict(storage, access)),
                 canPersist: false,
                 // Not DAP fields: the sidebar menu shows the resolved storage compactly.
                 address: memory,
@@ -237,8 +239,32 @@ class DebugDataBreakpoints {
             : info.bkpt;
         return hardwareType(bkpt?.type);
     }
+    // GDB accepts any number of watchpoints but inserts them only on resume. OpenOCD refuses a
+    // second watchpoint at an address unless its length and access match, so continue would be
+    // aborted. Reject the combination here, across both groups, while it is still explainable.
+    conflict(storage, access) {
+        const groups = this.session.dataBreakpoints;
+        const managers = groups?.native && groups?.sidebar ? [groups.native, groups.sidebar] : [this];
+        for (const manager of managers)
+            for (const item of manager.owned.values())
+                if (
+                    item.enabled !== "n" &&
+                    item.address === storage.address &&
+                    (item.width !== storage.width || item.access !== access)
+                )
+                    return item;
+        return null;
+    }
     async create(spec) {
         const storage = this.issued.get(spec.dataId);
+        const existing = this.conflict(storage, spec.access);
+        if (existing)
+            throw new Error(
+                this.message("debug.dataBreakpointConflict", {
+                    address: storage.address,
+                    access: this.message(ACCESS_LABELS[existing.access])
+                })
+            );
         const flag = { write: "", read: "-r ", readWrite: "-a " }[spec.access];
         const expression = `*((${TYPES[storage.width]} *)${storage.address})`;
         const result = await this.session.mi.command(`-break-watch ${flag}${quote(expression)}`);
@@ -250,6 +276,8 @@ class DebugDataBreakpoints {
         const item = {
             ...spec,
             number: String(bkpt.number),
+            address: storage.address,
+            width: storage.width,
             hardware: false,
             enabled: bkpt.enabled || "y",
             dap: { id: this.session.nextBreakpoint++, verified: false }
@@ -346,12 +374,16 @@ class DebugDataBreakpoints {
         } finally {
             const interrupted = this.session.internalStop?.interrupted;
             this.session.internalStop = null;
-            if (resume && interrupted && !this.session.ended && !this.unsafe) await this.continueAfterUpdate();
+            if (resume && interrupted && !this.session.ended) {
+                // An unconfirmed software watchpoint must not run; show the client the stop instead.
+                if (this.unsafe) this.session.reportHiddenStop();
+                else await this.continueAfterUpdate();
+            }
         }
     }
     async continueAfterUpdate() {
         try {
-            await this.session.execute("-exec-continue");
+            await this.session.resumeAfterInternalStop();
         } catch (error) {
             this.executionFailed(error);
             throw error;

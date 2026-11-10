@@ -32,6 +32,8 @@ module.exports = Object.freeze({
     "debug.dataBreakpointHardware": "GDB 未确认此监视点为硬件监视点，不支持软件监视点。",
     "debug.dataBreakpointResources":
         "无法启用硬件数据断点：目标的硬件监视资源可能不足，或不支持此访问类型。GDB：{error}",
+    "debug.dataBreakpointConflict":
+        "地址 {address} 已有一个“{access}”数据断点。OpenOCD 不能在同一地址同时设置不同类型的硬件监视点；请先删除它，或只保留一个“访问时中断”。",
     "debug.dataBreakpointRemove": "无法删除之前的数据断点，仍保留其跟踪信息。GDB：{error}",
     "debug.dataBreakpointChanged": "GDB 已更改或禁用此数据断点，请在 VS Code 中刷新或重新启用。",
     "debug.dataBreakpointStopped": "数据断点：{name}",
