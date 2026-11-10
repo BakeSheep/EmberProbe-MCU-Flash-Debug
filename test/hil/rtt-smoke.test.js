@@ -1108,6 +1108,7 @@ async function run() {
             type(0, "reset");
             await expectText(0, /EmberProbe RTT test, profile=/u, 15000);
             await heartbeat();
+            return { recovery: (await call("rtt.status")).recovery };
         });
         // A poll that meets the reset makes OpenOCD stop RTT for good; the stall watchdog must bring every one back.
         await step(
