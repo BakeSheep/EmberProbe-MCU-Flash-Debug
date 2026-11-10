@@ -55,51 +55,31 @@
       "name": "mcu-chip-info",
       "version": "1.2.2",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/read-chip.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/read-chip.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-config",
       "version": "1.2.1",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/config.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/config.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-fault-analyzer",
       "version": "1.0.2",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/analyze-fault.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/analyze-fault.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-elf-analyze",
       "version": "1.0.2",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/analyze-elf.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/analyze-elf.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-peripheral-debug",
       "version": "1.0.1",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/peripheral.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/peripheral.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-debug-control",
@@ -117,21 +97,13 @@
       "name": "mcu-rtos",
       "version": "1.0.0",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/rtos.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/rtos.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-cubemx",
       "version": "1.0.0",
       "runtime": true,
-      "required": [
-        "SKILL.md",
-        "scripts/cubemx.js",
-        "agents/openai.yaml"
-      ]
+      "required": ["SKILL.md", "scripts/cubemx.js", "agents/openai.yaml"]
     }
   ]
 }

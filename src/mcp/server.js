@@ -205,7 +205,7 @@ function createServer(options = {}) {
             if (tool.confirm) return await runConfirmable(tool, args, call, target, extra);
             const request = tool.request(args, { workspace: target });
             const value = await call(request.method, request.params || {}, request.timeoutMs);
-            return results.success(tool.result ? tool.result(value) : value);
+            return results.success(tool.result ? tool.result(value, args, { workspace: target }) : value);
         } catch (error) {
             return results.failure(error, tool.methods.at(-1));
         } finally {

@@ -4,19 +4,19 @@ Use `scripts/program.js` from the Skill directory. Do not construct an OpenOCD s
 
 1. Run preflight without `--execute`:
 
-   ```bash
-   node <skill-dir>/scripts/program.js --workspace <workspace>
-   ```
+    ```bash
+    node <skill-dir>/scripts/program.js --workspace <workspace>
+    ```
 
 2. Report the detected ELF and SHA-256, target, probe, OpenOCD executable, and compatibility result. Stop if detection is incomplete or OpenOCD is older than 0.12.0.
 3. If `flashAuthorization.authorized` is `true` with `mode: "full"`, the explicit sidebar grant covers this plan: report it and run `--execute` without `--confirmation-id`. With `mode: "workspace"`, report the remembered permission and `trustedExpiresAt` and likewise execute without an ID. Otherwise show the returned `flashAuthorization` plan and ask the user to approve. When `choices` includes `workspace`, offer it: it allows programming this ELF path through the same probe, target, transport, adapter speed and OpenOCD for 24 hours, including rebuilt images at that path. The initial request is not approval, and a confirmation ID must not be reused for a changed plan.
 4. When confirmation is required, only after explicit approval repeat the same command with:
 
-   ```bash
-   node <skill-dir>/scripts/program.js --workspace <workspace> --execute --confirmation-id <id>
-   ```
+    ```bash
+    node <skill-dir>/scripts/program.js --workspace <workspace> --execute --confirmation-id <id>
+    ```
 
-   Add `--remember` only when the user chose the workspace option. Never infer it from a request to flash.
+    Add `--remember` only when the user chose the workspace option. Never infer it from a request to flash.
 
 Use `--permission` to inspect the remembered programming permission and `--reset-permission` to revoke it. Flash verification needs its own one-time confirmation unless the Bridge applies the sidebar full-access grant.
 

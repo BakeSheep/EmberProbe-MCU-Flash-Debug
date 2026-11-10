@@ -9,10 +9,21 @@ All EmberProbe skill scripts talk to the extension through a local Agent Bridge 
 failures as a single JSON `diagnostic` on stderr:
 
 ```json
-{ "ok": false, "type": "diagnostic", "operation": "config.get",
-  "error": { "code": "BRIDGE_TIMEOUT", "category": "extension", "stage": "request",
-    "message": "...", "likelyCause": "...", "retryable": false,
-    "suggestedActions": ["..."], "details": { "method": "config.get", "timeoutMs": 20000, "elapsedMs": 20001, "resultUnknown": true } } }
+{
+    "ok": false,
+    "type": "diagnostic",
+    "operation": "config.get",
+    "error": {
+        "code": "BRIDGE_TIMEOUT",
+        "category": "extension",
+        "stage": "request",
+        "message": "...",
+        "likelyCause": "...",
+        "retryable": false,
+        "suggestedActions": ["..."],
+        "details": { "method": "config.get", "timeoutMs": 20000, "elapsedMs": 20001, "resultUnknown": true }
+    }
+}
 ```
 
 Always read `error.code`, `retryable`, and `details` before deciding what to do next. The
@@ -29,7 +40,6 @@ use that explicit workspace grant without asking for a second approval or manufa
 Never enable this setting yourself, infer it from the task, or bypass a returned confirmation request.
 Probe ownership, target identity, firmware consistency and input checks still apply. Anonymous probes
 retain one-time-only Flash/variable-write permission, and a mismatched ELF still requires write confirmation.
-
 
 When `confirmationRequired` is true, confirm sensitive Bridge operations in the Agent conversation. Show the returned concrete
 plan and wait for the human's answer before submitting its confirmation ID. Flash programming,
@@ -88,10 +98,11 @@ evidence that hardware is disconnected.
 ## Retry policy
 
 - **Read-only calls** (`config.get`, `chip.read`, `fault.read`, `elf.analyze`, `peripherals.list`,
-  `peripherals.read`, `debug.status`, `debug.inspect`, `rtos.status`, `rtos.snapshot`, `debug.breakpoints.list`, `variables.read`,
+  `peripherals.read`, `debug.status`, `debug.inspect`, `debug.evaluate`, `memory.read`, `rtos.status`, `rtos.snapshot`,
+  `debug.breakpoints.list`, `variables.read`, `variables.list`, `watch.list`,
   `variables.sample`, `variables.exportCsv`): if preconditions are unchanged, retry **at most once**.
   If it fails again, stop and report the diagnostic.
-- **State-changing calls** (`config.set`, `debug.start`, `debug.control`,
+- **State-changing calls** (`config.set`, `debug.start`, `debug.control`, `target.control`, `watch.add`, `watch.remove`,
   `debug.breakpoints.update`, `peripherals.write`, `variables.write`, flash programming): a
   transport timeout means the **result is unknown** (`details.resultUnknown` is `true`). The
   request may have taken effect, not taken effect, or still be running. **Do not resend it
@@ -134,9 +145,9 @@ When investigating target anomalies or crashes, follow this strict symptom diagn
 2. **Compare firmware**: When necessary and permitted, verify or compare target flash against the selected ELF to rule out stale or mismatched firmware.
 3. **Respect probe ownership and authorization**: Before calling `fault.read`, `variables.read`, `peripherals.read`, or debug sessions, verify probe availability and respect lock constraints (`PROBE_BUSY`).
 4. **Structure observations**: Explicitly structure findings into **Observed Fact**, **Hypothesis**, and **Next Verification Step**.
-   - No fault flags, Thread mode, or a successful compilation does **not** imply normal functionality.
-   - Do not assert a "reset loop" without concrete reset flags (e.g., RCC reset flags) or explicit core reset events.
-   - After code regeneration, always rebuild before hardware validation; rebuilding does not mean the target has been updated until programmed.
+    - No fault flags, Thread mode, or a successful compilation does **not** imply normal functionality.
+    - Do not assert a "reset loop" without concrete reset flags (e.g., RCC reset flags) or explicit core reset events.
+    - After code regeneration, always rebuild before hardware validation; rebuilding does not mean the target has been updated until programmed.
 
 ## Configuration changes
 

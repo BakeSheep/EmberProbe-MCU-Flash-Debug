@@ -27,6 +27,7 @@ const { REGISTRY_DIR } = require("../skills/_emberprobe/bridge-locator");
 const flashCommon = require("../skills/_emberprobe/flash-common");
 const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
 const { createServer } = require("../src/mcp/server");
+const confirm = require("../src/mcp/confirm");
 const { configSnippet, launcherSource } = require("../src/services/mcpRegistration");
 const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
 const { PeripheralWriteAuthorization } = require("../src/peripheralWriteAuthorization");
@@ -437,6 +438,39 @@ const inspection = new AgentDebugInspection(debugBridge);
             assert.ok(message.includes("Connection: target/stm32f4x.cfg via interface/stlink.cfg serial 0001A"));
             assert.ok(message.includes("Writes:\n  - kp @ 0x20000000 (f32): 0.5"), message);
             assert.ok(!message.includes("[object Object]"), message);
+            await client.close();
+        });
+
+        await scenario("List every write in the approval message", async () => {
+            const { client, elicitations } = await connect({
+                elicitation: true,
+                env: { EMBERPROBE_WORKSPACE: workspace },
+                answer: { action: "decline" }
+            });
+            const values = Array.from({ length: 64 }, (_, index) => ({ name: `gain${index}`, value: index }));
+            const result = await client.callTool({ name: "variables_write", arguments: { values } });
+            assert.strictEqual(result.structuredContent.error.code, "CONFIRMATION_DENIED");
+            const message = elicitations[0].message;
+            for (let index = 0; index < 64; index++) {
+                const address = `0x${(0x20000000 + index * 4).toString(16).toUpperCase()}`;
+                assert.ok(message.includes(`  - gain${index} @ ${address} (f32): ${index}`), `gain${index}`);
+            }
+            assert.ok(!message.includes("more"), "no write is hidden behind a count");
+            // Every requested field of a peripheral register is shown, however long the list.
+            const fields = Array.from({ length: 32 }, (_, index) => ({ target: `GPIOA.ODR.ODR${index}`, value: 1 }));
+            const summary = confirm.summary({
+                question: "Write?",
+                items: [
+                    {
+                        register: "GPIOA.ODR",
+                        address: "0x40020014",
+                        current: "0x0",
+                        value: "0xffffffff",
+                        requested: fields
+                    }
+                ]
+            });
+            assert.ok(summary.includes("GPIOA.ODR.ODR31 = 1]"), summary);
             await client.close();
         });
 

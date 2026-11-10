@@ -28,7 +28,8 @@ const PROMPTS = Object.freeze([
         toolset: "core",
         skill: "mcu-variables",
         scripts: {
-            "scripts/read.js": "variables_read, variables_sample, watch_add and variables_export_csv",
+            "scripts/read.js":
+                "variables_list (--list), variables_read, variables_sample, watch_add and variables_export_csv; watch_list and watch_remove have no script equivalent",
             "scripts/sampling.js": "sampling_status and sampling_control",
             "scripts/write.js": "variables_write"
         }

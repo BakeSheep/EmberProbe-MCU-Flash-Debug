@@ -257,7 +257,18 @@ const named = (report, status) => report.steps.filter((step) => step.status === 
             assert.strictEqual(fake.state.verified, 2);
             assert.strictEqual(report.server.name, "emberprobe");
             assert.ok(!JSON.stringify(report).includes('"id-'), "the report contains a confirmation ID");
-            const cubemxOnly = report.coverage.notCalled.every((name) => name.startsWith("cubemx_"));
+            // The baseline walks the core workflow; these newer inspection tools have their own unit tests.
+            const notInBaseline = new Set([
+                "target_control",
+                "watch_list",
+                "watch_remove",
+                "variables_list",
+                "debug_evaluate",
+                "memory_read"
+            ]);
+            const cubemxOnly = report.coverage.notCalled.every(
+                (name) => name.startsWith("cubemx_") || notInBaseline.has(name)
+            );
             assert.ok(cubemxOnly, `uncovered tools: ${report.coverage.notCalled}`);
             assert.strictEqual(report.coverage.called.length + report.coverage.notCalled.length, TOOLS.length);
             assert.match(renderReport(report), /Result: PASSED/);

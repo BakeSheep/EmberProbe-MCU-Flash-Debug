@@ -6,6 +6,8 @@ const { AgentDebugInspection } = require("./agentDebugInspection");
 function createAgentRoutes(host, probes = listProbes) {
     const listProbes = probes;
     let inspection;
+    // One instance keeps the handle table shared by inspect, evaluate and memory reads.
+    const debugInspection = () => (inspection ||= new AgentDebugInspection(host._debugBridge));
     return {
         "config.get": () => host._configurationSnapshot(),
         "probe.list": async (params = {}) => {
@@ -55,6 +57,9 @@ function createAgentRoutes(host, probes = listProbes) {
         "flash.verify": (params) => host._agentFlashService.execute(params || {}, true),
         "flash.permission": (params) => host._agentFlashService.permission(params || {}),
         "watch.add": (params) => host._agentOps.addWatch(params),
+        "watch.list": () => host._agentOps.listWatch(),
+        "watch.remove": (params) => host._agentOps.removeWatch(params || {}),
+        "variables.list": (params) => host._agentOps.listVariables(params || {}),
         "variables.exportCsv": (params) => host._agentOps.exportCsv(params || {}),
         "variables.read": (params) => host._agentOps.readVariables(params),
         "variables.sample": (params) => host._agentOps.sampleVariables(params),
@@ -64,16 +69,16 @@ function createAgentRoutes(host, probes = listProbes) {
         "variables.write": (params) => host._writes.writeAgentVariables(params),
         "variables.write.permission": (params) => host._writes.agentPermission(params),
         "chip.read": () => host.readChipInfoAction(true),
+        "target.control": (params) => host._chipInfoService.control(params?.action, true),
         "fault.read": () => host._agentOps.readFault(),
         "elf.analyze": (params) => host._analyzeElf(params || {}),
         "peripherals.list": (params) => host._svdPeripheralService.list(params || {}),
         "peripherals.read": (params) => host._svdPeripheralService.read(params || {}),
         "peripherals.write": (params) => host._svdPeripheralService.write(params || {}),
         "debug.status": () => host._debugControlService.status(),
-        "debug.inspect": (params) => {
-            inspection ||= new AgentDebugInspection(host._debugBridge);
-            return inspection.inspect(params || {});
-        },
+        "debug.inspect": (params) => debugInspection().inspect(params || {}),
+        "debug.evaluate": (params) => debugInspection().evaluate(params || {}),
+        "memory.read": (params) => debugInspection().readMemory(params || {}),
         "rtos.status": () => host._rtosViewService.status(),
         "rtos.snapshot": (params) => {
             if (params?.includeStackUsage !== undefined && typeof params.includeStackUsage !== "boolean")

@@ -5,6 +5,7 @@ const { assertAgentSettable } = require("./configurationStore");
 const agentPlans = require("./agentPlans");
 const { selectPausedDebugReadSession } = require("./liveWatchService");
 const { CACHE_KEYS } = require("../cacheKeys");
+const { listSymbols } = require("./agentSymbolList");
 
 // What the Agent Bridge routes do on the probe: reads and multi-sample runs on their own short probe session (or the
 // running sampling/debug session), sampling control, watch list additions, CSV export, fault reads, CubeMX runs and
@@ -130,6 +131,86 @@ class AgentOperations {
             historyTruncated: result.limitReached === true,
             csv: result.csv
         };
+    }
+    // The lists watch.add edits: the sidebar and the focused chart panel, which sampling_control start reads.
+    listWatch() {
+        let symbols = null;
+        try {
+            symbols = this.host.readElfSymbols().symbols;
+        } catch {
+            // Stored names are reported even while the ELF is unavailable.
+        }
+        const describe = (key) =>
+            this.host._scalarWatchList(key).map((item) => {
+                const displayName = this.host._variableDisplayName(item, symbols);
+                return {
+                    name: item.name,
+                    ...(displayName && displayName !== item.name ? { displayName } : {}),
+                    type: item.type || ""
+                };
+            });
+        const panel = this.host._focusedLivePanel();
+        return {
+            sidebar: describe(CACHE_KEYS.sidebarWatchList),
+            chart: { panelId: panel?.panelId ?? null, variables: describe(panel?.watchKey || CACHE_KEYS.watchList) }
+        };
+    }
+    // Removes stored entries by raw name, display name or a composite prefix (sensor removes sensor.x, sensor[0]).
+    // Sampling plans refresh through _saveWatchList; recorded chart history is kept.
+    async removeWatch(params) {
+        const names = Array.isArray(params?.variables) ? params.variables.map((name) => String(name).trim()) : [];
+        if (!names.length || names.some((name) => !name))
+            throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
+        const destination = params.destination || "sidebar";
+        if (!["sidebar", "chart", "both"].includes(destination))
+            throw Object.assign(new Error("destination must be sidebar, chart, or both"), {
+                code: "INVALID_DESTINATION"
+            });
+        let resolveSymbol = null;
+        try {
+            resolveSymbol = elfSymbols.createSymbolResolver(this.host.readElfSymbols().symbols);
+        } catch {
+            // Without ELF metadata only stored names match.
+        }
+        // A display or file-qualified name (ep7, main.c::cfg) maps to the raw identity the list stores.
+        const rawName = (name) => {
+            try {
+                const parsed = elfSymbols.parseMemberPath(name);
+                const base = parsed ? parsed.base : name;
+                return resolveSymbol ? resolveSymbol(base, name).name + name.slice(base.length) : null;
+            } catch {
+                return null;
+            }
+        };
+        const covers = (stored, name) =>
+            stored === name || stored.startsWith(`${name}.`) || stored.startsWith(`${name}[`);
+        const results = {};
+        const removeFrom = async (key, target) => {
+            const current = this.host._scalarWatchList(key);
+            const removed = new Set();
+            const notFound = [];
+            for (const name of names) {
+                let hits = current.filter((item) => covers(item.name, name));
+                const raw = hits.length ? null : rawName(name);
+                if (raw) hits = current.filter((item) => covers(item.name, raw));
+                if (!hits.length) notFound.push(name);
+                for (const item of hits) removed.add(item.name);
+            }
+            if (removed.size)
+                await this.host._saveWatchList(
+                    key,
+                    current.filter((item) => !removed.has(item.name))
+                );
+            results[target] = { removed: [...removed], notFound };
+        };
+        const chartKey = this.host._focusedLivePanel()?.watchKey || CACHE_KEYS.watchList;
+        if (destination === "sidebar" || destination === "both")
+            await removeFrom(CACHE_KEYS.sidebarWatchList, "sidebar");
+        if (destination === "chart" || destination === "both") await removeFrom(chartKey, "chart");
+        return results;
+    }
+    listVariables(params) {
+        return listSymbols(this.host.readElfSymbols(), params || {});
     }
     async addWatch(params) {
         const names = Array.isArray(params.variables) ? params.variables.map(String) : [];

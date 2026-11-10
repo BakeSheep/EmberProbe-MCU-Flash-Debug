@@ -106,13 +106,13 @@ npm run bundle
 npm run test:hil:mcp -- --profile h750-jlink --workspace C:/path/to/project --phases protocol
 ```
 
-| Phase | Effect on the board | Needs `EMBERPROBE_HIL_CONFIRM=YES` |
-|---|---|---|
-| `protocol` | None. Checks the tool catalogue, prompts, argument validation, workspace identity, permissions and idle probe | No |
-| `read` | Opens the probe, samples, and briefly starts and stops live sampling. Adds a variable to the sidebar watch list | Yes |
-| `confirm` | Writes `variables.write` and `checks.peripherals.write`, then restores them. Covers denial, the chat fallback, one-time IDs and the 24-hour permission | Yes |
-| `debug` | Attaches without reset or download, halts, steps, hits `checks.breakpoint`, detaches, reads fault state | Yes |
-| `flash` | Erases and programs the workspace ELF | Yes |
+| Phase      | Effect on the board                                                                                                                                    | Needs `EMBERPROBE_HIL_CONFIRM=YES` |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `protocol` | None. Checks the tool catalogue, prompts, argument validation, workspace identity, permissions and idle probe                                          | No                                 |
+| `read`     | Opens the probe, samples, and briefly starts and stops live sampling. Adds a variable to the sidebar watch list                                        | Yes                                |
+| `confirm`  | Writes `variables.write` and `checks.peripherals.write`, then restores them. Covers denial, the chat fallback, one-time IDs and the 24-hour permission | Yes                                |
+| `debug`    | Attaches without reset or download, halts, steps, hits `checks.breakpoint`, detaches, reads fault state                                                | Yes                                |
+| `flash`    | Erases and programs the workspace ELF                                                                                                                  | Yes                                |
 
 The default is `protocol,read`; `confirm`, `debug` and `flash` run only when named in `--phases`, and `protocol` always runs first. The script answers confirmations itself, so setting the variable is the operator's approval for those writes. This is why the baseline does not prove human confirmation; the harness acceptance does.
 
