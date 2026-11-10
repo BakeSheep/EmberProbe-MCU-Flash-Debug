@@ -131,35 +131,45 @@ class ChipInfoService {
         }
     }
 
-    async control(action) {
+    // An Agent caller (forAgent) receives every refusal and failure as an error and never gets the interactive
+    // probe picker; the sidebar keeps reporting them as notices.
+    async control(action, forAgent = false) {
         if (!["pause", "continue", "reset"].includes(action))
             throw Object.assign(new Error(`Unsupported target action: ${action}`), { code: "CHIP_ACTION_INVALID" });
-        if (!this.info) return this.rejectBusy("chip.notRead", "CHIP_NOT_READ", false);
-        if (this.running) return this.rejectBusy("chip.reading", "CHIP_READ_RUNNING", false);
-        if (this.coordinator.isActive("download")) return this.rejectBusy("chip.busyDownload", "PROBE_BUSY", false);
-        if (this.coordinator.isActive("liveWatch")) return this.rejectBusy("chip.busyLive", "PROBE_BUSY", false);
-        if (this.coordinator.isActive("agentRead")) return this.rejectBusy("chip.busyAgent", "PROBE_BUSY", false);
+        if (!this.info) return this.rejectBusy("chip.notRead", "CHIP_NOT_READ", forAgent);
+        if (this.running) return this.rejectBusy("chip.reading", "CHIP_READ_RUNNING", forAgent);
+        if (this.coordinator.isActive("download")) return this.rejectBusy("chip.busyDownload", "PROBE_BUSY", forAgent);
+        if (this.coordinator.isActive("liveWatch")) return this.rejectBusy("chip.busyLive", "PROBE_BUSY", forAgent);
+        if (this.coordinator.isActive("agentRead")) return this.rejectBusy("chip.busyAgent", "PROBE_BUSY", forAgent);
         if (this.coordinator.isActive("debugStart") || this.isDebugActive())
-            return this.rejectBusy("chip.busyDebug", "PROBE_BUSY", false);
+            return this.rejectBusy("chip.busyDebug", "PROBE_BUSY", forAgent);
         const probe = this.context.workspaceState.get(this.cacheKeys.debugger) || this.infoConnection?.probe;
         const target = this.context.workspaceState.get(this.cacheKeys.mcuCore);
-        if (!probe || !target) return this.rejectBusy("chip.needConfig", "CONFIG_INCOMPLETE", false);
+        if (!probe || !target) return this.rejectBusy("chip.needConfig", "CONFIG_INCOMPLETE", forAgent);
         if (probe !== this.infoConnection?.probe || target !== this.infoConnection?.target)
-            return this.rejectBusy("chip.readAgain", "CHIP_INFO_STALE", false);
+            return this.rejectBusy("chip.readAgain", "CHIP_INFO_STALE", forAgent);
         let lease;
+        let transitioned = false;
         try {
             await this.yieldRtt?.("chipInfo");
             lease = this.coordinator.acquire("chipInfo");
             this.post({ state: "reading", key: "chip.controlling" });
             const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const executable = await this.resolveExecutable(configured);
-            if (!executable) throw Object.assign(new Error(this.t("chip.notReady")), { i18nKey: "chip.notReady" });
+            if (!executable)
+                throw Object.assign(new Error(this.t("chip.notReady")), {
+                    i18nKey: "chip.notReady",
+                    code: "OPENOCD_NOT_READY"
+                });
             const { cwd } = this.commandContext();
             const connection = this.prepareConnection
-                ? await this.prepareConnection({ executable, probe, target }, true)
+                ? await this.prepareConnection({ executable, probe, target }, !forAgent)
                 : {};
             if (lease.released || this.isDebugActive())
-                throw Object.assign(new Error(this.t("chip.busyDebug")), { i18nKey: "chip.busyDebug" });
+                throw Object.assign(new Error(this.t("chip.busyDebug")), {
+                    i18nKey: "chip.busyDebug",
+                    code: "PROBE_BUSY"
+                });
             const options = {
                 executable,
                 probe,
@@ -175,6 +185,7 @@ class ChipInfoService {
                     code: "CHIP_INFO_STALE"
                 });
             const result = await this.chipInfo.controlTarget(options, action);
+            transitioned = true;
             // Show the verified transition even if the subsequent full information read fails.
             this.info = {
                 ...this.info,
@@ -200,7 +211,11 @@ class ChipInfoService {
                 message: error.message || String(error),
                 diagnostic: serializeError(error)
             });
-            return null;
+            if (!forAgent) return null;
+            // The action already took effect: report the verified state, not a failure an Agent might retry.
+            if (transitioned)
+                return { ...this.info, refreshError: { code: error.code || "", message: error.message || "" } };
+            throw error;
         } finally {
             lease?.release();
         }

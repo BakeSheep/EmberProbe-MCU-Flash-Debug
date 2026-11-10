@@ -244,6 +244,7 @@ const TEST_GROUPS = Object.freeze({
         "variable-disambiguation.test.js",
         "verify-driver-helper.test.js",
         "webview-assets.test.js",
+        "website.test.js",
         "sampling-rate-picker.test.js",
         "webview-runtime.test.js",
         "webview-zoom.test.js",

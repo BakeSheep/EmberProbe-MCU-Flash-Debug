@@ -84,24 +84,30 @@ SDK 和自定义 profile 保持原状。条目使用 `@deepseek-ai/dsh-mcp-clien
 
 MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cubemx`，不支持更改暴露范围。旧设置 `emberprobe.mcp.toolsets` 和环境变量 `EMBERPROBE_MCP_TOOLSETS` 不再生效。下表仅按功能分类：
 
-| 工具集 | 工具 |
-|---|---|
-| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `rtt_status` `rtt_read` `rtt_control` `peripherals_list` `peripherals_read` `peripherals_write` |
-| `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
-| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
+| 工具集   | 工具                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core`   | `config_get` `config_set` `probe_list` `chip_read` `target_control` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_list` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `watch_list` `watch_remove` `sampling_status` `sampling_control` `rtt_status` `rtt_read` `rtt_control` `peripherals_list` `peripherals_read` `peripherals_write` |
+| `debug`  | `debug_status` `debug_inspect` `debug_evaluate` `memory_read` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot`                                                                                                                                                                                                                                                 |
+| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel`                                                                                                                                                                                                                                                                           |
 
 - 注解：`readOnlyHint` 由 `agent-client.js` 的 `READ_ONLY_METHODS`（可重试的只读方法）与 `OBSERVATION_METHODS`（不改变状态但可能访问硬件的方法）派生；`flash_program`、写入、CubeMX 生成与 `debug_control` 标记为 `destructiveHint`；所有工具 `openWorldHint: false`。
 - schema 手写在 `src/mcp/tools.js`，全部 `additionalProperties: false`；`probeSerial` 保持字符串原样传递。最终校验仍由 Bridge 完成。
 - 漂移测试（`test/mcp-tools.test.js`）要求每个工具对应现有的 Bridge 路由，每个路由要么被映射，要么列入显式排除清单。
 - `flash_program` / `flash_verify` 先在服务器进程内运行与 skill 相同的预检（`flash-common.preflight`）；`ready === false` 时直接返回 `diagnostics` 与 `notes`，不进入确认。已有 24 小时工作区授权时直接执行，并在结果的 `authorization.trustedExpiresAt` 中报告到期时间。
 - `debug_inspect` 的 `frame` 与 `reference` 是 Bridge 在上一次列表中返回的字符串句柄（`stackFrames[].frame`、`scopes[].reference`、`variables[].reference`），不是 DAP 整数；整数在 schema 校验时即被拒绝。句柄在恢复运行、写入、控制台命令或切换会话后失效，需要重新列出。
+- `debug_evaluate` 在已暂停的原生会话中以 DAP `hover` 上下文求值，只接受无副作用的变量路径（全局/局部变量、成员、下标、`*ptr`）；含赋值、`++`/`--` 或函数调用的表达式在到达调试器前以 `DEBUG_EXPRESSION_REJECTED` 拒绝。读取方式与 Variables 视图相同：经指针访问外设地址时同样会读取该地址。返回的 `reference` 是与 `debug_inspect` 共用的句柄。
+- `memory_read` 在已暂停的原生会话中读取最多 4096 字节，只允许 Cortex-M 的 Code 与 SRAM 区（`0x00000000`–`0x3FFFFFFF`），其他地址返回 `MEMORY_REGION_NOT_ALLOWED`：外设、外部设备与系统区的读取可能清除状态位或弹出 FIFO，外设寄存器改用按 SVD 检查读副作用的 `peripherals_read`。
+- `target_control` 不需要调试会话即可暂停、继续或复位目标，对应侧栏芯片卡片的按钮；需要先用 `chip_read` 在相同探针与目标上读取一次（否则 `CHIP_NOT_READ` / `CHIP_INFO_STALE`），调试、采样或烧录期间返回 `PROBE_BUSY`。动作已生效但随后的芯片信息刷新失败时，结果仍返回新的 `targetState` 并附 `refreshError`，不按失败处理。
+- `variables_list` 在扩展已加载的 ELF 符号表（`variables_read` 解析名称所用的同一份）中按名称、显示名或源文件做不区分大小写的子串搜索，分页返回地址、大小、DWARF 标量类型与 `composite` 标记；`nextStart` 存在时还有下一页。它对应 skill 的 `read.js --list`，但后者在本地解析工作区中最新的 ELF。
+- `watch_list` 返回侧栏观察列表与当前聚焦图表面板（`sampling_control start` 采样的范围）中保存的原始名称与显示名；`watch_remove` 接受原始名称或显示名，复合变量名会同时移除其成员（如 `sensor` 移除 `sensor.x`、`sensor[0]`），已记录的图表历史保留。
+- 以上新增工具目前只有 MCP 入口；对应的 skill 脚本参数尚未提供。
 
 ## 确认
 
 敏感工具（`flash_program`、`flash_verify`、`variables_write`、`peripherals_write`、`cubemx_start`、`cubemx_execute`）收到 Bridge 的确认响应后：
 
 - 侧栏“Agent 配置”中开启“完全允许 Agent 操作”后，Bridge 对适用操作返回 `mode: "full"`，MCP 直接执行烧录、Flash 校验、写入和 CubeMX 生成，不再发起操作确认。关闭后恢复原有授权流程；探针、目标、数据与工作区校验仍保留，匿名探针和 ELF 不匹配等限制仍生效。见 [Agent 权限](../guide/agent.md#agent-权限)。
-- 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与按 Bridge 实际响应渲染的计划摘要——烧录的 ELF 路径与 SHA-256、target、probe 与 serial、transport、速度；变量写入的 ELF 路径与 SHA-256、连接（target、probe、serial 或调试会话）及每个写入项的名称、地址、类型与新值；外设写入的 SVD 路径与 SHA-256、寄存器地址、新旧寄存器值与所请求的字段；CubeMX 的 `.ioc`、候选文件、CubeMX 版本与配置变更（最多 16 项，其余给出数量与完整 diff 路径）。表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
+- 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与按 Bridge 实际响应渲染的计划摘要——烧录的 ELF 路径与 SHA-256、target、probe 与 serial、transport、速度；变量写入的 ELF 路径与 SHA-256、连接（target、probe、serial 或调试会话）及每个写入项的名称、地址、类型与新值；外设写入的 SVD 路径与 SHA-256、寄存器地址、新旧寄存器值与所请求的全部字段；CubeMX 的 `.ioc`、候选文件、CubeMX 版本与配置变更（最多 16 项，其余给出数量与完整 diff 路径）。变量与外设写入逐项列出全部写入（schema 限制为最多 64 项），用户批准的每一项都在消息中可见；单个值超过 200 个字符时只截断该值本身。表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
 - 客户端不支持 elicitation 时，返回计划、确认 ID 与 `nextStep` 说明：agent 必须把计划展示给用户、等待明确回答，再带 `confirmationId`（以及用户明确选择的 `remember`）重调，与 skill 流程一致。
 - 确认 ID 过期或已使用时透传 `*_CONFIRMATION_INVALID`，服务器不会自动重新申请。
 - CubeMX 生成方法 `cubemx.start` / `cubemx.execute` 只消费确认，计划由 `cubemx.prepare` 签发。因此 `cubemx_start` / `cubemx_execute` 未带确认 ID 时，服务器先以相同候选文件及其内容哈希调用 `cubemx.prepare`，再按上述方式确认；已有 24 小时项目授权时直接执行。`cubemx_prepare` 只返回计划与 `nextStep`，不返回确认 ID，agent 无法用它绕过 `cubemx_execute` / `cubemx_start` 的确认。
@@ -112,11 +118,15 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 - Bridge 是请求/响应模式。请求带 `progressToken` 时，服务器在等待期间每 5 秒发送一次只含已耗时的 `notifications/progress`，避免客户端判定无响应；阶段性进度要等 Bridge 支持流式输出。
 - 超时预算复用 `agent-client.js` 的方法表。状态变更类调用超时后结果未知（`details.resultUnknown: true`），按诊断建议先查询状态，不自动重发。
-- 收到 `notifications/cancelled` 时，`cubemx_execute` 转发 `cubemx.cancel`；烧录与写入不中断，结果按未知处理。`variables_sample` 不转发取消，因为唯一的取消方法 `sampling.stop` 也会停止常驻采样。
+- 收到 `notifications/cancelled` 时，`cubemx_execute` 转发 `cubemx.cancel`；烧录与写入不中断，结果按未知处理。`variables_sample` 不转发取消，因为唯一的取消方法 `sampling.stop` 也会停止常驻采样；因此 `count × intervalMs` 限制在 25 分钟以内（超出返回 `SAMPLE_DURATION_TOO_LONG`），保证在导出配置的 30 分钟客户端上限内结束，客户端超时后不会继续占用探针。更长的采集用 `watch_add`（`destination: "chart"`）加 `sampling_control start`，再用 `variables_export_csv` 导出。
 
 ## 结果与诊断
 
-成功时 `structuredContent` 是 Bridge 的原始结果（数组或标量包在 `result` 中），`content` 是紧凑的 JSON 文本。失败时 `isError: true`，`structuredContent` 与 skill 写到 stderr 的 `diagnostic` 同形（`{ ok: false, type: "diagnostic", operation, error: { code, category, likelyCause, retryable, suggestedActions, actions, details } }`），由同一个 `diagnosticForError` 生成。诊断表中与通道相关的片段写成占位符：skill 脚本渲染成原有的 CLI 写法（如 `mcu-debug-control --start`，输出不变），MCP 渲染成工具名（如 `debug_start`）；`actions: [{ method: "debug.start" }]` 是与通道无关的机器可读版本。
+成功时 `structuredContent` 是 Bridge 的原始结果（数组或标量包在 `result` 中），`content` 是紧凑的 JSON 文本。多数客户端只把 `content` 交给模型，因此文本超过 60000 字符时逐步缩短数组（保留开头若干项）与长字符串，在省略处标注 `… N more items` / `more characters`，并在顶层加 `textTruncated` 说明；文本始终是合法 JSON，`structuredContent` 仍是完整结果。
+
+`variables_export_csv` 带 `outputPath`（工作区内的相对路径，规则与 skill 的 `--output` 相同：经符号链接解析后也不得离开工作区，已存在时覆盖）时，MCP 服务器把 CSV 写入该文件，结果只含元数据、`output` 绝对路径与 `bytes`。不带 `outputPath` 时，32 KiB 以内的 CSV 照常内联在 `csv` 中；更大的导出不内联，返回元数据、`csvOmitted: true`、`bytes` 与 `nextStep`，提示改用 `outputPath` 或缩小范围。
+
+失败时 `isError: true`，`structuredContent` 与 skill 写到 stderr 的 `diagnostic` 同形（`{ ok: false, type: "diagnostic", operation, error: { code, category, likelyCause, retryable, suggestedActions, actions, details } }`），由同一个 `diagnosticForError` 生成。诊断表中与通道相关的片段写成占位符：skill 脚本渲染成原有的 CLI 写法（如 `mcu-debug-control --start`，输出不变），MCP 渲染成工具名（如 `debug_start`）；`actions: [{ method: "debug.start" }]` 是与通道无关的机器可读版本。
 
 ## Prompts
 
@@ -128,13 +138,13 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 以下行为需要在各客户端中实测后记录；本表不预设结果。实测流程、发给客户端的步骤和回报模板见 [MCP harness 实机验收](../development/mcp-harness-acceptance.md)：
 
-| 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
-|---|---|---|---|---|---|
-| VS Code Copilot | provider | — | — | — | 待实测 |
-| Claude Code | 原生 JSON / 可选 CLI | 工具注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-claude-2026-11-05.md)；确认路径待实测 |
-| Codex | 原生 TOML / 可选 CLI | 工具注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-codex-2026-11-05.md)；确认路径待实测 |
-| Gemini CLI | 原生 JSON / 可选 CLI | — | 按客户端能力选择 | — | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测 |
-| OpenCode | 原生 local JSON/JSONC 写入 | 工具注解对模型不可见 | 未实测 | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-opencode-2026-11-05.md)；确认路径待实测 |
-| Cursor | 扩展 API / 安装链接 | — | — | — | 待实测 |
-| Antigravity | 原生 JSON 写入 | — | 按客户端能力选择 | — | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测 |
-| DeepSeek Harness (DSH) | 原生 profile YAML 写入 | — | 未声明时使用聊天确认 | — | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持 |
+| 客户端                 | 连接                       | 工具列表与注解              | elicitation          | roots  | 实测记录                                                                                     |
+| ---------------------- | -------------------------- | --------------------------- | -------------------- | ------ | -------------------------------------------------------------------------------------------- |
+| VS Code Copilot        | provider                   | —                           | —                    | —      | 待实测                                                                                       |
+| Claude Code            | 原生 JSON / 可选 CLI       | 39 个工具；注解对模型不可见 | 未实测               | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-claude-2026-11-05.md)；确认路径待实测   |
+| Codex                  | 原生 TOML / 可选 CLI       | 39 个工具；注解对模型不可见 | 未实测               | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-codex-2026-11-05.md)；确认路径待实测    |
+| Gemini CLI             | 原生 JSON / 可选 CLI       | —                           | 按客户端能力选择     | —      | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测                                            |
+| OpenCode               | 原生 local JSON/JSONC 写入 | 39 个工具；注解对模型不可见 | 未实测               | 未实测 | [2026-11-05 H750 只读通过](../records/validation/mcp-opencode-2026-11-05.md)；确认路径待实测 |
+| Cursor                 | 扩展 API / 安装链接        | —                           | —                    | —      | 待实测                                                                                       |
+| Antigravity            | 原生 JSON 写入             | —                           | 按客户端能力选择     | —      | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测                              |
+| DeepSeek Harness (DSH) | 原生 profile YAML 写入     | —                           | 未声明时使用聊天确认 | —      | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持          |

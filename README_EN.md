@@ -2,7 +2,7 @@
 
 EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it provides firmware flashing, built-in debugging, live variables, and Agent-assisted development.
 
-> [中文文档](README.md)
+> [Website](https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/en/) | [中文文档](README.md)
 
 ![Live watch chart panel with sampled waveforms, current values, and the write list](docs/images/live-watch-waveform.png)
 

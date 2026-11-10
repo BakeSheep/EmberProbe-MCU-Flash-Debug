@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### MCP
+
+- 新增工具：`debug_evaluate`（在暂停的原生会话中对无副作用的变量路径求值）、`memory_read`（读取 Code 与 SRAM 区最多 4096 字节，外设区改用 `peripherals_read`）、`target_control`（无调试会话时暂停、继续或复位目标）、`variables_list`（搜索并分页列出 ELF 变量）、`watch_list` 与 `watch_remove`（查看和移除观察列表项）。Agent Bridge 新增对应方法 `debug.evaluate`、`memory.read`、`target.control`、`variables.list`、`watch.list`、`watch.remove`；skill 脚本尚未提供对应参数。
+- New tools: `debug_evaluate` (evaluate a side-effect-free variable path in a paused native session), `memory_read` (read up to 4096 bytes from the Code and SRAM regions; use `peripherals_read` for peripherals), `target_control` (halt, resume or reset the target without a debug session), `variables_list` (search and page ELF variables), and `watch_list` / `watch_remove` (inspect and remove watch-list entries). The Agent Bridge adds the matching methods `debug.evaluate`, `memory.read`, `target.control`, `variables.list`, `watch.list` and `watch.remove`; skill scripts do not expose them yet.
+- 变量与外设写入的确认弹窗逐项列出全部写入（此前最多显示 16 项，其余只给数量），寄存器所请求的字段也不再整体截断；`variables_export_csv` 新增 `outputPath`，把 CSV 写入工作区文件并只返回元数据，未指定时超过 32 KiB 的 CSV 不再内联；超长结果的文本改为缩短数组与字符串后的合法 JSON，不再在 JSON 中间截断；`variables_sample` 总时长限制为 25 分钟（`SAMPLE_DURATION_TOO_LONG`），避免客户端超时后仍占用探针。
+- Approval messages for variable and peripheral writes now list every write (previously at most 16, the rest only counted) and no longer clip a register's requested fields as a whole; `variables_export_csv` adds `outputPath` to write the CSV into a workspace file and return only metadata, and without it a CSV larger than 32 KiB is no longer returned inline; oversized result text is now valid JSON with arrays and strings shortened instead of being cut mid-JSON; `variables_sample` is limited to 25 minutes in total (`SAMPLE_DURATION_TOO_LONG`) so a client timeout no longer leaves the probe busy.
+
+### RTOS
+
+- 修复固件缺少 `.ARM.attributes` 架构信息时 FreeRTOS 任务快照误报“需要 Cortex-M 目标”：GDB 此时显示的 `armv3m` 等名称不代表真实内核，现在统一按寄存器描述识别，Cortex-A/R 目标仍会被拒绝。
+- Fix FreeRTOS task snapshots wrongly requiring a Cortex-M target for firmware without `.ARM.attributes` CPU information. Names such as `armv3m` that GDB shows in this case do not identify the core, so the target is now recognized from its register description; Cortex-A/R targets are still rejected.
+
 ### RTT 日志 / RTT logging
 
 - 新增 SEGGER RTT 日志：侧栏“RTT 日志”卡片和命令可启动、停止，J-Link 与 CMSIS-DAP 用法相同，调试或采样时也能查看。每个 up 通道一个终端，回车把一行发送到同号 down 通道，可选主机时间戳，可保存为按大小轮转的日志文件。控制块从设置的地址、ELF `_SEGGER_RTT` 或 RAM 范围定位。只支持单核目标，外部 GDB Server 模式下不可用。

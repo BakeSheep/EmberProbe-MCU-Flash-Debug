@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { READ_ONLY_METHODS, OBSERVATION_METHODS } = require("../../skills/_emberprobe/agent-client");
+const { workspaceOutputPath } = require("../../skills/_emberprobe/file-identity");
 
 const TOOLSETS = Object.freeze(["core", "debug", "cubemx"]);
 
@@ -89,6 +90,24 @@ function timestamp(value, name) {
     return parsed;
 }
 
+// variables.sample holds the probe for the whole call and cannot be cancelled on its own (sampling.stop would
+// also stop persistent sampling). Keep it inside the 30-minute call budget the exported client configs set,
+// so a client timeout never leaves an orphaned read running.
+const MAX_SAMPLE_MS = 25 * 60000;
+
+function sampleTooLong(count, intervalMs) {
+    return Object.assign(new Error(`count × intervalMs must not exceed ${MAX_SAMPLE_MS} ms`), {
+        code: "SAMPLE_DURATION_TOO_LONG",
+        category: "input",
+        retryable: false,
+        details: { count, intervalMs, durationMs: count * intervalMs, maxDurationMs: MAX_SAMPLE_MS },
+        suggestedActions: [
+            "Lower count or intervalMs so the capture fits in 25 minutes.",
+            "For a longer capture: watch_add with destination chart, sampling_control start, then variables_export_csv with outputPath."
+        ]
+    });
+}
+
 function candidateHash(file) {
     return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
@@ -97,6 +116,35 @@ function candidateHash(file) {
 // whatever directory the client launched it from.
 function workspacePath(context, file) {
     return context?.workspace ? path.resolve(context.workspace, file) : path.resolve(file);
+}
+
+// The same rule as the skill's --output: relative, inside the workspace, also through symlinks.
+function csvOutputPath(context, file) {
+    return workspaceOutputPath(context?.workspace || process.cwd(), file, "outputPath");
+}
+
+// A chart export can reach the archive's 64 MiB cap. Sending that inline would flood the agent's context
+// (clients forward the text content, which results.js truncates), so only a small CSV stays inline.
+const INLINE_CSV_MAX = 32 * 1024;
+
+function csvResult(value, args = {}, context) {
+    if (!value || typeof value !== "object" || typeof value.csv !== "string") return value;
+    const { csv, ...metadata } = value;
+    const bytes = Buffer.byteLength(csv, "utf8");
+    if (args.outputPath !== undefined) {
+        const output = csvOutputPath(context, args.outputPath);
+        fs.mkdirSync(path.dirname(output), { recursive: true });
+        fs.writeFileSync(output, csv, "utf8");
+        return { ...metadata, output, bytes };
+    }
+    if (csv.length <= INLINE_CSV_MAX) return value;
+    return {
+        ...metadata,
+        csvOmitted: true,
+        bytes,
+        nextStep:
+            "The CSV is too large to return inline. Call variables_export_csv again with outputPath (a workspace-relative file), or narrow variables or the time range."
+    };
 }
 
 /**
@@ -108,7 +156,7 @@ function workspacePath(context, file) {
  *   kind?: "bridge" | "flash", confirm?: boolean, destructive?: boolean, mutates?: boolean,
  *   hardware?: boolean, operation?: string, cancel?: (args: Record<string, any>) => BridgeRequest | null,
  *   plan?: (params: Record<string, any>) => BridgeRequest & { context?: Record<string, any> },
- *   result?: (value: any) => any
+ *   result?: (value: any, args?: Record<string, any>, context?: { workspace?: string }) => any
  * }} ToolDefinition
  */
 /** @type {ToolDefinition[]} */
@@ -181,6 +229,18 @@ const TOOLS = [
             method: "chip.read",
             params: { sections: args.sections || (args.fields?.length ? [] : ["identity"]), fields: args.fields || [] }
         })
+    },
+    {
+        name: "target_control",
+        toolset: "core",
+        title: "Halt, resume or reset the target",
+        description:
+            "Halt, resume or reset the target through the probe without a debug session. Needs a chip_read on the same probe and target first; refused while debugging or sampling. Act only when the user asked.",
+        methods: ["target.control"],
+        destructive: true,
+        hardware: true,
+        inputSchema: object({ action: str("Action", { enum: ["pause", "continue", "reset"] }) }, ["action"]),
+        request: (args) => ({ method: "target.control", params: { action: args.action } })
     },
     {
         name: "fault_read",
@@ -267,7 +327,8 @@ const TOOLS = [
         name: "variables_sample",
         toolset: "core",
         title: "Sample variables",
-        description: "Read variables repeatedly and return every sample.",
+        description:
+            "Read variables repeatedly and return every sample. count × intervalMs is limited to 25 minutes; for longer captures start persistent sampling and export the chart history.",
         methods: ["variables.sample"],
         hardware: true,
         inputSchema: object(
@@ -281,6 +342,7 @@ const TOOLS = [
         request: (args) => {
             const count = args.count ?? 10;
             const intervalMs = args.intervalMs ?? 200;
+            if (count * intervalMs > MAX_SAMPLE_MS) throw sampleTooLong(count, intervalMs);
             return {
                 method: "variables.sample",
                 params: { variables: toSpecs(args.variables), count, intervalMs },
@@ -322,16 +384,22 @@ const TOOLS = [
         name: "variables_export_csv",
         toolset: "core",
         title: "Export chart history as CSV",
-        description: "Export samples from an open Live Watch chart panel. Timestamps are UTC.",
+        description:
+            "Export samples from an open Live Watch chart panel. Timestamps are UTC. Pass outputPath to write the CSV into the workspace; without it only a small CSV is returned inline.",
         methods: ["variables.exportCsv"],
         inputSchema: object({
             variables: strings("Series to export; default all with data"),
             lastSeconds: { type: "number", exclusiveMinimum: 0, description: "Relative range ending now" },
             from: { type: ["string", "number"], description: "ISO 8601 UTC (ending in Z) or epoch ms" },
             to: { type: ["string", "number"], description: "ISO 8601 UTC (ending in Z) or epoch ms; default now" },
-            panelId: int("Chart panel number; default the focused panel", 1, 1000)
+            panelId: int("Chart panel number; default the focused panel", 1, 1000),
+            outputPath: str("Workspace-relative file to write the CSV to, e.g. exports/run.csv; overwritten", {
+                minLength: 1
+            })
         }),
-        request: (args) => {
+        request: (args, context) => {
+            // Rejected before the export runs, so a bad path never costs an archive read.
+            if (args.outputPath !== undefined) csvOutputPath(context, args.outputPath);
             const to = timestamp(args.to, "to") ?? Date.now();
             let from = timestamp(args.from, "from");
             if (args.lastSeconds !== undefined) {
@@ -345,7 +413,8 @@ const TOOLS = [
             if (from !== undefined) params.from = from;
             if (args.panelId !== undefined) params.panelId = args.panelId;
             return { method: "variables.exportCsv", params };
-        }
+        },
+        result: csvResult
     },
     {
         name: "watch_add",
@@ -369,6 +438,50 @@ const TOOLS = [
             method: "watch.add",
             params: { variables: args.variables, types: args.types || {}, destination: args.destination || "sidebar" }
         })
+    },
+    {
+        name: "watch_list",
+        toolset: "core",
+        title: "List watched variables",
+        description:
+            "List the sidebar watch list and the focused chart panel's variables, which sampling_control start samples.",
+        methods: ["watch.list"],
+        inputSchema: object(),
+        request: () => ({ method: "watch.list" })
+    },
+    {
+        name: "watch_remove",
+        toolset: "core",
+        title: "Remove variables from the watch list",
+        description:
+            "Remove variables from the sidebar watch list, the focused chart, or both. A composite name also removes its members; recorded chart history is kept.",
+        methods: ["watch.remove"],
+        mutates: true,
+        inputSchema: object(
+            {
+                variables: strings("Stored or display names", { minItems: 1, maxItems: 64 }),
+                destination: str("Where to remove them", { enum: ["sidebar", "chart", "both"], default: "sidebar" })
+            },
+            ["variables"]
+        ),
+        request: (args) => ({
+            method: "watch.remove",
+            params: { variables: args.variables, destination: args.destination || "sidebar" }
+        })
+    },
+    {
+        name: "variables_list",
+        toolset: "core",
+        title: "Search ELF variables",
+        description:
+            "Search the workspace ELF's global and static variables by name, display name or source file, with address, size and DWARF type. Names work in variables_read and watch_add.",
+        methods: ["variables.list"],
+        inputSchema: object({
+            query: str("Case-insensitive substring; empty lists all", { maxLength: 256 }),
+            start: int("Page start", 0, 10000000),
+            count: int("Page size", 1, 200, { default: 50 })
+        }),
+        request: (args) => ({ method: "variables.list", params: args })
     },
     {
         name: "rtt_status",
@@ -545,6 +658,47 @@ const TOOLS = [
             method: "debug.start",
             params: args?.attach === undefined ? {} : { attach: args.attach }
         })
+    },
+    {
+        name: "debug_evaluate",
+        toolset: "debug",
+        title: "Evaluate a variable path",
+        description:
+            "Evaluate a side-effect-free variable path (globals, locals, members, indexes, *ptr) in a paused native session; assignments, ++/-- and calls are rejected. Children are listed with debug_inspect action variables.",
+        methods: ["debug.evaluate"],
+        inputSchema: object(
+            {
+                expression: str("Variable path, e.g. sensor.pos.y, buf[3], *ctx->rx", {
+                    minLength: 1,
+                    maxLength: 1024
+                }),
+                frame: str("Frame handle from a stack listing; default the selected frame", {
+                    minLength: 1,
+                    maxLength: 64
+                })
+            },
+            ["expression"]
+        ),
+        request: (args) => ({ method: "debug.evaluate", params: args })
+    },
+    {
+        name: "memory_read",
+        toolset: "debug",
+        title: "Read target memory",
+        description:
+            "Read raw bytes from a paused native session. Limited to the Code and SRAM regions (0x00000000-0x3FFFFFFF); read peripheral registers with peripherals_read.",
+        methods: ["memory.read"],
+        inputSchema: object(
+            {
+                address: {
+                    type: ["string", "integer"],
+                    description: "Start address: 0x-prefixed hex string or integer"
+                },
+                length: int("Bytes to read", 1, 4096, { default: 64 })
+            },
+            ["address"]
+        ),
+        request: (args) => ({ method: "memory.read", params: args })
     },
     {
         name: "debug_select",

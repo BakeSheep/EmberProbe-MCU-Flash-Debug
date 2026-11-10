@@ -24,14 +24,17 @@ const PLAN_FIELDS = [
     ["candidatePath", "Candidate .ioc"],
     ["tool", "STM32CubeMX"]
 ];
-// Write plans list their targets under `items`; CubeMX plans under `changes`.
-const ITEM_LISTS = [
-    ["items", "Writes"],
-    ["values", "Values"],
-    ["writes", "Writes"],
-    ["changes", "Changes"]
-];
 const MAX_ITEMS = 16;
+// Write plans list their targets under `items`; CubeMX plans under `changes`. The user approves every write
+// the Bridge will perform, so write lists are shown in full (the tool schemas bound them to 64 items). Only
+// CubeMX changes, which can run into hundreds of keys, are capped and point to the full diff instead.
+/** @type {[key: string, label: string, limit: number][]} */
+const ITEM_LISTS = [
+    ["items", "Writes", Infinity],
+    ["values", "Values", Infinity],
+    ["writes", "Writes", Infinity],
+    ["changes", "Changes", MAX_ITEMS]
+];
 const MAX_VALUE = 200;
 
 function clip(text) {
@@ -71,11 +74,12 @@ function itemLine(item) {
         item.action === "deleted"
             ? "(deleted)"
             : valueText(first(item.value, item.newValue, item.after, item.written, item.requested));
-    // A peripheral write names the register; the fields the user asked for follow it.
+    // A peripheral write names the register; every field the user asked for follows it. Each value is
+    // clipped on its own so a long list never hides a later field.
     const requested = Array.isArray(item.requested)
-        ? ` [${item.requested.map((entry) => `${entry.target} = ${entry.value}`).join(", ")}]`
+        ? ` [${item.requested.map((entry) => `${clip(String(entry.target))} = ${valueText(entry.value)}`).join(", ")}]`
         : "";
-    return `${name}${address}${type}: ${from !== undefined ? `${valueText(from)} → ${to}` : to}${clip(requested)}`;
+    return `${name}${address}${type}: ${from !== undefined ? `${valueText(from)} → ${to}` : to}${requested}`;
 }
 
 function summary(result) {
@@ -89,11 +93,11 @@ function summary(result) {
         if (digest && !(result[`${key}Sha256`] ?? result.plan?.[`${key}Sha256`]))
             lines.push(`${label} SHA-256: ${digest}`);
     }
-    for (const [key, label] of ITEM_LISTS) {
+    for (const [key, label, limit] of ITEM_LISTS) {
         const items = result[key] ?? result.plan?.[key];
         if (!Array.isArray(items) || !items.length) continue;
         lines.push(`${label}:`);
-        const shown = items.slice(0, MAX_ITEMS);
+        const shown = items.slice(0, limit);
         for (const item of shown) lines.push(`  - ${itemLine(item)}`);
         const reported = key === "changes" ? result.changesSummary?.total : undefined;
         const total = Number.isInteger(reported) && reported > items.length ? reported : items.length;

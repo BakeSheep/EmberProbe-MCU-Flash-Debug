@@ -2,7 +2,7 @@
 
 EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，集成固件烧录、断点调试、实时变量观测与 Agent 辅助开发。
 
-> [English documentation](README_EN.md) | [使用教程](#使用教程)
+> [官网](https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/) | [English documentation](README_EN.md) | [使用教程](#使用教程)
 
 ![实时图表面板：采样波形、当前数值与写入列表](docs/images/live-watch-waveform.png)
 
@@ -90,7 +90,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 #### 1. 烧录
 
-点击 **烧录**，写入当前 ELF、校验并复位运行；固件与目标 Flash 一致时跳过擦写。状态行与日志显示进度，失败时展开“连接诊断”查看原因。
+点击 **烧录**，写入当前 ELF、校验并复位运行。状态行与日志显示进度，失败时展开“连接诊断”查看原因。
 
 也可右键工程文件夹选择 **EmberProbe: 下载程序**，或从命令面板执行同名命令。
 
@@ -100,7 +100,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 | 按钮 | 行为 |
 | --- | --- |
-| **复位调试** | 下载当前固件（与目标一致时跳过），复位并运行到 `main` 停下 |
+| **复位调试** | 下载当前固件，复位并运行到 `main` 停下 |
 | **不复位调试** | 附加并暂停目标，**不复位、不下载固件**，保留当前现场 |
 
 > 使用“不复位调试”时，选中的 ELF 必须与芯片中正在运行的固件一致。

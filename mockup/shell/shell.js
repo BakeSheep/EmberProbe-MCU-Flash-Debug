@@ -28,7 +28,7 @@
     }
 
     var state = {
-        lang: "zh",
+        lang: new URLSearchParams(window.location.search).get("lang") === "en" ? "en" : "zh",
         activeView: "emberprobe",
         activeTab: "livewatch",
         openTabs: ["FreeRTOSConfig.h", "main.c", "livewatch", "README.md"],
@@ -54,6 +54,7 @@
         "README.md": { label: "README.md", type: "markdown" }
     };
 
+    var breakpointTimer = null;
     var sidebarHost = null;
     var livewatchHost = null;
     var simulator = window.EmberProbeSidebarData.createSimulator();
@@ -160,6 +161,21 @@
         var lines = codeLines("main.c");
         for (var i = 0; i < lines.length; i++) if (lines[i].indexOf("pid_update(&pid") >= 0) return i + 1;
         return 87;
+    }
+
+    // The debug command resets and runs to main (runToEntryPoint).
+    function findMainLine() {
+        var lines = codeLines("main.c");
+        var entry = lines.indexOf("int main(void)");
+        for (var i = entry + 1; i < lines.length; i++) if (/^\s+\S.*;$/.test(lines[i])) return i + 1;
+        return entry + 1;
+    }
+
+    function enabledBreakpointLine() {
+        var hit = state.breakpoints.find(function (item) {
+            return item.file === "main.c" && item.enabled;
+        });
+        return hit ? hit.line : 0;
     }
 
     function showToast(text, iconName) {
@@ -607,10 +623,8 @@
                     '</span><span class="var-value">= ' +
                     esc(node.value) +
                     "</span>" +
-                    (node.stl ? '<span class="stl-badge">STL</span>' : "") +
-                    '<span class="var-type">' +
-                    esc(node.type) +
-                    "</span></div>";
+                    (node.type ? '<span class="var-type">' + esc(node.type) + "</span>" : "") +
+                    "</div>";
                 if (hasChildren && expanded) html += renderVariableTree(node.children, depth + 1, path);
                 return html;
             })
@@ -632,7 +646,10 @@
                 );
             })
             .join("");
-        $("debugCallStack").innerHTML = D.DEBUG.callStack
+        var callStack = state.debugInMain
+            ? [{ name: "main", detail: "main.c:" + state.debugLine, active: true }]
+            : D.DEBUG.callStack;
+        $("debugCallStack").innerHTML = callStack
             .map(function (frame, index) {
                 return (
                     '<div class="tree-row stack-row' +
@@ -745,15 +762,14 @@
 
     /* --------------------------------------------------------------- debug */
 
-    function setEmberProbeStatus(text, cls) {
-        var item = $("emberprobeStatus");
-        item.textContent = "EmberProbe: " + text;
-        item.className = "status-item emberprobe" + (cls ? " " + cls : "");
+    // VS Code's status bar item for the debug session; the extension itself contributes none.
+    function updateDebugStatus() {
+        $("debugSessionStatus").classList.toggle("hidden", !state.debugActive);
+        $("debugSessionName").textContent = D.DEBUG.name;
     }
 
     function updateDebugToolbar() {
         $("debug-toolbar").classList.toggle("hidden", !state.debugActive || !state.activeTab);
-        $("debugToolbarLabel").textContent = state.debugPaused ? "ControlTask · main.c:" + state.debugLine : "运行中…";
         $("dbgContinue").innerHTML = icon(state.debugPaused ? "debug-continue" : "debug-pause");
         $("dbgContinue").title = state.debugPaused ? "继续 (F5)" : "暂停 (F6)";
         $("dbgContinue").setAttribute("aria-label", $("dbgContinue").title);
@@ -763,59 +779,76 @@
         });
     }
 
-    function startDebug() {
-        if (sidebarHost) sidebarHost.startDebug();
+    function startDebug(kind) {
+        if (state.debugActive) return;
+        if (sidebarHost) sidebarHost.startDebug(kind);
     }
 
-    function completeDebugStart() {
+    function completeDebugStart(kind) {
         state.debugActive = true;
         state.debugPaused = true;
-        state.debugLine = findDebugLine();
+        state.debugInMain = kind !== "attach";
+        state.debugLine = kind === "attach" ? findDebugLine() : findMainLine();
         $("debug-toolbar").classList.remove("hidden");
         updateDebugToolbar();
+        updateDebugStatus();
         renderEditor();
-        setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
+        renderDebugSidebar();
         switchView("debug");
         openFileTab("main.c");
+        if (state.panelVisible) showPanel("debug-console");
         if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: state.debugLine });
-        showToast("调试会话已启动：EmberProbe (J-Link)");
     }
 
     function stopDebug() {
-        if (sidebarHost && sidebarHost.cancelDebugStart() && !state.debugActive) {
-            setEmberProbeStatus("已连接", "");
-            return;
-        }
+        clearTimeout(breakpointTimer);
+        if (sidebarHost && sidebarHost.cancelDebugStart() && !state.debugActive) return;
+        if (!state.debugActive) return;
         state.debugActive = false;
         state.debugPaused = false;
+        state.debugInMain = false;
         $("debug-toolbar").classList.add("hidden");
         updateDebugToolbar();
+        updateDebugStatus();
         renderEditor();
-        setEmberProbeStatus("已连接 · 目标运行中", "running");
-        if (sidebarHost) sidebarHost.setTargetState("running", { notify: false });
-        showToast("调试会话已停止，目标继续运行");
+        renderDebugSidebar();
+        if (sidebarHost) sidebarHost.setTargetState("running", { notify: false, ended: true });
     }
 
     function pauseDebug() {
-        if (sidebarHost && sidebarHost.isDebugStarting()) return;
-        state.debugActive = true;
+        if (!state.debugActive || state.debugPaused) return;
+        clearTimeout(breakpointTimer);
+        stopAt(findDebugLine());
+    }
+
+    function stopAt(line) {
         state.debugPaused = true;
-        state.debugLine = findDebugLine();
-        $("debug-toolbar").classList.remove("hidden");
+        state.debugInMain = false;
+        state.debugLine = line;
+        openFileTab("main.c");
         updateDebugToolbar();
         renderEditor();
-        setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
-        if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: state.debugLine });
+        renderDebugSidebar();
+        if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: line });
     }
 
     function continueDebug() {
         if (sidebarHost && sidebarHost.isDebugStarting()) return;
         if (!state.debugActive) return startDebug();
+        if (!state.debugPaused) return;
         state.debugPaused = false;
         updateDebugToolbar();
         renderEditor();
-        setEmberProbeStatus("运行中", "running");
         if (sidebarHost) sidebarHost.setTargetState("running", { notify: false });
+        // The control loop reaches an enabled breakpoint again right away.
+        var line = enabledBreakpointLine();
+        if (line)
+            breakpointTimer = setTimeout(function () {
+                if (!state.debugActive || state.debugPaused) return;
+                $("debugConsoleBody").innerHTML +=
+                    "\n" + esc(D.translate("断点命中") + " main.c:" + line + " — ControlTask()");
+                stopAt(line);
+            }, 400);
     }
 
     function stepDebug() {
@@ -835,30 +868,23 @@
         openFileTab("main.c");
         updateDebugToolbar();
         renderEditor();
-        setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
-        if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: state.debugLine });
-        showToast("单步跳过 → main.c:" + state.debugLine, "debug-step-over");
+        if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: next, step: true });
     }
 
-    function simulateDownload() {
+    // The "EmberProbe OpenOCD" terminal the extension opens for a download.
+    function appendFlashLog(event) {
         showPanel("terminal");
         var body = $("terminalBody");
-        var steps = [
-            { cls: "info", text: "Info : accepting 'gdb' connection on tcp/3333" },
-            { cls: "info", text: "Info : flash write 0x08000000 917504 bytes" },
-            { cls: "ok", text: "Info : verified OK (CRC32 0x8F3C21A7)" },
-            { cls: "ok", text: "Info : EmberProbe download complete in 4.8s" }
-        ];
-        steps.forEach(function (step, index) {
-            setTimeout(
-                function () {
-                    body.innerHTML += '\n<span class="' + step.cls + '">' + esc(step.text) + "</span>";
-                    body.parentElement.scrollTop = body.parentElement.scrollHeight;
-                    if (index === steps.length - 1) showToast("烧录完成：EmberProbeDemo.elf（917504 字节）");
-                },
-                500 + index * 550
-            );
+        // A task terminal: no shell prompt under the log.
+        if (event.start) {
+            body.innerHTML = "";
+            body.nextElementSibling.style.display = "none";
+        }
+        event.lines.forEach(function (line) {
+            body.innerHTML +=
+                (body.innerHTML ? "\n" : "") + '<span class="' + line.cls + '">' + esc(line.text) + "</span>";
         });
+        body.parentElement.scrollTop = body.parentElement.scrollHeight;
     }
 
     /* ------------------------------------------------------------ frame hosts */
@@ -870,12 +896,20 @@
                 showToast(event.text);
                 break;
             case "debugStart":
-                completeDebugStart();
+                completeDebugStart(event.kind);
                 break;
             case "debugPending":
                 $("debugStartButton").disabled = event.busy;
                 $("debugStartButton").setAttribute("aria-busy", String(event.busy));
-                if (event.busy) setEmberProbeStatus("正在执行…", "");
+                break;
+            case "debugSessionChanged":
+                if (livewatchHost) livewatchHost.debugSessionChanged();
+                break;
+            case "sampling":
+                if (livewatchHost) livewatchHost.setSampling(event.phase);
+                break;
+            case "flashLog":
+                appendFlashLog(event);
                 break;
             case "openLiveWatch":
                 openLiveWatch();
@@ -885,7 +919,6 @@
                     state.debugPaused = false;
                     updateDebugToolbar();
                     renderEditor();
-                    setEmberProbeStatus("运行中", "running");
                 } else {
                     if (!state.debugPaused) state.debugLine = findDebugLine();
                     state.debugActive = true;
@@ -893,7 +926,6 @@
                     $("debug-toolbar").classList.remove("hidden");
                     updateDebugToolbar();
                     renderEditor();
-                    setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
                 }
                 break;
             case "setLang":
@@ -914,7 +946,10 @@
         if (sidebarHost) sidebarHost.destroy();
         sidebarHost = window.EmberProbeSidebarHost.create($("sidebarFrame"), {
             notify: notify,
-            simulator: simulator
+            simulator: simulator,
+            isEnglish: function () {
+                return state.lang === "en";
+            }
         });
         var frame = $("sidebarFrame");
         frame.onload = function () {
@@ -934,6 +969,11 @@
             unlimitedAvailable: new URLSearchParams(window.location.search).get("unlimited") === "1",
             notify: notify,
             simulator: simulator,
+            requestSampling: function (running) {
+                if (!sidebarHost) return;
+                if (running) sidebarHost.startSampling();
+                else sidebarHost.stopSampling();
+            },
             getSidebarWatch: function () {
                 return sidebarHost ? sidebarHost.getWatchList() : [];
             }
@@ -1006,7 +1046,7 @@
                 startDebug();
                 break;
             case "download":
-                simulateDownload();
+                if (sidebarHost) sidebarHost.download();
                 break;
             case "livewatch":
                 openLiveWatch();
@@ -1173,7 +1213,7 @@
     $("dbgStepOver").addEventListener("click", stepDebug);
     $("dbgStepInto").addEventListener("click", stepDebug);
     $("dbgStepOut").addEventListener("click", function () {
-        showToast("单步跳出 → ControlTask()", "debug-step-out");
+        stepDebug();
     });
     $("dbgRestart").addEventListener("click", function () {
         startDebug();
@@ -1360,6 +1400,13 @@
 
     /* ------------------------------------------------------------------- init */
 
+    if (state.lang === "en") {
+        document.documentElement.lang = "en";
+        $("sidebarFrame").src = "sidebar.en.html";
+        $("livewatchFrame").src = "livewatch.en.html";
+        TAB_META.livewatch.label = "Waveform #1";
+        D.useEnglish();
+    }
     state.debugLine = findDebugLine();
     setTheme(window.EmberProbeMockTheme.current());
     renderTabs();
@@ -1373,7 +1420,7 @@
     renderMarkdown();
     activateTab(state.activeTab);
     updateDebugToolbar();
-    setEmberProbeStatus("已连接", "");
+    if (state.lang === "en") D.translateDocument(document.body);
     mountSidebarHost();
     mountLivewatchHost();
 })();

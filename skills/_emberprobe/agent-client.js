@@ -513,6 +513,30 @@ const DIAGNOSTICS = {
         ["读取当前状态，并在暂停后重新列出线程、调用栈和作用域。"],
         false
     ],
+    DEBUG_EXPRESSION_REJECTED: [
+        "debug_configuration",
+        "表达式不是无副作用的变量路径：含赋值、自增/自减或函数调用。",
+        ["改用变量或成员路径，如 sensor.pos.y、buf[3]、*ptr；修改变量请走写入确认流程。"],
+        false
+    ],
+    MEMORY_REGION_NOT_ALLOWED: [
+        "peripheral_safety",
+        "原始内存读取只允许 Code 与 SRAM 区（0x00000000–0x3FFFFFFF）；外设、外部设备与系统区的读取可能有副作用。",
+        ["读取外设寄存器使用 {{peripheralRead}}，它按 SVD 拒绝读有副作用的寄存器。"],
+        false
+    ],
+    CHIP_NOT_READ: [
+        "target_connection",
+        "目标控制需要先读取一次芯片信息，以确定探针与目标连接。",
+        ["先使用 {{chipRead}} 读取芯片信息，再重试。"],
+        true
+    ],
+    CHIP_INFO_STALE: [
+        "target_connection",
+        "上次读取芯片信息后，探针或目标配置已变化。",
+        ["重新使用 {{chipRead}} 读取芯片信息，确认目标后再重试。"],
+        true
+    ],
     DEBUG_INSPECTION_INVALID: [
         "debug_configuration",
         "检查动作或分页参数无效。",
@@ -577,7 +601,11 @@ const READ_ONLY_METHODS = new Set([
     "rtos.status",
     "rtos.snapshot",
     "debug.breakpoints.list",
-    "peripherals.list"
+    "peripherals.list",
+    "debug.evaluate",
+    "memory.read",
+    "variables.list",
+    "watch.list"
 ]);
 
 // Observation methods do not change the target, workspace or extension state, but may touch hardware or install a USB
@@ -603,6 +631,7 @@ const OBSERVATION_METHODS = new Set([
 // These calls may perform a one-time USB driver installation before reading hardware.
 const DRIVER_SETUP_METHODS = new Set([
     "chip.read",
+    "target.control",
     "fault.read",
     "peripherals.read",
     "variables.read",
@@ -631,6 +660,9 @@ const STATUS_QUERY_FOR = {
     "config.set": "config.get",
     "debug.start": "debug.status",
     "debug.control": "debug.status",
+    "target.control": "chip.read",
+    "watch.add": "watch.list",
+    "watch.remove": "watch.list",
     "debug.breakpoints.update": "debug.breakpoints.list",
     "peripherals.write": "peripherals.read",
     "variables.write": "variables.read"
@@ -651,7 +683,9 @@ function requiresNativeSession(operation) {
 const RENDERINGS = {
     config: { skill: "mcu-config Skill", mcp: "config_get 与 config_set 工具", methods: ["config.get", "config.set"] },
     configSvd: { skill: "mcu-config", mcp: "config_set（values.svd）", methods: ["config.set"] },
-    list: { skill: "--list", mcp: "mcu-variables 的 --list（MCP 暂无等价工具）", methods: [] },
+    list: { skill: "--list", mcp: "variables_list（query）", methods: ["variables.list"] },
+    chipRead: { skill: "mcu-chip-info", mcp: "chip_read", methods: ["chip.read"] },
+    peripheralRead: { skill: "mcu-peripheral-debug --read", mcp: "peripherals_read", methods: ["peripherals.read"] },
     peripheralList: { skill: "--list 或 --query", mcp: "peripherals_list（query）", methods: ["peripherals.list"] },
     debugStart: { skill: "mcu-debug-control --start", mcp: "debug_start", methods: ["debug.start"] },
     debugPause: {

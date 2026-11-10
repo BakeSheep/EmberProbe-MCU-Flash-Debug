@@ -8,7 +8,7 @@
     "type": "git",
     "url": "https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug.git"
   },
-  "homepage": "https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug#readme",
+  "homepage": "https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/",
   "bugs": {
     "url": "https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug/issues"
   },
@@ -1253,9 +1253,9 @@
     "check": "node scripts/run-tests.js",
     "check:release": "node scripts/run-tests.js --release",
     "check:openocd-noecho": "node scripts/check-openocd-noecho.js",
-    "lint": "eslint src skills scripts test mockup",
-    "format": "prettier --write \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"mockup/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
-    "format:check": "prettier --check \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"mockup/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
+    "lint": "eslint src skills scripts test mockup website",
+    "format": "prettier --write \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"mockup/**/*.js\" \".github/workflows/*.yml\" \"*.json\" \"website/*.js\" \"website/*.css\"",
+    "format:check": "prettier --check \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"mockup/**/*.js\" \".github/workflows/*.yml\" \"*.json\" \"website/*.js\" \"website/*.css\"",
     "typecheck": "tsc -p jsconfig.quality.json",
     "coverage": "c8 node scripts/run-tests.js --quality && node scripts/check-coordinator-coverage.js",
     "quality": "npm run lint && npm run format:check && npm run typecheck && npm run coverage",
@@ -1271,6 +1271,9 @@
     "mockup": "node mockup/build.js",
     "mockup:serve": "node mockup/serve.js",
     "mockup:smoke": "node mockup/smoke.js",
+    "site:build": "node website/build.js",
+    "site:serve": "node website/serve.js",
+    "site:check": "node website/check.js",
     "check:syntax": "node scripts/run-tests.js --syntax",
     "test:unit": "node scripts/run-tests.js --tests",
     "test:fast": "node scripts/run-tests.js --group fast",

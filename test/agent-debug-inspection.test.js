@@ -210,6 +210,93 @@ const { diagnosticForError } = require("../skills/_emberprobe/agent-client");
         bridge.dispose();
         fs.rmSync(workspace, { recursive: true, force: true });
     }
+    {
+        // Evaluate and raw memory reads share the paused-context checks and the handle table.
+        const requests = [];
+        const memory = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
+        const target = {
+            id: "core-1",
+            type: "emberprobe",
+            async customRequest(command, params) {
+                requests.push({ command, params });
+                if (command === "stackTrace") return { stackFrames: [{ id: 3, name: "main" }] };
+                if (command === "threads") return { threads: [{ id: 1 }] };
+                if (command === "evaluate")
+                    return { result: "{x = 1}", type: "struct pos", variablesReference: 30, memoryReference: "0x2000" };
+                if (command === "readMemory")
+                    return {
+                        address: params.memoryReference,
+                        data: memory.subarray(0, params.count).toString("base64")
+                    };
+                throw new Error(`Unexpected DAP command ${command}`);
+            }
+        };
+        const evaluationBridge = new DebugSessionBridge({ trackSessions: false });
+        evaluationBridge.sessions.set(target.id, target);
+        evaluationBridge.paused = true;
+        evaluationBridge.stopEpoch = 4;
+        const evaluation = new AgentDebugInspection(evaluationBridge);
+        const value = await evaluation.evaluate({ expression: " sensor.pos " });
+        assert.deepStrictEqual(requests.at(-1), {
+            command: "evaluate",
+            params: { expression: "sensor.pos", context: "hover" }
+        });
+        assert.strictEqual(value.result, "{x = 1}");
+        assert.strictEqual(value.variablesReference, undefined, "DAP integers never reach the Agent");
+        assert.match(value.reference, /^[0-9a-f-]{36}$/);
+        assert.strictEqual(value.sessionId, "core-1");
+        const frame = (await evaluation.inspect({ action: "stack", threadId: 1 })).stackFrames[0].frame;
+        await evaluation.evaluate({ expression: "buf[2]", frame });
+        assert.strictEqual(requests.at(-1).params.frameId, 3);
+        const sent = requests.length;
+        for (const expression of ["x = 1", "count++", "--count", "reset()", "f (1)"])
+            await assert.rejects(
+                evaluation.evaluate({ expression }),
+                { code: "DEBUG_EXPRESSION_REJECTED" },
+                expression
+            );
+        for (const expression of ["", "   ", 7, "x".repeat(1025)])
+            await assert.rejects(evaluation.evaluate({ expression }), { code: "DEBUG_INSPECTION_INVALID" });
+        assert.strictEqual(requests.length, sent, "rejected expressions never reach the debugger");
+
+        const bytes = await evaluation.readMemory({ address: "0x20000000", length: 4 });
+        assert.deepStrictEqual(requests.at(-1), {
+            command: "readMemory",
+            params: { memoryReference: "0x20000000", count: 4 }
+        });
+        assert.deepStrictEqual(
+            { address: bytes.address, length: bytes.length, hex: bytes.hex, unreadableBytes: bytes.unreadableBytes },
+            { address: "0x20000000", length: 4, hex: "deadbeef", unreadableBytes: 0 }
+        );
+        assert.strictEqual((await evaluation.readMemory({ address: 0x3ffffff8, length: 8 })).unreadableBytes, 4);
+        assert.strictEqual((await evaluation.readMemory({ address: 0 })).length, 64, "default length");
+        const before = requests.length;
+        for (const [address, length] of [
+            ["0x40020014", 4],
+            [0x3ffffffd, 4],
+            ["0xE000ED28", 4],
+            ["0x60000000", 1]
+        ])
+            await assert.rejects(evaluation.readMemory({ address, length }), (error) => {
+                assert.strictEqual(error.code, "MEMORY_REGION_NOT_ALLOWED");
+                assert.strictEqual(error.details.limit, "0x3FFFFFFF");
+                return true;
+            });
+        for (const params of [
+            { address: "20000000" },
+            { address: "0x123456789" },
+            { address: -1 },
+            { address: 1.5 },
+            { address: "0x20000000", length: 0 },
+            { address: "0x20000000", length: 4097 }
+        ])
+            await assert.rejects(evaluation.readMemory(params), { code: "DEBUG_INSPECTION_INVALID" });
+        assert.strictEqual(requests.length, before, "refused reads never reach the debugger");
+        evaluationBridge.paused = false;
+        await assert.rejects(evaluation.readMemory({ address: "0x20000000" }), { code: "TARGET_NOT_PAUSED" });
+        await assert.rejects(evaluation.evaluate({ expression: "x" }), { code: "TARGET_NOT_PAUSED" });
+        evaluationBridge.dispose();
+    }
     console.log("Agent C++/RTOS inspection, pagination, stale contexts and CLI bridge tests passed");
 })().catch((error) => {
     console.error(error);

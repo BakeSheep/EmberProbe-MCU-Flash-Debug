@@ -504,7 +504,6 @@
                 <button type="button" id="dbgStop" title="停止 (Shift+F5)">
                     <span class="codicon codicon-debug-stop" aria-hidden="true"></span>
                 </button>
-                <span class="debug-label" id="debugToolbarLabel">ControlTask · main.c:87</span>
             </div>
 
             <footer id="statusbar">
@@ -528,13 +527,9 @@
                     </button>
                 </div>
                 <div class="status-right">
-                    <button
-                        type="button"
-                        class="status-item emberprobe"
-                        id="emberprobeStatus"
-                        title="EmberProbe 会话状态"
-                    >
-                        EmberProbe: 已暂停
+                    <button type="button" class="status-item hidden" id="debugSessionStatus" title="调试会话">
+                        <span class="codicon codicon-debug-alt" aria-hidden="true"></span>
+                        <span id="debugSessionName"></span>
                     </button>
                     <button type="button" class="status-item" id="cursorStatus">Ln 103, Col 12</button>
                     <button type="button" class="status-item">空格: 4</button>

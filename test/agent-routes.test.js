@@ -35,6 +35,10 @@ const { AgentService } = require("../src/services/agentService");
         "flash.verify": "_agentFlashService.execute",
         "flash.permission": "_agentFlashService.permission",
         "watch.add": "_agentOps.addWatch",
+        "watch.list": "_agentOps.listWatch",
+        "watch.remove": "_agentOps.removeWatch",
+        "variables.list": "_agentOps.listVariables",
+        "target.control": "_chipInfoService.control",
         "variables.exportCsv": "_agentOps.exportCsv",
         "variables.read": "_agentOps.readVariables",
         "variables.sample": "_agentOps.sampleVariables",
@@ -66,6 +70,8 @@ const { AgentService } = require("../src/services/agentService");
         if (method === "config.set") assert.deepStrictEqual(calls.at(-1).args[0], { elf: "test.elf" });
         if (method.startsWith("sampling.")) assert.strictEqual(calls.at(-1).args[0], method.split(".")[1]);
         if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_svdPeripheralService.write");
+        // The Agent route always uses the agent mode: errors are thrown and no probe picker opens.
+        if (method === "target.control") assert.strictEqual(calls.at(-1).args[1], true);
         await bridge.call(method);
         if (method !== "config.set") await routes[method](null);
     }
@@ -107,6 +113,8 @@ const { AgentService } = require("../src/services/agentService");
             "chip.read",
             "cubemx.check",
             "debug.inspect",
+            "debug.evaluate",
+            "memory.read",
             "rtt.status",
             "rtt.read",
             "rtt.start",

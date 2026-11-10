@@ -20,15 +20,15 @@ For failure handling, retry limits, cross-skill routing, and result scoping, rea
 
 1. Read the current configuration before changing it:
 
-   ```bash
-   node <skill-dir>/scripts/config.js --workspace <workspace> --get
-   ```
+    ```bash
+    node <skill-dir>/scripts/config.js --workspace <workspace> --get
+    ```
 
 2. Change only values explicitly requested by the user:
 
-   ```bash
-   node <skill-dir>/scripts/config.js --workspace <workspace> --set debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg
-   ```
+    ```bash
+    node <skill-dir>/scripts/config.js --workspace <workspace> --set debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg
+    ```
 
 3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `iocPath`, `transport`, `rtos`, `adapterSpeedKhz`, `sampleFrequencyHz`, and `tclPort`. `sampleFrequencyHz` is the requested sampling rate (0.1–200 Hz); the actual rate may be lower on a slow probe. The experimental waveform "Max rate" (unlimited sampling) toggle is user-only and cannot be enabled through the Agent Bridge; sampling status may report `unlimitedActive`, `limitedBy` and `effectiveIntervalMs: 0` while it is on. `iocPath` selects an existing workspace `.ioc` (STM32CubeMX) or `.ioc2` (STM32CubeMX2); it does not edit its contents. `rtos` enables RTOS task awareness for debugging only; it is case-sensitive, `""` turns it off, and it applies at the next debug start. Use `mcu-cubemx` for initialization configuration and code generation. `openocdPath` and `cubemxPath` are read-only through the Agent Bridge; instruct the user to change executable paths in VS Code settings or the EmberProbe sidebar instead.
 4. Report the normalized configuration returned by EmberProbe. The extension validates paths, configuration names, numeric ranges, and synchronizes the sidebar immediately.

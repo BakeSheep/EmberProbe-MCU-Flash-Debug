@@ -435,11 +435,11 @@
                     { name: "timestamp", value: "0x1F4A03C2", type: "uint32_t" }
                 ]
             },
+            // Values follow the built-in debugger's STL summaries (src/debug/stl.js).
             {
                 name: "g_history",
-                value: "size=10",
+                value: "vector length 10, capacity 16",
                 type: "std::vector<float>",
-                stl: true,
                 children: [
                     { name: "[0]", value: "36.41", type: "float" },
                     { name: "[1]", value: "36.42", type: "float" },
@@ -455,13 +455,84 @@
             },
             {
                 name: "g_fw_version",
-                value: '"1.4.2"',
+                value: '"1.4.2" (length 5)',
                 type: "std::string",
-                stl: true,
                 children: [
-                    { name: "size", value: "5", type: "size_type" },
-                    { name: "capacity", value: "15", type: "size_type" }
+                    { name: "[0]", value: "49 '1'", type: "char" },
+                    { name: "[1]", value: "46 '.'", type: "char" },
+                    { name: "[2]", value: "52 '4'", type: "char" },
+                    { name: "[3]", value: "46 '.'", type: "char" },
+                    { name: "[4]", value: "50 '2'", type: "char" }
                 ]
+            },
+            {
+                name: "g_params",
+                value: "map length 3",
+                type: "std::map<unsigned short, float>",
+                children: [
+                    {
+                        name: "[0]",
+                        value: "1",
+                        children: [
+                            { name: "key", value: "1", type: "const unsigned short" },
+                            { name: "value", value: "1.85", type: "float" }
+                        ]
+                    },
+                    {
+                        name: "[1]",
+                        value: "2",
+                        children: [
+                            { name: "key", value: "2", type: "const unsigned short" },
+                            { name: "value", value: "0.42", type: "float" }
+                        ]
+                    },
+                    {
+                        name: "[2]",
+                        value: "3",
+                        children: [
+                            { name: "key", value: "3", type: "const unsigned short" },
+                            { name: "value", value: "0.06", type: "float" }
+                        ]
+                    }
+                ]
+            },
+            {
+                name: "g_rx_queue",
+                value: "deque length 3",
+                type: "std::deque<unsigned short>",
+                children: [
+                    { name: "[0]", value: "1447", type: "unsigned short" },
+                    { name: "[1]", value: "1452", type: "unsigned short" },
+                    { name: "[2]", value: "1449", type: "unsigned short" }
+                ]
+            },
+            {
+                name: "g_offset",
+                value: "optional engaged",
+                type: "std::optional<float>",
+                children: [{ name: "value", value: "0.125", type: "float" }]
+            },
+            {
+                name: "g_driver",
+                value: "unique_ptr 0x20001a40",
+                type: "std::unique_ptr<Driver>",
+                children: [
+                    {
+                        name: "value",
+                        value: "{…}",
+                        type: "Driver",
+                        children: [
+                            { name: "duty", value: "0.62", type: "float" },
+                            { name: "fault", value: "false", type: "bool" }
+                        ]
+                    }
+                ]
+            },
+            {
+                name: "g_last_error",
+                value: "variant index 0: int",
+                type: "std::variant<int, float>",
+                children: [{ name: "value", value: "0", type: "int" }]
             },
             {
                 name: "g_telemetry_frame",
@@ -535,12 +606,64 @@
 
     var DEBUG_CONSOLE_LINES = [
         { cls: "prompt", text: "> EmberProbe DAP 会话已启动 (J-Link · SWD 4000 kHz)" },
-        { cls: "", text: "已加载符号: EmberProbeDemo.elf (28 个全局变量, 6 个 FreeRTOS 任务)" },
-        { cls: "", text: "断点命中 main.c:103 — ControlTask()" },
-        { cls: "dim", text: "  g_setpoint = 1500.0" },
-        { cls: "dim", text: "  g_measured = 1447.0" },
-        { cls: "dim", text: "  pid.output = 742.16" }
+        { cls: "", text: "已加载符号: EmberProbeDemo.elf (28 个全局变量, 6 个 FreeRTOS 任务)" }
     ];
+
+    // The English window: every Chinese string an English recording or tour shows.
+    var ENGLISH = {
+        "FOC 电机控制器演示": "FOC motor controller demo",
+        "通过 EmberProbe 扩展可以实时观察下列全局变量、外设寄存器与 FreeRTOS 任务。":
+            "Watch these globals, peripheral registers and FreeRTOS tasks live with EmberProbe.",
+        实时变量面板观察的全局量: "Globals watched in the live values panel",
+        "初始化 ADC、TIM2 PWM 与编码器接口": "Initialize the ADC, TIM2 PWM and encoder interface",
+        "读取母线电压/电流与 NTC 温度": "Read bus voltage, bus current and NTC temperature",
+        "1 kHz 电流环 + 位置环控制任务": "1 kHz current and position control task",
+        "断点所在行：EmberProbe 会在这里暂停并显示实时变量":
+            "Breakpoint line: EmberProbe pauses here and shows live values",
+        "5 ms 传感器融合任务": "5 ms sensor fusion task",
+        "20 ms 通信任务：USB-CDC / CAN 遥测": "20 ms communication task: USB-CDC and CAN telemetry",
+        不应到达这里: "Should never get here",
+        "EmberProbe DAP 会话已启动": "EmberProbe DAP session started",
+        已加载符号: "Symbols loaded",
+        " 个全局变量": " globals",
+        " 个 FreeRTOS 任务": " FreeRTOS tasks",
+        断点命中: "Breakpoint hit",
+        调试控制台: "Debug Console",
+        运行和调试: "Run and Debug",
+        调用堆栈: "Call Stack",
+        资源管理器: "Explorer",
+        "空格: 4": "Spaces: 4",
+        问题: "Problems",
+        输出: "Output",
+        终端: "Terminal",
+        任务: "Tasks",
+        变量: "Variables",
+        监视: "Watch",
+        断点: "Breakpoints"
+    };
+    var ENGLISH_KEYS = Object.keys(ENGLISH).sort(function (a, b) {
+        return b.length - a.length;
+    });
+
+    function translate(text) {
+        return ENGLISH_KEYS.reduce(function (result, key) {
+            return result.split(key).join(ENGLISH[key]);
+        }, text);
+    }
+
+    function useEnglish() {
+        Object.keys(FILES).forEach(function (name) {
+            FILES[name].content = translate(FILES[name].content);
+        });
+        DEBUG_CONSOLE_LINES.forEach(function (line) {
+            line.text = translate(line.text);
+        });
+    }
+
+    function translateDocument(root) {
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) walker.currentNode.textContent = translate(walker.currentNode.textContent);
+    }
 
     var COMMANDS = [
         { id: "workbench.action.selectTheme", title: "颜色主题", category: "首选项", action: "theme" },
@@ -605,6 +728,9 @@
 
     return {
         FILES: FILES,
+        translate: translate,
+        useEnglish: useEnglish,
+        translateDocument: translateDocument,
         EXPLORER: EXPLORER,
         SEARCH_RESULTS: SEARCH_RESULTS,
         SCM_CHANGES: SCM_CHANGES,

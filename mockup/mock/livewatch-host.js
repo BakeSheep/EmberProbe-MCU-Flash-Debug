@@ -65,19 +65,7 @@
             send({
                 type: "variableTypes",
                 version: data.VERSION,
-                symbols: symbols.map(function (symbol) {
-                    return {
-                        name: symbol.name,
-                        displayName: symbol.displayName,
-                        typeName: symbol.typeName,
-                        watchType: symbol.watchType,
-                        isComposite: !!symbol.isComposite,
-                        hasRuntimeLayout: false,
-                        unsupportedReason: "",
-                        hasDwarfWriteType: !!symbol.hasDwarfWriteType,
-                        isBoolean: !!symbol.isBoolean
-                    };
-                })
+                symbols: root.EmberProbeSidebarData.variableTypes()
             });
             send({ type: "variableTypesDone", version: data.VERSION });
         }
@@ -134,10 +122,59 @@
             return Object.assign({ type: "samplingArchiveInfo", openExport: !!openExport }, status);
         }
 
+        // Without options.requestSampling this panel runs on its own (the frame tests); in the shell the sidebar
+        // host owns the one sampling session and setSampling follows it.
+        var phase = "stopped";
+
+        function sendPhaseStatus() {
+            var status = root.EmberProbeSidebarData.samplingStatus(phase);
+            var active = root.EmberProbeSidebarData.samplingActive(phase);
+            if (status.running) {
+                var hz = active ? frequencyHz : 0;
+                status.actualHz = hz;
+                status.bytesPerSecond = hz * 24;
+                status.frequencyHz = frequencyHz;
+                status.effectiveIntervalMs = Math.round(1000 / frequencyHz);
+                status.p95DurationMs = Math.round((1000 / frequencyHz) * 0.85);
+                status.missedDeadlines = 0;
+                // A debug session samples at the last finite frequency, never unlimited.
+                if (unlimitedEnabled && phase === "debug-sampling") status.unlimitedSuppressedReason = "debug";
+            }
+            send(status);
+        }
+
+        function setSampling(next) {
+            phase = next;
+            running = root.EmberProbeSidebarData.samplingStatus(next).running;
+            if (timer) clearTimeout(timer);
+            timer = null;
+            sendPhaseStatus();
+            if (root.EmberProbeSidebarData.samplingActive(next)) streamSamples();
+            else if (next === "debug-ready") sendSnapshot();
+        }
+
+        // A debug session reads into its own history, so the chart starts over (src/mainViewProvider.js).
+        function debugSessionChanged() {
+            historyRevision += 1;
+            history.clear("mock");
+            send({ type: "debugSessionChanged" });
+            send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+        }
+
+        function sendSnapshot() {
+            publishSamples(Date.now());
+        }
+
         function streamSamples() {
             if (!running) return;
             var t = Date.now();
             simulator.tick();
+            publishSamples(t);
+            var interval = Math.max(5, Math.round(1000 / frequencyHz));
+            timer = setTimeout(streamSamples, interval);
+        }
+
+        function publishSamples(t) {
             var names = watchItems.map(function (item) {
                 return item.name;
             });
@@ -182,47 +219,18 @@
                 archive.splice(0, archive.length - archiveLimit);
                 archiveTruncated = true;
             }
-            var interval = Math.max(5, Math.round(1000 / frequencyHz));
-            timer = setTimeout(streamSamples, interval);
         }
 
         function startSampling(items, hz) {
             if (Array.isArray(items)) watchItems = items;
             if (Number.isFinite(Number(hz)) && Number(hz) > 0) frequencyHz = Number(hz);
-            running = true;
-            if (timer) clearTimeout(timer);
-            send({
-                type: "liveStatus",
-                running: true,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.sampling",
-                actualHz: frequencyHz,
-                frequencyHz: frequencyHz,
-                effectiveIntervalMs: Math.round(1000 / frequencyHz),
-                p95DurationMs: Math.round((1000 / frequencyHz) * 0.85),
-                missedDeadlines: 0
-            });
-            streamSamples();
+            if (options.requestSampling) options.requestSampling(true);
+            else setSampling("sampling");
         }
 
         function stopSampling() {
-            running = false;
-            if (timer) {
-                clearTimeout(timer);
-                timer = null;
-            }
-            send({
-                type: "liveStatus",
-                running: false,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.stopped"
-            });
+            if (options.requestSampling) options.requestSampling(false);
+            else setSampling("stopped");
         }
 
         function triggerDownload(csv, fileName) {
@@ -261,15 +269,7 @@
             sendVariableList();
             send({ type: "liveFrequency", frequencyHz: frequencyHz, intervalMs: Math.round(1000 / frequencyHz) });
             send({ type: "liveUnlimited", enabled: unlimitedEnabled });
-            send({
-                type: "liveStatus",
-                running: false,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.stopped"
-            });
+            sendPhaseStatus();
             send(archiveInfo(false));
         }
 
@@ -362,16 +362,12 @@
                     break;
                 }
                 case "resolveCompositeLayout": {
-                    var symbol = symbols.find(function (entry) {
-                        return entry.name === message.name;
-                    });
-                    send({
-                        type: "compositeLayoutResult",
-                        name: message.name,
-                        version: message.version,
-                        layout: symbol && symbol.compositeLayout,
-                        error: symbol && symbol.compositeLayout ? undefined : "未找到复合布局"
-                    });
+                    send(
+                        Object.assign(
+                            { type: "compositeLayoutResult", name: message.name, version: message.version },
+                            root.EmberProbeSidebarData.layoutResult(message.name)
+                        )
+                    );
                     break;
                 }
                 case "saveWatch":
@@ -469,6 +465,8 @@
         root.addEventListener("emberprobe-background", sendBackground);
 
         return {
+            setSampling: setSampling,
+            debugSessionChanged: debugSessionChanged,
             importBackgroundPng(pngBase64) {
                 backgroundPending = true;
                 send({ type: "importChartBackgroundIcon", requestId: ++backgroundRequest, pngBase64 });

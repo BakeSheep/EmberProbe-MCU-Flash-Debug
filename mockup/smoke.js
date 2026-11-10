@@ -292,11 +292,15 @@ async function testShell() {
     check("breakpoint marker", !!doc.querySelector("#gutter .breakpoint"));
     check("debug toolbar initially hidden", doc.getElementById("debug-toolbar").classList.contains("hidden"));
     check("variable tree rendered", doc.querySelectorAll("#debugVariables .tree-row").length > 8);
-    check("stl badges rendered", doc.querySelectorAll("#debugVariables .stl-badge").length === 2);
+    check(
+        "stl summaries rendered",
+        [...doc.querySelectorAll("#debugVariables .var-value")].some((cell) =>
+            cell.textContent.includes("vector length 10, capacity 16")
+        )
+    );
     check("call stack rendered", doc.querySelectorAll("#debugCallStack .stack-row").length === 3);
     check("terminal rendered", doc.querySelectorAll("#terminalBody span").length === shellData.TERMINAL_LINES.length);
     check("problems rendered", doc.querySelectorAll("#problemsList .problem-row").length === 2);
-    check("status bar shows connection", doc.getElementById("emberprobeStatus").textContent.includes("已连接"));
 
     doc.getElementById("commandCenter").click();
     await sleep(30);

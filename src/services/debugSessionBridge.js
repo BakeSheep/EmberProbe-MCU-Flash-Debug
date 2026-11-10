@@ -2,7 +2,6 @@
 const { withWriteAccessStatus } = require("../writeAccess");
 const { isSupportedDebugSession } = require("./debugConfiguration");
 
-const MIN_DAP_INTERVAL_MS = 250;
 const MAX_READ_BYTES = 4096;
 // Memory is frozen while paused, so a larger fixed object is read as consecutive DAP blocks and stays
 // consistent. The cap matches the adapter's readMemory limit and the runtime object size limit.
@@ -85,7 +84,6 @@ class DebugSessionBridge {
         this.cancel = options.cancel || clearTimeout;
         this.now = options.now || Date.now;
         this.getReadPlan = options.getReadPlan || (() => []);
-        this.getIntervalMs = options.getIntervalMs || (() => MIN_DAP_INTERVAL_MS);
         this.onSamples = options.onSamples || (() => {});
         this.onStatus = options.onStatus || (() => {});
         this.onError = options.onError || (() => {});
@@ -1223,7 +1221,6 @@ function arrayThreads(value) {
 
 module.exports = {
     DebugSessionBridge,
-    MIN_DAP_INTERVAL_MS,
     SNAPSHOT_INITIAL_DELAY_MS,
     SNAPSHOT_RETRY_DELAYS_MS,
     CONTROL_TIMEOUT_MS,

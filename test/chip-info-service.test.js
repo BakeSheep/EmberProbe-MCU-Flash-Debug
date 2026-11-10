@@ -132,7 +132,39 @@ const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connecti
         assert.strictEqual(await chipService.control("pause"), null);
         assert.deepStrictEqual(actions, ["pause", "continue", "reset"]);
         assert.ok(chipPosts.some((message) => message.key === "chip.busyDownload"));
+        // An Agent gets the refusal as an error it can diagnose instead of a sidebar-only notice.
+        await assert.rejects(chipService.control("pause", true), { code: "PROBE_BUSY" });
         active.delete("download");
+        {
+            const recorded = [...actions];
+            const interactive = [];
+            const prepare = chipService.prepareConnection;
+            chipService.prepareConnection = async (_request, allowPicker) => {
+                interactive.push(allowPicker);
+                return {};
+            };
+            assert.strictEqual((await chipService.control("pause", true)).targetState, "halted");
+            await chipService.control("continue");
+            assert.deepStrictEqual(interactive, [false, true], "only the sidebar may open the probe picker");
+            // The action took effect even though the refresh failed: report the verified state, not a failure.
+            const read = chipService.chipInfo.readChipInfo;
+            chipService.chipInfo.readChipInfo = async () => {
+                throw Object.assign(new Error("read timed out"), { code: "OPENOCD_TIMEOUT" });
+            };
+            const partial = await chipService.control("pause", true);
+            assert.strictEqual(partial.targetState, "halted");
+            assert.deepStrictEqual(partial.refreshError, { code: "OPENOCD_TIMEOUT", message: "read timed out" });
+            chipService.chipInfo.readChipInfo = read;
+            const control = chipService.chipInfo.controlTarget;
+            chipService.chipInfo.controlTarget = async () => {
+                throw Object.assign(new Error("target not halted"), { code: "TARGET_CONTROL_FAILED" });
+            };
+            await assert.rejects(chipService.control("pause", true), { code: "TARGET_CONTROL_FAILED" });
+            chipService.chipInfo.controlTarget = control;
+            chipService.prepareConnection = prepare;
+            await chipService.control("continue");
+            actions.splice(0, actions.length, ...recorded);
+        }
 
         let attachmentId = "arrival-A";
         chipService.prepareConnection = async () => ({

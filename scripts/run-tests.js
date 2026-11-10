@@ -185,6 +185,7 @@ async function main(args = process.argv.slice(2)) {
                 ["src", "skills", "scripts"]
                     .flatMap((dir) => discover(path.join(root, dir), true))
                     .concat(
+                        discover(path.join(root, "website")),
                         discover(path.join(root, "mockup"), true).filter(
                             (file) => !file.startsWith(path.join(root, "mockup", "dist") + path.sep)
                         )

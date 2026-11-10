@@ -5,9 +5,13 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { AjvJsonSchemaValidator } = require("@modelcontextprotocol/sdk/validation/ajv-provider.js");
 const { createAgentRoutes } = require("../src/services/agentRoutes");
 const tools = require("../src/mcp/tools");
+const results = require("../src/mcp/results");
 const { INSTRUCTIONS } = require("../src/mcp/server");
 const { READ_ONLY_METHODS, OBSERVATION_METHODS } = require("../skills/_emberprobe/agent-client");
 
@@ -257,6 +261,123 @@ const validator = new AjvJsonSchemaValidator();
         assert.ok(first.params.requestId, "generation calls carry an idempotency key");
         assert.strictEqual(tool("cubemx_execute").request({ requestId: "r1" }).params.requestId, "r1");
         assert.deepStrictEqual(tool("cubemx_execute").cancel({}), { method: "cubemx.cancel", params: {} });
+    });
+
+    await scenario("Map the debugger, target and watch-list tools to their Bridge requests", () => {
+        const tool = (name) => tools.TOOLS.find((item) => item.name === name);
+        const valid = (name, args) => validator.getValidator(tool(name).inputSchema)(args).valid;
+        assert.deepStrictEqual(tool("debug_start").request({}), { method: "debug.start", params: {} });
+        assert.deepStrictEqual(tool("debug_start").request({ attach: true }).params, { attach: true });
+        assert.ok(!valid("debug_start", { attach: "yes" }));
+        assert.deepStrictEqual(tool("target_control").request({ action: "reset" }), {
+            method: "target.control",
+            params: { action: "reset" }
+        });
+        assert.ok(!valid("target_control", { action: "erase" }));
+        assert.ok(valid("memory_read", { address: "0x20000000", length: 4096 }));
+        assert.ok(valid("memory_read", { address: 536870912 }));
+        assert.ok(!valid("memory_read", { address: "0x20000000", length: 4097 }));
+        assert.ok(!valid("memory_read", { length: 4 }));
+        assert.ok(valid("debug_evaluate", { expression: "sensor.x" }));
+        assert.ok(!valid("debug_evaluate", { expression: "" }));
+        assert.deepStrictEqual(tool("watch_remove").request({ variables: ["x"] }).params, {
+            variables: ["x"],
+            destination: "sidebar"
+        });
+        const hints = Object.fromEntries(tools.TOOLS.map((item) => [item.name, tools.annotations(item)]));
+        for (const name of ["debug_evaluate", "memory_read", "variables_list", "watch_list"])
+            assert.strictEqual(hints[name].readOnlyHint, true, `${name} only reads`);
+        assert.strictEqual(hints.watch_remove.readOnlyHint, false);
+        assert.strictEqual(hints.target_control.destructiveHint, true);
+        const names = tools.TOOLS.map((item) => item.name);
+        for (const name of [
+            "target_control",
+            "variables_list",
+            "watch_list",
+            "watch_remove",
+            "memory_read",
+            "debug_evaluate"
+        ])
+            assert.ok(names.includes(name), name);
+        assert.deepStrictEqual(
+            ["memory_read", "debug_evaluate"].map((name) => tool(name).toolset),
+            ["debug", "debug"]
+        );
+    });
+
+    await scenario("Refuse samples that outlast the client call budget", () => {
+        const sample = tools.TOOLS.find((item) => item.name === "variables_sample");
+        assert.strictEqual(sample.request({ variables: ["x"], count: 1000, intervalMs: 1500 }).timeoutMs, 1530000);
+        assert.throws(
+            () => sample.request({ variables: ["x"], count: 1000, intervalMs: 1501 }),
+            (error) =>
+                error.code === "SAMPLE_DURATION_TOO_LONG" &&
+                error.retryable === false &&
+                error.details.maxDurationMs === 1500000 &&
+                error.suggestedActions.some((action) => action.includes("variables_export_csv"))
+        );
+    });
+
+    await scenario("Write chart CSV into the workspace and keep only small exports inline", () => {
+        const csvTool = tools.TOOLS.find((item) => item.name === "variables_export_csv");
+        const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-mcp-csv-")));
+        const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-mcp-csv-outside-")));
+        try {
+            const context = { workspace };
+            const metadata = { panelId: 1, names: ["x"], rowCount: 2, historyTruncated: false };
+            const small = { ...metadata, csv: "time,x\n1,2\n" };
+            assert.deepStrictEqual(csvTool.result(small, {}, context), small, "a small export stays inline");
+
+            const written = csvTool.result(small, { outputPath: "exports/run.csv" }, context);
+            const output = path.join(workspace, "exports", "run.csv");
+            assert.deepStrictEqual(written, { ...metadata, output, bytes: 11 });
+            assert.strictEqual(fs.readFileSync(output, "utf8"), small.csv);
+
+            const large = { ...metadata, csv: "x\n".repeat(20000) };
+            const omitted = csvTool.result(large, {}, context);
+            assert.strictEqual(omitted.csv, undefined, "a large export never goes inline");
+            assert.strictEqual(omitted.csvOmitted, true);
+            assert.strictEqual(omitted.bytes, 40000);
+            assert.ok(omitted.nextStep.includes("outputPath"));
+
+            const params = { to: 0, lastSeconds: 1 };
+            assert.ok(csvTool.request({ ...params, outputPath: "run.csv" }, context).params);
+            for (const outputPath of [path.join(outside, "run.csv"), "../run.csv", "."])
+                assert.throws(() => csvTool.request({ ...params, outputPath }, context), {
+                    code: "PATH_OUTSIDE_WORKSPACE"
+                });
+            let linked = false;
+            try {
+                fs.symlinkSync(outside, path.join(workspace, "link"), "junction");
+                linked = true;
+            } catch {
+                // Symlinks may be unavailable to unprivileged users; the relative-path cases above still run.
+            }
+            if (linked)
+                assert.throws(() => csvTool.request({ ...params, outputPath: "link/run.csv" }, context), {
+                    code: "PATH_OUTSIDE_WORKSPACE"
+                });
+            assert.deepStrictEqual(fs.readdirSync(outside), [], "nothing is written outside the workspace");
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+            fs.rmSync(outside, { recursive: true, force: true });
+        }
+    });
+
+    await scenario("Shorten oversized text into valid JSON and keep small results unchanged", () => {
+        assert.strictEqual(results.text({ a: [1, 2] }), '{"a":[1,2]}');
+        const samples = Array.from({ length: 5000 }, (_, index) => ({ t: index, values: { x: index * 1.5 } }));
+        const value = { count: 5000, samples, log: "y".repeat(100000) };
+        const full = results.success(value);
+        assert.strictEqual(full.structuredContent, value, "structuredContent keeps the full result");
+        const text = full.content[0].text;
+        assert.ok(text.length <= results.MAX_TEXT, `${text.length}`);
+        const parsed = JSON.parse(text);
+        assert.match(parsed.textTruncated, /structuredContent holds the full result/);
+        assert.strictEqual(parsed.count, 5000);
+        assert.deepStrictEqual(parsed.samples[0], samples[0]);
+        assert.match(parsed.samples.at(-1), /^… \d+ more items$/);
+        assert.match(parsed.log, /more characters\]$/);
     });
 
     await scenario("Include core, debug and CubeMX tools in the catalog", () => {

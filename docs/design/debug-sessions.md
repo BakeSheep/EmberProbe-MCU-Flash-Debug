@@ -54,9 +54,9 @@ _ep_rtos_target configure -rtos <name>
 
 ### FreeRTOS 任务快照
 
-工作区实现已增加实验性 FreeRTOS 任务面板，仅做有界暂停读取，支持过滤、排序和运行后旧快照标记。可选栈填充估算必须先确认边界与布局，不代表实时 SP；任务面板尚无实板验收。浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。崩溃任务分析仍未实现。
+FreeRTOS 任务面板仅做有界暂停读取，支持过滤、排序和运行后旧快照标记。可选栈填充估算必须先确认边界与布局，不代表实时 SP。浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。崩溃任务分析仍未实现。
 
-任务快照要求小端 ARM32 和单核 FreeRTOS 内核。GDB 有时把 Cortex-M 的 ELF/AXF 报告为通用 `arm` 或 `armv6`/`armv7`/`armv8`；此时面板依据 [GDB 的 M-profile 寄存器描述](https://sourceware.org/gdb/current/onlinedocs/gdb.html/ARM-Features.html)，检查当前会话的寄存器名称是否包含 `xpsr` 且不含 `cpsr`。该查询只读取元数据，不读取寄存器值或修改目标架构。明确的 A/R 架构、无法确认的目标、大端、非 32 位指针和 FreeRTOS SMP 仍不支持。拒绝时会在诊断中列出 GDB 的架构、字节序和指针大小；不会用侧栏的芯片信息代替当前调试会话的确认结果。
+任务快照要求小端 ARM32 和单核 FreeRTOS 内核。GDB 有时把 Cortex-M 的 ELF/AXF 报告为通用 `arm` 或 `armv6`/`armv7`/`armv8`，固件缺少 `.ARM.attributes` 的 `Tag_CPU_arch` 时则显示默认的 `armv3m`。架构名不带 A/R 后缀就不能确定内核，此时面板依据 [GDB 的 M-profile 寄存器描述](https://sourceware.org/gdb/current/onlinedocs/gdb.html/ARM-Features.html)，检查当前会话的寄存器名称是否包含 `xpsr` 且不含 `cpsr`。该查询只读取元数据，不读取寄存器值或修改目标架构。明确的 A/R 架构、无法确认的目标、大端、非 32 位指针和 FreeRTOS SMP 仍不支持。拒绝时会在诊断中列出 GDB 的架构、字节序和指针大小；不会用侧栏的芯片信息代替当前调试会话的确认结果。
 
 首次自动停在 `main` 通常早于任务创建和调度器启动。任务数与当前 TCB 确认尚无任务时，面板显示启动提示，不遍历仍为零值的链表；继续运行过初始化，再暂停查看任务。`pxEndOfStack`、`ulRunTimeCounter` 是否存在取决于固件配置，缺失时省略对应统计；已经初始化的链表损坏或内存读取失败仍显示部分结果。
 

@@ -117,6 +117,12 @@ const { RspMemory } = require("./rsp-memory");
         assert.strictEqual(snapshot.tasks[0].name, "Primary");
         assert.strictEqual(snapshot.tasks[0].priority, 3, "secondary TCB typedef cannot redirect layout resolution");
         assert.strictEqual(snapshot.tasks[0].stack.totalBytes, 32);
+        // An image without Tag_CPU_arch makes GDB report its default "armv3m" on the same M-profile target.
+        await mi.command("-gdb-set architecture armv3m");
+        adapter.symbolDirectory.reset();
+        const defaultArchitecture = await new FreeRtosSnapshot(adapter).snapshot();
+        assert.deepStrictEqual(defaultArchitecture.diagnostics, [], diagnostics.join(""));
+        assert.strictEqual(defaultArchitecture.kernel.supported, true);
         for (const expression of [
             "pxCurrentTCB = 0",
             "xSchedulerRunning = 0",

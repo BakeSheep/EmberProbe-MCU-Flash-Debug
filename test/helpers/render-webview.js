@@ -60,6 +60,7 @@ function render(html, initialState = {}, options = {}) {
     });
     const { markup, pages } = splitPageScripts(String(html));
     const dom = new JSDOM(markup, {
+        url: options.url,
         runScripts: "dangerously",
         pretendToBeVisual: true,
         virtualConsole,

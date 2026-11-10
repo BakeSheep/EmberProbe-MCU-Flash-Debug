@@ -60,6 +60,102 @@
 
     var ADC_LAYOUT = arrayLayout("uint16_t[16]", "u16", 16);
 
+    var MOTOR_MODE_ENUM = {
+        typeName: "motor_mode_t",
+        entries: [
+            { name: "MODE_FAULT", value: "-1" },
+            { name: "MODE_IDLE", value: "0" },
+            { name: "MODE_RUN", value: "1" },
+            { name: "MODE_BRAKE", value: "2" }
+        ]
+    };
+    var APP_STATE_ENUM = {
+        typeName: "app::State",
+        entries: [
+            { name: "app::State::Idle", value: "0" },
+            { name: "app::State::Active", value: "3" },
+            { name: "app::State::Ready", value: "3" }
+        ]
+    };
+
+    var SENSOR_LAYOUT = {
+        kind: "struct",
+        typeName: "sensor_t",
+        byteSize: 12,
+        members: [
+            structMember("id", 0, "u16", "uint16_t"),
+            structMember("value", 4, "f32", "float"),
+            structMember("mode", 8, "i8", "motor_mode_t")
+        ]
+    };
+
+    // Type graph of `sensor_t *`, what the extension sends so a pointer row can open onto its target.
+    var SENSOR_POINTER_GRAPH = {
+        root: 4,
+        types: [
+            { kind: "scalar", typeName: "uint16_t", byteSize: 2, watchType: "u16" },
+            { kind: "scalar", typeName: "float", byteSize: 4, watchType: "f32" },
+            { kind: "scalar", typeName: "motor_mode_t", byteSize: 1, watchType: "i8" },
+            {
+                kind: "class",
+                typeName: "sensor_t",
+                byteSize: 12,
+                fields: [
+                    { name: "id", type: 0, offset: 0 },
+                    { name: "value", type: 1, offset: 4 },
+                    { name: "mode", type: 2, offset: 8 }
+                ]
+            },
+            { kind: "pointer", typeName: "sensor_t *", byteSize: 4, target: 3, pointerTarget: "data" }
+        ]
+    };
+
+    var MOTOR_GRAPH = {
+        root: 9,
+        types: [
+            { kind: "scalar", typeName: "float", byteSize: 4, watchType: "f32" },
+            { kind: "scalar", typeName: "app::State", byteSize: 1, watchType: "u8" },
+            { kind: "pointer", typeName: "void (**)(void)", byteSize: 4, target: 0, pointerTarget: "function" },
+            {
+                kind: "class",
+                typeName: "std::atomic<float>",
+                stdSummary: { kind: "value", targets: ["_M_fp"] },
+                fields: [{ name: "_M_fp", memberRole: "internal", type: 0 }]
+            },
+            { kind: "pointer", typeName: "Driver *", byteSize: 4, target: 0, pointerTarget: "incomplete" },
+            {
+                kind: "class",
+                typeName: "std::unique_ptr<Driver>",
+                stdSummary: { kind: "value", targets: ["_M_head_impl"] },
+                fields: [{ name: "_M_head_impl", memberRole: "internal", type: 4 }]
+            },
+            { kind: "pointer", typeName: "void (*)(void)", byteSize: 4, target: 0, pointerTarget: "function" },
+            {
+                kind: "class",
+                typeName: "std::function<void()>",
+                stdSummary: { kind: "function", targets: ["_M_invoker"], presence: ["_M_manager"] },
+                fields: [
+                    { name: "_M_invoker", memberRole: "internal", type: 6 },
+                    { name: "_M_manager", memberRole: "internal", type: 6 }
+                ]
+            },
+            { kind: "pointer", typeName: "const char *", byteSize: 4, target: 0, pointerTarget: "data" },
+            {
+                kind: "class",
+                typeName: "app::Motor",
+                byteSize: 48,
+                fields: [
+                    { name: "_vptr.Motor", memberRole: "artificial", type: 2, offset: 0 },
+                    { name: "name", type: 8, offset: 4 },
+                    { name: "state", type: 1, offset: 8 },
+                    { name: "speed", type: 3, offset: 12 },
+                    { name: "driver", type: 5, offset: 16 },
+                    { name: "on_fault", type: 7, offset: 20 }
+                ]
+            }
+        ]
+    };
+
     function composite(name, address, size, typeName, layout, extra) {
         return Object.assign(
             {
@@ -107,8 +203,81 @@
         scalar("system_core_clock", 0x200000a8, 4, "uint32_t", "u32"),
         scalar("SystemCoreClock", 0x200000ac, 4, "uint32_t", "u32"),
         composite("g_adc_samples", 0x200000c0, 32, "uint16_t[16]", ADC_LAYOUT),
-        composite("g_imu", 0x20000100, 32, "imu_sample_t", IMU_LAYOUT)
+        composite("g_imu", 0x20000100, 32, "imu_sample_t", IMU_LAYOUT),
+        // Enums: the host sends each sample's enumText; the page only shows it.
+        scalar("g_motor_mode", 0x200000b0, 1, "motor_mode_t", "i8", { isEnum: true, enumInfo: MOTOR_MODE_ENUM }),
+        scalar("g_app_state", 0x200000b1, 1, "app::State", "u8", { isEnum: true, enumInfo: APP_STATE_ENUM }),
+        // Pointers: the cell shows the target the host resolved; a data pointer opens onto its target.
+        scalar("g_active_sensor", 0x200000b4, 4, "sensor_t *", "u32", {
+            isPointer: true,
+            pointerTarget: "data",
+            hasRuntimeLayout: true,
+            hasDwarfWriteType: false,
+            runtimeLayout: SENSOR_POINTER_GRAPH
+        }),
+        scalar("g_on_fault", 0x200000b8, 4, "void (*)(int)", "u32", {
+            isPointer: true,
+            pointerTarget: "function",
+            hasDwarfWriteType: false
+        }),
+        scalar("g_banner", 0x200000bc, 4, "const char *", "u32", {
+            isPointer: true,
+            pointerTarget: "data",
+            hasDwarfWriteType: false
+        }),
+        scalar("g_pending", 0x200000a8, 4, "sensor_t *", "u32", {
+            isPointer: true,
+            pointerTarget: "data",
+            hasDwarfWriteType: false
+        }),
+        composite("g_sensors", 0x20000200, 36, "sensor_t[3]", {
+            kind: "array",
+            typeName: "sensor_t[3]",
+            byteSize: 36,
+            totalElements: 3,
+            elementType: { typeName: "sensor_t", byteSize: 12, compositeLayout: SENSOR_LAYOUT }
+        }),
+        // A C++ object read through its type graph: library members show as one row, internals stay hidden.
+        Object.assign(composite("g_motor", 0x20000300, 48, "app::Motor", null), {
+            displayName: "g_motor",
+            hasRuntimeLayout: true,
+            runtimeLayout: MOTOR_GRAPH
+        })
     ];
+
+    // The type phase the extension posts for both pages (src/services/elfViewController.js).
+    function variableTypes() {
+        return SYMBOLS.map(function (symbol) {
+            return Object.assign(
+                {
+                    name: symbol.name,
+                    displayName: symbol.displayName,
+                    typeName: symbol.typeName,
+                    watchType: symbol.watchType,
+                    isComposite: !!symbol.isComposite,
+                    hasRuntimeLayout: !!symbol.hasRuntimeLayout,
+                    unsupportedReason: symbol.unsupportedReason || "",
+                    hasDwarfWriteType: !!symbol.hasDwarfWriteType,
+                    sourceFile: "",
+                    origin: "user"
+                },
+                symbol.enumInfo ? { enumInfo: symbol.enumInfo, isEnum: true } : {},
+                symbol.isBoolean ? { isBoolean: true } : {},
+                symbol.isConst ? { isConst: true } : {},
+                symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {}
+            );
+        });
+    }
+
+    // What resolveCompositeLayout answers: a composite's layout, or the type graph a pointer opens onto.
+    function layoutResult(name) {
+        var symbol = SYMBOLS.find(function (item) {
+            return item.name === name;
+        });
+        if (symbol && symbol.isComposite && symbol.compositeLayout) return { layout: symbol.compositeLayout };
+        if (symbol && symbol.runtimeLayout) return { layout: { runtimeLayout: symbol.runtimeLayout } };
+        return { error: "未找到复合布局" };
+    }
 
     /* ------------------------------------------------------------- watch lists */
 
@@ -118,22 +287,34 @@
         })[0];
         if (!symbol) throw new Error("Unknown mock symbol: " + name);
         if (symbol.isComposite)
-            return {
+            return Object.assign(
+                {
+                    name: symbol.name,
+                    displayName: symbol.displayName,
+                    address: symbol.address,
+                    size: symbol.size,
+                    type: "",
+                    isComposite: true,
+                    compositeLayout: symbol.compositeLayout
+                },
+                symbol.runtimeLayout ? { typeName: symbol.typeName, runtimeLayout: symbol.runtimeLayout } : {}
+            );
+        // The display fields the extension keeps on a watch item (src/validation.js).
+        var extra = {};
+        ["enumInfo", "isBoolean", "isPointer", "pointerTarget"].forEach(function (key) {
+            if (symbol[key] !== undefined) extra[key] = symbol[key];
+        });
+        if (symbol.isPointer) extra.typeName = symbol.typeName;
+        return Object.assign(
+            {
                 name: symbol.name,
                 displayName: symbol.displayName,
                 address: symbol.address,
                 size: symbol.size,
-                type: "",
-                isComposite: true,
-                compositeLayout: symbol.compositeLayout
-            };
-        return {
-            name: symbol.name,
-            displayName: symbol.displayName,
-            address: symbol.address,
-            size: symbol.size,
-            type: symbol.watchType
-        };
+                type: symbol.watchType
+            },
+            extra
+        );
     }
 
     function sidebarWatchList() {
@@ -313,11 +494,11 @@
                 flashSize: "1024 KB",
                 endian: "little",
                 uid: "0x002E 004D 3038 5157 3236 3813",
-                targetState: "halted",
-                haltReason: "断点命中 · main.c:103",
-                pc: "0x08001a3c",
-                sp: "0x2001ffb0",
-                lr: "0x080012b7",
+                targetState: "running",
+                haltReason: "",
+                pc: "",
+                sp: "",
+                lr: "",
                 probe: "J-Link",
                 probeName: "J-Link V11",
                 probeVersion: "V11 compiled Nov 24 2024 10:12:05",
@@ -348,9 +529,12 @@
             state: state,
             stopEpoch: stopEpoch || 0,
             inspectionEpoch: 1,
-            sessionId: state === "paused" ? RTOS_SESSION : "",
-            supported: true,
-            sessions: [{ id: RTOS_SESSION, name: "EmberProbe (J-Link)", serverGroup: "Cortex-M4", targetProcessor: 0 }]
+            sessionId: state === "none" ? "" : RTOS_SESSION,
+            supported: state !== "none",
+            sessions:
+                state === "none"
+                    ? []
+                    : [{ id: RTOS_SESSION, name: "EmberProbe (J-Link)", serverGroup: "Cortex-M4", targetProcessor: 0 }]
         };
     }
 
@@ -801,7 +985,12 @@
 
     function createSimulator() {
         var overrides = new Map();
+        // Everything a sample shows comes from this state, so nothing changes unless the target ran (tick).
         var state = {
+            now: Date.now(),
+            loopUs: 840,
+            inReset: false,
+            saved: null,
             temp: 36.4,
             rpm: 1450,
             voltage: 24.02,
@@ -819,9 +1008,38 @@
             var factor = Math.pow(10, digits);
             return Math.round(value * factor) / factor;
         }
+        // Stopped at main after a reset: the firmware's runtime values have not been computed yet.
+        var RESET_ZERO = [
+            "g_sensor_temp",
+            "g_motor_rpm",
+            "g_bus_voltage",
+            "g_bus_current",
+            "g_error_count",
+            "g_warn_count",
+            "g_state",
+            "g_measured",
+            "g_pwm_duty",
+            "g_uart_tx_count",
+            "g_uart_rx_count",
+            "g_watchdog_kick",
+            "g_loop_time_us",
+            "g_debug_counter"
+        ];
+        function reset() {
+            overrides.clear();
+            state.inReset = true;
+        }
+        function boot() {
+            state.inReset = false;
+        }
         function tick() {
+            if (state.inReset) return;
+            state.now = Date.now();
+            state.loopUs = 840 + Math.round(noise(60));
             state.temp = round(state.temp + noise(0.06) + (36.5 - state.temp) * 0.02, 3);
-            state.rpm = Math.max(0, Math.min(65535, Math.round(state.rpm + noise(6))));
+            // The firmware's speed loop: the motor follows a written g_target_rpm.
+            var targetRpm = overrides.has("g_target_rpm") ? overrides.get("g_target_rpm") : 1500;
+            state.rpm = Math.max(0, Math.min(65535, Math.round(state.rpm + (targetRpm - state.rpm) * 0.04 + noise(6))));
             state.voltage = round(state.voltage + noise(0.02), 3);
             state.current = round(state.current + noise(0.01), 3);
             if (Math.random() < 0.004) state.errors += 1;
@@ -839,7 +1057,7 @@
                 return round(value + noise(0.02), 4);
             });
             state.imu.temp = round(state.temp + noise(0.05), 3);
-            state.imu.timestamp = Date.now() & 0xffffffff;
+            state.imu.timestamp = state.now >>> 0;
         }
         function scalarSamples(names, t) {
             var values = {
@@ -849,7 +1067,7 @@
                 g_bus_current: state.current,
                 g_error_count: state.errors,
                 g_warn_count: state.warns,
-                g_state: Math.floor(Date.now() / 2000) % 4,
+                g_state: Math.floor(state.now / 2000) % 4,
                 g_target_rpm: 1500,
                 g_pid_kp: 1.85,
                 g_pid_ki: 0.42,
@@ -857,13 +1075,13 @@
                 g_setpoint: 1500,
                 g_measured: state.rpm,
                 g_pwm_duty: Math.min(1000, Math.round(state.rpm / 2)),
-                g_uart_tx_count: 12844 + (Math.floor(Date.now() / 1000) % 1000),
-                g_uart_rx_count: 9120 + (Math.floor(Date.now() / 1000) % 700),
+                g_uart_tx_count: 12844 + (Math.floor(state.now / 1000) % 1000),
+                g_uart_rx_count: 9120 + (Math.floor(state.now / 1000) % 700),
                 g_can_last_id: 0x18ff50e5,
                 g_watchdog_kick: 88213,
                 g_heap_used: 35456,
                 g_stack_high_water: 412,
-                g_loop_time_us: 840 + Math.round(noise(60)),
+                g_loop_time_us: state.loopUs,
                 g_control_dt: 0.001,
                 g_temp_limit: 85,
                 g_motor_enabled: 1,
@@ -871,8 +1089,36 @@
                 system_core_clock: 168000000,
                 SystemCoreClock: 168000000
             };
+            if (state.inReset)
+                RESET_ZERO.forEach(function (name) {
+                    values[name] = 0;
+                });
+            var display = {
+                g_motor_mode: { value: 1, enumText: "MODE_RUN(1)" },
+                g_app_state: { value: 3, enumText: ".Active / .Ready(3)" },
+                g_active_sensor: {
+                    value: 0x2000020c,
+                    valueText: "0x2000020C",
+                    isPointer: true,
+                    pointerInfo: { kind: "data", name: "g_sensors", index: 1, offset: 12 }
+                },
+                g_on_fault: {
+                    value: 0x08001a41,
+                    valueText: "0x08001A41",
+                    isPointer: true,
+                    pointerInfo: { kind: "function", name: "fault_handler", offset: 0 }
+                },
+                g_banner: {
+                    value: 0x080c2f10,
+                    valueText: "0x080C2F10",
+                    isPointer: true,
+                    pointerString: '"EmberProbe v1"'
+                },
+                g_pending: { value: 0, valueText: "0x00000000", isPointer: true }
+            };
             return (names || [])
                 .map(function (name) {
+                    if (display[name]) return Object.assign({ name: name, valueText: null, t: t }, display[name]);
                     return { name: name, value: overrides.has(name) ? overrides.get(name) : values[name], t: t };
                 })
                 .filter(function (sample) {
@@ -976,9 +1222,146 @@
                     }
                 };
             }
+            if (name === "g_sensors") {
+                return {
+                    name: name,
+                    t: t,
+                    tree: {
+                        kind: "array",
+                        typeName: "sensor_t[3]",
+                        byteSize: 36,
+                        offset: 0,
+                        elements: [0, 1, 2].map(function (index) {
+                            return { index: index, offset: index * 12, kind: "struct", members: sensorMembers(index) };
+                        })
+                    }
+                };
+            }
+            if (name === "g_active_sensor.value")
+                return { name: name, t: t, tree: { kind: "class", typeName: "sensor_t", members: sensorMembers(1) } };
+            if (name === "g_motor") return { name: name, t: t, tree: motorTree() };
             return null;
         }
-        return { tick: tick, scalarSamples: scalarSamples, compositeSample: compositeSample, write: write };
+        // The sensors the firmware polls; sensor 1 is the one g_active_sensor points to.
+        function sensorMembers(index) {
+            var values = [state.temp, round(state.voltage, 2), round(state.current, 3)];
+            return [
+                { name: "id", offset: 0, kind: "scalar", value: index + 1, valueText: null, type: "u16" },
+                { name: "value", offset: 4, kind: "scalar", value: values[index], valueText: null, type: "f32" },
+                {
+                    name: "mode",
+                    offset: 8,
+                    kind: "scalar",
+                    value: index === 2 ? 0 : 1,
+                    valueText: null,
+                    type: "i8",
+                    enumText: index === 2 ? "MODE_IDLE(0)" : "MODE_RUN(1)"
+                }
+            ];
+        }
+        function motorTree() {
+            return {
+                kind: "class",
+                typeName: "app::Motor",
+                members: [
+                    {
+                        name: "_vptr.Motor",
+                        kind: "scalar",
+                        type: "u32",
+                        memberRole: "artificial",
+                        isPointer: true,
+                        typeName: "void (**)(void)",
+                        value: 0x080c3a28,
+                        pointerInfo: { kind: "vtable", name: "vtable for app::Motor", dynamicTypeName: "app::Motor" }
+                    },
+                    {
+                        name: "name",
+                        kind: "scalar",
+                        type: "u32",
+                        isPointer: true,
+                        typeName: "const char *",
+                        value: 0x080c2f40,
+                        pointerString: '"left-wheel"'
+                    },
+                    {
+                        name: "state",
+                        kind: "scalar",
+                        type: "u8",
+                        typeName: "app::State",
+                        value: 3,
+                        enumText: ".Active / .Ready(3)"
+                    },
+                    {
+                        name: "speed",
+                        kind: "class",
+                        typeName: "std::atomic<float>",
+                        stdSummary: { kind: "value", targets: ["_M_fp"] },
+                        members: [
+                            {
+                                name: "_M_fp",
+                                kind: "scalar",
+                                type: "f32",
+                                memberRole: "internal",
+                                value: state.rpm
+                            }
+                        ]
+                    },
+                    {
+                        name: "driver",
+                        kind: "class",
+                        typeName: "std::unique_ptr<Driver>",
+                        stdSummary: { kind: "value", targets: ["_M_head_impl"] },
+                        members: [
+                            {
+                                name: "_M_head_impl",
+                                kind: "scalar",
+                                type: "u32",
+                                memberRole: "internal",
+                                isPointer: true,
+                                typeName: "Driver *",
+                                value: 0x20000480,
+                                pointerInfo: { kind: "data", name: "g_driver_pool", index: 0, offset: 0 }
+                            }
+                        ]
+                    },
+                    {
+                        name: "on_fault",
+                        kind: "class",
+                        typeName: "std::function<void()>",
+                        stdSummary: { kind: "function", targets: ["_M_invoker"], presence: ["_M_manager"] },
+                        members: [
+                            {
+                                name: "_M_invoker",
+                                kind: "scalar",
+                                type: "u32",
+                                memberRole: "internal",
+                                isPointer: true,
+                                typeName: "void (*)(void)",
+                                value: 0x08001a41,
+                                pointerInfo: { kind: "function", name: "app::Motor::stop", offset: 0 }
+                            },
+                            {
+                                name: "_M_manager",
+                                kind: "scalar",
+                                type: "u32",
+                                memberRole: "internal",
+                                isPointer: true,
+                                typeName: "void (*)(void)",
+                                value: 0x08001b11
+                            }
+                        ]
+                    }
+                ]
+            };
+        }
+        return {
+            tick: tick,
+            reset: reset,
+            boot: boot,
+            scalarSamples: scalarSamples,
+            compositeSample: compositeSample,
+            write: write
+        };
     }
 
     /* ------------------------------------------------------------------ probes */
@@ -1015,7 +1398,56 @@
 
     // The extension's connectedProbes message for the selected device and any driver switched in the mock.
     // Automatic mode checks the chip it recorded and, among several J-Links, uses the one that chip is on.
-    function connectedProbes(selectedId, drivers, automatic) {
+    /* ---------------------------------------------------------------- sampling */
+
+    // One sampling state shared by the sidebar and the waveform panel, as the fields the extension posts in
+    // liveStatus (samplingCoordinator.status, debugLaunch.prepareProbe, debugSessionBridge.status).
+    var SAMPLING_PHASES = {
+        stopped: { mode: "stopped", key: "sb.stopped", source: "none", intent: false },
+        connecting: { mode: "standalone-pending", key: "sb.stopped", source: "none", intent: true },
+        sampling: { mode: "standalone-sampling", key: "sb.sampling", source: "openocd", intent: true, live: true },
+        restoring: { mode: "standalone-pending", key: "live.restoring", source: "none", intent: true },
+        "debug-waiting": { mode: "debug-running-waiting", key: "live.debugWaiting", source: "dap", intent: true },
+        "debug-reading": {
+            mode: "debug-paused-reading",
+            key: "live.dapReading",
+            source: "dap",
+            intent: true,
+            canRead: true
+        },
+        "debug-ready": { mode: "debug-paused-ready", key: "live.dapReady", source: "dap", intent: true, live: true },
+        "debug-disabled": { mode: "debug-disabled", key: "sb.stopped", source: "dap", intent: false, canRead: true },
+        "debug-sampling": {
+            mode: "debug-running-sampling",
+            key: "live.debugRuntimeSampling",
+            source: "openocd",
+            intent: true,
+            live: true
+        }
+    };
+
+    function samplingStatus(phase) {
+        var entry = SAMPLING_PHASES[phase];
+        var live = !!entry.live;
+        return {
+            type: "liveStatus",
+            running: entry.intent,
+            intentEnabled: entry.intent,
+            canRead: live || !!entry.canRead,
+            canWrite: live,
+            haltWrite: live && entry.mode !== "debug-running-sampling",
+            snapshotReady: live,
+            source: entry.source,
+            mode: entry.mode,
+            key: entry.key
+        };
+    }
+
+    function samplingActive(phase) {
+        return phase === "sampling" || phase === "debug-sampling";
+    }
+
+    function connectedProbes(selectedId, drivers, automatic, read) {
         var selected =
             PROBES.find(function (probe) {
                 return probe.id === selectedId;
@@ -1055,6 +1487,7 @@
                         selectable: true
                     },
                     automatic && probe.chip ? { targetLabel: probe.chip } : {},
+                    read && probe.selectable !== false ? { targetCore: "Cortex-M4" } : {},
                     kind ? { driver: { kind: kind, instanceId: probe.id } } : {}
                 );
             })
@@ -1068,6 +1501,8 @@
         SVD_PATH: SVD_PATH,
         SYMBOLS: SYMBOLS,
         watchItem: watchItem,
+        variableTypes: variableTypes,
+        layoutResult: layoutResult,
         sidebarWatchList: sidebarWatchList,
         sidebarWriteList: sidebarWriteList,
         graphWatchList: graphWatchList,
@@ -1080,6 +1515,9 @@
         peripheralRegisters: peripheralRegisters,
         peripheralReadResult: peripheralReadResult,
         peripheralWriteResult: peripheralWriteResult,
-        createSimulator: createSimulator
+        ELF_PATH: ELF_PATH,
+        createSimulator: createSimulator,
+        samplingStatus: samplingStatus,
+        samplingActive: samplingActive
     };
 });

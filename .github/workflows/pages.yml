@@ -1,0 +1,66 @@
+name: Website
+
+on:
+  push:
+    branches: [master]
+    paths:
+      [
+        "website/**",
+        "mockup/**",
+        "src/**",
+        "media/icon.png",
+        "package.json",
+        "package-lock.json",
+        ".github/workflows/pages.yml"
+      ]
+  pull_request:
+    paths:
+      [
+        "website/**",
+        "mockup/**",
+        "src/**",
+        "media/icon.png",
+        "package.json",
+        "package-lock.json",
+        ".github/workflows/pages.yml"
+      ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run site:check
+      - run: node test/website.test.js
+      - run: node test/mockup.test.js
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/dist
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4

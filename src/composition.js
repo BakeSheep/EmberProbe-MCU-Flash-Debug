@@ -44,7 +44,7 @@ const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
 const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
-const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
+const { DebugSessionBridge } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
 const { PeripheralAccessService, peripheralConfigurationKey } = require("./services/peripheralAccessService");
 const { assertWriteIdentity } = require("../skills/_emberprobe/probe-connection");
@@ -209,7 +209,6 @@ function createSamplingServices(host, context, vscode) {
     const debugBridge = new DebugSessionBridge({
         getReadPlan: () => host._sampling.activeReadPlan(),
         getRamSectionRanges: () => writableRamSectionRanges(host.readElfSymbols().memory?.sections),
-        getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, host._sampling.intervalMs),
         onSamples: (samples, t) => host._sampling.handleRawSamples(samples, t),
         onStatus: (status) => {
             host._syncDebugSampleContext();

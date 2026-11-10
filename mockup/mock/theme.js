@@ -9,6 +9,8 @@
     } catch (error) {
         // file:// and privacy settings can disable persistent storage.
     }
+    var requestedTheme = new URLSearchParams(root.location.search).get("theme");
+    if (requestedTheme === "light" || requestedTheme === "dark") theme = requestedTheme;
 
     function apply(next, persist) {
         if (next !== "light" && next !== "dark") return false;
