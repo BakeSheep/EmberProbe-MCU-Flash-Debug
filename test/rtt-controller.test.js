@@ -1397,8 +1397,178 @@ function makeController(host, options = {}) {
             await exhaust();
             assert.strictEqual(controller.status().state, "stopped", "a second exhaustion ends RTT visibly");
             assert.strictEqual(controller.status().error.code, "RTT_CHANNEL_DISCONNECTED");
+            assert.strictEqual(controller.status().recovery.reason, "channel-lost");
         }
     );
+
+    // A target whose channel 0 telemetry the test scripts; data sockets come from `sockets`.
+    function stallFixture({ pollingIntervalMs, own = false } = {}) {
+        const target = { readOffset: 0, usedBytes: 0 };
+        const gate = { hold: null }; // A promise here keeps the next snapshot waiting, like a busy OpenOCD.
+        const snapshot = async () => {
+            if (gate.hold) await gate.hold;
+            return {
+                snapshot: {
+                    channels: [{ index: 0, flags: 2, mode: "block", size: 1024, capacity: 1023, ...target }]
+                }
+            };
+        };
+        const host = fakeHost();
+        const clock = new FakeClock();
+        const sockets = [];
+        const order = [];
+        const { controller } = makeController(host, {
+            clock,
+            net: {
+                connect: () => {
+                    const socket = idleSocket();
+                    sockets.push(socket);
+                    return socket;
+                }
+            },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", pollingIntervalMs })
+        });
+        let calls;
+        if (own) {
+            calls = [];
+            controller._ManagedOpenOcdSession = ownSessionClass(order, {
+                rttControl: async (request) => {
+                    calls.push(request);
+                    if (request.operation === "snapshot") return snapshot();
+                    if (request.operation === "start" || request.operation === "channels")
+                        return { channels: oneChannel };
+                    return {};
+                }
+            });
+        } else {
+            const managed = fakeHostSession();
+            host.debugLaunch.managedServer = managed.session;
+            const base = managed.session.rttControl;
+            managed.session.rttControl = async (request) => {
+                if (request.operation !== "snapshot") return base(request);
+                managed.calls.push(request);
+                return snapshot();
+            };
+            calls = managed.calls;
+        }
+        // One telemetry sample per second.
+        const sample = async (count = 1) => {
+            for (let i = 0; i < count; i++) {
+                await clock.advance(1000);
+                await flushQueue(controller);
+            }
+        };
+        const starts = () => calls.filter((call) => call.operation === "start").length;
+        return { host, controller, target, gate, sockets, order, sample, starts, calls: () => calls };
+    }
+
+    await scenario("target data nobody reads restarts RTT once on the same session, then stops", async () => {
+        const { controller, target, sockets, sample, starts, calls } = stallFixture();
+        await controller.start();
+        sockets[0].emit("connect");
+        target.usedBytes = 120;
+        await sample(3);
+        assert.strictEqual(starts(), 1, "three quiet samples are not yet a stall");
+        await sample();
+        assert.strictEqual(starts(), 2, "the fourth quiet sample restarts RTT");
+        const restart = calls()
+            .map((call) => call.operation)
+            .slice(calls().findIndex((call) => call.operation === "start") + 1);
+        assert.ok(
+            restart.indexOf("stop") !== -1 && restart.indexOf("stop") < restart.lastIndexOf("start"),
+            "rtt stop precedes the new rtt start, so OpenOCD registers its poll again"
+        );
+        const status = controller.status();
+        assert.strictEqual(status.state, "running");
+        assert.strictEqual(status.source, "debug-server");
+        assert.deepStrictEqual(status.recovery, { reason: "stalled", channel: 0, at: status.recovery.at });
+        assert.strictEqual(status.buffers[0].generation, 2, "the restart starts a new buffer generation");
+        await sample(4);
+        assert.strictEqual(controller.status().state, "stopped", "a second stall with no byte in between ends RTT");
+        assert.strictEqual(controller.status().error.code, "RTT_STREAM_STALLED");
+        assert.strictEqual(starts(), 2);
+    });
+
+    await scenario("progress, an empty target buffer or new bytes keep the stream alive", async () => {
+        const { controller, target, sockets, sample, starts } = stallFixture();
+        await controller.start();
+        sockets[0].emit("connect");
+        target.usedBytes = 120;
+        for (let i = 0; i < 6; i++) {
+            target.readOffset += 10; // OpenOCD reads, even if the host saw nothing yet.
+            await sample();
+        }
+        target.usedBytes = 0; // A quiet firmware with nothing waiting.
+        await sample(6);
+        target.usedBytes = 120;
+        for (let i = 0; i < 6; i++) {
+            sockets.at(-1).emit("data", Buffer.from("x"));
+            await sample();
+        }
+        assert.strictEqual(starts(), 1, "none of these is a stall");
+        await sample(4);
+        assert.strictEqual(starts(), 2);
+        sockets.at(-1).emit("connect");
+        sockets.at(-1).emit("data", Buffer.from("back"));
+        await sample(4);
+        assert.strictEqual(controller.status().state, "running", "bytes after a restart renew its budget");
+        assert.strictEqual(starts(), 3);
+        await controller.stop();
+        assert.strictEqual(controller.status().recovery.reason, "stalled");
+        await controller.start();
+        assert.strictEqual(controller.status().recovery, null, "a new start clears the last recovery");
+        await controller.stop();
+    });
+
+    await scenario("time alone is not a stall: OpenOCD busy between two samples polls nothing either", async () => {
+        const { controller, target, gate, sockets, sample, starts } = stallFixture();
+        await controller.start();
+        sockets[0].emit("connect");
+        target.usedBytes = 120;
+        await sample();
+        let release;
+        gate.hold = new Promise((resolve) => {
+            release = resolve;
+        });
+        await sample(5);
+        gate.hold = null;
+        release();
+        await sample();
+        assert.strictEqual(starts(), 1, "two quiet samples five seconds apart are not enough");
+        await sample();
+        assert.strictEqual(starts(), 2, "the third quiet sample after the busy spell is");
+        await controller.stop();
+    });
+
+    await scenario("a slow polling interval needs a longer quiet period", async () => {
+        const { controller, target, sockets, sample, starts } = stallFixture({ pollingIntervalMs: 2000 });
+        await controller.start();
+        sockets[0].emit("connect");
+        target.usedBytes = 120;
+        await sample(8);
+        assert.strictEqual(starts(), 1, "four polls of 2 s have not passed since the first quiet sample");
+        await sample();
+        assert.strictEqual(starts(), 2);
+        await controller.stop();
+    });
+
+    await scenario("a stall restart keeps the owned session and its lease", async () => {
+        const { host, controller, target, sockets, order, sample, starts } = stallFixture({ own: true });
+        await controller.start();
+        sockets[0].emit("connect");
+        target.usedBytes = 120;
+        await sample(4);
+        assert.strictEqual(starts(), 2);
+        assert.deepStrictEqual(
+            order.map((entry) => entry.type),
+            ["ownStart"],
+            "the OpenOCD process is not restarted"
+        );
+        assert.strictEqual(host._probeCoordinator.isActive("rtt"), true);
+        assert.strictEqual(controller.status().source, "own-session");
+        await controller.stop();
+        assert.strictEqual(host._probeCoordinator.isActive("rtt"), false);
+    });
 
     await scenario("down-channel input goes to the connected channel socket", async () => {
         const host = fakeHost();

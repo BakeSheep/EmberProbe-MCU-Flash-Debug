@@ -346,6 +346,8 @@ module.exports = Object.freeze({
         "The control-block search stalled on the probe; set the control-block address or change samplingAdapterSpeedKhz",
     "rtt.err.ambiguous": "Several _SEGGER_RTT symbols in the ELF",
     "rtt.err.channelDisconnected": "The RTT channel data connection is unavailable",
+    "rtt.err.streamStalled":
+        "The target RTT buffer holds data that is never read, and restarting RTT did not recover it",
     "rtt.err.writeTooLarge": "The input line exceeds the length limit",
     "rtt.err.notRunning": "RTT is not running",
     "notice.rttStopped": "RTT stopped",

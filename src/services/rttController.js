@@ -47,6 +47,12 @@ const MODE_CONNECT_TIMEOUT_MS = 10000;
 // A shared host can hold its lock past a mode write's budget. Nothing reached the target then, so the write repeats
 // until the mode deadline above.
 const MODE_BUSY_RETRY_MS = 100;
+// OpenOCD unregisters its RTT poll after one failed read, such as a poll that meets a target reset, and leaves the data
+// ports open, so the stream stops with nothing to see on the host. Target data whose read offset and host byte count
+// both stay put over this many consecutive telemetry samples, and at least this long, means nobody is reading it.
+const STALL_SAMPLES = 3;
+const STALL_MIN_MS = 3000;
+const STALL_POLLING_FACTOR = 4; // A slow polling interval needs a longer quiet period before it counts.
 
 const rttError = (code, message, details) =>
     Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
@@ -85,6 +91,9 @@ class RttController {
         this._pendingSockets = new Set();
         this._connectTimers = new Map();
         this._recoveredChannels = new Set(); // Channels re-attached for a lost data port that have not connected since.
+        this._stallWatch = new Map(); // up channel index -> { readOffset, received, since, samples } while data waits
+        this._stallRecovered = false; // Restarted for a stalled stream and no byte has arrived since.
+        this.recovery = null; // The last automatic re-attachment of this run: { reason, channel, at }.
         this._servers = []; // [{ port, channel }]
         this._block = null;
         this._attachRun = 0;
@@ -133,6 +142,7 @@ class RttController {
             pollingIntervalMs: this._runSettings?.pollingIntervalMs ?? null,
             targetDroppedBytes: null,
             targetTelemetry: this.targetTelemetry,
+            recovery: this.recovery,
             servers: this._servers.map((server) => ({ ...server })),
             buffers: [...this._buffers.entries()].map(([channel, buffer]) => {
                 const socket = this._sockets.get(channel);
@@ -221,6 +231,8 @@ class RttController {
             this._ownSessionIntent = false;
             this._yieldOperation = null;
             this._recoveredChannels.clear();
+            this._stallRecovered = false;
+            this.recovery = null;
             this.error = null;
             if (!selection) {
                 try {
@@ -590,6 +602,7 @@ class RttController {
         this._rates = new Map(
             up.map((channel) => [channel.index, { bytes: 0, time: this.clock.monotonicMs(), rate: null }])
         );
+        this._stallWatch.clear();
         this.targetTelemetry = {
             available: false,
             reason: this._block.exact ? "RTT_TELEMETRY_PENDING" : "RTT_EXACT_ADDRESS_REQUIRED",
@@ -775,6 +788,7 @@ class RttController {
                               ? "applied"
                               : "mismatch";
             }
+            this._watchStall(run, snapshot.channels);
         } catch (error) {
             if (run !== this._attachRun || session !== this._hostSession || this.state !== "running") return;
             this.targetTelemetry = {
@@ -785,6 +799,57 @@ class RttController {
             };
         }
         this._postStatus();
+    }
+
+    // Counts the samples in which a channel's target buffer holds data that neither OpenOCD (read offset) nor the host
+    // (bytes received) moved. A sample with no waiting data, or any progress, starts the count again. Only an exact
+    // control block is sampled, so a scanned block has no watchdog.
+    _watchStall(run, observed) {
+        const now = this.clock.monotonicMs();
+        const quietMs = Math.max(STALL_MIN_MS, STALL_POLLING_FACTOR * (this._runSettings?.pollingIntervalMs ?? 0));
+        for (const { index, readOffset, usedBytes } of observed) {
+            const buffer = this._buffers.get(index);
+            if (!buffer || !Number.isSafeInteger(readOffset) || !(usedBytes > 0)) {
+                this._stallWatch.delete(index);
+                continue;
+            }
+            const previous = this._stallWatch.get(index);
+            if (!previous || previous.readOffset !== readOffset || previous.received !== buffer.end) {
+                this._stallWatch.set(index, { readOffset, received: buffer.end, since: now, samples: 0 });
+                continue;
+            }
+            previous.samples++;
+            if (previous.samples >= STALL_SAMPLES && now - previous.since >= quietMs) {
+                this._stallWatch.clear();
+                void this._enqueue(() => this._recoverStall(run, index));
+                return;
+            }
+        }
+    }
+
+    // A stalled stream gets one fresh `rtt stop` and `rtt start` on the same session. A stream that stalls again before
+    // any byte arrived ends the run instead of restarting in a loop.
+    async _recoverStall(run, channel) {
+        if (run !== this._attachRun || this.state !== "running") return;
+        if (this._stallRecovered) {
+            await this._fail(
+                rttError("RTT_STREAM_STALLED", `RTT channel ${channel} holds data on the target that is not read`, {
+                    channel
+                })
+            );
+            return;
+        }
+        this._stallRecovered = true;
+        this.recovery = { reason: "stalled", channel, at: this.clock.now() };
+        try {
+            this.onBeforeStop(); // Drain terminal/log cursors before the attachment's buffers disappear.
+        } catch {
+            /* A terminal consumer must not prevent the restart. */
+        }
+        this._attachRun++;
+        this._cancelTimers();
+        await this._detachRtt();
+        await this._attach();
     }
 
     // Connects one up channel's data port. OpenOCD may need a moment to bind it, so failures retry with backoff;
@@ -816,6 +881,7 @@ class RttController {
             socket.on("data", (chunk) => {
                 if (!buffer) return;
                 buffer.append(chunk);
+                this._stallRecovered = false;
                 try {
                     this.onData(server.channel);
                 } catch {
@@ -857,6 +923,7 @@ class RttController {
             return;
         }
         this._recoveredChannels.add(channel);
+        this.recovery = { reason: "channel-lost", channel, at: this.clock.now() };
         this._ownSessionIntent ||= !!this._ownSession;
         await this._detachToPending("channel-lost");
         await this._reconcile();
@@ -958,6 +1025,7 @@ class RttController {
             this._ownSessionIntent = false;
             this._yieldOperation = null;
             this._recoveredChannels.clear();
+            this._stallRecovered = false;
             this._runSettings = null;
             this._origin = null;
             this._modeIdentity = null;
@@ -969,6 +1037,23 @@ class RttController {
     // Teardown order: stop reading data, stop the RTT servers and RTT itself while the Tcl session is alive, then
     // stop a session we own and release its lease.
     async _detach() {
+        await this._detachRtt();
+        const own = this._ownSession;
+        if (own) {
+            this._ownSession = null;
+            // An unconfirmed OpenOCD exit is left to the session's own reporting; RTT still releases the lease.
+            await own.stop().catch(() => {});
+        }
+        if (this._lease) {
+            this._lease.release();
+            this._lease = null;
+        }
+        this._hostSession = null;
+        this.source = null;
+    }
+
+    // The attachment without its host: a restart keeps the session and its lease.
+    async _detachRtt() {
         for (const socket of this._sockets.values()) socket.destroy();
         for (const socket of this._pendingSockets) socket.destroy();
         this._pendingSockets.clear();
@@ -984,24 +1069,13 @@ class RttController {
                     .catch(() => {});
             await session.rttControl({ operation: "stop" }).catch(() => {});
         }
-        const own = this._ownSession;
-        if (own) {
-            this._ownSession = null;
-            // An unconfirmed OpenOCD exit is left to the session's own reporting; RTT still releases the lease.
-            await own.stop().catch(() => {});
-        }
-        if (this._lease) {
-            this._lease.release();
-            this._lease = null;
-        }
         this._buffers.clear();
         this._rates.clear();
+        this._stallWatch.clear();
         this.targetTelemetry = { available: false, reason: "RTT_NOT_RUNNING", sampledAt: null, channels: [] };
         this._servers = [];
         this.channels = null;
         this.missingChannels = [];
-        this._hostSession = null;
-        this.source = null;
         this._block = null;
         this._retry = null;
         this._startAttempts = 0;

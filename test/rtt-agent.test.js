@@ -42,6 +42,7 @@ function fixture() {
             pollingIntervalMs: null,
             targetDroppedBytes: null,
             targetTelemetry: { available: false, reason: "RTT_NOT_RUNNING", sampledAt: null, channels: [] },
+            recovery: null,
             error: null
         });
         controller._servers = [{ channel: 0, port: 12345 }];

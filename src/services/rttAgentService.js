@@ -82,6 +82,7 @@ class RttAgentService {
             pollingIntervalMs,
             targetDroppedBytes,
             targetTelemetry,
+            recovery,
             error
         } = this.host._rtt.status();
         return {
@@ -98,6 +99,7 @@ class RttAgentService {
             pollingIntervalMs,
             targetDroppedBytes,
             targetTelemetry,
+            recovery,
             error: publicError(error)
         };
     }

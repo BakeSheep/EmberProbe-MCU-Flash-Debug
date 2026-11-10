@@ -187,12 +187,24 @@ async function run() {
     const pull = async (channel) => {
         const state = reader(channel);
         const deadline = Date.now() + 5000;
+        let restartDeadline = null;
         for (;;) {
-            const reply = await call("rtt.read", {
-                channel,
-                ...(channel === 1 ? { encoding: "base64" } : {}),
-                ...(state.cursor !== undefined ? { generation: state.generation, cursor: state.cursor } : {})
-            });
+            let reply;
+            try {
+                reply = await call("rtt.read", {
+                    channel,
+                    ...(channel === 1 ? { encoding: "base64" } : {}),
+                    ...(state.cursor !== undefined ? { generation: state.generation, cursor: state.cursor } : {})
+                });
+            } catch (error) {
+                // A watchdog restart passes through `starting` for a moment; a read waits for it to finish.
+                if (error.code !== "RTT_NOT_RUNNING" || error.details?.state !== "starting") throw error;
+                restartDeadline ??= Date.now() + 15000;
+                assert(Date.now() < restartDeadline, "RTT stayed in starting for 15 seconds");
+                await sleep(100);
+                continue;
+            }
+            restartDeadline = null;
             if (reply.reset && state.cursor !== undefined) state.resets++;
             state.generation = reply.generation;
             state.cursor = reply.nextCursor;
@@ -1097,6 +1109,30 @@ async function run() {
             await expectText(0, /EmberProbe RTT test, profile=/u, 15000);
             await heartbeat();
         });
+        // A poll that meets the reset makes OpenOCD stop RTT for good; the stall watchdog must bring every one back.
+        await step(
+            "firmware.resetRepeat",
+            async () => {
+                const resets = Number(process.env.EMBERPROBE_RTT_RESETS) || 20;
+                const recoveries = [];
+                let last = (await call("rtt.status")).recovery?.at ?? null;
+                for (let index = 0; index < resets; index++) {
+                    await sleep(300);
+                    await drain(0);
+                    type(0, "reset");
+                    await expectText(0, /EmberProbe RTT test, profile=/u, 15000);
+                    await heartbeat();
+                    const { recovery } = await call("rtt.status");
+                    if (recovery && recovery.at !== last) {
+                        recoveries.push({ reset: index, ...recovery });
+                        last = recovery.at;
+                    }
+                }
+                const status = await running(null, 5000);
+                return { resets, recoveries, source: status.source };
+            },
+            600000
+        );
 
         await step("ui.stop", async () => {
             const before = (shown.get(0) || "").length;

@@ -316,6 +316,7 @@ module.exports = Object.freeze({
     "rtt.err.scanTimeout": "搜索控制块时探针无响应，请设置控制块地址，或修改 samplingAdapterSpeedKhz",
     "rtt.err.ambiguous": "ELF 中存在多个 _SEGGER_RTT 符号",
     "rtt.err.channelDisconnected": "RTT 通道数据连接不可用",
+    "rtt.err.streamStalled": "目标端 RTT 缓冲有数据但一直未被读取，重新启动 RTT 后仍未恢复",
     "rtt.err.writeTooLarge": "单行输入超过长度上限",
     "rtt.err.notRunning": "RTT 未运行",
     "notice.rttStopped": "RTT 已停止",

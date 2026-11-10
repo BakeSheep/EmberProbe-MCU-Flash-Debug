@@ -47,6 +47,7 @@ const RTT_ERROR_KEYS = Object.freeze({
     RTT_PARSE_ERROR: "rtt.err.parse",
     RTT_CANCELLED: "rtt.err.cancelled",
     RTT_CHANNEL_DISCONNECTED: "rtt.err.channelDisconnected",
+    RTT_STREAM_STALLED: "rtt.err.streamStalled",
     RTT_WRITE_TOO_LARGE: "rtt.err.writeTooLarge",
     RTT_NOT_RUNNING: "rtt.err.notRunning",
     RTT_DISCONNECTED: "rtt.err.hostLost",
