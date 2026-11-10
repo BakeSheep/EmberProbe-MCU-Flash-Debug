@@ -20,6 +20,15 @@
       "port": 8086
     },
     {
+      "name": "mockup-data-breakpoints",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/28951/.codex/worktrees/sidebar-data-breakpoints/EmberProbe-MCU-Flash-Debug/mockup/serve.js",
+        "8088"
+      ],
+      "port": 8088
+    },
+    {
       "name": "website",
       "runtimeExecutable": "node",
       "runtimeArgs": [

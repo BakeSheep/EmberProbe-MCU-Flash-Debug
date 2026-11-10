@@ -661,6 +661,22 @@ button {
     color: var(--vscode-descriptionForeground);
 }
 
+.data-breakpoint-row .file {
+    margin-left: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.data-breakpoint-row.unverified .dot {
+    color: var(--vscode-debugIcon-breakpointUnverifiedForeground, var(--vscode-disabledForeground));
+}
+
+/* The extension's RTT view in the bottom panel. */
+.rtt-pane iframe {
+    background: var(--vscode-panel-background);
+}
+
 /* --------------------------------------------------------------- extensions */
 
 .extension-card {
@@ -1509,6 +1525,69 @@ button {
 .palette-item.selected .p-category,
 .palette-item.selected .p-key {
     color: inherit;
+}
+
+.quick-input-title {
+    padding: 6px 12px 0;
+    color: var(--vscode-quickInputTitle-foreground, var(--vscode-foreground));
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+}
+
+.quick-input .palette-input-wrap {
+    margin: 6px 8px;
+    height: 26px;
+    padding: 0 0 0 6px;
+    border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+    border-radius: 2px;
+    background: var(--vscode-input-background);
+}
+
+.quick-input .palette-input-wrap:focus-within {
+    border-color: var(--vscode-focusBorder);
+}
+
+#quickInputText {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: var(--vscode-input-foreground);
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+}
+
+.quick-input-ok {
+    height: 100%;
+    padding: 0 12px;
+    border: 0;
+    border-left: 1px solid var(--vscode-widget-border);
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.quick-input-ok:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+.quick-input-message {
+    margin: -2px 8px 6px;
+    padding: 4px 8px;
+    border: 1px solid var(--vscode-inputValidation-errorBorder);
+    background: var(--vscode-inputValidation-errorBackground);
+    color: var(--vscode-foreground);
+    font-size: 12px;
+}
+
+.quick-item input {
+    margin: 0;
+    accent-color: var(--vscode-focusBorder);
+    pointer-events: none;
 }
 
 .palette-empty {

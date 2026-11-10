@@ -2,7 +2,7 @@
 
 用网页复刻 EmberProbe 插件在 VS Code 中的完整界面：整个 VS Code 编辑器外壳 + 插件侧边栏 + Live Watch 波形面板 + 调试界面。
 
-侧边栏与 Live Watch 页面**直接复用插件的真实前端代码**（`src/modernView.js`、`src/liveWatchView.js` 及 `src/webview/**` 资产），由生成脚本产出；VS Code 外壳、假数据与"扩展主机"由本目录手写，通过 `postMessage` 驱动真实渲染器。
+侧边栏、Live Watch 页面与底部面板的 RTT 终端**直接复用插件的真实前端代码**（`src/modernView.js`、`src/liveWatchView.js`、`src/rttPanelView.js` 及 `src/webview/**` 资产），由生成脚本产出；VS Code 外壳、假数据与"扩展主机"由本目录手写，通过 `postMessage` 驱动真实渲染器。
 
 > 所有数据均为模拟值，不连接任何硬件；VS Code 界面为手工近似复刻，与 Microsoft 无关。
 
@@ -25,19 +25,24 @@ npm run mockup:smoke
 node test/mockup.test.js
 ```
 
-改动 `src/webview/**`、`src/modernView.js`、`src/liveWatchView.js` 后重新执行 `npm run mockup` 即可同步。
+改动 `src/webview/**`、`src/modernView.js`、`src/liveWatchView.js`、`src/rttPanelView.js` 后重新执行 `npm run mockup` 即可同步。
+
+只改前端渲染时重新生成就够了；新增或改变了页面与扩展之间的消息（新命令、新消息类型、新字段）时，还要同步 `mock/*-host.js`，否则 mockup 中的新功能没有回应。
 
 ## 覆盖范围
 
 - **VS Code 外壳**：标题栏（菜单、命令中心、窗口按钮）、活动栏（资源管理器/搜索/源代码管理/运行和调试/扩展/EmberProbe）、侧边栏视图、编辑器标签页、面包屑、C 语法高亮、代码缩略图、断点与当前行、底部面板（问题/输出/调试控制台/终端）、状态栏、命令面板、调试工具条、通知弹窗。
-- **EmberProbe 侧边栏**（真实渲染器）：工具栏与语言切换、Agent Skill、OpenOCD 环境卡片、烧录/调试、内存区域分析、MCU 配置（ELF/调试器/芯片/SVD/CubeMX）、芯片信息（读芯片/暂停/继续/复位）、实时变量（监听/写入/变量浏览器/复合变量展开）、外设寄存器（目录/寄存器/字段/读写）、FreeRTOS 任务表、探针诊断与日志。
+- **EmberProbe 侧边栏**（真实渲染器）：工具栏与语言切换、Agent Skill、OpenOCD 环境卡片、烧录/调试、内存区域分析、MCU 配置（ELF/调试器/芯片/SVD/CubeMX）、芯片信息（读芯片/暂停/继续/复位）、实时变量（监听/写入/变量浏览器/复合变量展开/右键数据断点）、RTT 卡片（启动/停止、通道选择、保存日志、时间戳）、外设寄存器（目录/寄存器/字段/读写）、FreeRTOS 任务表、探针诊断与日志。
 - **Live Watch**（真实渲染器）：多序列波形图、当前值面板、频率与时间窗、冻结/归一化/清除、变量导入弹窗、CSV 导出（触发浏览器下载）、时间轴选择。
-- **调试界面**：变量树（含 `std::vector` / `std::string` 的 STL 展示）、监视、调用堆栈、断点列表与编辑器断点联动。
+- **RTT 终端**（真实渲染器）：底部面板的“RTT 终端”标签页，每个 up 通道一个标签，输入框向带 down 缓冲的通道发送一行，↑↓ 历史，标题栏清除按钮。
+- **调试界面**：变量树（含 `std::vector` / `std::string` 的 STL 展示）、监视、调用堆栈、断点列表与编辑器断点联动；断点列表同时列出侧边栏设置的数据断点。
 
 ## 可交互项
 
 - 活动栏切换、侧边栏与面板拖拽调宽/调高、面板折叠。
 - 侧边栏：开始/停止采样（数值实时刷新）、变量搜索与添加/移除、写入变量、外设寄存器读取/写入、RTOS 刷新、芯片读取与控制、烧录进度、SVD 下载流程、语言切换（中/EN）。
+- RTT：首次启动后底部面板出现“RTT 终端”标签并切到前台；演示固件在通道 0 输出启动信息和每秒一行控制日志，通道 1 输出任务跟踪；在输入框输入 `help`、`status`、`rpm 1200`、`version` 可得到固件回应（`rpm` 会写入目标转速）。通道按钮打开 VS Code 式多选列表，勾选后运行中的 RTT 会重启；选“其他通道号…”可输入通道号。目标暂停时没有新输出。
+- 数据断点：调试会话中右键侧边栏变量行（含结构体成员、数组元素）打开数据断点菜单；目标运行时先暂停，暂停后显示存储地址与宽度，可按写入/读取/访问设置，启用、禁用、编辑条件（VS Code 式输入框）、删除。按 Cortex-M4 的 4 个比较器，第 5 个启用的数据断点显示为未成功启用。继续运行后命中第一个已启用的数据断点，调试控制台显示命中并停止；移除监视行会一并删除其上的数据断点，结束调试会话后全部清除。
 - Live Watch：开始/停止采样（曲线实时滚动）、导入变量、导出 CSV、冻结/归一化、样式色板。
 - 外壳：命令面板（Ctrl+Shift+P，支持筛选与回车执行）、启动/停止调试（F5 / Shift+F5）、单步、断点开关、文件树折叠、标签页开关、问题跳转。
 - 颜色主题：点击左下角管理齿轮，选择 **浅色现代 · Light Modern** 或 **深色现代 · Dark Modern**；也可在命令面板搜索主题名称。选择会保存在浏览器中，外壳、侧边栏与波形页同步切换，采样、历史、冻结状态和调试位置均保留。
@@ -65,7 +70,9 @@ mockup/
     theme.js             # 主题持久化及父页面/iframe 同步
     reference.css        # 真实截图的外壳布局与浅色工作区覆盖
     sidebar-data.js      # 变量/内存/芯片/外设/RTOS 假数据与数值模拟器
-    sidebar-host.js      # 响应侧边栏命令并推送模拟消息
+    sidebar-host.js      # 响应侧边栏命令并推送模拟消息（含 RTT 卡片与数据断点）
+    rtt-panel-host.js    # RTT 终端：各通道回滚、演示固件输出与输入回应
+    text.js              # 宿主显示的文字：扩展的 src/i18n 字符串（构建为 dist/i18n.js）加演示固件文字
     livewatch-data.js    # 波形面板变量与配色
     livewatch-host.js    # 采样流模拟、导入/导出响应
   vendor/                # 官方 Codicon、Seti 文件图标及 Modern 主题颜色（含授权与来源）
@@ -74,11 +81,11 @@ mockup/
 
 ## 工作原理
 
-1. `build.js` 调用 `getModernWebviewContent()` / `getLiveWatchContent()` 生成两个页面的真实 HTML，然后：
+1. `build.js` 调用 `getModernWebviewContent()` / `getLiveWatchContent()` / `getRttPanelContent()` 生成三个页面的真实 HTML，并把 `src/i18n` 的字符串写成 `dist/i18n.js`，然后：
     - 注入 `theme.css`（VS Code CSS 变量，否则 iframe 内样式无颜色）；
     - 注入 `prelude.js`，在真实渲染器之前定义 `acquireVsCodeApi`，把命令 `postMessage` 给父页面；
     - 在 `<body>` 上标记页面类型与语言。
-2. 外壳页面通过 iframe 嵌入这两个页面，`mock/*-host.js` 监听子页面的命令、回发与真实扩展相同形状的消息（`initCheck`、`availableVariables*`、`liveSample`、`peripheral*`、`rtos*` 等）。
+2. 外壳页面通过 iframe 嵌入这三个页面，`mock/*-host.js` 监听子页面的命令、回发与真实扩展相同形状的消息（`initCheck`、`availableVariables*`、`liveSample`、`peripheral*`、`rtos*` 等）。
 3. 两个模拟宿主共享变量模拟器，写入值会在后续采样中读回；波形面板可导入当前侧边栏查看列表，并按变量名去重。
    行为与扩展对齐：侧边栏宿主持有唯一的采样状态（`samplingStatus`，字段同扩展的 `liveStatus`），波形面板跟随；启动调试时采样暂停（`debug-running-waiting`），目标继续运行后才恢复，每次暂停只读取一份快照；复位调试停在 `main()`，不复位调试直接暂停在当前位置，继续后命中启用的断点；烧录用 `notice` 与 “EmberProbe OpenOCD” 终端显示 `openocdRunner` 的真实消息序列；芯片卡片、外设、RTOS 的可用条件同扩展。
 4. 语言切换：真实渲染器在原页面中更新语言，外壳保留 iframe 与宿主，新增变量、采样、波形历史和样式均继续保留。
@@ -89,7 +96,7 @@ mockup/
 
 - 生成的 `dist/` 不提交；需要先执行 `npm run mockup`。
 - 仅覆盖 Webview 自绘界面与 VS Code 常用外壳；菜单、窗口按钮等为演示占位。
-- 未接入真实探针/OpenOCD，烧录、采样、外设读写均为模拟；烧录字节数与速度、调试启动的 2.2 s 都是演示值。
+- 未接入真实探针/OpenOCD，烧录、采样、外设读写、RTT 与数据断点均为模拟；保存 RTT 日志不弹出系统保存对话框，直接采用对话框默认给出的文件名；RTT 不模拟烧录、调试启动时的让出与恢复，数据断点不求值条件；烧录字节数与速度、调试启动的 2.2 s 都是演示值。
 - 单步演示按示例源文件的下一条代码行推进，不模拟指令执行、函数调用或控制流。
 - 本地服务器仅监听 `127.0.0.1`，非法 URL 编码返回 400；启动前需要生成 `dist/`。
 - 个别浏览器可能限制 `file://` 下 iframe 的脚本运行，此时请使用 `npm run mockup:serve`。

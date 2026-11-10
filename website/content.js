@@ -31,7 +31,7 @@ const mcpTools = {
     inspect: ["debug_inspect", "debug_evaluate", "memory_read", "debug_breakpoints_list", "debug_breakpoints_update"],
     rtos: ["rtos_status", "rtos_snapshot"],
     peripherals: ["peripherals_list", "peripherals_read", "peripherals_write"],
-    rtt: ["rtt_status", "rtt_read", "rtt_control"],
+    rtt: ["rtt_status", "rtt_read", "rtt_control", "rtt_write"],
     elf: ["elf_analyze"],
     cubemx: [
         "cubemx_detect",
@@ -64,8 +64,7 @@ const content = {
         subtitle: "Agent 友好的现代化 STM32 调试插件",
         install: "安装到 VS Code",
         tour: "打开引导教程",
-        notice: "画面为真实产品界面，数据为模拟数据。",
-        heroAlt: "EmberProbe 界面：侧栏写入 g_target_rpm，波形图中 g_motor_rpm 随之上升",
+        heroAlt: "EmberProbe 界面：侧栏实时读写 C++ 变量，波形图显示 PID 成员与采样历史",
         player: { pause: "暂停", play: "播放", enlarge: "放大", exit: "退出放大" },
         chapters: [
             {
@@ -135,12 +134,11 @@ const content = {
                 nav: "采样",
                 zone: {
                     title: "实时采样与波形",
-                    lead: "零代码、非侵入，在程序运行时读取变量。C/C++ 的各种类型都能看懂，画成曲线，整段历史随时回看、随时导出。",
 
                     stats: [
-                        ["不限速", "采样率自定义"],
+                        ["不限速", "至高达2000+Hz"],
                         ["C / C++", "全类型解析"],
-                        ["整段历史", "随时回看与导出"],
+                        ["非侵入", "运行时读取变量"],
                         ["零代码", "不改固件，不打断程序"]
                     ],
                     modes: {
@@ -181,7 +179,7 @@ const content = {
                             title: "静默采样",
                             scope: "仅波形窗口",
                             text: "隐藏的曲线和结构体成员照常记录，重新显示即可看到隐藏期间的历史。",
-                            steps: ["隐藏曲线", "持续记录", "显示历史"]
+                            steps: ["隐藏曲线", "持续记录", "CSV 导出"]
                         }
                     },
                     states: {
@@ -267,13 +265,10 @@ const content = {
                         lead: "把变量画成实时曲线，看、比、存一应俱全。",
                         alt: "把采样率调到不限速，冻结图表，拖动历史时间轴，再选择曲线和范围导出 CSV",
                         features: [
-                            ["冻结与回看", "冻结画面时后台照常采样，拖动时间轴回看整段会话。"],
                             ["缩放与归一化", "切换时间窗口，一键归一化，量级不同的曲线放在一起比较。"],
                             ["多个波形窗口", "每个窗口有独立的变量列表和历史，重启后自动恢复。"],
                             ["DEC / HEX / BIN", "按变量切换显示进制，不影响采样和导出。"],
                             ["临时增益", "给曲线乘上倍数，小信号也能看清。"],
-                            ["144 种曲线样式", "实线、虚线、点线自动分配，手选的颜色在窗口间共享。"],
-                            ["背景图标", "导入一张透明 PNG，作为波形图的背景。"],
                             ["大容量历史", "默认 512 MiB 内存加 1 GiB 磁盘归档，长时间采样不丢数据。"],
                             ["自由导出 CSV", "任选变量和时间段导出原始采样点，包括早已移出内存的历史。"]
                         ],
@@ -307,8 +302,6 @@ const content = {
         ],
         agent: {
             clientsTitle: "支持的 Agent 客户端",
-            clientsNote:
-                "Claude Code、Codex、Gemini CLI、OpenCode、Antigravity、DeepSeek Harness 一键安装；GitHub Copilot 和 Cursor 自动识别。其他支持 MCP 的客户端可复制配置接入。",
             capabilitiesTitle: "MCP 能力",
             capabilities: [
                 ["config", "工程配置", "读取与更新工程配置，列出已连接的调试器。"],
@@ -318,10 +311,10 @@ const content = {
                 ["watch", "观测列表", "添加、查看或移除侧栏与波形窗口中的观测变量。"],
                 ["sampling", "实时采样与导出", "多次读取变量，控制持续采样、查看采样状态，导出波形历史 CSV。"],
                 ["debug", "调试控制", "查看和选择会话，启动或附加调试，暂停、继续、单步、重启与停止。"],
-                ["inspect", "断点与现场查看", "管理断点，暂停时查看线程、调用栈、变量与原始内存。"],
+                ["inspect", "断点与现场查看", "管理断点与数据断点，暂停时查看线程、调用栈、变量与原始内存。"],
                 ["rtos", "FreeRTOS 任务", "查看 RTOS 支持状态，暂停时读取任务状态、优先级与栈使用。"],
                 ["peripherals", "外设寄存器", "按 SVD 搜索外设、寄存器与位域，读取或写入数值。"],
-                ["rtt", "RTT 日志", "启动或停止 RTT，查看连接状态，读取固件输出。"],
+                ["rtt", "RTT 日志", "启动或停止 RTT，查看连接状态，读取固件输出，你确认后向固件输入命令。"],
                 ["elf", "内存占用", "分析 ELF 的 Flash、RAM、内存区域、段与大符号占用。"],
                 [
                     "cubemx",
@@ -330,8 +323,6 @@ const content = {
                 ],
                 ["permission", "操作权限", "查看或清除已记住的工程授权与待确认请求。"]
             ],
-            permissionNote:
-                "烧录、写入与代码生成等操作按各自规则请求确认。完全允许 Agent 操作默认关闭，只能由你在侧栏开启；安全检查始终保留。",
             groups: [
                 [
                     "setup",
@@ -377,28 +368,14 @@ const content = {
                     title: "芯片信息",
                     lead: "内核、器件 ID、Flash 容量和唯一 ID，一键读取。",
                     alt: "读取芯片信息，展开详情查看器件 ID、唯一 ID 和调试连接"
+                },
+                {
+                    id: "rtt",
+                    title: "RTT 日志",
+                    lead: "固件日志实时显示在 VS Code 面板，可向固件发送命令，也能一键保存到文件。",
+                    alt: "在侧栏启动 RTT，底部的 RTT 终端持续显示固件日志；开启保存日志后，在输入框发送 status 命令并收到固件回应"
                 }
             ]
-        },
-        requirements: {
-            id: "requirements",
-            nav: "环境",
-            title: "环境要求",
-            rows: [
-                ["编辑器", "VS Code 1.85 或更高版本"],
-                ["OpenOCD", "Windows 和 Linux 已内置，其他平台使用本机 OpenOCD"],
-                ["调试器", "J-Link、ST-Link、CMSIS-DAP 等主流调试器"],
-                ["断点调试", "ARM GDB 工具链，装过 STM32CubeIDE 或 CubeCLT 即可"],
-                ["Agent", "支持 MCP 的 Agent 客户端"],
-                ["CubeMX 生成", "本机安装的 STM32CubeMX"]
-            ],
-            startTitle: "开始使用",
-            start: [
-                ["安装扩展", "在 VS Code 扩展市场搜索 EmberProbe。"],
-                ["打开工程", "插上 Link，一键完成配置。"],
-                ["烧录调试", "一键烧录，然后调试或观测变量。"]
-            ],
-            guide: "阅读使用指南"
         },
         source: "源代码",
         releases: "版本更新",
@@ -434,8 +411,8 @@ const content = {
         subtitle: "The modern, Agent-friendly STM32 debugging extension",
         install: "Install in VS Code",
         tour: "Open the guided tour",
-        notice: "Product UI with simulated data.",
-        heroAlt: "EmberProbe: g_target_rpm is written in the sidebar and g_motor_rpm rises in the waveform view",
+        heroAlt:
+            "EmberProbe: live C++ variable reads and writes in the sidebar, with PID members and sampling history in the waveform view",
         player: { pause: "Pause", play: "Play", enlarge: "Enlarge", exit: "Exit enlarged view" },
         chapters: [
             {
@@ -514,12 +491,11 @@ const content = {
                 nav: "Sampling",
                 zone: {
                     title: "Live sampling and waveforms",
-                    lead: "No code changes, no intrusion: read variables while the program runs. Every C/C++ type is understood and plotted, with the whole history ready to review or export.",
 
                     stats: [
-                        ["Unlimited", "Any sample rate you set"],
+                        ["Unlimited", "Up to 2000+ Hz"],
                         ["C / C++", "Every type parsed"],
-                        ["Full history", "Review and export any time"],
+                        ["Non-intrusive", "Read variables while running"],
                         ["Zero code", "No firmware changes, no pauses"]
                     ],
                     modes: {
@@ -560,7 +536,7 @@ const content = {
                             title: "Silent sampling",
                             scope: "Waveform window",
                             text: "Hidden curves and struct members keep recording. Show them again to see the history you missed.",
-                            steps: ["Hide curves", "Keep recording", "Reveal history"]
+                            steps: ["Hide curves", "Keep recording", "Export CSV"]
                         }
                     },
                     states: {
@@ -653,10 +629,6 @@ const content = {
                         alt: "The sample rate is set to unlimited, the chart is frozen, the history timeline is dragged, and curves and a range are chosen for CSV export",
                         features: [
                             [
-                                "Freeze and review",
-                                "Freeze the view while sampling continues, then drag the timeline across the whole session."
-                            ],
-                            [
                                 "Zoom and normalize",
                                 "Switch time windows and normalize in one click to compare curves of any scale."
                             ],
@@ -669,11 +641,6 @@ const content = {
                                 "Change a variable's display base without touching sampling or export."
                             ],
                             ["Temporary gain", "Scale a curve so small signals stay readable."],
-                            [
-                                "144 curve styles",
-                                "Solid, dashed and dotted styles are assigned for you; colors you pick are shared across windows."
-                            ],
-                            ["Background icon", "Import a transparent PNG as the waveform background."],
                             [
                                 "Large history",
                                 "512 MiB in memory plus a 1 GiB disk archive by default, so long runs lose nothing."
@@ -719,8 +686,6 @@ const content = {
         ],
         agent: {
             clientsTitle: "Supported Agent clients",
-            clientsNote:
-                "One-click install for Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, and DeepSeek Harness. GitHub Copilot and Cursor are detected automatically. Other MCP clients can copy the configuration.",
             capabilitiesTitle: "MCP capabilities",
             capabilities: [
                 ["config", "Workspace setup", "Read and update workspace settings, and list connected debug probes."],
@@ -749,7 +714,7 @@ const content = {
                 [
                     "inspect",
                     "Breakpoints and inspection",
-                    "Manage breakpoints; inspect threads, stacks, variables, and raw memory while paused."
+                    "Manage breakpoints and data breakpoints; inspect threads, stacks, variables, and raw memory while paused."
                 ],
                 [
                     "rtos",
@@ -761,7 +726,11 @@ const content = {
                     "Peripheral registers",
                     "Search SVD peripherals, registers, and fields, then read or write their values."
                 ],
-                ["rtt", "RTT logs", "Start or stop RTT, check its connection state, and read firmware output."],
+                [
+                    "rtt",
+                    "RTT logs",
+                    "Start or stop RTT, check its connection state, read firmware output, and send commands to the firmware once you approve them."
+                ],
                 ["elf", "Memory usage", "Analyze ELF Flash, RAM, memory regions, sections, and largest symbols."],
                 [
                     "cubemx",
@@ -774,8 +743,6 @@ const content = {
                     "Inspect or clear remembered workspace permissions and pending confirmations."
                 ]
             ],
-            permissionNote:
-                "Flashing, writes, and code generation request confirmation under their respective rules. Allow all Agent operations is off by default and can only be enabled in the sidebar. Safety checks always remain in place.",
             groups: [
                 [
                     "setup",
@@ -841,28 +808,14 @@ const content = {
                     title: "Chip information",
                     lead: "Core, device ID, Flash size, and unique ID in one click.",
                     alt: "Chip information is read, and the details show device ID, unique ID, and the debug connection"
+                },
+                {
+                    id: "rtt",
+                    title: "RTT logs",
+                    lead: "Firmware logs stream live into a VS Code panel. Send commands back, or save the log to a file in one click.",
+                    alt: "RTT is started from the sidebar and the RTT terminal in the bottom panel streams the firmware log; log saving is turned on, then a status command is sent from the input box and the firmware answers"
                 }
             ]
-        },
-        requirements: {
-            id: "requirements",
-            nav: "Requirements",
-            title: "Requirements",
-            rows: [
-                ["Editor", "VS Code 1.85 or later"],
-                ["OpenOCD", "Built in on Windows and Linux. Other platforms use a local OpenOCD."],
-                ["Debug probes", "J-Link, ST-Link, CMSIS-DAP, and other popular probes"],
-                ["Breakpoint debugging", "An ARM GDB toolchain. STM32CubeIDE or CubeCLT is enough."],
-                ["Agents", "An Agent client that supports MCP"],
-                ["CubeMX generation", "A local STM32CubeMX installation"]
-            ],
-            startTitle: "Get started",
-            start: [
-                ["Install the extension", "Search for EmberProbe in the VS Code Marketplace."],
-                ["Open your project", "Plug in your probe and set everything up in one click."],
-                ["Flash and debug", "Flash in one click, then debug or watch variables."]
-            ],
-            guide: "Read the guide"
         },
         source: "Source",
         releases: "Releases",

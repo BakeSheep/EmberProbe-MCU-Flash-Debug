@@ -26,6 +26,12 @@ async function showFile(session, name) {
     await session.page.clock.runFor(300);
 }
 
+// The bottom panel covers the editor column, so the RTT terminal it opens fills the recording.
+async function rttPanelFills(session) {
+    await session.page.evaluate(() => document.getElementById("panel").style.setProperty("--panel-height", "410px"));
+    await session.page.clock.runFor(100);
+}
+
 // Brings a section of the sidebar to the top of its panel.
 async function scrollTo(session, id) {
     await session.sb.evaluate((target) => document.getElementById(target).scrollIntoView({ block: "start" }), id);
@@ -537,6 +543,43 @@ const scenes = {
         (session) => session.lw.evaluate(() => document.getElementById("export").click()),
         ".export-panel"
     ),
+    // RTT logs: the sidebar card starts RTT, the bottom panel's RTT terminal streams the firmware's log, the log is
+    // saved to a file, then the sidebar folds away so the terminal and command reply stay fully readable.
+    rtt: {
+        window: { width: 636, height: 470, sidebar: 588 },
+        crop: [48, 36, 588, 408],
+        // Both passes use the same real controls, at the width of their respective website card.
+        compact: {
+            window: { width: 468, height: 470, sidebar: 420 },
+            crop: [48, 36, 420, 408]
+        },
+        duration: 10,
+        poster: 9,
+        cursor: [200, 380],
+        steps: [0],
+        async prepare(session, { openSections }) {
+            await openSections(session, ["rttSection"]);
+            await scrollTo(session, "rttSection");
+            await rttPanelFills(session);
+        },
+        async verify(session) {
+            const saved = await session.sb.getAttribute("#rttSaveLog", "aria-pressed");
+            const output = await session.frames.rtt.innerText("#lines");
+            if (saved !== "true" || !/> status\s+rpm=\d+ target=\d+ bus=[\d.]+V errors=\d+/.test(output))
+                throw new Error("RTT recording must save the log and show the firmware's status reply");
+        },
+        operations: [
+            { at: 1.2, to: "#rttToggle", move: 0.9, click: true },
+            { at: 4.2, to: "#rttSaveLog", move: 0.8, click: true },
+            {
+                at: 4.6,
+                run: (session) => session.page.evaluate(() => document.getElementById("toggleSidebar").click())
+            },
+            { at: 5.8, on: "rtt", to: "#input", point: [0.3, 0.5], move: 0.9, click: true },
+            { at: 6.1, type: "status" },
+            { at: 7.0, key: "Enter" }
+        ]
+    },
     chip: {
         ...PANEL,
         duration: 7,

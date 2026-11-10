@@ -16,6 +16,8 @@ const path = require("path");
 const pkg = require("../package.json");
 const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
+const rttPanelView = require("../src/rttPanelView");
+const { STRINGS } = require("../src/i18n");
 const mockCsv = require("./mock-csv");
 const { versionLabel } = require("../src/buildInfo");
 
@@ -103,6 +105,11 @@ function buildLiveWatch(lang) {
     );
 }
 
+// The bottom panel's RTT terminal (src/rttPanelView.js), mounted in the shell's panel.
+function buildRttPanel(lang) {
+    return inject(rttPanelView.getRttPanelContent(lang), "rttpanel", lang);
+}
+
 function copyFile(from, to) {
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(from, to);
@@ -116,6 +123,12 @@ function main() {
         .replace("module.exports =", "root.EmberProbeMockHistory =");
     fs.writeFileSync(path.join(dist, "chart-history.js"), "(function(root) {\n" + historySource + "\n})(window);\n");
     fs.writeFileSync(path.join(dist, "csv.js"), mockCsv.browserSource(), "utf8");
+    // The extension's own strings, so the mock hosts' pickers and messages read as the extension's.
+    fs.writeFileSync(
+        path.join(dist, "i18n.js"),
+        "window.EmberProbeMockStrings = " + JSON.stringify(STRINGS) + ";\n",
+        "utf8"
+    );
 
     for (const name of ["index.html", "shell.css", "shell.js", "shell-data.js"]) {
         copyFile(path.join(shellDir, name), path.join(dist, name));
@@ -123,10 +136,12 @@ function main() {
     for (const name of [
         "prelude.js",
         "theme.js",
+        "text.js",
         "sidebar-data.js",
         "sidebar-host.js",
         "livewatch-data.js",
-        "livewatch-host.js"
+        "livewatch-host.js",
+        "rtt-panel-host.js"
     ]) {
         copyFile(path.join(mockDir, name), path.join(dist, name));
     }
@@ -140,6 +155,7 @@ function main() {
     for (const lang of ["zh", "en"]) {
         outputs.push([`sidebar.${lang}.html`, buildSidebar(lang)]);
         outputs.push([`livewatch.${lang}.html`, buildLiveWatch(lang)]);
+        outputs.push([`rtt-panel.${lang}.html`, buildRttPanel(lang)]);
     }
     for (const [name, html] of outputs) {
         fs.writeFileSync(path.join(dist, name), html, "utf8");

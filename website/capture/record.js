@@ -20,6 +20,7 @@ const repository = path.join(__dirname, "../..");
 const frameRoot = path.join(repository, "test-results/website-capture");
 const media = path.join(__dirname, "../assets/media");
 const timelineFile = path.join(media, "timeline.json");
+const ffmpeg = process.env.FFMPEG || "ffmpeg";
 
 const CURSOR =
     '<svg viewBox="0 0 22 22" width="22" height="22"><path d="M3 2l14 11-6.4.6L14 20l-2.6 1.1-3.3-6.4L3 19z" fill="#1B1A18" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>';
@@ -50,7 +51,8 @@ async function openWindow(browser, url, scene, windowSize, lang) {
     const frames = {
         page: page.mainFrame(),
         sb: page.frames().find((frame) => /sidebar/.test(frame.url())),
-        lw: page.frames().find((frame) => /livewatch/.test(frame.url()))
+        lw: page.frames().find((frame) => /livewatch/.test(frame.url())),
+        rtt: page.frames().find((frame) => /rtt-panel/.test(frame.url()))
     };
     return { context, page, failures, frames, lang, sb: frames.sb, lw: frames.lw };
 }
@@ -207,7 +209,7 @@ function encode(directory, output, crf, crop) {
     const filters = crop ? [cropFilter(crop)] : [];
     filters.push("scale=out_color_matrix=bt709:out_range=tv:flags=neighbor", "format=yuv420p");
     // prettier-ignore
-    run("ffmpeg", [
+    run(ffmpeg, [
         "-y", "-loglevel", "error", "-framerate", String(FPS), "-i", path.join(directory, "%04d.png"),
         "-vf", filters.join(","), "-an", "-c:v", "libx264", "-preset", "veryslow", "-crf", String(crf),
         "-profile:v", "high", "-g", String(FPS), "-color_primaries", "bt709", "-color_trc", "bt709",
@@ -217,7 +219,7 @@ function encode(directory, output, crf, crop) {
 
 function poster(frame, output, crop) {
     const filters = crop ? ["-vf", cropFilter(crop)] : [];
-    run("ffmpeg", ["-y", "-loglevel", "error", "-i", frame, ...filters, "-frames:v", "1", "-quality", "82", output]);
+    run(ffmpeg, ["-y", "-loglevel", "error", "-i", frame, ...filters, "-frames:v", "1", "-quality", "82", output]);
 }
 
 // One pass through the scene in the given window.
@@ -229,6 +231,7 @@ async function capture(browser, url, name, lang, windowSize, label, every) {
     const session = await openWindow(browser, url, scene, windowSize, lang);
     await scene.prepare(session, { pump, openSections });
     const frames = await take(session, scene, directory, every);
+    if (scene.verify) await scene.verify(session);
     const crop = scene.cropTo ? await boxOf(session, scene.cropTo, windowSize) : scene.crop;
     await session.context.close();
     if (session.failures.length) throw new Error(`${name}: ${session.failures.join("; ")}`);

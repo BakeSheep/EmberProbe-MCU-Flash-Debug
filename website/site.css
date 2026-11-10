@@ -626,13 +626,6 @@ h1 {
     display: block;
     object-fit: contain;
 }
-.agent-note {
-    max-width: 960px;
-    margin-top: 18px;
-    color: var(--muted);
-    font-size: 14px;
-    line-height: 1.7;
-}
 .capability-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -867,76 +860,9 @@ h1 {
     background: var(--accent);
 }
 
-/* Requirements */
-.spec-grid {
-    display: grid;
-    grid-template-columns: 800px minmax(0, 1fr);
-    gap: 48px;
-    align-items: start;
-}
-.spec {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-}
-.spec th,
-.spec td {
-    padding: 12px 0;
-    border-top: 1px solid var(--line);
-    text-align: left;
-    vertical-align: top;
-    line-height: 1.55;
-}
-.spec tr:first-child th,
-.spec tr:first-child td {
-    border-top: 0;
-    padding-top: 0;
-}
-.spec th {
-    width: 168px;
-    padding-right: 24px;
-    color: var(--ink);
-    font-weight: 500;
-}
-.start h3 {
-    margin-bottom: 8px;
-    color: var(--ink);
-    font-size: 15px;
-    font-weight: 500;
-    line-height: 24px;
-}
-.start ol {
-    list-style: none;
-}
 .number {
     color: var(--accent);
     font: 500 14px/24px var(--mono);
-}
-.step-copy {
-    display: block;
-    color: var(--muted);
-    font-size: 14px;
-    line-height: 1.55;
-}
-.step-copy strong {
-    display: block;
-    margin-bottom: 2px;
-    color: var(--ink);
-    font-size: 15px;
-    font-weight: 500;
-    line-height: 24px;
-}
-.start li {
-    display: grid;
-    grid-template-columns: 28px minmax(0, 1fr);
-    padding: 10px 0;
-    border-top: 1px solid var(--line);
-}
-.start-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 16px;
 }
 
 /* Footer */
@@ -950,9 +876,6 @@ h1 {
     justify-content: space-between;
     gap: 32px;
     padding-block: 28px;
-}
-.footer p span {
-    display: block;
 }
 .footer nav {
     display: flex;
@@ -1329,16 +1252,14 @@ body:not(.tour-on) .tour {
 
 @media (max-width: 1240px) {
     .chapter-head,
-    .chapter-body,
-    .spec-grid {
+    .chapter-body {
         grid-template-columns: minmax(0, 1fr);
     }
     .chapter-head p {
         grid-row: auto;
         max-width: 760px;
     }
-    .chapter-body,
-    .spec-grid {
+    .chapter-body {
         gap: 24px;
         max-width: 800px;
     }
@@ -1423,10 +1344,6 @@ body:not(.tour-on) .tour {
     .wide .points li + li {
         border-top: 1px solid var(--line);
     }
-    .spec th {
-        width: 112px;
-        padding-right: 12px;
-    }
     .footer-row {
         display: block;
     }
@@ -1473,12 +1390,6 @@ body:not(.tour-on) .tour {
     font-weight: 600;
     line-height: 1.2;
     letter-spacing: -0.02em;
-}
-.zone-lead {
-    margin-top: 12px;
-    max-width: 720px;
-    font-size: 16px;
-    line-height: 1.6;
 }
 .scope {
     height: 80px;
@@ -2318,9 +2229,6 @@ body:not(.tour-on) .tour {
     }
     .zone-head h2 {
         font-size: 30px;
-    }
-    .zone-lead {
-        font-size: 16px;
     }
     .scope {
         height: 64px;

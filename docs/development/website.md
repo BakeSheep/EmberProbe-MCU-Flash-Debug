@@ -57,6 +57,8 @@ Logo 在 `website/assets/clients/`，来源版本、品牌说明与 MIT 许可�
 
 首页录屏全部来自 mockup 的真实前端，是提交到 `website/assets/media/` 的产物，CI 不录制。画面数据是模拟数据，不能作为硬件实测依据。前端或 mock 行为改变后需要重录对应场景。
 
+首页首图使用 `website/assets/media/hero.png`，与 README 的 `docs/images/live-watch-waveform.png` 是同一张原始截图。中英文页面与窄屏布局共用这张图，保留完整画面和原始比例；录制脚本生成的 `hero-<lang>.webp` 不替换当前首图。
+
 录制依赖 ffmpeg 和 `playwright-core`，后者不是本仓库的依赖，用 `LIB` 指向含有它的目录：
 
 ```sh
@@ -65,12 +67,13 @@ LIB=<目录> node website/capture/record.js --lang=zh waveform
 LIB=<目录> node website/capture/record.js
 ```
 
-需要指定已安装的 Chromium 时，可设置 `CHROMIUM=<可执行文件路径>`；未设置时使用 Playwright 默认浏览器。
+需要指定已安装的 Chromium 时，可设置 `CHROMIUM=<可执行文件路径>`；未设置时使用 Playwright 默认浏览器。ffmpeg 不在 PATH 时，可设置 `FFMPEG=<可执行文件路径>`。
 
 `--preview` 每 0.5 秒存一帧到 `test-results/website-capture/`，用来核对操作时序。不写语言时录中英文，不写场景时录全部，约需 30 分钟。
 
 - 时钟由 Playwright 控制并逐帧推进，等待时间可以在场景中用 `skip` 缩短。场景只用选择器定位，中英文共用同一份脚本。
 - 场景的 `window` 是页面上的显示尺寸。录制使用 2 倍像素，编码时不缩放，所以静止时视频按 1:1 显示。
+- “其他功能”的 `rtt` 场景先在侧栏启动 RTT 并开启保存日志，再收起侧栏，完整展示终端日志及 `status` 命令回应。桌面和窄屏各录一遍，中英文共四段；录制结束会检查保存状态和命令回应，防止把操作失败的画面导出。
 - 单段不超过 2 MB，全部不超过 60 MB。超出时先缩短时长，再提高场景的 `crf`。
 - `still: true` 的场景（首图）只在 `poster` 秒截一张无光标的图，输出 `hero-<lang>.webp` 和窄屏图，不编码视频。首图展示完整编辑器，首页保留整张截图的轻微 3D 透视和鼠标响应，不另加局部浮层，不持续缩放，也不设置常驻 `will-change: transform`。窄屏和减少动画模式关闭鼠标响应。
 - 带 `cropTo: {on, to, pad}` 的静态场景按海报帧上选择器匹配元素的外接框裁剪（`on` 是 `sb` 侧栏、`lw` 波形窗口或 `page`），中英文排版不同也能裁准。`timeline.json` 中这类条目按语言分别记录 `zh`/`en` 尺寸，输出 `<场景>-<lang>.webp`。专题区的场景截图（`mode-sidebar`、`mode-chart`）、类型截图（`type-*`）和波形截图（`chart-menu`、`chart-export`）都用这种方式，变量来自 mockup 的“ELF 全部变量”，默认查看列表不变；`type-stl` 在页面上按 `#debugVariables` 中容器所在的行裁剪。

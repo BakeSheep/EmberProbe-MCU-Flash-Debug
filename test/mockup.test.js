@@ -10,6 +10,8 @@ const { render } = require("./helpers/render-webview");
 const { FakeClock } = require("./helpers/fake-clock");
 const { scenario } = require("./helpers/scenario");
 const { getModernWebviewContent } = require("../src/modernView");
+const { getRttPanelContent } = require("../src/rttPanelView");
+const { STRINGS } = require("../src/i18n");
 const liveWatchView = require("../src/liveWatchView");
 const mockCsv = require("../mockup/mock-csv");
 const sidebarData = require("../mockup/mock/sidebar-data");
@@ -29,6 +31,7 @@ function hostEnvironment() {
         EmberProbeLiveWatchData: liveData,
         EmberProbeMockCsv: mockCsv,
         EmberProbeMockHistory: require("../src/services/chartHistoryStore"),
+        EmberProbeMockStrings: STRINGS,
         addEventListener: (_type, handler) => listeners.add(handler),
         removeEventListener: (_type, handler) => listeners.delete(handler)
     };
@@ -70,7 +73,7 @@ function hostEnvironment() {
             body: { appendChild() {} }
         }
     });
-    for (const file of ["sidebar-host.js", "livewatch-host.js"])
+    for (const file of ["text.js", "sidebar-host.js", "livewatch-host.js", "rtt-panel-host.js"])
         vm.runInContext(fs.readFileSync(path.join(mockup, "mock", file), "utf8"), context, { filename: file });
     function frame(onSend) {
         const messages = [];
@@ -266,6 +269,340 @@ function testHostsAndRenderer() {
     } finally {
         host.destroy();
         liveHost.destroy();
+        view.close();
+    }
+}
+
+// Values made inside the hosts' vm context, compared as plain data.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+// Delivers what a real page posted since the last call to its mock host.
+function pump(env, frame, view, from) {
+    const start = from.at;
+    from.at = view.messages.length;
+    for (const message of view.messages.slice(start)) env.deliver(frame, message);
+}
+
+function testRttWithRenderers() {
+    const env = hostEnvironment();
+    const sidebarView = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
+    const panelView = render(getRttPanelContent("zh"));
+    const sidebar = env.frame((message) => sidebarView.send(message));
+    const panel = env.frame((message) => panelView.send(message));
+    const simulator = sidebarData.createSimulator();
+    const picks = [];
+    const inputs = [];
+    const events = [];
+    const panelHost = env.root.EmberProbeRttPanelHost.create(panel, {
+        simulator,
+        translate: env.root.EmberProbeMockText.create(() => false)
+    });
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, {
+        simulator,
+        quickPick: (items, settings, done) => picks.push({ items, settings, done }),
+        inputBox: (settings, done) => inputs.push({ settings, done }),
+        notify(event) {
+            events.push(event);
+            if (event.action === "rtt") panelHost.sync(event);
+        }
+    });
+    const sidebarAt = { at: 0 };
+    const panelAt = { at: 0 };
+    const doc = sidebarView.document;
+    const panelDoc = panelView.document;
+    const lines = () => panelDoc.getElementById("lines").textContent;
+    try {
+        env.deliver(sidebar, { type: "initCheck" });
+        pump(env, panel, panelView, panelAt);
+        assert.equal(latest(panel, "rttPanelSnapshot").channels.length, 0, "the panel starts empty");
+
+        // Before any start the picker lists only the configured channel and says the firmware list is unknown.
+        doc.getElementById("rttChannelPick").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        assert.equal(picks.length, 1);
+        assert.equal(picks[0].settings.canPickMany, true);
+        assert.equal(picks[0].settings.placeHolder, STRINGS.zh["rtt.channelsPlaceholderUnknown"]);
+        assert.deepStrictEqual(plain(picks[0].items.map((item) => item.label)), [
+            "通道 0",
+            STRINGS.zh["rtt.channelOther"]
+        ]);
+        picks[0].done(undefined);
+
+        doc.getElementById("rttToggle").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        assert.equal(latest(sidebar, "rttStatus").state, "starting");
+        env.advance(500);
+        const running = latest(sidebar, "rttStatus");
+        assert.equal(running.state, "running");
+        assert.deepStrictEqual(running.view.selectedChannels, [0]);
+        assert.deepStrictEqual(
+            running.channels.up.map((channel) => channel.index),
+            [0]
+        );
+        assert.ok(
+            events.some((event) => event.action === "rttReveal"),
+            "the panel comes forward on start"
+        );
+        assert.ok(lines().includes("EmberProbe Demo"), "the firmware's banner reaches the panel");
+        assert.equal(panelDoc.getElementById("tabs").hidden, true, "one channel shows no tabs");
+        env.advance(1000);
+        assert.match(lines(), /ctrl: rpm=\d+ target=\d+ temp=/);
+        const buffer = latest(sidebar, "rttStatus").buffers[0];
+        assert.ok(buffer.receivedBytes > 0 && buffer.rateBytesPerSecond > 0, "the card's counters move");
+        assert.ok(doc.querySelector("#rttChannels .rtt-ch-metrics").textContent.includes("48/1024 B"));
+        assert.equal(doc.getElementById("noticeRtt").hidden, true, "known occupancy raises no notice");
+
+        // The input box sends a line; the firmware's shell answers it.
+        const input = panelDoc.getElementById("input");
+        assert.equal(input.disabled, false, "channel 0 has a down buffer");
+        input.value = "rpm 1200";
+        panelDoc.getElementById("inputRow").dispatchEvent(new panelView.window.Event("submit", { cancelable: true }));
+        pump(env, panel, panelView, panelAt);
+        assert.equal(latest(panel, "rttSendResult").ok, true);
+        assert.ok(lines().includes("> rpm 1200"));
+        env.advance(40);
+        assert.ok(lines().includes("target rpm = 1200"));
+        assert.equal(simulator.scalarSamples(["g_target_rpm"], 1)[0].value, 1200);
+        input.value = "x".repeat(80);
+        panelDoc.getElementById("inputRow").dispatchEvent(new panelView.window.Event("submit", { cancelable: true }));
+        pump(env, panel, panelView, panelAt);
+        assert.equal(latest(panel, "rttSendResult").ok, false);
+        assert.ok(panelDoc.getElementById("inputError").textContent.includes("63"), "a line must fit the down buffer");
+
+        // Now the firmware's channels are known; picking both restarts RTT with two terminals.
+        doc.getElementById("rttChannelPick").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        const pick = picks[1];
+        assert.equal(pick.settings.placeHolder, STRINGS.zh["rtt.channelsPlaceholder"]);
+        assert.deepStrictEqual(
+            plain(pick.items.map((item) => [item.label, item.description || "", item.detail || "", !!item.picked])),
+            [
+                ["通道 0", "Terminal", "缓冲区 1024 B", true],
+                ["通道 1", "Trace", "缓冲区 4096 B", false],
+                [STRINGS.zh["rtt.channelOther"], "", "", false]
+            ]
+        );
+        pick.done(pick.items.slice(0, 2));
+        assert.equal(latest(sidebar, "rttStatus").state, "starting", "a running attachment restarts");
+        assert.equal(doc.getElementById("rttChannelPick").textContent, "通道 0, 1");
+        env.advance(500);
+        assert.deepStrictEqual(
+            latest(sidebar, "rttStatus").channels.up.map((channel) => channel.name),
+            ["Terminal", "Trace"]
+        );
+        assert.equal(panelDoc.getElementById("tabs").hidden, false);
+        assert.equal(panelDoc.querySelectorAll("#tabs .tab").length, 2);
+        assert.ok(lines().includes(STRINGS.zh["rtt.termStopped"]), "the restart is visible in the transcript");
+
+        // Typed channel numbers come from an input box; an empty set is refused with the extension's notice.
+        doc.getElementById("rttChannelPick").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        picks[2].done([picks[2].items.at(-1)]);
+        assert.equal(inputs.length, 1);
+        assert.equal(inputs[0].settings.validate("1, x"), STRINGS.zh["rtt.channelOtherInvalid"]);
+        inputs[0].done("0, 5");
+        assert.deepStrictEqual(latest(sidebar, "rttStatus").view.selectedChannels, [0, 5]);
+        doc.getElementById("rttChannelPick").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        const notListed = picks[3].items.find((item) => item.index === 5);
+        assert.equal(notListed.description, STRINGS.zh["rtt.channelNotListed"]);
+        picks[3].done([]);
+        assert.equal(latest(sidebar, "notice").notice.key, "rtt.channelsNone");
+        env.advance(500);
+
+        // The log button names the file it writes in its tooltip, and the next click stops saving.
+        doc.getElementById("rttSaveLog").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        const log = latest(sidebar, "rttStatus").view.log;
+        assert.equal(log.enabled, true);
+        assert.match(log.file, /\/rtt-\d{8}-\d{6}\.log$/);
+        assert.ok(doc.getElementById("rttSaveLog").title.includes(log.file));
+        assert.equal(doc.getElementById("rttSaveLog").getAttribute("aria-pressed"), "true");
+        doc.getElementById("rttSaveLog").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        assert.equal(latest(sidebar, "rttStatus").view.log.file, "");
+        assert.equal(doc.getElementById("rttSaveLog").title, STRINGS.zh["rtt.saveLogTitle"]);
+
+        // Timestamps prefix each firmware line with the host time.
+        doc.getElementById("rttTimestamps").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        env.advance(1000);
+        assert.match(lines(), /\[\d\d:\d\d:\d\d\.\d{3}\] \[I\] ctrl:/);
+
+        // A halted target prints nothing.
+        host.startDebug("attach");
+        env.advance(2200);
+        host.setTargetState("halted", { notify: false, line: 90 });
+        const halted = lines();
+        env.advance(3000);
+        assert.equal(lines(), halted);
+        host.setTargetState("running", { notify: false, ended: true });
+
+        // Stop marks each channel; a reload gets the scrollback back, a clear does not.
+        doc.getElementById("rttToggle").click();
+        pump(env, sidebar, sidebarView, sidebarAt);
+        assert.equal(latest(sidebar, "rttStatus").state, "stopped");
+        assert.equal(
+            latest(panel, "rttPanelStatus").channels.every((channel) => !channel.active),
+            true
+        );
+        panelHost.reload();
+        env.deliver(panel, { type: "ready" });
+        const snapshot = latest(panel, "rttPanelSnapshot");
+        assert.ok(snapshot.channels.find((channel) => channel.index === 0).text.includes("target rpm = 1200"));
+        assert.deepStrictEqual(snapshot.history[0], ["rpm 1200"], "a refused line is not remembered");
+        env.deliver(panel, { type: "rttClear", channel: 0 });
+        env.deliver(panel, { type: "ready" });
+        assert.equal(latest(panel, "rttPanelSnapshot").channels.find((channel) => channel.index === 0).text, "");
+        sidebarView.assertHealthy();
+        panelView.assertHealthy();
+    } finally {
+        host.destroy();
+        panelHost.destroy();
+        sidebarView.close();
+        panelView.close();
+    }
+}
+
+async function testDataBreakpointsWithRenderer() {
+    const env = hostEnvironment();
+    const view = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
+    const sidebar = env.frame((message) => view.send(message));
+    const inputs = [];
+    const events = [];
+    let host = null;
+    host = env.root.EmberProbeSidebarHost.create(sidebar, {
+        simulator: sidebarData.createSimulator(),
+        inputBox: (settings, done) => inputs.push({ settings, done }),
+        notify(event) {
+            events.push(event);
+            if (event.action === "pauseDebug") host.setTargetState("halted", { notify: false, line: 95 });
+        }
+    });
+    const at = { at: 0 };
+    const doc = view.document;
+    const request = (body) => {
+        const status = latest(sidebar, "sidebarDataBreakpoints");
+        env.deliver(sidebar, {
+            type: "sidebarDataBreakpoint",
+            sessionId: status.sessionId,
+            epoch: status.epoch,
+            generation: latest(sidebar, "sidebarDataBreakpoints").generation,
+            requestId: 1000 + sidebar.messages.length,
+            ...body
+        });
+        return sidebar.messages.at(-1);
+    };
+    const menuButton = (label) =>
+        [...doc.querySelectorAll(".data-breakpoint-menu button")].find((button) => button.textContent.includes(label));
+    // Rows are decorated by the page's MutationObserver, which runs after the render.
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const openMenu = async (name) => {
+        await settle();
+        const row = doc.querySelector(`[data-breakpoint-path="${name}"]`);
+        assert.ok(row, `${name} is decorated for data breakpoints`);
+        row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+        pump(env, sidebar, view, at);
+    };
+    try {
+        env.deliver(sidebar, { type: "initCheck" });
+        pump(env, sidebar, view, at);
+        await openMenu("g_motor_rpm");
+        assert.ok(
+            doc.querySelector(".data-breakpoint-head-meta").textContent.includes(STRINGS.zh["sb.dataNoSession"]),
+            "outside a debug session the menu says why it is empty"
+        );
+        doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape" }));
+
+        host.startDebug("reset");
+        env.advance(2200);
+        host.setTargetState("running", { notify: false });
+        pump(env, sidebar, view, at);
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").available, true);
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").paused, false);
+
+        // A running target offers only the pause; pausing reopens the menu with the storage resolved.
+        await openMenu("g_motor_rpm");
+        menuButton(STRINGS.zh["sb.dataPause"]).click();
+        pump(env, sidebar, view, at);
+        pump(env, sidebar, view, at);
+        assert.ok(events.some((event) => event.action === "pauseDebug"));
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").paused, true);
+        assert.equal(doc.querySelector(".data-breakpoint-head-meta").textContent, "0x20000044 · 2 字节");
+        menuButton(STRINGS.zh["sb.dataWrite"]).click();
+        pump(env, sidebar, view, at);
+        const mark = doc.querySelector('[data-breakpoint-path="g_motor_rpm"] > .data-breakpoint-mark');
+        assert.ok(mark, "the watch row shows the armed watchpoint");
+        assert.ok(mark.title.includes(STRINGS.zh["sb.dataWrite"]));
+        assert.equal(events.findLast((event) => event.action === "dataBreakpoints").entries.length, 1);
+
+        // Members resolve through the layout; display-only rows cannot be watched.
+        request({ action: "info", name: "g_imu.temp" });
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").info.address, "0x20000118");
+        request({ action: "info", name: "g_imu.accel[2]" });
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").info.address, "0x20000108");
+        request({ action: "info", name: "g_active_sensor" });
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").info.dataId, null);
+        request({ action: "info", name: "g_imu" });
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").info.dataId, null, "a struct has no single width");
+
+        // Four comparators: the fifth enabled watchpoint is reported as not set.
+        for (const name of ["g_sensor_temp", "g_bus_voltage", "g_error_count", "g_loop_time_us"]) {
+            request({ action: "info", name });
+            const info = latest(sidebar, "sidebarDataBreakpoints").info;
+            request({ action: "add", name, dataId: info.dataId, accessType: "readWrite" });
+        }
+        let entries = latest(sidebar, "sidebarDataBreakpoints").entries;
+        assert.equal(entries.length, 5);
+        assert.equal(entries[4].verified, false);
+        assert.equal(entries[4].message, STRINGS.zh["debug.dataBreakpointHardware"]);
+        request({ action: "enable", id: entries[1].id, enabled: false });
+        entries = latest(sidebar, "sidebarDataBreakpoints").entries;
+        assert.equal(entries[4].verified, true, "disabling one frees a comparator");
+
+        // The condition comes from VS Code's input box.
+        request({ action: "condition", id: entries[0].id, condition: "" });
+        assert.equal(inputs.length, 1);
+        assert.equal(inputs[0].settings.prompt, STRINGS.zh["sb.dataConditionPrompt"]);
+        inputs[0].done("g_motor_rpm > 2500");
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").entries[0].condition, "g_motor_rpm > 2500");
+        request({ action: "remove", id: entries[4].id });
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").entries.length, 4);
+
+        // A request from an earlier stop is stale.
+        const before = latest(sidebar, "sidebarDataBreakpoints");
+        host.setTargetState("halted", { notify: false, line: 96, step: true });
+        env.deliver(sidebar, {
+            type: "sidebarDataBreakpoint",
+            action: "remove",
+            id: entries[0].id,
+            sessionId: before.sessionId,
+            epoch: before.epoch,
+            generation: before.generation,
+            requestId: 9999
+        });
+        assert.equal(latest(sidebar, "sidebarDataBreakpointError").message, STRINGS.zh["sb.dataStale"]);
+
+        // Running into an armed watchpoint stops the target; removing the watch row removes its watchpoints.
+        host.setTargetState("running", { notify: false });
+        env.advance(700);
+        const hit = events.findLast((event) => event.action === "dataBreakpointHit");
+        assert.equal(hit.name, "g_motor_rpm");
+        assert.equal(hit.accessType, "write");
+        host.setTargetState("halted", { notify: false, line: 97 });
+        env.deliver(sidebar, {
+            type: "saveSidebarWatch",
+            items: ["g_sensor_temp", "g_bus_voltage", "g_imu"].map((name) => sidebarData.watchItem(name))
+        });
+        assert.ok(!latest(sidebar, "sidebarDataBreakpoints").entries.some((entry) => entry.name === "g_motor_rpm"));
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").entries.length, 3, "other rows keep theirs");
+
+        host.setTargetState("running", { notify: false, ended: true });
+        assert.equal(latest(sidebar, "sidebarDataBreakpoints").available, false);
+        assert.equal(events.findLast((event) => event.action === "dataBreakpoints").entries.length, 0);
+        view.assertHealthy();
+    } finally {
+        host.destroy();
         view.close();
     }
 }
@@ -583,11 +920,12 @@ function testDebugBusyBridge() {
 
 function shellHtml() {
     const assets = {
-        "csv.js": mockCsv.browserSource()
+        "csv.js": mockCsv.browserSource(),
+        "i18n.js": "window.EmberProbeMockStrings = " + JSON.stringify(STRINGS) + ";"
     };
     return fs
         .readFileSync(path.join(mockup, "shell/index.html"), "utf8")
-        .replace(/src="(?:sidebar|livewatch)\.(?:zh|en)\.html"/g, 'src="about:blank"')
+        .replace(/src="(?:sidebar|livewatch|rtt-panel)\.(?:zh|en)\.html"/g, 'src="about:blank"')
         .replace(/<script src="([^"]+)"><\/script>/g, (_match, name) => {
             const directory = name.startsWith("shell") ? "shell" : "mock";
             const source =
@@ -727,6 +1065,118 @@ async function testShell() {
         doc.getElementById("debugStartButton").click();
         await clock.advance(2300);
         assert.ok(doc.querySelector('[data-tab="main.c"].active'));
+        view.assertHealthy();
+    } finally {
+        view.close();
+    }
+}
+
+async function testShellRttAndDataBreakpoints() {
+    const clock = new FakeClock();
+    const view = render(
+        shellHtml(),
+        {},
+        {
+            beforeParse(window) {
+                window.setTimeout = (fn, ms, ...args) => clock.schedule(() => fn(...args), ms || 0);
+                window.clearTimeout = clock.cancel;
+                window.setInterval = (fn, ms) => {
+                    const id = {};
+                    const again = () => {
+                        id.timer = clock.schedule(() => {
+                            again();
+                            fn();
+                        }, ms);
+                    };
+                    again();
+                    return id;
+                };
+                window.clearInterval = (id) => id && clock.cancel(id.timer);
+            }
+        }
+    );
+    const doc = view.document;
+    const sent = [];
+    doc.getElementById("sidebarFrame").contentWindow.postMessage = (message) => sent.push(message);
+    const fromSidebar = (message) =>
+        view.window.dispatchEvent(
+            new view.window.MessageEvent("message", {
+                source: doc.getElementById("sidebarFrame").contentWindow,
+                data: { __emberprobeMock: true, message }
+            })
+        );
+    const last = (type) => sent.findLast((message) => message.type === type);
+    try {
+        // The channel picker is VS Code's multi-select quick pick.
+        fromSidebar({ type: "executeCommand", cmd: "mcu-vscode.rttSelectChannels" });
+        assert.equal(doc.getElementById("quick-input").classList.contains("hidden"), false);
+        assert.equal(doc.getElementById("quickInputTitle").textContent, STRINGS.zh["rtt.channelsTitle"]);
+        assert.equal(doc.querySelectorAll("#quickInputList .quick-item").length, 2);
+        assert.equal(doc.querySelector("#quickInputList .quick-item input").checked, true);
+        doc.getElementById("quickInputText").dispatchEvent(
+            new view.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+        assert.ok(doc.getElementById("quick-input").classList.contains("hidden"));
+        assert.equal(last("commandSuccess").cmd, "mcu-vscode.rttSelectChannels");
+
+        // The RTT tab appears with the first start and comes to the front.
+        assert.equal(doc.getElementById("rttPanelTab").hidden, true);
+        fromSidebar({ type: "executeCommand", cmd: "mcu-vscode.startRtt" });
+        await clock.advance(500);
+        assert.equal(doc.getElementById("rttPanelTab").hidden, false);
+        assert.ok(doc.querySelector('[data-panel-pane="rtt"]').classList.contains("active"));
+        assert.equal(doc.getElementById("rttClear").hidden, false);
+        doc.querySelector('[data-panel="terminal"]').click();
+        assert.equal(doc.getElementById("rttClear").hidden, true);
+        fromSidebar({ type: "executeCommand", cmd: "mcu-vscode.stopRtt" });
+        assert.equal(doc.getElementById("rttPanelTab").hidden, false, "the tab stays once shown");
+
+        // A sidebar data breakpoint is listed in the Breakpoints view; its checkbox toggles it.
+        doc.getElementById("debugStartButton").click();
+        await clock.advance(2300);
+        const status = last("sidebarDataBreakpoints");
+        assert.equal(status.paused, true);
+        const request = (body) =>
+            fromSidebar({
+                type: "sidebarDataBreakpoint",
+                sessionId: status.sessionId,
+                epoch: status.epoch,
+                generation: last("sidebarDataBreakpoints").generation,
+                requestId: sent.length + 1,
+                ...body
+            });
+        request({ action: "info", name: "g_motor_rpm" });
+        request({
+            action: "add",
+            name: "g_motor_rpm",
+            dataId: last("sidebarDataBreakpoints").info.dataId,
+            accessType: "write"
+        });
+        const row = doc.querySelector("#debugBreakpoints .data-breakpoint-row");
+        assert.ok(row.textContent.includes("g_motor_rpm"));
+        assert.ok(row.textContent.includes(STRINGS.zh["sb.dataWrite"]));
+        assert.ok(row.querySelector(".codicon-debug-breakpoint-data"));
+        row.click();
+        assert.ok(doc.querySelector("#debugBreakpoints .data-breakpoint-row.disabled"));
+        assert.equal(last("sidebarDataBreakpoints").entries[0].enabled, false);
+        doc.querySelector("#debugBreakpoints .data-breakpoint-row").click();
+
+        // The condition editor is VS Code's input box, validated as the extension does.
+        request({ action: "condition", id: last("sidebarDataBreakpoints").entries[0].id });
+        assert.equal(doc.getElementById("quickInputText").placeholder, STRINGS.zh["sb.dataConditionPrompt"]);
+        doc.getElementById("quickInputText").value = "g_motor_rpm > 2500";
+        doc.getElementById("quickInputOk").click();
+        assert.equal(last("sidebarDataBreakpoints").entries[0].condition, "g_motor_rpm > 2500");
+        assert.ok(doc.querySelector("#debugBreakpoints .data-breakpoint-row").textContent.includes("> 2500"));
+
+        // Continuing runs into it: the debug console says so and the target stops.
+        for (const line of [...doc.querySelectorAll(".gutter-line .breakpoint")]) line.closest(".gutter-line").click();
+        doc.getElementById("dbgContinue").click();
+        await clock.advance(700);
+        assert.ok(doc.getElementById("debugConsoleBody").textContent.includes("数据断点命中: g_motor_rpm"));
+        assert.ok(doc.getElementById("dbgContinue").querySelector(".codicon-debug-continue"));
+        doc.getElementById("dbgStop").click();
+        assert.equal(doc.querySelector("#debugBreakpoints .data-breakpoint-row"), null, "the session's rows go");
         view.assertHealthy();
     } finally {
         view.close();
@@ -874,7 +1324,10 @@ async function testServer() {
     testDownloadRun();
     testDebugLatency();
     testDebugBusyBridge();
+    testRttWithRenderers();
+    await testDataBreakpointsWithRenderer();
     await testShell();
+    await testShellRttAndDataBreakpoints();
     testThemeBridge();
     await testFrozenChartTheme();
     await testServer();

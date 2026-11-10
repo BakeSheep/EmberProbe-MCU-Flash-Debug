@@ -245,6 +245,27 @@ async function testLiveWatch() {
     window.close();
 }
 
+async function testRttPanel() {
+    console.log("rtt-panel.zh.html");
+    const { dom, errors } = loadPage("rtt-panel.zh.html");
+    const { window } = dom;
+    const doc = window.document;
+    await sleep(50);
+    const channels = [
+        { index: 0, name: "Terminal", active: true, hasInput: true, text: "\x1b[32m[I]\x1b[0m boot\r\n" },
+        { index: 1, name: "Trace", active: true, hasInput: false, text: "trace\r\n" }
+    ];
+    push(window, { type: "rttPanelSnapshot", state: "running", inputMode: "line", history: {}, channels });
+    push(window, { type: "rttOutput", channel: 0, text: "ctrl: rpm=1500\r\n" });
+    check("rtt channel tabs rendered", doc.querySelectorAll("#tabs .tab").length === 2);
+    check("rtt output rendered", doc.getElementById("lines").textContent.includes("ctrl: rpm=1500"));
+    check("rtt ansi colours rendered", !!doc.querySelector("#lines span"));
+    check("rtt input enabled on a channel with a down buffer", doc.getElementById("input").disabled === false);
+    check("no rtt panel script errors", errors.length === 0);
+    if (errors.length) console.error(errors.join("\n"));
+    window.close();
+}
+
 function testShellAssets() {
     console.log("index.html assets");
     const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
@@ -257,13 +278,14 @@ function testShellAssets() {
     if (missing.length) console.error("missing:", missing.join(", "));
     check("shell references generated sidebar page", refs.includes("sidebar.zh.html"));
     check("shell references generated live-watch page", refs.includes("livewatch.zh.html"));
+    check("shell references generated RTT panel page", refs.includes("rtt-panel.zh.html"));
 }
 
 async function testShell() {
     console.log("index.html shell behaviour");
     const shellData = require("./shell/shell-data.js");
     let html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
-    html = html.replace(/src="(?:sidebar|livewatch)\.(?:zh|en)\.html"/g, 'src="about:blank"');
+    html = html.replace(/src="(?:sidebar|livewatch|rtt-panel)\.(?:zh|en)\.html"/g, 'src="about:blank"');
     html = html.replace(
         /<script src="([^"]+)"><\/script>/g,
         (match, src) => `<script>${fs.readFileSync(path.join(dist, src), "utf8")}</script>`
@@ -335,6 +357,7 @@ async function testShell() {
 (async function main() {
     await testSidebar();
     await testLiveWatch();
+    await testRttPanel();
     testShellAssets();
     await testShell();
     if (failures.length) {

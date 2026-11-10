@@ -648,7 +648,7 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .connected-probe-refresh{width:18px;padding:0}.connected-probe-refresh svg{width:12px;height:12px;margin:0;fill:none;stroke:currentColor;stroke-width:1.6}
 .rtt-channels{display:grid;gap:3px}.rtt-ch{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;min-width:0;padding:5px 7px;border:1px solid var(--vscode-widget-border,transparent);border-radius:4px;background:var(--vscode-editor-background);font-size:10px}.rtt-ch-index{flex:none;color:var(--vscode-descriptionForeground);font-weight:700}.rtt-ch-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtt-ch .tag{flex:none;white-space:nowrap;margin-left:auto}.rtt-ch-io{flex:none;width:11px;height:11px;fill:none;stroke:var(--vscode-descriptionForeground);stroke-width:1.2;stroke-linecap:round;stroke-linejoin:round}.rtt-ch-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--vscode-testing-iconPassed)}.rtt-ch-dot.off{background:var(--vscode-descriptionForeground);opacity:.5}.rtt-ch-diagnostics{flex-basis:100%;min-width:0;display:flex;flex-direction:column;gap:4px;padding-top:4px;border-top:1px solid var(--vscode-widget-border,var(--vscode-sideBarSectionHeader-border,transparent))}.rtt-ch-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 10px}@media(min-width:380px){.rtt-ch-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}}.rtt-metric{display:flex;flex-direction:column;gap:1px;min-width:0}.rtt-metric-k{overflow:hidden;color:var(--vscode-descriptionForeground);font-size:9px;font-weight:700;letter-spacing:.03em;text-overflow:ellipsis;white-space:nowrap}.rtt-metric-v{overflow:hidden;color:var(--vscode-foreground);font:600 11px var(--vscode-editor-font-family);font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}.rtt-metric-v.muted{color:var(--vscode-descriptionForeground);font-weight:400}
 
-#rttSection .mini:disabled{opacity:.5;cursor:default}.rtt-options{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 7px}
+#rttSection .mini:disabled{opacity:.5;cursor:default}.rtt-options{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin:0 0 7px}
 /* Data breakpoint menu: workbench menu palette (incl. high contrast), VS Code menu metrics. */
 .data-breakpoint-menu {
     position: fixed;
@@ -884,6 +884,6 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .sb-comp-head > .data-breakpoint-mark {
     left: 2px;
 }
-.value-row:not(.composite) > .data-breakpoint-mark {
-    top: 13px;
+.value-row:not(.composite).has-pointee > .data-breakpoint-mark {
+    top: 20px;
 }

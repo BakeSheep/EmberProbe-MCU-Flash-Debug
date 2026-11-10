@@ -292,5 +292,17 @@
             "width": 443,
             "height": 384
         }
+    },
+    "rtt": {
+        "duration": 10,
+        "width": 588,
+        "height": 408,
+        "narrow": [
+            420,
+            408
+        ],
+        "steps": [
+            0
+        ]
     }
 }

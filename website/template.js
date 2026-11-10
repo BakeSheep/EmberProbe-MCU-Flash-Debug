@@ -5,6 +5,7 @@ const path = require("path");
 const { content, links, agentClients, mcpTools } = require("./content");
 
 const origin = "https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/";
+const heroImage = { file: "hero.png", width: 2559, height: 1527 };
 const timeline = JSON.parse(fs.readFileSync(path.join(__dirname, "assets/media/timeline.json"), "utf8"));
 const escape = (value) =>
     String(value).replace(
@@ -18,10 +19,8 @@ const MOTION_FLAG = `<script>if(!matchMedia("(prefers-reduced-motion: reduce)").
 function head(lang, prefix, demo = false) {
     const c = content[lang];
     const canonical = origin + (demo ? "demo/" : lang === "en" ? "en/" : "");
-    const hero = `${prefix}assets/media/hero-${lang}`;
-    const preload = demo
-        ? ""
-        : `<link rel="preload" as="image" href="${hero}.webp" media="(min-width: 761px)" fetchpriority="high"><link rel="preload" as="image" href="${hero}-narrow.webp" media="(max-width: 760px)" fetchpriority="high">`;
+    const hero = `${prefix}assets/media/${heroImage.file}`;
+    const preload = demo ? "" : `<link rel="preload" as="image" href="${hero}" fetchpriority="high">`;
     // Without motion.js nothing would reveal what the flag hides.
     const motion = demo
         ? ""
@@ -115,6 +114,7 @@ const FEATURE_ICONS = {
     history: '<path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-5v6l4 2"/>',
     window: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
     hidden: '<path d="m3 3 18 18M10 5c5-1 10 7 10 7l-3 4M6 6l-4 6s5 8 11 7m-3-9a3 3 0 0 0 4 4"/>',
+    export: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
     record: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>'
 };
 
@@ -134,7 +134,7 @@ function modeCard(prefix, lang, card, index) {
 }
 
 function silentSampling(silent) {
-    return `<aside class="mode-silent" aria-labelledby="silent-title"><div><h4 id="silent-title">${escape(silent.title)}<span>${escape(silent.scope)}</span></h4><p>${escape(silent.text)}</p></div><ol class="silent-flow">${silent.steps.map((step, i) => `<li>${featureIcon(["hidden", "record", "history"][i])}<span>${escape(step)}</span></li>`).join("")}</ol></aside>`;
+    return `<aside class="mode-silent" aria-labelledby="silent-title"><div><h4 id="silent-title">${escape(silent.title)}<span>${escape(silent.scope)}</span></h4><p>${escape(silent.text)}</p></div><ol class="silent-flow">${silent.steps.map((step, i) => `<li>${featureIcon(["hidden", "record", "export"][i])}<span>${escape(step)}</span></li>`).join("")}</ol></aside>`;
 }
 
 // One mark per target state: a free-running trace, the debugger's Continue, a breakpoint.
@@ -198,7 +198,7 @@ function samplingZone(c, prefix, lang, section) {
         )
         .join("");
     return `<section class="chapter zone zone-sampling" id="${section.id}"><div class="zone-bg" aria-hidden="true"></div>
-<div class="wrap zone-intro"><header class="zone-head"><h2 data-reveal>${escape(zone.title)}</h2><p class="zone-lead" data-reveal style="--i:1">${escape(zone.lead)}</p></header>${scopeTrace()}<ul class="zone-stats">${stats}</ul></div>
+<div class="wrap zone-intro"><header class="zone-head"><h2 data-reveal>${escape(zone.title)}</h2></header>${scopeTrace()}<ul class="zone-stats">${stats}</ul></div>
 <div class="zone-part" id="${modes.id}"><div class="wrap">${partHead(modes)}<div class="mode-cards">${modes.cards.map((card, i) => modeCard(prefix, lang, card, i)).join("")}</div>${silentSampling(modes.silent)}</div></div>
 <div class="zone-part" id="${states.id}"><div class="wrap">${partHead(states)}${samplingStates(c, prefix, lang, states)}</div></div>
 <div class="zone-part" id="${types.id}"><div class="wrap">${partHead(types)}<div class="chapter-body">${clip(c, prefix, lang, "variables", types.alt)}<div class="chapter-side"><ul class="points">${listItems(types.points)}</ul></div></div>${typeGrid(prefix, lang, types.gallery)}</div></div>
@@ -220,8 +220,8 @@ function agentDetail(agent, prefix) {
             return `<article class="capability-card capability-${id}"><header><span class="capability-icon">${featureIcon(id)}</span><span class="capability-count">${tools.length} ${escape(agent.toolsLabel)}</span></header><h4>${escape(title)}</h4><p>${escape(text)}</p><ul class="capability-tags">${capabilities.map(([, name]) => `<li>${escape(name)}</li>`).join("")}</ul><details class="capability-tools"><summary>${escape(agent.detailsLabel)}<span aria-hidden="true">+</span></summary>${capabilities.map(([key, name, description]) => `<div class="capability-tool-group"><h5>${escape(name)}</h5><p>${escape(description)}</p><ul>${mcpTools[key].map((tool) => `<li><code>${escape(tool)}</code></li>`).join("")}</ul></div>`).join("")}</details></article>`;
         })
         .join("");
-    return `<div class="agent-detail"><section class="agent-clients" aria-labelledby="agent-clients-title"><h3 id="agent-clients-title">${escape(agent.clientsTitle)}</h3><ul class="client-logos">${clients}</ul><p class="agent-note">${escape(agent.clientsNote)}</p></section>
-<section class="agent-capabilities" aria-labelledby="agent-capabilities-title"><h3 id="agent-capabilities-title">${escape(agent.capabilitiesTitle)}</h3><div class="capability-grid">${cards}</div><p class="agent-note">${escape(agent.permissionNote)}</p></section></div>`;
+    return `<div class="agent-detail"><section class="agent-clients" aria-labelledby="agent-clients-title"><h3 id="agent-clients-title">${escape(agent.clientsTitle)}</h3><ul class="client-logos">${clients}</ul></section>
+<section class="agent-capabilities" aria-labelledby="agent-capabilities-title"><h3 id="agent-capabilities-title">${escape(agent.capabilitiesTitle)}</h3><div class="capability-grid">${cards}</div></section></div>`;
 }
 
 // motion.js turns the grid into a deck that scrolling moves through: cards wait stacked on the right, pass through
@@ -242,24 +242,15 @@ function toolsChapter(c, prefix, lang) {
 }
 
 // The first image is a single still of the real UI.
-function heroVisual(c, prefix, lang) {
-    const data = timeline.hero;
-    const file = `${prefix}assets/media/hero-${lang}`;
-    return `<figure class="hero-visual"><div class="hero-scene" data-hero-scene><div class="hero-glow" aria-hidden="true"></div><div class="hero-card" data-hero-card style="--shot:${data.width} / ${data.height}; --shot-narrow:${data.narrow[0]} / ${data.narrow[1]}"><picture><source media="(max-width: 760px)" srcset="${file}-narrow.webp"><img src="${file}.webp" width="${data.width}" height="${data.height}" alt="${escape(c.heroAlt)}" fetchpriority="high"></picture></div></div></figure>`;
+function heroVisual(c, prefix) {
+    const { file, width, height } = heroImage;
+    return `<figure class="hero-visual"><div class="hero-scene" data-hero-scene><div class="hero-glow" aria-hidden="true"></div><div class="hero-card" data-hero-card style="--shot:${width} / ${height}; --shot-narrow:${width} / ${height}"><picture><img src="${prefix}assets/media/${file}" width="${width}" height="${height}" alt="${escape(c.heroAlt)}" fetchpriority="high"></picture></div></div></figure>`;
 }
 
 function heroCopy(c, links, demo) {
     const letters = [..."EmberProbe"].map((letter, i) => `<span style="--i:${i}">${letter}</span>`).join("");
     return `<div class="hero-copy"><p class="eyebrow" data-reveal>${escape(c.eyebrow)}</p><h1><span class="visually-hidden">EmberProbe</span><span class="title-letters" aria-hidden="true">${letters}</span></h1><p class="subtitle" data-reveal style="--i:3">${escape(c.subtitle)}</p>
 <div class="hero-actions" data-reveal style="--i:5"><a class="button primary" href="${links.install}">${c.install}</a><a class="button" href="${demo}">${c.tour}</a></div></div>`;
-}
-
-function requirementsChapter(c, guide) {
-    const spec = c.requirements;
-    return `<section class="chapter" id="${spec.id}"><div class="wrap"><header class="chapter-head" data-reveal><h2>${escape(spec.title)}</h2></header>
-<div class="spec-grid"><table class="spec" data-reveal><tbody>${spec.rows.map(([key, value]) => `<tr><th scope="row">${escape(key)}</th><td>${escape(value)}</td></tr>`).join("")}</tbody></table>
-<div class="start"><h3 data-reveal>${escape(spec.startTitle)}</h3><ol>${spec.start.map(([title, text], i) => `<li data-reveal style="--i:${i}"><span class="number">${i + 1}</span><span class="step-copy"><strong>${escape(title)}</strong><span>${escape(text)}</span></span></li>`).join("")}</ol>
-<div class="start-actions" data-reveal><a class="button primary" href="${links.install}">${c.install}</a><a class="button" href="${guide}">${escape(spec.guide)}</a></div></div></div></div></section>`;
 }
 
 function home(lang, version) {
@@ -269,15 +260,14 @@ function home(lang, version) {
     return `${head(lang, prefix)}<body>
 <a class="skip" href="#main">${c.skip}</a>
 <header class="header"><div class="wrap header-row"><a class="brand" href="${lang === "en" ? "./" : prefix}"><img src="${prefix}assets/icon.png" width="24" height="24" alt="">EmberProbe</a>
-<nav aria-label="${c.navLabel}"><i class="nav-marker" aria-hidden="true"></i>${[...c.chapters, c.tools, c.requirements].map((s) => `<a href="#${s.id}">${s.nav}</a>`).join("")}</nav>
+<nav aria-label="${c.navLabel}"><i class="nav-marker" aria-hidden="true"></i>${[...c.chapters, c.tools].map((s) => `<a href="#${s.id}">${s.nav}</a>`).join("")}</nav>
 <div class="header-links"><a data-language href="${lang === "en" ? "../" : "./en/"}" lang="${lang === "en" ? "zh-CN" : "en"}">${c.language}</a><a href="${links.github}">GitHub</a></div></div><i class="scroll-progress" aria-hidden="true"></i></header>
 <main id="main">
-<section class="hero" data-hero><div class="hero-grid" aria-hidden="true"></div><div class="wrap hero-row">${heroCopy(c, links, demo)}${heroVisual(c, prefix, lang)}</div></section>
+<section class="hero" data-hero><div class="hero-grid" aria-hidden="true"></div><div class="wrap hero-row">${heroCopy(c, links, demo)}${heroVisual(c, prefix)}</div></section>
 ${c.chapters.map((section) => (section.zone ? samplingZone(c, prefix, lang, section) : chapter(c, prefix, lang, section))).join("\n")}
 ${toolsChapter(c, prefix, lang)}
-${requirementsChapter(c, lang === "en" ? links.docsEn : links.docs)}
 </main>
-<footer class="footer"><div class="wrap footer-row"><p>EmberProbe v${escape(version)}<span>${c.notice}</span></p>
+<footer class="footer"><div class="wrap footer-row"><p>EmberProbe v${escape(version)}</p>
 <nav aria-label="${c.projectLabel}"><a href="${links.github}">${c.source}</a><a href="${links.github}/releases">${c.releases}</a><a href="${links.github}/issues">${c.issues}</a><a href="${links.github}/blob/master/LICENSE">${c.license}</a><a href="${prefix}credits.txt">Credits</a></nav></div></footer>
 </body></html>`;
 }

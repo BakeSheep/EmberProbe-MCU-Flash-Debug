@@ -428,8 +428,13 @@
                                 <button type="button" data-panel="output">输出</button>
                                 <button type="button" data-panel="debug-console">调试控制台</button>
                                 <button type="button" data-panel="terminal" class="active">终端</button>
+                                <!-- The extension's RTT view: the tab appears with the first RTT start. -->
+                                <button type="button" data-panel="rtt" id="rttPanelTab" hidden>RTT 终端</button>
                             </div>
                             <div class="panel-actions">
+                                <button type="button" id="rttClear" title="清除 RTT 输出" hidden>
+                                    <span class="codicon codicon-clear-all" aria-hidden="true"></span>
+                                </button>
                                 <button type="button" title="新建终端">
                                     <span class="codicon codicon-add" aria-hidden="true"></span>
                                 </button>
@@ -472,6 +477,9 @@
                                     ><span class="cmd">openocd -f interface/jlink.cfg -f target/stm32f4x.cfg</span
                                     ><span class="terminal-cursor"></span>
                                 </div>
+                            </div>
+                            <div class="panel-pane plugin-frame-wrap rtt-pane" data-panel-pane="rtt">
+                                <iframe id="rttFrame" src="rtt-panel.zh.html" title="RTT 终端"></iframe>
                             </div>
                         </div>
                     </div>
@@ -553,6 +561,19 @@
             </div>
         </div>
 
+        <!-- VS Code's quick pick / input box, opened by the mock extension host. -->
+        <div id="quick-input" class="overlay hidden">
+            <div class="palette quick-input" role="dialog" aria-modal="true" aria-labelledby="quickInputTitle">
+                <div class="quick-input-title" id="quickInputTitle"></div>
+                <div class="palette-input-wrap">
+                    <input id="quickInputText" spellcheck="false" autocomplete="off" />
+                    <button type="button" class="quick-input-ok" id="quickInputOk">确定</button>
+                </div>
+                <div class="quick-input-message" id="quickInputMessage" role="alert" hidden></div>
+                <div class="palette-list" id="quickInputList" role="listbox"></div>
+            </div>
+        </div>
+
         <div id="layout-menu" role="menu" aria-label="自定义布局" hidden>
             <button type="button" role="menuitemcheckbox" data-layout="sidebar">
                 <span class="codicon codicon-check" aria-hidden="true"></span>主侧边栏
@@ -576,11 +597,14 @@
         <div id="toasts"></div>
 
         <script src="csv.js"></script>
+        <script src="i18n.js"></script>
+        <script src="text.js"></script>
         <script src="chart-history.js"></script>
         <script src="sidebar-data.js"></script>
         <script src="livewatch-data.js"></script>
         <script src="sidebar-host.js"></script>
         <script src="livewatch-host.js"></script>
+        <script src="rtt-panel-host.js"></script>
         <script src="shell-data.js"></script>
         <script src="shell.js"></script>
     </body>

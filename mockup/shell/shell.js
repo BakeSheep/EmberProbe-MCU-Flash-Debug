@@ -57,7 +57,17 @@
     var breakpointTimer = null;
     var sidebarHost = null;
     var livewatchHost = null;
+    var rttHost = null;
+    var rttShown = false; // The RTT tab appears with the first start and stays (src/services/rttPanelHost.js).
+    var dataBreakpoints = []; // The sidebar's data breakpoints, as VS Code's Breakpoints view lists them.
     var simulator = window.EmberProbeSidebarData.createSimulator();
+    var tr = window.EmberProbeMockText.create(function () {
+        return state.lang === "en";
+    });
+
+    function webviewFrames() {
+        return [$("sidebarFrame"), $("livewatchFrame"), $("rttFrame")];
+    }
 
     function sendTheme(frame) {
         if (frame.contentWindow)
@@ -69,7 +79,7 @@
 
     function setTheme(theme, persist) {
         if (!window.EmberProbeMockTheme.apply(theme, persist)) return;
-        [$("sidebarFrame"), $("livewatchFrame")].forEach(sendTheme);
+        webviewFrames().forEach(sendTheme);
         document.querySelectorAll("[data-theme]").forEach(function (button) {
             button.setAttribute("aria-checked", String(button.dataset.theme === theme));
         });
@@ -87,14 +97,14 @@
         document.querySelector('[data-theme="' + window.EmberProbeMockTheme.current() + '"]').focus();
     }
 
-    [$("sidebarFrame"), $("livewatchFrame")].forEach(function (frame) {
+    webviewFrames().forEach(function (frame) {
         frame.addEventListener("load", function () {
             sendTheme(frame);
         });
     });
     window.addEventListener("message", function (event) {
         if (!event.data || !event.data.__emberprobeMockTheme || !event.data.request) return;
-        [$("sidebarFrame"), $("livewatchFrame")].forEach(function (frame) {
+        webviewFrames().forEach(function (frame) {
             if (event.source === frame.contentWindow) sendTheme(frame);
         });
     });
@@ -664,27 +674,56 @@
                 );
             })
             .join("");
-        $("debugBreakpoints").innerHTML = state.breakpoints
-            .map(function (item, index) {
-                return (
-                    '<div class="tree-row breakpoint-row' +
-                    (item.enabled ? "" : " disabled") +
-                    '" data-breakpoint="' +
-                    index +
-                    '"><input type="checkbox" aria-label="切换断点 ' +
-                    esc(item.file) +
-                    ":" +
-                    item.line +
-                    '"' +
-                    (item.enabled ? " checked" : "") +
-                    '><span class="dot codicon codicon-debug-breakpoint"></span><span class="label">' +
-                    esc(item.file) +
-                    '</span><span class="file">:' +
-                    item.line +
-                    "</span></div>"
-                );
-            })
-            .join("");
+        $("debugBreakpoints").innerHTML =
+            state.breakpoints
+                .map(function (item, index) {
+                    return (
+                        '<div class="tree-row breakpoint-row' +
+                        (item.enabled ? "" : " disabled") +
+                        '" data-breakpoint="' +
+                        index +
+                        '"><input type="checkbox" aria-label="切换断点 ' +
+                        esc(item.file) +
+                        ":" +
+                        item.line +
+                        '"' +
+                        (item.enabled ? " checked" : "") +
+                        '><span class="dot codicon codicon-debug-breakpoint"></span><span class="label">' +
+                        esc(item.file) +
+                        '</span><span class="file">:' +
+                        item.line +
+                        "</span></div>"
+                    );
+                })
+                .join("") +
+            dataBreakpoints
+                .map(function (entry) {
+                    var access = tr(
+                        { write: "sb.dataWrite", read: "sb.dataRead", readWrite: "sb.dataAccess" }[entry.accessType]
+                    );
+                    var failed = entry.enabled && !entry.verified;
+                    return (
+                        '<div class="tree-row breakpoint-row data-breakpoint-row' +
+                        (entry.enabled ? "" : " disabled") +
+                        (failed ? " unverified" : "") +
+                        '" data-data-breakpoint="' +
+                        esc(entry.id) +
+                        '" title="' +
+                        esc([entry.description, entry.condition, entry.message].filter(Boolean).join("\n")) +
+                        '"><input type="checkbox" aria-label="' +
+                        esc(entry.name + " · " + access) +
+                        '"' +
+                        (entry.enabled ? " checked" : "") +
+                        '><span class="dot codicon codicon-debug-breakpoint-data' +
+                        (failed ? "-unverified" : "") +
+                        '"></span><span class="label">' +
+                        esc(entry.name) +
+                        '</span><span class="file">' +
+                        esc(access + (entry.condition ? " · " + entry.condition : "")) +
+                        "</span></div>"
+                    );
+                })
+                .join("");
     }
 
     function renderProblems() {
@@ -748,6 +787,7 @@
         document.querySelectorAll(".panel-pane").forEach(function (pane) {
             pane.classList.toggle("active", pane.dataset.panelPane === name);
         });
+        $("rttClear").hidden = name !== "rtt";
     }
 
     function togglePanel() {
@@ -931,6 +971,41 @@
             case "setLang":
                 swapLanguage(event.page, event.lang);
                 break;
+            case "rtt":
+                if (event.state !== "stopped") showRttTab();
+                if (rttHost) rttHost.sync(event);
+                break;
+            case "rttReveal":
+                showRttTab();
+                showPanel("rtt");
+                if (event.focus && $("rttFrame").contentWindow) $("rttFrame").focus();
+                break;
+            case "pauseDebug":
+                pauseDebug();
+                break;
+            case "dataBreakpoints":
+                dataBreakpoints = event.entries || [];
+                renderDebugSidebar();
+                break;
+            case "dataBreakpointHit":
+                if (!state.debugActive || state.debugPaused) break;
+                clearTimeout(breakpointTimer);
+                $("debugConsoleBody").innerHTML +=
+                    "\n" +
+                    esc(
+                        tr("mock.dataHit") +
+                            ": " +
+                            event.name +
+                            " · " +
+                            tr(
+                                { write: "sb.dataWrite", read: "sb.dataRead", readWrite: "sb.dataAccess" }[
+                                    event.accessType
+                                ]
+                            ) +
+                            " — ControlTask()"
+                    );
+                stopAt(findDebugLine());
+                break;
             default:
                 break;
         }
@@ -939,7 +1014,38 @@
     function swapLanguage(page, lang) {
         // The real renderer has already changed its language in place. Keep
         // the frame and host alive so sampling, history and user edits survive.
-        state.lang = lang === "en" ? "en" : "zh";
+        var next = lang === "en" ? "en" : "zh";
+        var changed = next !== state.lang;
+        state.lang = next;
+        // The RTT view is rebuilt in the new language and asks for its snapshot again (RttPanelHost.languageChanged).
+        if (changed && page === "sidebar" && rttHost) {
+            rttHost.reload();
+            $("rttFrame").src = "rtt-panel." + next + ".html";
+        }
+    }
+
+    function showRttTab() {
+        if (rttShown) return;
+        rttShown = true;
+        $("rttPanelTab").hidden = false;
+    }
+
+    function mountRttHost() {
+        if (rttHost) rttHost.destroy();
+        rttHost = window.EmberProbeRttPanelHost.create($("rttFrame"), {
+            simulator: simulator,
+            translate: tr
+        });
+        // The page may have loaded, and posted its ready, before this host listened.
+        var catchUp = function () {
+            setTimeout(function () {
+                if (rttHost && !rttHost.isReady()) rttHost.sendSnapshot();
+            }, 60);
+        };
+        $("rttFrame").addEventListener("load", catchUp);
+        setTimeout(function () {
+            if (rttHost && !rttHost.isReady()) rttHost.sendSnapshot();
+        }, 600);
     }
 
     function mountSidebarHost() {
@@ -947,6 +1053,8 @@
         sidebarHost = window.EmberProbeSidebarHost.create($("sidebarFrame"), {
             notify: notify,
             simulator: simulator,
+            quickPick: showQuickPick,
+            inputBox: showInputBox,
             isEnglish: function () {
                 return state.lang === "en";
             }
@@ -981,6 +1089,136 @@
         setTimeout(function () {
             if (livewatchHost && !livewatchHost.isInitialized()) livewatchHost.sendReady();
         }, 600);
+    }
+
+    /* ------------------------------------------------------------ quick input */
+
+    // vscode.window.showQuickPick / showInputBox for the mock host: done(undefined) when dismissed.
+    var quick = null;
+
+    function showQuickMessage(text) {
+        $("quickInputMessage").textContent = text || "";
+        $("quickInputMessage").hidden = !text;
+    }
+
+    function closeQuickInput(result) {
+        if (!quick) return;
+        var done = quick.done;
+        quick = null;
+        $("quick-input").classList.add("hidden");
+        done(result);
+    }
+
+    function renderQuickList() {
+        var list = $("quickInputList");
+        if (!quick || quick.mode !== "pick") {
+            list.innerHTML = "";
+            list.hidden = true;
+            return;
+        }
+        list.hidden = false;
+        var needle = $("quickInputText").value.trim().toLowerCase();
+        quick.visible = quick.items.filter(function (item) {
+            var text = (item.label + " " + (item.description || "")).toLowerCase();
+            return !needle || item.other || text.indexOf(needle) >= 0;
+        });
+        quick.index = Math.min(quick.index, Math.max(0, quick.visible.length - 1));
+        list.setAttribute("aria-multiselectable", String(!!quick.settings.canPickMany));
+        list.innerHTML = quick.visible
+            .map(function (item, index) {
+                return (
+                    '<div class="palette-item quick-item' +
+                    (index === quick.index ? " selected" : "") +
+                    '" role="option" aria-selected="' +
+                    String(!!item.picked) +
+                    '" data-index="' +
+                    index +
+                    '">' +
+                    (quick.settings.canPickMany
+                        ? '<input type="checkbox" tabindex="-1" aria-hidden="true"' +
+                          (item.picked ? " checked" : "") +
+                          ">"
+                        : "") +
+                    '<span class="quick-label">' +
+                    esc(item.label) +
+                    "</span>" +
+                    (item.description ? '<span class="p-category">' + esc(item.description) + "</span>" : "") +
+                    (item.detail ? '<span class="p-key">' + esc(item.detail) + "</span>" : "") +
+                    "</div>"
+                );
+            })
+            .join("");
+    }
+
+    function openQuickInput(next, title, placeholder, value) {
+        if (quick) closeQuickInput(undefined);
+        closePalette();
+        quick = next;
+        $("quickInputTitle").textContent = title || "";
+        $("quickInputTitle").hidden = !title;
+        $("quickInputText").value = value || "";
+        $("quickInputText").placeholder = placeholder || "";
+        $("quickInputOk").hidden = quick.mode === "pick" && !quick.settings.canPickMany;
+        $("quickInputOk").textContent = state.lang === "en" ? "OK" : "确定";
+        showQuickMessage("");
+        $("quick-input").classList.remove("hidden");
+        renderQuickList();
+        $("quickInputText").focus();
+    }
+
+    function showQuickPick(items, settings, done) {
+        settings = settings || {};
+        openQuickInput(
+            {
+                mode: "pick",
+                settings: settings,
+                done: done,
+                index: 0,
+                visible: [],
+                items: items.map(function (item) {
+                    return Object.assign({}, item);
+                })
+            },
+            settings.title,
+            settings.placeHolder,
+            ""
+        );
+    }
+
+    function showInputBox(settings, done) {
+        settings = settings || {};
+        openQuickInput(
+            { mode: "input", settings: settings, done: done },
+            settings.title,
+            settings.prompt,
+            settings.value
+        );
+    }
+
+    function acceptQuickInput() {
+        if (!quick) return;
+        if (quick.mode === "input") {
+            var value = $("quickInputText").value;
+            var problem = quick.settings.validate ? quick.settings.validate(value) : "";
+            if (problem) return showQuickMessage(problem);
+            return closeQuickInput(value);
+        }
+        if (quick.settings.canPickMany)
+            return closeQuickInput(
+                quick.items.filter(function (item) {
+                    return item.picked;
+                })
+            );
+        var item = quick.visible[quick.index];
+        if (item) closeQuickInput([item]);
+    }
+
+    function toggleQuickItem(index) {
+        if (!quick || !quick.visible[index]) return;
+        quick.index = index;
+        if (!quick.settings.canPickMany) return acceptQuickInput();
+        quick.visible[index].picked = !quick.visible[index].picked;
+        renderQuickList();
     }
 
     /* ---------------------------------------------------------- command palette */
@@ -1190,6 +1428,14 @@
     });
 
     $("debugBreakpoints").addEventListener("click", function (event) {
+        var dataRow = event.target.closest("[data-data-breakpoint]");
+        if (dataRow) {
+            var entry = dataBreakpoints.find(function (item) {
+                return item.id === dataRow.dataset.dataBreakpoint;
+            });
+            if (entry && sidebarHost) sidebarHost.setDataBreakpointEnabled(entry.id, !entry.enabled);
+            return;
+        }
         var row = event.target.closest("[data-breakpoint]");
         if (!row) return;
         var item = state.breakpoints[Number(row.dataset.breakpoint)];
@@ -1226,6 +1472,9 @@
         });
     });
     $("panelClose").addEventListener("click", togglePanel);
+    $("rttClear").addEventListener("click", function () {
+        if (rttHost) rttHost.clear();
+    });
 
     $("commandCenter").addEventListener("click", openPalette);
     $("paletteInput").addEventListener("input", function () {
@@ -1241,6 +1490,36 @@
     });
     $("command-palette").addEventListener("click", function (event) {
         if (event.target === $("command-palette")) closePalette();
+    });
+
+    $("quick-input").addEventListener("click", function (event) {
+        if (event.target === $("quick-input")) closeQuickInput(undefined);
+    });
+    $("quickInputList").addEventListener("click", function (event) {
+        var item = event.target.closest("[data-index]");
+        if (item) toggleQuickItem(Number(item.dataset.index));
+        $("quickInputText").focus();
+    });
+    $("quickInputOk").addEventListener("click", acceptQuickInput);
+    $("quickInputText").addEventListener("input", function () {
+        if (!quick) return;
+        if (quick.mode === "pick") {
+            quick.index = 0;
+            renderQuickList();
+        } else showQuickMessage(quick.settings.validate ? quick.settings.validate($("quickInputText").value) : "");
+    });
+    $("quickInputText").addEventListener("keydown", function (event) {
+        if (!quick) return;
+        if (event.key === "Escape") closeQuickInput(undefined);
+        else if (event.key === "Enter") acceptQuickInput();
+        else if (quick.mode === "pick" && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+            var count = quick.visible.length;
+            if (!count) return;
+            quick.index = (quick.index + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
+            renderQuickList();
+        } else return;
+        event.preventDefault();
+        event.stopPropagation();
     });
 
     $("toggleSidebar").addEventListener("click", toggleSidebar);
@@ -1404,6 +1683,7 @@
         document.documentElement.lang = "en";
         $("sidebarFrame").src = "sidebar.en.html";
         $("livewatchFrame").src = "livewatch.en.html";
+        $("rttFrame").src = "rtt-panel.en.html";
         TAB_META.livewatch.label = "Waveform #1";
         D.useEnglish();
     }
@@ -1421,6 +1701,7 @@
     activateTab(state.activeTab);
     updateDebugToolbar();
     if (state.lang === "en") D.translateDocument(document.body);
+    mountRttHost();
     mountSidebarHost();
     mountLivewatchHost();
 })();

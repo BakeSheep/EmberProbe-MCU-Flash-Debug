@@ -36,7 +36,31 @@
             return item.name;
         });
         var stopped = false;
-        var rtt = { running: false, terminals: false, saving: false, timestamps: false };
+        // src/services/rttTerminalService.js: the channels to read, the terminals made so far, the chosen log file.
+        var rtt = {
+            state: "stopped",
+            selected: [0],
+            listed: false,
+            terminals: 0,
+            logFile: "",
+            timestamps: false,
+            timer: null,
+            ticker: null,
+            received: {}
+        };
+        var tr = (root.EmberProbeMockText && root.EmberProbeMockText.create(isEnglish)) || String;
+        var quickPick =
+            options.quickPick ||
+            function (_items, _settings, done) {
+                done(undefined);
+            };
+        var inputBox =
+            options.inputBox ||
+            function (_settings, done) {
+                done(undefined);
+            };
+        // Sidebar data breakpoints (src/services/sidebarDataBreakpoints.js and src/debug/dataBreakpointGroups.js).
+        var dataBreakpoints = { session: 0, entries: [], nextId: 1, issued: {}, nextDataId: 1 };
         var initialized = false;
         var agentFullAccess = false;
         var agentAccessEnabled = true;
@@ -145,6 +169,7 @@
                 if (stopped) return;
                 setDebugPending(false);
                 if (kind !== "attach") simulator.reset();
+                dataBreakpoints.session += 1;
                 notify({ action: "debugSessionChanged" });
                 send({ type: "commandSuccess", cmd: cmd });
                 notify({ action: "debugStart", kind: kind === "attach" ? "attach" : "reset" });
@@ -311,6 +336,9 @@
                 if (settings.ended) setPhase("stopped");
                 else setPhase("debug-disabled");
             }
+            // A halted target prints nothing over RTT; the panel follows.
+            if (rtt.state === "running") postRttStatus();
+            dataBreakpointsChanged(settings.ended);
             if (settings.notify !== false) notify({ action: "targetState", state: next });
         }
 
@@ -544,6 +572,9 @@
                     send({ type: "agentAccess", enabled: agentAccessEnabled });
                     send({ type: "agentPermissions", fullAccess: agentFullAccess, available: true });
                     break;
+                case "sidebarDataBreakpoint":
+                    handleDataBreakpoint(message);
+                    break;
                 case "initCheck":
                     initialized = true;
                     sendInitialState();
@@ -684,10 +715,12 @@
                     sendVariableList();
                     break;
                 case "saveSidebarWatch": {
+                    var previousWatch = watchNames;
                     watchItems = message.items || [];
                     watchNames = (message.items || []).map(function (item) {
                         return item.name;
                     });
+                    pruneDataBreakpoints(previousWatch, watchNames);
                     if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
                     break;
                 }
@@ -742,35 +775,544 @@
             }
         }
 
-        // RTT card: the channels a demo firmware would configure, with the view fields the host adds.
-        function postRttStatus() {
-            var up = [
-                { index: 0, name: "Terminal", mode: "skip" },
-                { index: 1, name: "Trace", mode: "block" }
-            ];
-            send({
-                type: "rttStatus",
-                state: rtt.running ? "running" : "stopped",
-                channels: rtt.running ? { up: up, down: [{ index: 0, size: 64 }] } : null,
-                buffers: rtt.running
-                    ? up.map(function (channel) {
-                          return { channel: channel.index, connected: true };
-                      })
-                    : [],
-                view: {
-                    terminals: rtt.terminals ? up.length : 0,
-                    timestamps: rtt.timestamps,
-                    log: { enabled: rtt.saving, directory: rtt.saving ? "D:/work/firmware/logs" : "" }
-                }
+        // RTT card: what the demo firmware's control block lists, with the view fields the host adds.
+        var RTT_FIRMWARE = [
+            { index: 0, name: "Terminal", mode: "skip", size: 1024, down: 64 },
+            { index: 1, name: "Trace", mode: "block", size: 4096, down: 0 }
+        ];
+        var RTT_MAX_CHANNELS = 16;
+        // Bytes per second the demo firmware writes to each up channel (its log line and trace records).
+        var RTT_RATE = { 0: 52, 1: 168 };
+
+        function rttTargetRunning() {
+            return chipState !== "halted";
+        }
+
+        // The card's counters refresh once a second while RTT runs.
+        function rttTick() {
+            if (rtt.state !== "running") return;
+            if (rttTargetRunning())
+                rttUp().forEach(function (channel) {
+                    rtt.received[channel.index] = (rtt.received[channel.index] || 0) + (RTT_RATE[channel.index] || 0);
+                });
+            postRttStatus();
+        }
+        var RTT_LOG_DIR = "D:/work/firmware/logs";
+
+        function rttUp() {
+            return RTT_FIRMWARE.filter(function (channel) {
+                return rtt.selected.indexOf(channel.index) >= 0;
             });
         }
 
-        function handleRtt(cmd) {
-            if (cmd === "mcu-vscode.startRtt") rtt.running = rtt.terminals = true;
-            else if (cmd === "mcu-vscode.stopRtt") rtt.running = false;
-            else if (cmd === "mcu-vscode.rttSaveLog") rtt.saving = !rtt.saving;
-            else if (cmd === "mcu-vscode.rttToggleTimestamps") rtt.timestamps = !rtt.timestamps;
+        function postRttStatus() {
+            var running = rtt.state === "running";
+            var up = running
+                ? rttUp().map(function (channel) {
+                      return { index: channel.index, name: channel.name, mode: channel.mode, size: channel.size };
+                  })
+                : [];
+            send({
+                type: "rttStatus",
+                state: rtt.state,
+                channels: running
+                    ? {
+                          up: up,
+                          down: RTT_FIRMWARE.filter(function (channel) {
+                              return channel.down > 0;
+                          }).map(function (channel) {
+                              return { index: channel.index, size: channel.down };
+                          })
+                      }
+                    : null,
+                buffers: up.map(function (channel) {
+                    return {
+                        channel: channel.index,
+                        connected: true,
+                        rateBytesPerSecond: rttTargetRunning() ? RTT_RATE[channel.index] || 0 : 0,
+                        receivedBytes: rtt.received[channel.index] || 0,
+                        start: 0
+                    };
+                }),
+                // What the host last read of each up buffer's fill level in target RAM.
+                targetTelemetry: running
+                    ? {
+                          available: true,
+                          sampledAt: Date.now(),
+                          channels: up.map(function (channel) {
+                              return {
+                                  index: channel.index,
+                                  usedBytes: rttTargetRunning() ? (channel.index === 0 ? 48 : 212) : 0,
+                                  capacity: channel.size
+                              };
+                          })
+                      }
+                    : null,
+                firmwareChannels: rtt.listed
+                    ? RTT_FIRMWARE.map(function (channel) {
+                          return { index: channel.index, name: channel.name, size: channel.size };
+                      })
+                    : [],
+                view: {
+                    selectedChannels: rtt.selected.slice(),
+                    terminals: rtt.terminals,
+                    timestamps: rtt.timestamps,
+                    log: {
+                        enabled: !!rtt.logFile,
+                        directory: rtt.logFile ? RTT_LOG_DIR : "",
+                        file: rtt.logFile
+                    }
+                }
+            });
+            notify({
+                action: "rtt",
+                state: rtt.state,
+                timestamps: rtt.timestamps,
+                targetRunning: chipState !== "halted",
+                channels: running
+                    ? rttUp().map(function (channel) {
+                          return { index: channel.index, name: channel.name, down: channel.down };
+                      })
+                    : []
+            });
+        }
+
+        function rttNotice(id, notice) {
+            send({ type: "notice", area: "rtt", id: id, notice: notice });
+        }
+
+        function rttClearNotices() {
+            ["rtt", "rtt-channels", "rtt-log"].forEach(function (id) {
+                send({ type: "noticeClear", area: "rtt", id: id });
+            });
+        }
+
+        // The control block is found after a short search; the panel tab appears and comes forward without focus.
+        function startRtt() {
+            if (rtt.state !== "stopped") return;
+            rttClearNotices();
+            rtt.state = "starting";
             postRttStatus();
+            rtt.timer = setTimeout(function () {
+                rtt.timer = null;
+                if (stopped || rtt.state !== "starting") return;
+                rtt.state = "running";
+                rtt.listed = true;
+                rtt.terminals = Math.max(rtt.terminals, rttUp().length);
+                postRttStatus();
+                notify({ action: "rttReveal", focus: false });
+                if (!rtt.ticker) rtt.ticker = setInterval(rttTick, 1000);
+            }, 500);
+        }
+
+        function stopRtt() {
+            if (rtt.timer) clearTimeout(rtt.timer);
+            if (rtt.ticker) clearInterval(rtt.ticker);
+            rtt.timer = rtt.ticker = null;
+            if (rtt.state === "stopped") return;
+            rtt.state = "stopped";
+            postRttStatus();
+        }
+
+        function fileStamp(ms) {
+            var date = new Date(ms);
+            function two(value) {
+                return (value < 10 ? "0" : "") + value;
+            }
+            return (
+                date.getFullYear() +
+                two(date.getMonth() + 1) +
+                two(date.getDate()) +
+                "-" +
+                two(date.getHours()) +
+                two(date.getMinutes()) +
+                two(date.getSeconds())
+            );
+        }
+
+        function parseTypedChannels(text) {
+            var parts = String(text || "")
+                .split(",")
+                .map(function (part) {
+                    return part.trim();
+                })
+                .filter(Boolean);
+            if (!parts.length) return null;
+            var out = [];
+            for (var i = 0; i < parts.length; i++) {
+                if (!/^\d+$/.test(parts[i]) || Number(parts[i]) > 255) return null;
+                out.push(Number(parts[i]));
+            }
+            return out;
+        }
+
+        // src/services/rttTerminalService.js selectChannels: a multi-select of the firmware's channels plus the
+        // configured ones, an "other" entry for typed numbers, and a restart when RTT is not stopped.
+        function selectRttChannels(cmd) {
+            var listed = new Map();
+            if (rtt.listed)
+                RTT_FIRMWARE.forEach(function (channel) {
+                    listed.set(channel.index, channel);
+                });
+            var indices = Array.from(new Set(Array.from(listed.keys()).concat(rtt.selected))).sort(function (a, b) {
+                return a - b;
+            });
+            var items = indices.map(function (index) {
+                var channel = listed.get(index);
+                return {
+                    label: tr("rtt.channelPick", { n: index }),
+                    description: channel
+                        ? channel.name || tr("rtt.channelDefault")
+                        : listed.size
+                          ? tr("rtt.channelNotListed")
+                          : "",
+                    detail: channel && channel.size ? tr("rtt.channelSize", { size: channel.size }) : "",
+                    picked: rtt.selected.indexOf(index) >= 0,
+                    index: index
+                };
+            });
+            items.push({ label: tr("rtt.channelOther"), other: true });
+            function finish(next) {
+                send({ type: "commandSuccess", cmd: cmd });
+                if (!next) return;
+                send({ type: "noticeClear", area: "rtt", id: "rtt-channels" });
+                if (!next.length || next.length > RTT_MAX_CHANNELS) {
+                    rttNotice("rtt-channels", {
+                        level: "warning",
+                        key: next.length ? "rtt.channelsTooMany" : "rtt.channelsNone",
+                        params: { max: RTT_MAX_CHANNELS }
+                    });
+                    return;
+                }
+                var order = next.slice().sort(function (a, b) {
+                    return a - b;
+                });
+                if (order.join(",") === rtt.selected.join(",")) return;
+                rtt.selected = order;
+                postRttStatus();
+                if (rtt.state !== "stopped") {
+                    stopRtt();
+                    startRtt();
+                }
+            }
+            quickPick(
+                items,
+                {
+                    canPickMany: true,
+                    title: tr("rtt.channelsTitle"),
+                    placeHolder: tr(listed.size ? "rtt.channelsPlaceholder" : "rtt.channelsPlaceholderUnknown")
+                },
+                function (picked) {
+                    if (!picked) return finish(null);
+                    var next = new Set();
+                    var other = false;
+                    picked.forEach(function (item) {
+                        if (item.other) other = true;
+                        else next.add(item.index);
+                    });
+                    if (!other) return finish(Array.from(next));
+                    inputBox(
+                        {
+                            title: tr("rtt.channelsTitle"),
+                            prompt: tr("rtt.channelOtherPrompt"),
+                            validate: function (value) {
+                                return parseTypedChannels(value) ? "" : tr("rtt.channelOtherInvalid");
+                            }
+                        },
+                        function (typed) {
+                            if (typed === undefined) return finish(null);
+                            parseTypedChannels(typed).forEach(function (index) {
+                                next.add(index);
+                            });
+                            finish(Array.from(next));
+                        }
+                    );
+                }
+            );
+        }
+
+        // While saving, the button stops; otherwise the save dialog's suggested file (rtt-<time>.log) is taken.
+        function toggleRttLog() {
+            rtt.logFile = rtt.logFile ? "" : RTT_LOG_DIR + "/rtt-" + fileStamp(Date.now()) + ".log";
+            postRttStatus();
+        }
+
+        function showRttTerminals() {
+            if (!rtt.terminals) {
+                rttNotice(
+                    "rtt",
+                    rtt.state === "starting"
+                        ? { level: "info", key: "rtt.terminalsPending" }
+                        : { level: "warning", key: "rtt.err.notRunning" }
+                );
+                return;
+            }
+            notify({ action: "rttReveal", focus: true });
+        }
+
+        /* ------------------------------------------------- sidebar data breakpoints */
+
+        // Cortex-M4 has four DWT comparators; GDB reports the fifth watchpoint as not set in hardware.
+        var DWT_COMPARATORS = 4;
+        var WATCH_WIDTH = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
+        var dataHitTimer = null;
+
+        function dataStatus() {
+            var inSession = debugState !== "none" && dataBreakpoints.session > 0;
+            return {
+                sessionId: inSession ? "mock-debug-" + dataBreakpoints.session : null,
+                paused: debugState === "paused",
+                epoch: stopEpoch,
+                available: inSession && !debugStarting
+            };
+        }
+
+        function dataGeneration() {
+            return JSON.stringify([stopEpoch, data.VERSION]);
+        }
+
+        function dataSnapshot() {
+            var enabled = 0;
+            return {
+                generation: dataGeneration(),
+                entries: dataBreakpoints.entries.map(function (entry) {
+                    var fits = entry.enabled && ++enabled <= DWT_COMPARATORS;
+                    return Object.assign({}, entry, {
+                        verified: fits,
+                        message: entry.enabled && !fits ? tr("debug.dataBreakpointHardware") : ""
+                    });
+                })
+            };
+        }
+
+        function postDataBreakpoints(body) {
+            send(Object.assign({ type: "sidebarDataBreakpoints" }, body || {}, dataStatus()));
+            // VS Code's Breakpoints view lists them too (the debug sidebar in the shell).
+            notify({ action: "dataBreakpoints", entries: dataSnapshot().entries });
+        }
+
+        function dataError(requestId, key) {
+            send({ type: "sidebarDataBreakpointError", requestId: requestId, message: tr(key) });
+        }
+
+        // Status changes invalidate open menus; a finished session drops its rows, as the adapter's clear() does.
+        function dataBreakpointsChanged(ended) {
+            if (dataHitTimer) clearTimeout(dataHitTimer);
+            dataHitTimer = null;
+            if (ended) {
+                dataBreakpoints.entries = [];
+                dataBreakpoints.issued = {};
+            }
+            postDataBreakpoints({ invalidated: true });
+            if (debugState === "running") scheduleDataHit();
+        }
+
+        // The storage behind a display path: a scalar global, or a member/element reached through its layout.
+        function resolveStorage(name) {
+            var match = /^([A-Za-z_]\w*)(.*)$/.exec(String(name || ""));
+            var symbol =
+                match &&
+                data.SYMBOLS.find(function (item) {
+                    return item.name === match[1];
+                });
+            if (!symbol || symbol.runtimeLayout) return null;
+            var address = symbol.address;
+            var width = symbol.isComposite ? 0 : symbol.size;
+            var layout = symbol.compositeLayout || null;
+            var rest = match[2];
+            var token;
+            var pattern = /^(?:\.([A-Za-z_]\w*)|\[(\d+)\])/;
+            while (rest && (token = pattern.exec(rest))) {
+                rest = rest.slice(token[0].length);
+                if (!layout) return null;
+                if (token[1] !== undefined) {
+                    var member = (layout.members || []).find(function (item) {
+                        return item.name === token[1];
+                    });
+                    if (!member) return null;
+                    address += member.offset;
+                    layout = member.compositeLayout || null;
+                    width = layout ? 0 : WATCH_WIDTH[member.watchType] || 0;
+                } else {
+                    var element = layout.elementType;
+                    var index = Number(token[2]);
+                    if (!element || layout.kind !== "array" || index >= layout.totalElements) return null;
+                    address += index * element.byteSize;
+                    layout = element.compositeLayout || null;
+                    width = layout ? 0 : element.byteSize;
+                }
+            }
+            if (rest || !width) return null;
+            return { address: address, width: width, constant: !!symbol.isConst };
+        }
+
+        function dataInfo(name) {
+            var storage = resolveStorage(name);
+            if (!storage)
+                return {
+                    dataId: null,
+                    canPersist: false,
+                    description: tr("debug.dataBreakpointUnavailable", { error: tr("sb.dataUnsupported") })
+                };
+            if ([1, 2, 4].indexOf(storage.width) < 0 || storage.address % storage.width)
+                return {
+                    dataId: null,
+                    canPersist: false,
+                    description: tr("debug.dataBreakpointUnavailable", { error: tr("debug.dataBreakpointSize") })
+                };
+            var address = "0x" + storage.address.toString(16).padStart(8, "0");
+            var identity = address + ":" + storage.width;
+            var issued = dataBreakpoints.issued[identity];
+            if (!issued) {
+                issued = { dataId: "sidebar:" + dataBreakpoints.nextDataId++, address: address, bytes: storage.width };
+                dataBreakpoints.issued[identity] = issued;
+            }
+            return {
+                dataId: issued.dataId,
+                description: tr("debug.dataBreakpointStorage", { name: name, address: address, bytes: storage.width }),
+                // Mirrors the adapter: one address takes a single armed access type.
+                accessTypes: ["write", "read", "readWrite"].filter(function (type) {
+                    return !dataBreakpoints.entries.some(function (entry) {
+                        return entry.enabled && entry.dataId === issued.dataId && entry.accessType !== type;
+                    });
+                }),
+                canPersist: false,
+                address: address,
+                bytes: storage.width,
+                constant: storage.constant
+            };
+        }
+
+        // The first enabled, armed watchpoint whose storage the running firmware touches stops the target.
+        function scheduleDataHit() {
+            var armed = dataSnapshot().entries.filter(function (entry) {
+                return entry.verified && !(entry.accessType === "write" && entry.constant);
+            });
+            if (!armed.length) return;
+            var hit = armed[0];
+            dataHitTimer = setTimeout(function () {
+                dataHitTimer = null;
+                if (stopped || debugState !== "running") return;
+                notify({
+                    action: "dataBreakpointHit",
+                    name: hit.name,
+                    accessType: hit.accessType,
+                    condition: hit.condition
+                });
+            }, 700);
+        }
+
+        // Removing a watch row removes the watchpoints set on it and its members, without pausing the target.
+        function pruneDataBreakpoints(previous, names) {
+            var removed = previous.filter(function (name) {
+                return names.indexOf(name) < 0;
+            });
+            var before = dataBreakpoints.entries.length;
+            dataBreakpoints.entries = dataBreakpoints.entries.filter(function (entry) {
+                return !removed.some(function (name) {
+                    return (
+                        entry.name === name ||
+                        entry.name.indexOf(name + ".") === 0 ||
+                        entry.name.indexOf(name + "[") === 0
+                    );
+                });
+            });
+            if (dataBreakpoints.entries.length !== before) postDataBreakpoints(dataSnapshot());
+        }
+
+        function handleDataBreakpoint(message) {
+            var requestId = message.requestId;
+            var status = dataStatus();
+            if (!status.available) return dataError(requestId, "sb.dataNoSession");
+            if (message.sessionId !== status.sessionId || message.epoch !== status.epoch)
+                return dataError(requestId, "sb.dataStale");
+            var action = message.action;
+            if (action === "pause") {
+                // The adapter pauses the target; the shell's debug toolbar shows the stop like any other.
+                if (debugState === "running") notify({ action: "pauseDebug" });
+                return postDataBreakpoints({ requestId: requestId, action: "pause" });
+            }
+            if (action === "list") return postDataBreakpoints(Object.assign(dataSnapshot(), { requestId: requestId }));
+            if (debugState !== "paused") return dataError(requestId, "sb.dataStale");
+            if (action === "info") {
+                var info = dataInfo(message.name);
+                return postDataBreakpoints(
+                    Object.assign(dataSnapshot(), { requestId: requestId, action: action, info: info })
+                );
+            }
+            if (message.generation !== dataGeneration()) return dataError(requestId, "sb.dataStale");
+            function reply() {
+                postDataBreakpoints(Object.assign(dataSnapshot(), { requestId: requestId, action: action }));
+            }
+            if (action === "add") {
+                var resolved = dataInfo(message.name);
+                if (!resolved.dataId || resolved.dataId !== message.dataId) return dataError(requestId, "sb.dataStale");
+                if (resolved.accessTypes.indexOf(message.accessType) < 0)
+                    return dataError(requestId, "sb.dataUnsupported");
+                var duplicate = dataBreakpoints.entries.some(function (entry) {
+                    return entry.dataId === resolved.dataId && entry.accessType === message.accessType;
+                });
+                if (!duplicate)
+                    dataBreakpoints.entries.push({
+                        id: String(dataBreakpoints.nextId++),
+                        name: message.name,
+                        dataId: resolved.dataId,
+                        accessType: message.accessType,
+                        condition: "",
+                        enabled: true,
+                        constant: resolved.constant,
+                        description: resolved.description
+                    });
+                return reply();
+            }
+            var entry = dataBreakpoints.entries.find(function (item) {
+                return item.id === message.id;
+            });
+            if (!entry) return dataError(requestId, "sb.dataStale");
+            if (action === "remove") {
+                dataBreakpoints.entries.splice(dataBreakpoints.entries.indexOf(entry), 1);
+                return reply();
+            }
+            if (action === "enable" && typeof message.enabled === "boolean") {
+                entry.enabled = message.enabled;
+                return reply();
+            }
+            if (action === "condition") {
+                // VS Code's input box comes first; the request is re-checked once it closes.
+                return inputBox(
+                    {
+                        prompt: tr("sb.dataConditionPrompt"),
+                        value: entry.condition || "",
+                        validate: function (value) {
+                            return value.length > 1024 || /[\x00-\x1f\x7f]/.test(value) ? tr("sb.dataUnsupported") : "";
+                        }
+                    },
+                    function (condition) {
+                        if (condition === undefined)
+                            return postDataBreakpoints({ requestId: requestId, cancelled: true });
+                        if (
+                            debugState !== "paused" ||
+                            message.epoch !== stopEpoch ||
+                            dataBreakpoints.entries.indexOf(entry) < 0
+                        )
+                            return dataError(requestId, "sb.dataStale");
+                        entry.condition = condition.trim();
+                        reply();
+                    }
+                );
+            }
+            dataError(requestId, "sb.dataUnsupported");
+        }
+
+        function handleRtt(cmd) {
+            if (cmd === "mcu-vscode.startRtt") startRtt();
+            else if (cmd === "mcu-vscode.stopRtt") stopRtt();
+            else if (cmd === "mcu-vscode.showRttTerminals") showRttTerminals();
+            else if (cmd === "mcu-vscode.rttSaveLog") toggleRttLog();
+            else if (cmd === "mcu-vscode.rttToggleTimestamps") {
+                rtt.timestamps = !rtt.timestamps;
+                postRttStatus();
+            }
         }
 
         function handleExecute(cmd) {
@@ -801,6 +1343,9 @@
                 case "mcu-vscode.rttToggleTimestamps":
                     handleRtt(cmd);
                     send({ type: "commandSuccess", cmd: cmd });
+                    break;
+                case "mcu-vscode.rttSelectChannels":
+                    selectRttChannels(cmd);
                     break;
                 case "mcu-vscode.manageAgentSkills":
                     simulateSkillToggle(cmd);
@@ -888,6 +1433,20 @@
             },
             startSampling: startSampling,
             stopSampling: stopSampling,
+            // The Breakpoints view's checkbox toggles a sidebar watchpoint like the menu does.
+            setDataBreakpointEnabled: function (id, enabled) {
+                var entry = dataBreakpoints.entries.find(function (item) {
+                    return item.id === id;
+                });
+                if (!entry || debugState === "none") return;
+                entry.enabled = enabled === true;
+                postDataBreakpoints(dataSnapshot());
+                if (debugState === "running") {
+                    if (dataHitTimer) clearTimeout(dataHitTimer);
+                    dataHitTimer = null;
+                    scheduleDataHit();
+                }
+            },
             getWatchList: function () {
                 return watchItems.slice();
             },
@@ -899,6 +1458,8 @@
             },
             destroy: function () {
                 cancelDebugStart();
+                if (rtt.timer) clearTimeout(rtt.timer);
+                if (rtt.ticker) clearInterval(rtt.ticker);
                 stopped = true;
                 clearSamplingTimers();
                 root.removeEventListener("message", onMessage);
