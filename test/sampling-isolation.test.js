@@ -7,6 +7,92 @@ const { EventEmitter } = require("events");
 const { run, estimateRuntimeBytes } = require("../src/samplingWorker");
 const { MAX_COMPOSITE_BYTES } = require("../src/dwarf/layoutLimits");
 const { wait, waitFor } = require("./helpers/wait");
+const { scenario } = require("./helpers/scenario");
+const { loadModule } = require("./helpers/load-module");
+
+async function testTargetEpochDelivery() {
+    const outbound = [];
+    let runtimeHandlers;
+    let finishSnapshot;
+    const runtime = {
+        targetEpoch: 7,
+        samplingEnabled: false,
+        stopped: false,
+        stats: () => ({}),
+        invalidateTarget() {
+            this.targetEpoch++;
+        },
+        rttControl() {
+            const targetEpoch = this.targetEpoch;
+            return new Promise((resolve) => {
+                finishSnapshot = () => resolve({ snapshot: { targetEpoch, channels: [] } });
+            });
+        }
+    };
+    class FakeWorker extends EventEmitter {
+        constructor() {
+            super();
+            this.port = new EventEmitter();
+            this.port.postMessage = (message) => outbound.push(message);
+            run(this.port, {}, (_options, handlers) => {
+                runtimeHandlers = handlers;
+                return runtime;
+            });
+        }
+        postMessage(message) {
+            this.port.emit("message", message);
+        }
+    }
+    const { SamplingSession: ProxySession } = loadModule("src/samplingSession.js", {
+        worker_threads: { Worker: FakeWorker }
+    });
+    const session = new ProxySession({});
+    const deliver = (message) => session.worker.emit("message", message);
+    const initial = session.request("stats");
+    await Promise.resolve();
+    const initialMessage = outbound.shift();
+    assert.strictEqual(initialMessage.state.targetEpoch, 7);
+    assert.strictEqual(initialMessage.state.targetInvalidations, 0);
+    deliver(initialMessage);
+    await initial;
+    assert.strictEqual(session.targetEpoch, 7);
+    const pending = session.rttControl({ operation: "snapshot" });
+    session.invalidateTarget();
+    assert.strictEqual(session.targetEpoch, 8, "host invalidation takes effect before worker state delivery");
+    session.invalidateTarget();
+    assert.strictEqual(session.targetEpoch, 9, "concurrent invalidations each advance the epoch once");
+    deliver(initialMessage);
+    assert.strictEqual(session.targetEpoch, 9, "old worker state cannot roll back pending host invalidations");
+    await Promise.resolve();
+    assert.deepStrictEqual(
+        outbound.map((message) => message.state.targetInvalidations),
+        [2, 2]
+    );
+    finishSnapshot();
+    await Promise.resolve();
+    const snapshotMessage = outbound.pop();
+    assert.strictEqual(snapshotMessage.result.snapshot.targetEpoch, 7);
+    assert.strictEqual(snapshotMessage.state.targetEpoch, 9);
+    deliver(snapshotMessage);
+    assert.strictEqual((await pending).snapshot.targetEpoch, 7);
+    assert.strictEqual(session.targetEpoch, 9, "an old snapshot remains distinguishable from the current target");
+    for (const response of outbound.splice(0).reverse()) deliver(response);
+    assert.strictEqual(session.targetEpoch, 9, "acknowledgments do not increment the epoch a second time");
+    runtime.invalidateTarget();
+    runtimeHandlers.onStatus({});
+    deliver(outbound.shift());
+    assert.strictEqual(session.targetEpoch, 10, "worker-side target invalidations propagate through event state");
+    deliver(initialMessage);
+    assert.strictEqual(session.targetEpoch, 10, "late older response state cannot undo an observed worker epoch");
+    const direct = session.request("invalidateTarget");
+    assert.strictEqual(session.targetEpoch, 11, "direct invalidation requests use the same immediate host guard");
+    await Promise.resolve();
+    deliver(outbound.shift());
+    await direct;
+    assert.strictEqual(session.targetEpoch, 11);
+    assert.strictEqual(session.pending.size, 0);
+}
+
 function testRuntimeAccounting() {
     const tree = {
         kind: "class",
@@ -88,6 +174,10 @@ function testRuntimeAccounting() {
     port.emit("close");
 }
 (async () => {
+    await scenario(
+        "target epochs survive delayed snapshots, stale state and concurrent invalidations",
+        testTargetEpochDelivery
+    );
     testRuntimeAccounting();
     const ticks = [],
         errors = [];
@@ -104,7 +194,14 @@ function testRuntimeAccounting() {
         assert.strictEqual((await session.request("stats")).result.pauseReason, "archive_backpressure");
         session.setPauseReason(null);
         // The worker accepts target invalidation without pausing the sampling clock.
+        const targetEpoch = session.targetEpoch;
+        session.invalidateTarget();
+        assert.strictEqual(session.targetEpoch, targetEpoch + 1, "the proxy invalidates synchronously");
+        const invalidated = await session.request("stats");
+        assert.strictEqual(invalidated.state.targetEpoch, targetEpoch + 1);
+        assert.strictEqual(session.targetEpoch, targetEpoch + 1, "worker acknowledgment preserves the epoch");
         assert.strictEqual((await session.request("invalidateTarget", [])).result, undefined);
+        assert.strictEqual(session.targetEpoch, targetEpoch + 2);
         await waitFor(() => ticks.length >= 2, "the Worker starts sampling");
         const begin = Date.now();
         // Model a synchronous ELF parse/build extension blocking the extension host.

@@ -831,7 +831,7 @@ const inspection = new AgentDebugInspection(debugBridge);
             const { prompts } = await client.listPrompts();
             assert.deepStrictEqual(
                 prompts.map((prompt) => prompt.name),
-                ["flash", "fault_triage", "variable_debug", "rtos_inspect", "cubemx_generate"]
+                ["flash", "fault_triage", "variable_debug", "rtt_logging", "rtos_inspect", "cubemx_generate"]
             );
             const flashPrompt = await client.getPrompt({ name: "flash", arguments: { goal: "Flash build/app.elf" } });
             const text = flashPrompt.messages[0].content.text;

@@ -9,6 +9,8 @@ const { execFile } = require("child_process");
 const { AgentBridge } = require("../src/agentBridge");
 const peripheralSkill = require("../skills/mcu-peripheral-debug/scripts/peripheral");
 const debugSkill = require("../skills/mcu-debug-control/scripts/debug");
+const rttSkill = require("../skills/mcu-rtt/scripts/rtt");
+const { scenario } = require("./helpers/scenario");
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(__dirname, "..");
@@ -33,6 +35,67 @@ const root = path.resolve(__dirname, "..");
         await bridge.start();
         const peripheral = path.join(root, "skills", "mcu-peripheral-debug", "scripts", "peripheral.js");
         const debug = path.join(root, "skills", "mcu-debug-control", "scripts", "debug.js");
+
+        await scenario("RTT CLI validates options and sends only the four supported Bridge methods", async () => {
+            const rtt = path.join(root, "skills", "mcu-rtt", "scripts", "rtt.js");
+            for (const argv of [
+                [],
+                ["--read", "--read"],
+                ["--start", "--stop"],
+                ["--read", "--channel"],
+                ["--read", "--channel", "--status"],
+                ["--read", "--channel", "256"],
+                ["--read", "--generation", "9007199254740992"],
+                ["--read", "--cursor", "-1"],
+                ["--read", "--max-bytes", "0"],
+                ["--read", "--max-bytes", "65537"],
+                ["--read", "--channel", "1.5"],
+                ["--read", "--encoding", "hex"],
+                ["--status", "--channel", "0"],
+                ["--read", "--write", "input"]
+            ])
+                assert.throws(() => rttSkill.args(argv));
+            for (const action of ["status", "start", "stop", "read"]) {
+                const result = JSON.parse(
+                    (await execFileAsync(process.execPath, [rtt, "--workspace", workspace, `--${action}`])).stdout
+                );
+                assert.strictEqual(result.method, `rtt.${action}`);
+                assert.deepStrictEqual(result.params, {});
+            }
+            const result = JSON.parse(
+                (
+                    await execFileAsync(process.execPath, [
+                        rtt,
+                        "--workspace",
+                        workspace,
+                        "--read",
+                        "--channel",
+                        "255",
+                        "--generation",
+                        "7",
+                        "--cursor",
+                        "42",
+                        "--max-bytes",
+                        "65536",
+                        "--encoding",
+                        "base64"
+                    ])
+                ).stdout
+            );
+            assert.deepStrictEqual(result.params, {
+                channel: 255,
+                generation: 7,
+                cursor: 42,
+                maxBytes: 65536,
+                encoding: "base64"
+            });
+            await assert.rejects(execFileAsync(process.execPath, [rtt, "--write", "input"]), (error) => {
+                const diagnostic = JSON.parse(error.stderr);
+                assert.strictEqual(diagnostic.type, "diagnostic");
+                assert.match(diagnostic.error.message, /Unknown argument: --write/);
+                return true;
+            });
+        });
 
         assert.throws(
             () => peripheralSkill.args(["--list", "--confirm", "unused"]),

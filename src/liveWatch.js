@@ -16,6 +16,7 @@ const { MultiRatePlan } = require("./services/multiRatePlan");
 const { targetCheckMonitor } = require("./chip/targetIdentity");
 const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog } = require("./openocdProcess");
 const { MemoryWriter, validateManagedWritePlan, peripheralTransaction } = require("./memoryWrite");
+const { rttControl } = require("./rttControl");
 const { isNonHaltingWordWrite } = require("./writeAccess");
 const {
     normalizeRamSectionRanges,
@@ -1369,6 +1370,10 @@ class ManagedOpenOcdSession {
 
     peripheralTransaction(request, timeoutMs = 5000) {
         return peripheralTransaction(this, request, timeoutMs);
+    }
+
+    rttControl(request, timeoutMs = 5000) {
+        return rttControl(this, request, timeoutMs);
     }
 
     async _waitUntilIdle(timeoutMs) {

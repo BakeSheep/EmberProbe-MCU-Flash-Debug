@@ -12,6 +12,109 @@ function descriptor(workspace) {
 }
 
 const DIAGNOSTICS = {
+    RTT_NOT_RUNNING: [
+        "rtt_state",
+        "RTT 尚未运行或正在等待主机会话。",
+        ["先用 {{method:rtt.status}} 查询状态；按用户要求启动后等待 running 再读取。"],
+        false
+    ],
+    RTT_UNKNOWN_CHANNEL: [
+        "rtt_channel",
+        "所选 RTT 上行通道不可用。",
+        ["用 {{method:rtt.status}} 查看 channels、missingChannels 和 buffers，选择可用通道。"],
+        false
+    ],
+    RTT_MULTICORE_UNSUPPORTED: [
+        "rtt_support",
+        "RTT 不支持多核调试会话。",
+        ["使用单核会话；不要为读取日志自动更改调试配置。"],
+        false
+    ],
+    RTT_CONTROL_BLOCK_UNKNOWN: [
+        "rtt_firmware",
+        "无法定位 RTT 控制块。",
+        ["确认固件集成并初始化 SEGGER RTT，且 ELF 与固件一致。仅按用户要求通过 {{config}} 设置 RTT 地址或搜索范围。"],
+        false
+    ],
+    RTT_CONTROL_BLOCK_AMBIGUOUS: [
+        "rtt_configuration",
+        "找到多个可能的 RTT 控制块。",
+        ["核对 ELF 与固件，仅按用户要求通过 {{config}} 指定控制块地址；不要猜选地址。"],
+        false
+    ],
+    RTT_SCAN_RANGE_TOO_LARGE: [
+        "rtt_configuration",
+        "RTT 搜索范围超出扫描预算。",
+        ["核对 ELF 中的控制块符号，仅按用户要求通过 {{config}} 缩小 RTT 搜索范围或指定地址。"],
+        false
+    ],
+    RTT_SCAN_TIMEOUT: [
+        "rtt_connection",
+        "RTT 控制块搜索时探针无响应，会话已重置。",
+        ["不要自动重复启动；让用户指定控制块地址，或调整 emberprobe.samplingAdapterSpeedKhz。"],
+        false
+    ],
+    RTT_START_TIMEOUT: [
+        "rtt_start",
+        "RTT 启动重试已耗尽，固件可能尚未初始化控制块或通道。",
+        ["先用 {{method:rtt.status}} 核对状态与错误，再检查固件初始化和 ELF；不要自动重复启动。"],
+        false
+    ],
+    RTT_PORT_UNAVAILABLE: [
+        "rtt_connection",
+        "RTT 数据连接无法建立。",
+        ["用 {{method:rtt.status}} 核对状态，检查扩展的连接诊断后再决定是否重试。"],
+        false
+    ],
+    RTT_CHANNEL_DISCONNECTED: [
+        "rtt_connection",
+        "RTT 通道连接已断开。",
+        ["用 {{method:rtt.status}} 核对连接与会话状态。"],
+        false
+    ],
+    RTT_CANCELLED: [
+        "rtt_state",
+        "RTT 操作因停止或会话变化而取消。",
+        ["用 {{method:rtt.status}} 核对当前状态，不要自动重新启动。"],
+        false
+    ],
+    RTT_PARSE_ERROR: [
+        "rtt_firmware",
+        "RTT 控制块或通道信息无法解析。",
+        ["核对固件的 SEGGER RTT 集成、ELF 和扩展的诊断信息。"],
+        false
+    ],
+    RTT_INVALID_ADDRESS: [
+        "rtt_configuration",
+        "RTT 控制块地址无效。",
+        ["仅按用户要求通过 {{config}} 修正 RTT 地址。"],
+        false
+    ],
+    RTT_INVALID_RANGE: [
+        "rtt_configuration",
+        "RTT 搜索范围无效。",
+        ["仅按用户要求通过 {{config}} 修正 RTT 搜索范围。"],
+        false
+    ],
+    RTT_INVALID_INTERVAL: [
+        "rtt_configuration",
+        "RTT 轮询间隔无效。",
+        ["仅按用户要求通过 {{config}} 修正 RTT 轮询间隔。"],
+        false
+    ],
+    RTT_INVALID_CHANNELS: [
+        "rtt_configuration",
+        "RTT 通道选择无效。",
+        ["仅按用户要求通过 {{config}} 修正 RTT 通道选择。"],
+        false
+    ],
+    RTT_MODE_REQUIRES_UI_START: [
+        "rtt_configuration",
+        "RTT 配置了通道模式覆盖，只能由用户在 VS Code 中启动。",
+        ["请用户从 EmberProbe 侧栏或命令面板启动 RTT，之后可以继续读取。"],
+        false
+    ],
+    RTT_INVALID_CONTROL_BLOCK: ["rtt_firmware", "RTT 控制块无效。", ["检查固件初始化和控制块地址是否匹配。"], false],
     BRIDGE_UNAVAILABLE: [
         "extension",
         "EmberProbe 扩展未激活、当前工作区未启用 Agent 访问，或找不到包含当前目录的 Agent Bridge。",
@@ -518,6 +621,8 @@ const OBSERVATION_METHODS = new Set([
     "variables.sample",
     "peripherals.read",
     "sampling.status",
+    "rtt.status",
+    "rtt.read",
     "flash.permission",
     "variables.write.permission",
     "cubemx.permission"
@@ -534,6 +639,7 @@ const DRIVER_SETUP_METHODS = new Set([
     "variables.write",
     "variables.exportCsv",
     "sampling.start",
+    "rtt.start",
     "debug.start",
     "flash.execute",
     "flash.program",
@@ -542,6 +648,8 @@ const DRIVER_SETUP_METHODS = new Set([
 
 // Queries that confirm the real outcome after a state-changing call times out; unlisted methods get a generic hint.
 const STATUS_QUERY_FOR = {
+    "rtt.start": "rtt.status",
+    "rtt.stop": "rtt.status",
     "chip.read": "probe.list",
     "fault.read": "probe.list",
     "peripherals.read": "probe.list",

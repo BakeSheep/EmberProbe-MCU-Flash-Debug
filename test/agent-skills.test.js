@@ -9,10 +9,37 @@ const { AgentBridge, stringifyJson } = require("../src/agentBridge");
 const { call, descriptor: descriptorOf, diagnosticForError } = require("../skills/_emberprobe/agent-client");
 const configSkill = require("../skills/mcu-config/scripts/config");
 const liveSkill = require("../skills/mcu-variables/scripts/read");
+const { scenario } = require("./helpers/scenario");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const execFileAsync = promisify(execFile);
 
 (async () => {
+    await scenario("RTT diagnostics explain state, firmware, configuration and start failures", () => {
+        for (const code of [
+            "RTT_NOT_RUNNING",
+            "RTT_UNKNOWN_CHANNEL",
+            "RTT_MULTICORE_UNSUPPORTED",
+            "RTT_CONTROL_BLOCK_UNKNOWN",
+            "RTT_CONTROL_BLOCK_AMBIGUOUS",
+            "RTT_SCAN_RANGE_TOO_LARGE",
+            "RTT_SCAN_TIMEOUT",
+            "RTT_START_TIMEOUT",
+            "RTT_PORT_UNAVAILABLE",
+            "RTT_CHANNEL_DISCONNECTED",
+            "RTT_CANCELLED",
+            "RTT_PARSE_ERROR",
+            "RTT_INVALID_ADDRESS",
+            "RTT_INVALID_RANGE",
+            "RTT_INVALID_INTERVAL",
+            "RTT_INVALID_CHANNELS",
+            "RTT_INVALID_CONTROL_BLOCK"
+        ]) {
+            const diagnostic = diagnosticForError(Object.assign(new Error(code), { code }), { operation: "rtt.start" });
+            assert.notStrictEqual(diagnostic.error.category, "unknown", code);
+            assert.ok(diagnostic.error.suggestedActions.length, code);
+            assert.strictEqual(diagnostic.error.retryable, false, code);
+        }
+    });
     const extensionManifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf8"));
     assert.ok(
         extensionManifest.activationEvents.includes("onStartupFinished"),

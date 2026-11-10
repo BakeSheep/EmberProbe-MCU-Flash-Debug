@@ -176,6 +176,22 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
     assert.ok(!busy.events.includes("resume"), "ELF updates cannot start sampling during a flash");
     assert.strictEqual(await busy.provider.commandHandlers["mcu-vscode.download"](), false);
     lease.release();
+
+    // A probe held by an operation the download cannot displace is refused before RTT or live watch is interrupted.
+    const held = fixture({ sampling: false });
+    Object.defineProperty(held.provider, "_rtt", {
+        value: { yieldForRestart: () => held.events.push("rtt-yield"), onSessionsChanged() {} }
+    });
+    const scan = held.provider._probeCoordinator.acquire("targetScan");
+    assert.strictEqual(await held.provider.commandHandlers["mcu-vscode.download"](), false);
+    assert.deepStrictEqual(held.events, [], "nothing is interrupted for a download that cannot start");
+    assert.ok(
+        held.messages.some(
+            (message) =>
+                message.type === "notice" && message.id === "mcu-vscode.download" && message.notice.level === "warning"
+        )
+    );
+    scan.release();
     console.log("Flash refresh, sampling restoration and failure isolation tests passed");
 })().catch((error) => {
     console.error(error);

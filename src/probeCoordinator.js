@@ -6,6 +6,7 @@ const PROBE_OPERATIONS = Object.freeze([
     "liveStart",
     "chipInfo",
     "agentRead",
+    "rtt",
     "debugStart",
     "debugServer",
     "externalDebug",
@@ -34,8 +35,7 @@ class ProbeCoordinator {
         }
     }
 
-    _busy(requestedOperation) {
-        const activeOperation = this.firstActive();
+    _busy(requestedOperation, activeOperation = this.firstActive()) {
         return Object.assign(
             new Error(`The debug probe is busy with ${activeOperation}; cannot start ${requestedOperation}`),
             {
@@ -61,6 +61,14 @@ class ProbeCoordinator {
         this._state.set(name, lease);
         this.onChange(this.snapshot());
         return lease;
+    }
+
+    // Rejects as acquire(name) would once the `yielding` holders have released, without taking anything: a caller
+    // checks this before it asks a holder to give up the probe for an operation that cannot start anyway.
+    assertAvailable(name, yielding = []) {
+        this._validate(name);
+        const blocking = this.firstActive(PROBE_OPERATIONS.filter((operation) => !yielding.includes(operation)));
+        if (blocking) throw this._busy(name, blocking);
     }
 
     _transition(lease, nextOperation) {

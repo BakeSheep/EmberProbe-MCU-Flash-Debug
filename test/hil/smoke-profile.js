@@ -59,7 +59,7 @@ function text(value, profile, label, max = 256) {
 }
 
 // Optional deeper checks; each one is skipped when its configuration is absent.
-function resolveChecks(raw = {}, profile) {
+function resolveChecks(raw = {}, profile, platform) {
     const checks = {};
     if (raw.sampling) {
         const count = Number(raw.sampling.count ?? 20);
@@ -104,6 +104,16 @@ function resolveChecks(raw = {}, profile) {
         }));
         checks.peripherals = { read, write, reject };
     }
+    // Consumed by rtt-smoke.test.js; nosymElf has the control block symbol stripped, to exercise location by scan.
+    if (raw.rtt)
+        checks.rtt = {
+            controlBlockAddress: raw.rtt.controlBlockAddress ? String(raw.rtt.controlBlockAddress) : "",
+            nosymElf: raw.rtt.nosymElf ? platformPath(raw.rtt.nosymElf, platform, "checks.rtt.nosymElf", profile) : "",
+            sectionScan: raw.rtt.sectionScan !== false,
+            scanSpeedKhz: Number(raw.rtt.scanSpeedKhz ?? 0),
+            searchRange: raw.rtt.searchRange || null,
+            stress: raw.rtt.stress || null
+        };
     if (raw.negative)
         checks.negative = {
             readOnly: raw.negative.readOnly ? variableName(raw.negative.readOnly, profile) : null,
@@ -142,7 +152,7 @@ function resolveProfile(config, name, platform = process.platform) {
         if (!write.value) throw invalid(`${name}: variables.write.value is required`);
     }
     const svd = platformPath(merged.svd, platform, "svd", name);
-    const checks = resolveChecks(merged.checks, name);
+    const checks = resolveChecks(merged.checks, name, platform);
     if (checks.peripherals && !svd) throw invalid(`${name}: checks.peripherals needs an svd file`);
     const usb = merged.usb || {};
     if (usb.hardwareId !== undefined && !HARDWARE_ID.test(String(usb.hardwareId)))
@@ -212,7 +222,7 @@ function parseArgs(argv) {
             options.repeat = Number(value);
             if (!Number.isInteger(options.repeat) || options.repeat < 1 || options.repeat > 50)
                 throw invalid("--repeat must be an integer from 1 to 50");
-        } else if (["config", "platforms", "distro", "wsl-dir"].includes(key)) options[key] = value;
+        } else if (["config", "platforms", "distro", "wsl-dir", "suite"].includes(key)) options[key] = value;
         else throw invalid(`Unknown option: --${key}`);
     }
     return options;

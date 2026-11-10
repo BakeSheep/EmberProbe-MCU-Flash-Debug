@@ -2,10 +2,12 @@
 const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
 const { normalizeInventoryQuery } = require("../../skills/_emberprobe/probe-profile");
 const { AgentDebugInspection } = require("./agentDebugInspection");
+const { RttAgentService } = require("./rttAgentService");
 
 function createAgentRoutes(host, probes = listProbes) {
     const listProbes = probes;
     let inspection;
+    const rtt = new RttAgentService(host);
     // One instance keeps the handle table shared by inspect, evaluate and memory reads.
     const debugInspection = () => (inspection ||= new AgentDebugInspection(host._debugBridge));
     return {
@@ -66,6 +68,10 @@ function createAgentRoutes(host, probes = listProbes) {
         "sampling.status": (params) => host._agentOps.controlSampling("status", params),
         "sampling.start": (params) => host._agentOps.controlSampling("start", params),
         "sampling.stop": (params) => host._agentOps.controlSampling("stop", params),
+        "rtt.status": (params) => rtt.status(params),
+        "rtt.read": (params) => rtt.read(params),
+        "rtt.start": (params) => rtt.start(params),
+        "rtt.stop": (params) => rtt.stop(params),
         "variables.write": (params) => host._writes.writeAgentVariables(params),
         "variables.write.permission": (params) => host._writes.agentPermission(params),
         "chip.read": () => host.readChipInfoAction(true),

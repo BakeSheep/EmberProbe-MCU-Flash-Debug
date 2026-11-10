@@ -15,7 +15,12 @@ const COMMAND_AREAS = Object.freeze({
     "mcu-vscode.installCubeMxFirmware": "config",
     "mcu-vscode.downloadOfficialSvd": "config",
     "mcu-vscode.selectExistingSvd": "config",
-    "mcu-vscode.switchWorkspaceSvd": "config"
+    "mcu-vscode.switchWorkspaceSvd": "config",
+    "mcu-vscode.startRtt": "rtt",
+    "mcu-vscode.stopRtt": "rtt",
+    "mcu-vscode.showRttTerminals": "rtt",
+    "mcu-vscode.rttSaveLog": "rtt",
+    "mcu-vscode.rttToggleTimestamps": "rtt"
 });
 // Title of the error box when a command fails, so the box says which operation failed.
 const COMMAND_FAILURE_TITLES = Object.freeze({
@@ -23,7 +28,8 @@ const COMMAND_FAILURE_TITLES = Object.freeze({
     "mcu-vscode.debug": "notice.debugFailed",
     "mcu-vscode.attachDebug": "notice.attachFailed",
     "mcu-vscode.selectElf": "notice.selectElfFailed",
-    "mcu-vscode.autoDetect": "notice.autoDetectFailed"
+    "mcu-vscode.autoDetect": "notice.autoDetectFailed",
+    "mcu-vscode.startRtt": "notice.rttStartFailed"
 });
 
 function commandArea(cmd) {

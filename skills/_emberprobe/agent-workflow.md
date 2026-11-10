@@ -125,6 +125,7 @@ evidence that hardware is disconnected.
   `mcu-chip-info`; crash diagnosis via `mcu-fault-analyzer`; variables via `mcu-variables`;
   registers via `mcu-peripheral-debug`; session control and paused C/C++ object inspection via
   `mcu-debug-control`; RTOS task metadata via `mcu-rtos`; flashing via `mcu-flash`.
+- Read firmware RTT output and control its attachment via `mcu-rtt`; Agents cannot send target input.
 - Distinguish **no hardware dependency** from **no Bridge dependency**. Some reads need no probe
   (ELF analysis, `peripherals.list`, `config.get`) but every skill still needs the Bridge to be
   reachable; a Bridge failure is an extension/activation problem, not a wiring problem.

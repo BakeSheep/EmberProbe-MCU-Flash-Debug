@@ -110,6 +110,9 @@ class OpenOcdDebugController {
     get stopped() {
         return this.state === "stopped" || !!this.runtime?.stopped;
     }
+    get targetEpoch() {
+        return this.runtime?.targetEpoch;
+    }
     get pollingFailed() {
         return !!this.runtime?.pollingFailed;
     }
@@ -174,6 +177,16 @@ class OpenOcdDebugController {
             );
         if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));
         return this.runtime.peripheralTransaction(...args);
+    }
+    rttControl(...args) {
+        if (!this.capabilities.runtimeRead)
+            return Promise.reject(
+                Object.assign(new Error("RTT control is unavailable for multicore debug sessions"), {
+                    code: "RTT_MULTICORE_UNSUPPORTED"
+                })
+            );
+        if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));
+        return this.runtime.rttControl(...args);
     }
     writeAndVerify(...args) {
         if (!this.capabilities.runtimeRead) return Promise.reject(runtimeWriteDisabledError());

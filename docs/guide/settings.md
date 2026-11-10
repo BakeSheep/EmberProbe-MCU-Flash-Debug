@@ -1,6 +1,6 @@
 # 设置与界面
 
-EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 21 项，按 4 个大类排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
+EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 30 项，按 5 个大类排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
 
 | 分组 | 设置 | 用途 |
 | --- | --- | --- |
@@ -22,6 +22,21 @@ EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberpr
 | | `chartHistoryMaxMiB` | 波形历史的内存预算 |
 | | `samplingArchiveMaxMiB` | 采样归档的磁盘上限 |
 | | `chartBackgroundIcon.enabled` | 显示波形背景图标 |
+| RTT 日志 | `rtt.channels` | 读取的 up 通道及其模式、格式、编码、down 通道 |
+| | `rtt.autoStart` | 调试或采样开始时自动附加 RTT |
+| | `rtt.controlBlockAddress` | 控制块地址；未设置时自动定位 |
+| | `rtt.searchRange` | 控制块搜索范围 |
+| | `rtt.pollingIntervalMs` | 轮询间隔，默认 10 ms；0 使用 100 ms |
+| | `rtt.encoding` | 通道的默认文本编码 |
+| | `rtt.virtualTerminals` | 解析通道 0 的虚拟终端切换 |
+| | `rtt.timestamps` | 每行添加主机接收时间 |
+| | `rtt.input.mode` | 按行输入或按键立即发送 |
+| | `rtt.input.lineEnding` | 按行输入时的行尾 |
+| | `rtt.logFile.enabled` | 保存日志文件 |
+| | `rtt.logFile.directory` | 日志目录 |
+| | `rtt.logFile.maxBytes` | 单个日志文件的上限 |
+| | `rtt.logFile.raw` | 保存原始字节而不是文本 |
+| | `rtt.logFile.stripAnsi` | 日志中去除 ANSI 序列 |
 | 实验功能 | `experimental.externalGdb.enabled` | 启用外部 GDB 附加 |
 | | `experimental.externalGdb.target` | 外部服务器地址和端口 |
 | | `experimental.externalGdb.connectionMode` | 外部 GDB 连接模式 |

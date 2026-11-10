@@ -28,7 +28,7 @@ const INSTRUCTIONS = [
     "EmberProbe drives a real MCU through the EmberProbe VS Code extension. Rules for every tool:",
     "- Never guess the MCU target, probe, ELF or probe serial. Ask the user or report what is missing.",
     "- Sensitive tools (flash_program, flash_verify, variables_write, peripherals_write, cubemx_execute, cubemx_start) need the user's approval of the returned plan. Approval must come from the user, never from you. Use remember only when the user chose the workspace option.",
-    "- After a timeout or an unknown result, query the matching status tool (debug_status, variables_read, config_get, cubemx_status) before deciding; never resend a state-changing call automatically.",
+    "- After a timeout or an unknown result, query the matching status tool (debug_status, rtt_status, variables_read, config_get, cubemx_status) before deciding; never resend a state-changing call automatically.",
     "- The probe has a single owner. Stop sampling or debugging before flashing; PROBE_BUSY means wait or ask.",
     "- Do not bypass these tools by running OpenOCD, GDB or CubeMX yourself.",
     "- On failure read error.code, retryable and details; the suggested actions are more specific than guesses."

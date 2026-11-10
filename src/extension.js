@@ -26,6 +26,11 @@ function activate(context) {
         vscode.commands.registerCommand("mcu-vscode.folderAttachDebug", resource => provider.commandHandlers["mcu-vscode.attachDebug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderDownload", resource => provider.commandHandlers["mcu-vscode.download"](resource)),
         vscode.commands.registerCommand("mcu-vscode.openLiveWatch", () => provider.commandHandlers["mcu-vscode.openLiveWatch"]()),
+        vscode.commands.registerCommand("mcu-vscode.startRtt", () => provider.commandHandlers["mcu-vscode.startRtt"]()),
+        vscode.commands.registerCommand("mcu-vscode.stopRtt", () => provider.commandHandlers["mcu-vscode.stopRtt"]()),
+        vscode.commands.registerCommand("mcu-vscode.showRttTerminals", () => provider.commandHandlers["mcu-vscode.showRttTerminals"]()),
+        vscode.commands.registerCommand("mcu-vscode.rttSaveLog", () => provider.commandHandlers["mcu-vscode.rttSaveLog"]()),
+        vscode.commands.registerCommand("mcu-vscode.rttToggleTimestamps", () => provider.commandHandlers["mcu-vscode.rttToggleTimestamps"]()),
         vscode.commands.registerCommand("mcu-vscode.selectChartBackgroundIcon", () => provider.chartBackground().select()),
         vscode.commands.registerCommand("mcu-vscode.removeChartBackgroundIcon", () => provider.chartBackground().remove()),
         // Chart tabs left open at shutdown come back with their state when VS Code restarts.
@@ -55,6 +60,7 @@ function activate(context) {
             if (connectionChanged || samplingSpeedChanged) provider.connectionConfigurationChanged(samplingSpeedChanged, !connectionChanged);
             if (event.affectsConfiguration("emberprobe.sampleFrequencyHz")) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.samplingArchiveMaxMiB")) provider.samplingArchiveConfigurationChanged();
+            if (event.affectsConfiguration("emberprobe.rtt")) provider.rttConfigurationChanged();
             if (["cubemxPath", "cubemx2Path"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.refreshCubeMxStatus().catch(console.error);
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();

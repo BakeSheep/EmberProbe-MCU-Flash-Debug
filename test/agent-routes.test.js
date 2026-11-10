@@ -114,7 +114,11 @@ const { AgentService } = require("../src/services/agentService");
             "cubemx.check",
             "debug.inspect",
             "debug.evaluate",
-            "memory.read"
+            "memory.read",
+            "rtt.status",
+            "rtt.read",
+            "rtt.start",
+            "rtt.stop"
         ])
     );
     const failure = new Error("stale session");

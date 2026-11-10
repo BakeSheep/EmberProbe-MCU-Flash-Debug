@@ -55,10 +55,58 @@ const { RtosViewService } = require("./services/rtosViewService");
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService } = require("./services/chartHistoryService");
+const { RttController } = require("./services/rttController");
+const { RttTerminalService } = require("./services/rttTerminalService");
+
+function createRttController(host, vscode, ManagedOpenOcdSession) {
+    return new RttController(host, {
+        vscode,
+        ManagedOpenOcdSession,
+        onStatus: (status) => host._rttTerminals.onStatus(status),
+        onBeforeStop: () => host._rttTerminalController?.flush(),
+        onData: (channel) => host._rttTerminalController?.dataArrived(channel),
+        onAutoStart: () => void host._rttTerminals.startAutoCommand()
+    });
+}
+
+function createRttTerminals(host, vscode) {
+    return new RttTerminalService({
+        vscode,
+        controller: () => host._rtt,
+        t: (key, params) => host._t(key, params),
+        settings: () => {
+            const config = vscode.workspace.getConfiguration("emberprobe");
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            const directory = config.get("rtt.logFile.directory", "") || root;
+            const resolved =
+                directory && (path.isAbsolute(directory) ? directory : root && path.resolve(root, directory));
+            const logEnabled = config.get("rtt.logFile.enabled", false) === true;
+            const logRaw = config.get("rtt.logFile.raw", false) === true;
+            return {
+                timestamps: config.get("rtt.timestamps", false),
+                logEnabled,
+                logDirectory: resolved || "",
+                logFile: logEnabled && resolved ? path.join(resolved, logRaw ? "rtt.bin" : "rtt.log") : "",
+                logRaw,
+                virtualTerminals: config.get("rtt.virtualTerminals", true),
+                inputMode: config.get("rtt.input.mode", "line"),
+                inputLineEnding: config.get("rtt.input.lineEnding", "lf"),
+                logMaxBytes: config.get("rtt.logFile.maxBytes", 8 * 1024 * 1024),
+                stripAnsi: config.get("rtt.logFile.stripAnsi", true)
+            };
+        },
+        post: (message) => host._webviewView?.webview.postMessage(message),
+        onNotice: (notice, id = "rtt") => host._notices.notify("rtt", id, notice),
+        clearNotice: (id = "rtt") => host._notices.clear("rtt", id)
+    });
+}
 
 // Probe ownership, the external GDB server hold, J-Link driver and connection resolution, and chip reads.
 function createProbeServices(host, context, vscode) {
-    const probeCoordinator = new ProbeCoordinator(() => host._postProbeOperationStatus());
+    const probeCoordinator = new ProbeCoordinator(() => {
+        host._postProbeOperationStatus();
+        host._rttController?.onProbeChanged();
+    });
     const externalDebug = new ExternalDebugService({
         state: context.workspaceState,
         coordinator: probeCoordinator,
@@ -120,7 +168,8 @@ function createProbeServices(host, context, vscode) {
         commandContext: () => host._commandContext(),
         onPost: (message) => host._webviewView?.webview.postMessage(message),
         onDiagnostics: (diag, info) => host._writeChipDiagnostics(diag, info),
-        isDebugActive: () => !!host.debugLaunch.liveSession()
+        isDebugActive: () => !!host.debugLaunch.liveSession(),
+        yieldRtt: (operation) => host._rtt?.yieldOwnSession(operation)
     });
     return { probeCoordinator, externalDebug, probeDriverService, probeConnectionService, chipInfoService };
 }
@@ -331,7 +380,10 @@ function createAgentServices(host, context, vscode, { probeCoordinator, flashAut
         prepare: (options, settings) => host._probeConnectionService.prepare(options, settings),
         recordSuccess: (connection) => host._probeConnectionService.recordSuccess(connection),
         recordFlashed: (entry) => host._firmwareRecord.record(entry),
-        isDebugActive: () => host._debugBridge.hasAnySession || !!host.debugLaunch.liveSession()
+        isDebugActive: () => host._debugBridge.hasAnySession || !!host.debugLaunch.liveSession(),
+        yieldRtt: (operation) => host._rtt?.yieldForRestart(operation),
+        yieldOwnRtt: (operation) => host._rtt?.yieldOwnSession(operation),
+        notifyRtt: () => host._rtt?.onSessionsChanged()
     });
     let bridgeRegistry = null;
     const storageDir = context.globalStorageUri?.fsPath;
@@ -488,4 +540,4 @@ function createServices(host, context, { vscode }) {
     };
 }
 
-module.exports = { createServices };
+module.exports = { createServices, createRttController, createRttTerminals };

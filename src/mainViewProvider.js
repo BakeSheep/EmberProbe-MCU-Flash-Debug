@@ -34,7 +34,7 @@ const { WriteExecution } = require("./services/writeExecution");
 const { AgentOperations } = require("./services/agentOperations");
 const { ConnectedProbes } = require("./services/connectedProbes");
 const { ChartHistoryFeed } = require("./services/chartHistoryFeed");
-const { createServices } = require("./composition");
+const { createServices, createRttController, createRttTerminals } = require("./composition");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
@@ -105,6 +105,8 @@ class MainViewProvider {
     _agentOperations = null;
     _connectedProbesController = null;
     _historyFeedController = null;
+    _rttController = null;
+    _rttTerminalController = null;
     // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
         return (this._samplingController ??= createSamplingController(this));
@@ -129,6 +131,19 @@ class MainViewProvider {
     }
     get _historyFeed() {
         return (this._historyFeedController ??= new ChartHistoryFeed(this));
+    }
+    // The RTT controller attaches to whichever session owns the probe; it is created on first use so construction
+    // order and tests without RTT are unaffected.
+    get _rtt() {
+        return (this._rttController ??= createRttController(this, vscode, liveWatch.ManagedOpenOcdSession));
+    }
+    // The RTT terminals follow the controller's statuses; created on first use like the controller itself.
+    get _rttTerminals() {
+        return (this._rttTerminalController ??= createRttTerminals(this, vscode));
+    }
+
+    rttConfigurationChanged() {
+        this._rttTerminalController?.settingsChanged();
     }
     constructor(context) {
         this.commandHandlers = {};
@@ -397,6 +412,11 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
         this.commandHandlers["mcu-vscode.debug"] = (...args) => this.debugLaunch.start(...args);
         this.commandHandlers["mcu-vscode.download"] = (resource) => runDownload(this, vscode, resource);
+        this.commandHandlers["mcu-vscode.startRtt"] = async () => this._rttTerminals.startCommand();
+        this.commandHandlers["mcu-vscode.stopRtt"] = async () => this._rttTerminals.stopCommand();
+        this.commandHandlers["mcu-vscode.showRttTerminals"] = async () => this._rttTerminals.showTerminals();
+        this.commandHandlers["mcu-vscode.rttSaveLog"] = () => this._rttTerminals.saveLog();
+        this.commandHandlers["mcu-vscode.rttToggleTimestamps"] = () => this._rttTerminals.toggleTimestamps();
     }
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();
@@ -1131,6 +1151,11 @@ class MainViewProvider {
             // An unconfirmed OpenOCD exit is logged; the rest of the cleanup must still run.
             if (agentStopped) await agentStopped.catch((error) => console.error("Agent read cleanup failed:", error));
             this.debugLaunch.clearStartupWatchdog();
+            // RTT may own a session and a probe lease; release its terminals and logs before the managed server and
+            // sampling stop.
+            this._rttTerminalController?.dispose();
+            const rttStopped = this._rttController?.stop();
+            if (rttStopped) await rttStopped.catch((error) => console.error("RTT cleanup failed:", error));
             if (this.debugLaunch.managedGroup) {
                 for (const token of [...this.debugLaunch.managedGroup.members.keys()])
                     await this.debugLaunch.failGroupedCore(token, "Extension is shutting down");

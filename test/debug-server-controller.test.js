@@ -8,6 +8,7 @@ const { normalizeTargetSelection, buildOpenOcdTargetArgs } = require("../src/ope
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { loadProvider } = require("./helpers/load-provider");
+const { scenario } = require("./helpers/scenario");
 
 const settings = { executable: "fake", probe: "cmsis-dap.cfg", target: "stm32h7x.cfg", port: 32000, gdbPort: 32001 };
 function fixture(options = {}, overrides = {}) {
@@ -28,6 +29,7 @@ function fixture(options = {}, overrides = {}) {
         invalidateTarget: () => calls.push("invalidateTarget"),
         stats: () => ({ actualHz: 7 }),
         readOnce: async (items) => items,
+        rttControl: async (request) => ({ channels: { up: [], down: [] }, request }),
         writeAndVerify: async (items) => ({ before: [], after: items, halted: false }),
         waitForIdle: async () => true,
         waitForExit: async () => true,
@@ -60,6 +62,18 @@ function fixture(options = {}, overrides = {}) {
 }
 
 (async () => {
+    await scenario("debug target epoch follows runtime invalidations synchronously", async () => {
+        const f = fixture({}, { targetEpoch: 4 });
+        f.runtime.invalidateTarget = () => f.runtime.targetEpoch++;
+        assert.strictEqual(f.controller.targetEpoch, undefined, "there is no target before runtime construction");
+        await f.controller.start();
+        assert.strictEqual(f.controller.targetEpoch, 4);
+        f.controller.invalidateTarget();
+        assert.strictEqual(f.controller.targetEpoch, 5);
+        f.runtime.targetEpoch++;
+        assert.strictEqual(f.controller.targetEpoch, 6, "runtime-driven invalidations remain visible");
+        await f.controller.stop();
+    });
     assert.deepStrictEqual(normalizeTargetSelection({}), {});
     assert.deepStrictEqual(
         normalizeTargetSelection({ numberOfProcessors: 2, targetProcessor: 1, targetName: "chip.cpu1" }),
@@ -114,6 +128,7 @@ function fixture(options = {}, overrides = {}) {
     assert.strictEqual(await one.controller.waitForExit(), true);
     await assert.rejects(one.controller.readOnce([]), /not ready/);
     await assert.rejects(one.controller.writeAndVerify([]), /not ready/);
+    await assert.rejects(one.controller.rttControl({ operation: "channels" }), /not ready/);
     const first = one.controller.start();
     assert.strictEqual(one.controller.start(), first);
     const connection = await first;
@@ -129,6 +144,10 @@ function fixture(options = {}, overrides = {}) {
     assert.strictEqual(one.calls.filter((value) => value === "invalidateTarget").length, 1);
     assert.deepStrictEqual(one.controller.stats(), { actualHz: 7 });
     assert.deepStrictEqual(await one.controller.readOnce(["value"]), ["value"]);
+    assert.deepStrictEqual(await one.controller.rttControl({ operation: "channels" }), {
+        channels: { up: [], down: [] },
+        request: { operation: "channels" }
+    });
     assert.deepStrictEqual(await one.controller.writeAndVerify(["value"]), {
         before: [],
         after: ["value"],
@@ -158,6 +177,7 @@ function fixture(options = {}, overrides = {}) {
     two.controller.setWatch([]);
     assert.throws(() => two.controller.setWatch([{}]), { code: "DEBUG_RUNTIME_READ_UNSUPPORTED" });
     await assert.rejects(two.controller.readOnce([]), { code: "DEBUG_RUNTIME_READ_UNSUPPORTED" });
+    await assert.rejects(two.controller.rttControl({ operation: "channels" }), { code: "RTT_MULTICORE_UNSUPPORTED" });
     await assert.rejects(two.controller.writeAndVerify([]), { code: "RUNTIME_WRITE_DISABLED" });
     const coordinator = new SamplingCoordinator();
     assert.strictEqual(coordinator.setRuntimeEnabled(two.controller, true, { paused: false }), false);

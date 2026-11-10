@@ -263,6 +263,7 @@ class Baseline {
             async () => {
                 assert.strictEqual((await this.ok("debug_status")).state, "none", "stop the debug session first");
                 assert((await this.ok("sampling_status")).running !== true, "stop live sampling first");
+                assert.strictEqual((await this.ok("rtt_status")).state, "stopped", "stop RTT first");
             },
             { fatal: true }
         );
@@ -277,6 +278,8 @@ class Baseline {
         });
         await this.step("tools without target access respond", async () => {
             await this.ok("rtos_status");
+            await this.fails("rtt_read", {}, /RTT_NOT_RUNNING/u);
+            await this.ok("rtt_control", { action: "stop" });
             await this.ok("elf_analyze", { top: 5 });
             await this.ok("debug_breakpoints_list");
             if (profile.svd) await this.ok("peripherals_list", { query: "RCC" });

@@ -42,7 +42,7 @@ const toolNames = new Set(TOOLS.map((tool) => tool.name));
     await scenario("Include every workflow in the prompt catalog", () => {
         assert.deepStrictEqual(
             prompts.PROMPTS.map((prompt) => prompt.name),
-            ["flash", "fault_triage", "variable_debug", "rtos_inspect", "cubemx_generate"]
+            ["flash", "fault_triage", "variable_debug", "rtt_logging", "rtos_inspect", "cubemx_generate"]
         );
     });
 

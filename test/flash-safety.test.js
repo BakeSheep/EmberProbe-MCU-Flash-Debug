@@ -338,6 +338,33 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
         }
     });
 
+    await scenario("an Agent flash yields RTT only when the probe can be taken", async () => {
+        const coordinator = new ProbeCoordinator();
+        const yields = [];
+        const service = new AgentFlashService({
+            getConfig: () => ({ openocdPath: "openocd" }),
+            coordinator,
+            authorization: new FlashAuthorization(),
+            isDebugActive: () => false,
+            yieldRtt: (operation) => {
+                yields.push(operation);
+                return null;
+            }
+        });
+        const live = coordinator.acquire("liveWatch");
+        await assert.rejects(service.execute({}), { code: "PROBE_BUSY", activeOperation: "liveWatch" });
+        assert.deepStrictEqual(yields, [], "a flash that cannot start leaves RTT attached");
+        live.release();
+        const rtt = coordinator.acquire("rtt");
+        service.yieldRtt = (operation) => {
+            yields.push(operation);
+            rtt.release();
+            return Promise.resolve();
+        };
+        await service.execute({}).catch((error) => assert.notStrictEqual(error.code, "PROBE_BUSY"));
+        assert.deepStrictEqual(yields, ["agentDownload"]);
+    });
+
     console.log("Flash executable policy and bounded ELF tests passed");
 })().catch((error) => {
     console.error(error);

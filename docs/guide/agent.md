@@ -128,11 +128,13 @@ MCP 固定提供全部工具和工作流提示，按功能分为三类：
 
 | 分类 | 工具 |
 | --- | --- |
-| 基础 | 配置、探针、芯片信息、故障读取、ELF 分析、烧录与校验、权限、变量读写与采样、外设 |
+| 基础 | 配置、探针、芯片信息、故障读取、ELF 分析、烧录与校验、权限、变量读写与采样、外设、RTT 日志 |
 | 调试 | 调试启动与控制、断点、栈与变量检查、RTOS |
 | CubeMX | 检测、检查、准备、生成、取消 |
 
-另有五个工作流提示：`flash`、`fault_triage`、`variable_debug`、`rtos_inspect`、`cubemx_generate`。
+另有六个工作流提示：`flash`、`fault_triage`、`variable_debug`、`rtos_inspect`、`rtt_logging`、`cubemx_generate`。
+
+Agent 可以启动和停止 [RTT](flash-debug.md#rtt-日志)、读取固件日志，但不能向固件发送输入。
 
 烧录、写入和 CubeMX 生成需要确认。客户端支持时以表单询问，默认选项是拒绝；不支持时在对话中确认。见 [Agent 权限](#agent-权限)。
 

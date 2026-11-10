@@ -24,6 +24,18 @@ class FakeOpenOcdServer {
         this.scatterVersion = null;
         this.scatterFailures = 0;
         this.scatterReply = null;
+        // RTT emulation of the bundled OpenOCD: setup registers the block, start searches once and fails while
+        // rttBlockPresent is false, and channels lists the configured channels until stop. rttSupported=false
+        // emulates an OpenOCD build without the rtt command set.
+        this.rtt = null;
+        this.rttStarted = false;
+        this.rttBlockPresent = true;
+        this.rttChannels = "Channels: up=0, down=0\nUp-channels:\nDown-channels:\n";
+        this.rttServers = [];
+        this.rttPollingIntervalMs = null;
+        // `rtt channels` returns what it printed as its error when a channel's name cannot be read.
+        this.rttChannelsTruncated = false;
+        this.rttSupported = true;
     }
 
     seed(address, bytes) {
@@ -191,6 +203,44 @@ class FakeOpenOcdServer {
             return { ok: true, response: "" };
         }
         if (command === "[target current] curstate") return { ok: true, response: this.state };
+        if (/^rtt /.test(command)) {
+            if (!this.rttSupported) return { ok: false, response: 'invalid command name "rtt"' };
+            const setup = command.match(/^rtt setup (0x[0-9a-f]+) (\d+) "SEGGER RTT"$/i);
+            if (setup) {
+                this.rtt = { address: parseInt(setup[1], 16), size: Number(setup[2]) };
+                return { ok: true, response: "" };
+            }
+            const interval = command.match(/^rtt polling_interval (\d+)$/);
+            if (interval) {
+                this.rttPollingIntervalMs = Number(interval[1]);
+                return { ok: true, response: "" };
+            }
+            if (command === "rtt start") {
+                // OpenOCD logs the miss; its Tcl result stays empty.
+                if (!this.rttBlockPresent) return { ok: false, response: "" };
+                this.rttStarted = true;
+                return { ok: true, response: "" };
+            }
+            if (command === "rtt stop") {
+                this.rttStarted = false;
+                return { ok: true, response: "" };
+            }
+            if (command === "rtt channels") {
+                if (!this.rttStarted) return { ok: false, response: "rtt: Control block not available" };
+                return { ok: !this.rttChannelsTruncated, response: this.rttChannels };
+            }
+            const serverStart = command.match(/^rtt server start (\d+) (\d+)$/);
+            if (serverStart) {
+                this.rttServers.push({ port: Number(serverStart[1]), channel: Number(serverStart[2]) });
+                return { ok: true, response: "" };
+            }
+            const serverStop = command.match(/^rtt server stop (\d+)$/);
+            if (serverStop) {
+                const port = Number(serverStop[1]);
+                this.rttServers = this.rttServers.filter((server) => server.port !== port);
+                return { ok: true, response: "" };
+            }
+        }
         if (command === "halt") {
             this.state = "halted";
             return { ok: true, response: "" };
