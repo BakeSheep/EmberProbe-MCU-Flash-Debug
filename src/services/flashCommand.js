@@ -29,6 +29,13 @@ async function runDownload(host, vscode, resource) {
     if (host._agentOps.readRunning) return warn("msg.agentReadBusy");
     if (host._chipInfoRunning) return warn("msg.chipBusyForDownload");
     if (host._sampling.starting) return warn("msg.liveBusyForDownload");
+    // Refuse before RTT and live watch are interrupted: a download that cannot reserve the probe changes nothing.
+    try {
+        host._probeCoordinator.assertAvailable("download", ["rtt", "liveWatch"]);
+    } catch (error) {
+        if (error?.code !== "PROBE_BUSY") throw error;
+        return warn("msg.probeBusyForDownload");
+    }
     host._notices.clear("flash", "download-busy");
     host._notices.clear("flash", "download-refresh");
     // Keep the live lease until process exit, then synchronously reserve download.

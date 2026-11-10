@@ -764,6 +764,7 @@ module.exports = Object.freeze({
     "msg.liveBusyForDownload": "实时变量查看正在运行，请先停止后再下载（探针同一时刻只能被一个 OpenOCD 占用）",
     "msg.chipBusyForDownload": "正在读取芯片信息，请稍后再下载",
     "msg.debugBusyForDownload": "调试会话正在使用探针，请先结束调试再下载",
+    "msg.probeBusyForDownload": "探针正被其他操作占用，请稍后再下载",
     "msg.downloadSuccess": "固件下载并校验成功",
     "msg.downloadRefreshFailed": "烧录成功，但 ELF 变量与内存信息刷新失败：{error}",
     "msg.downloadSamplingFailed": "烧录成功，但自动恢复采样失败：{error}",

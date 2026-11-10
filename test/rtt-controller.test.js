@@ -676,10 +676,11 @@ function makeController(host, options = {}) {
     await scenario("the retry ladder gives up after its attempt budget", async () => {
         const host = fakeHost();
         const managed = fakeHostSession({ channels: emptyChannels });
-        host.debugLaunch.managedServer = managed.session;
+        host._sampling = { running: true, session: managed.session };
         const clock = new FakeClock();
         const { controller } = makeController(host, { clock });
         await controller.start();
+        assert.strictEqual(controller.status().source, "live-watch");
         await clock.advance(60000);
         await flushQueue(controller);
         assert.strictEqual(controller.status().state, "stopped");
@@ -690,6 +691,25 @@ function makeController(host, options = {}) {
             "the ladder polls the channel list at most twelve times"
         );
         assert.strictEqual(managed.calls.at(-1).operation, "stop", "teardown stops RTT on the host session");
+    });
+
+    await scenario("a debug server keeps an exact-address start waiting while the target may be halted", async () => {
+        const host = fakeHost();
+        // Halted at the entry breakpoint: the control block appears only after the user continues.
+        let initialized = false;
+        const managed = fakeHostSession({ channels: () => (initialized ? oneChannel : emptyChannels) });
+        host.debugLaunch.managedServer = managed.session;
+        const clock = new FakeClock();
+        const { controller } = makeController(host, { clock, net: { connect: () => idleSocket() } });
+        await controller.start();
+        await clock.advance(60000);
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "starting", "a manual start outlasts a long halt");
+        initialized = true;
+        await clock.advance(2000);
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "running");
+        await controller.stop();
     });
 
     await scenario("channel data flows from the RTT TCP port into the cursor buffer", async () => {
@@ -1086,6 +1106,27 @@ function makeController(host, options = {}) {
         assert.strictEqual(controller.status().reason, "host-ended");
     });
 
+    await scenario("a start refused while waiting keeps the intent to restore the own session", async () => {
+        const host = fakeHost();
+        const order = [];
+        const clock = new FakeClock();
+        const { controller } = makeController(host, { clock });
+        controller._ManagedOpenOcdSession = ownSessionClass(order);
+        await controller.start();
+        await controller.yieldForRestart("externalDebug");
+        const external = host._probeCoordinator.acquire("externalDebug");
+        await assert.rejects(controller.start(), (error) => error.code === "PROBE_BUSY");
+        assert.strictEqual(controller.status().state, "pending-host");
+        external.release();
+        controller.onProbeChanged();
+        await flushQueue(controller);
+        await clock.advance(1000);
+        await flushQueue(controller);
+        assert.strictEqual(controller.status().state, "running");
+        assert.strictEqual(controller.status().source, "own-session");
+        await controller.stop();
+    });
+
     await scenario("a long lease keeps the wait until its release", async () => {
         const host = fakeHost();
         const order = [];
@@ -1316,7 +1357,7 @@ function makeController(host, options = {}) {
     });
 
     await scenario(
-        "a channel that keeps losing its connection reports it; a good connection resets the budget",
+        "a channel that keeps losing its connection re-attaches once, then stops; a good connection resets the budget",
         async () => {
             const host = fakeHost();
             const managed = fakeHostSession();
@@ -1340,12 +1381,22 @@ function makeController(host, options = {}) {
                 await clock.advance(25);
             }
             assert.strictEqual(controller.status().error, null, "connections that succeed never exhaust the budget");
-            for (let round = 0; round < 21; round++) {
-                sockets.at(-1).emit("close");
-                await clock.advance(400);
-            }
+            const starts = () => managed.calls.filter((call) => call.operation === "start").length;
+            const exhaust = async () => {
+                for (let round = 0; round < 21; round++) {
+                    sockets.at(-1).emit("close");
+                    await clock.advance(400);
+                }
+                await flushQueue(controller);
+            };
+            assert.strictEqual(starts(), 1);
+            await exhaust();
+            assert.strictEqual(controller.status().state, "running", "the first exhaustion re-attaches");
+            assert.strictEqual(controller.status().error, null);
+            assert.strictEqual(starts(), 2, "the re-attachment starts RTT and its servers again");
+            await exhaust();
+            assert.strictEqual(controller.status().state, "stopped", "a second exhaustion ends RTT visibly");
             assert.strictEqual(controller.status().error.code, "RTT_CHANNEL_DISCONNECTED");
-            await controller.stop();
         }
     );
 

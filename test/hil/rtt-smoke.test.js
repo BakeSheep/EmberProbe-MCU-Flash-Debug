@@ -250,6 +250,48 @@ async function run() {
         return entry.terminal;
     };
     const type = (channel, text) => terminal(channel).sendText(`${text}\r`, false);
+    const expectShown = async (channel, patterns, timeoutMs = 8000) => {
+        const deadline = Date.now() + timeoutMs;
+        const missing = () => patterns.filter((pattern) => !pattern.test(shown.get(channel) || ""));
+        while (missing().length && Date.now() < deadline) await sleep(50);
+        const left = missing();
+        if (left.length)
+            throw Object.assign(
+                new Error(`${left.join(", ")} not shown on ${channel}: ${(shown.get(channel) || "").slice(-400)}`),
+                { code: "HIL_RTT_OUTPUT" }
+            );
+    };
+    // Settings are frozen at start, so each set gets its own start.
+    const startWith = async (entries) => {
+        await command("mcu-vscode.stopRtt");
+        await stopped();
+        for (const [key, value] of entries) await setting(key, value);
+        await command("mcu-vscode.startRtt");
+        const status = await running(null, 30000);
+        readers.clear();
+        shown.clear();
+        watchTerminals();
+        await drain(0);
+        await expectText(0, /hb \d+/u);
+        return status;
+    };
+    const withSettings = async (values, action) => {
+        const settings = vscode.workspace.getConfiguration("emberprobe");
+        const previous = Object.keys(values).map((key) => [key, settings.inspect(key)?.workspaceValue]);
+        await startWith(Object.entries(values));
+        try {
+            return await action();
+        } finally {
+            await startWith(previous);
+        }
+    };
+    // The firmware reports the bytes down channel 1 received since it was last asked.
+    const received = async () => {
+        await drain(0);
+        type(0, "rx");
+        const line = await expectText(0, /rx1:[ 0-9a-f]*\r?\n/u);
+        return line.replace("rx1:", "").trim();
+    };
 
     const flash = async () => {
         const plan = await call("flash.authorize", { elf, elfSha256, operation: "flash.execute" });
@@ -578,6 +620,224 @@ async function run() {
             return { bytes: text.length };
         });
 
+        await step("input.lineEndings", async () => {
+            await received();
+            try {
+                const seen = {};
+                for (const [ending, bytes] of [
+                    ["crlf", "61 62 0d 0a"],
+                    ["cr", "61 62 0d"],
+                    ["none", "61 62"],
+                    ["lf", "61 62 0a"]
+                ]) {
+                    await setting("rtt.input.lineEnding", ending);
+                    await sleep(200);
+                    type(1, "ab");
+                    await sleep(300);
+                    await setting("rtt.input.lineEnding", "lf");
+                    await sleep(200);
+                    seen[ending] = await received();
+                    assert.strictEqual(seen[ending], bytes, `${ending} sent other bytes`);
+                }
+                return seen;
+            } finally {
+                await setting("rtt.input.lineEnding", undefined);
+            }
+        });
+        await step("input.raw", async () => {
+            await setting("rtt.input.mode", "raw");
+            await sleep(200);
+            try {
+                await received();
+                const before = (shown.get(1) || "").length;
+                terminal(1).sendText("ab\x03\x7f中", false);
+                await sleep(300);
+                const bytes = await received();
+                assert.strictEqual(bytes, "61 62 03 7f e4 b8 ad", "raw keys were not sent as typed");
+                assert(!/ab|中/u.test((shown.get(1) || "").slice(before)), "raw input was echoed locally");
+                await drain(0);
+                type(0, "echo raw keys");
+                await expectText(0, /echo: raw keys\r?\n/u);
+                return bytes;
+            } finally {
+                // The next start must not see half a line.
+                terminal(1).sendText("\r", false);
+                await sleep(200);
+                await setting("rtt.input.mode", undefined);
+            }
+        });
+        await step(
+            "channels.downMapped",
+            () =>
+                withSettings(
+                    {
+                        "rtt.channels": [
+                            { index: 0, down: 1 },
+                            { index: 1, down: 0 }
+                        ]
+                    },
+                    async () => {
+                        await drain(1);
+                        type(0, "crossed");
+                        await expectText(1, /down1: crossed\r?\n/u);
+                        await drain(0);
+                        type(1, "echo crossed back");
+                        await expectText(0, /echo: crossed back\r?\n/u);
+                        return (await call("rtt.status")).channels.up.map((entry) => entry.downChannel);
+                    }
+                ),
+            60000
+        );
+        // Only channel 0 is read, so channel 1 stays up only as an input port: its stream must still be drained.
+        await step(
+            "channels.downInputOnly",
+            async () => {
+                await drain(0);
+                type(0, "rate 8000");
+                await expectText(0, /ok: rate=8000\r?\n/u);
+                try {
+                    return await withSettings({ "rtt.channels": [{ index: 0, down: 1 }] }, async () => {
+                        const status = await call("rtt.status");
+                        assert.deepStrictEqual(
+                            status.channels.up.map((entry) => entry.index),
+                            [0]
+                        );
+                        const dropped = async () => Number(/dropped=(\d+)/u.exec(await heartbeat())[1]);
+                        const before = await dropped();
+                        await sleep(4000);
+                        const after = await dropped();
+                        assert.strictEqual(after, before, "the unread input-only channel filled up");
+                        await drain(0);
+                        type(0, "input only");
+                        await expectText(0, /down1: input only\r?\n/u);
+                        return { dropped: after };
+                    });
+                } finally {
+                    await stopRate();
+                }
+            },
+            60000
+        );
+        await step(
+            "format.hex",
+            () =>
+                withSettings({ "rtt.channels": [0, { index: 1, format: "hex" }] }, async () => {
+                    type(1, "hexcheck");
+                    await expectShown(1, [
+                        /[0-9a-f]{8} {2}64 6f 77 6e 31 3a 20 68 65 78 63 68 65 63 6b 0a {2}\|down1: hexcheck\.\|/u
+                    ]);
+                }),
+            60000
+        );
+        await step(
+            "format.raw",
+            () =>
+                withSettings({ "rtt.channels": [{ index: 0, format: "raw" }, 1] }, async () => {
+                    type(0, "ansi");
+                    type(0, "newlines");
+                    await expectShown(0, [/\x1b\[31mred\x1b\[0m/u, /newline: lf\ncrlf\r\n/u, /\rprogress: 100%\n/u]);
+                }),
+            60000
+        );
+        await step(
+            "encoding.channelDefault",
+            async () => {
+                const seen = {};
+                const settings = vscode.workspace.getConfiguration("emberprobe");
+                const previous = settings.inspect("rtt.encoding")?.workspaceValue;
+                try {
+                    for (const [encoding, text] of [
+                        ["gbk", "中文"],
+                        ["gb18030", "\u{1f525}"],
+                        ["big5", "中文"],
+                        ["shift_jis", "日本"],
+                        ["euc-kr", "한글"],
+                        ["latin1", "café"]
+                    ]) {
+                        await startWith([["rtt.encoding", encoding]]);
+                        type(0, `enc ${encoding}`);
+                        await expectShown(0, [new RegExp(`enc ${encoding}: ${text} end\\r\\n`, "u")]);
+                        seen[encoding] = text;
+                    }
+                    return seen;
+                } finally {
+                    await startWith([["rtt.encoding", previous]]);
+                }
+            },
+            120000
+        );
+        await step(
+            "encoding.perChannel",
+            () =>
+                withSettings({ "rtt.channels": [{ index: 0, encoding: "gbk" }, 1] }, async () => {
+                    type(0, "enc gbk");
+                    await expectShown(0, [/enc gbk: 中文 end\r\n/u]);
+                    await sleep(300);
+                    // Input stays UTF-8 whatever the channel shows.
+                    await received();
+                    type(0, "echo 中");
+                    await expectText(0, /echo: .+\r?\n/u);
+                    await drain(0);
+                    type(1, "中");
+                    await sleep(300);
+                    assert.strictEqual(await received(), "e4 b8 ad 0a", "input was not sent as UTF-8");
+                    const log = fs.readFileSync(path.join(logDirectory, "rtt-ch0.log"), "utf8");
+                    assert(log.includes("enc gbk: 中文 end"), "the log does not hold the decoded text");
+                    const reply = await call("rtt.read", { channel: 0, maxBytes: 64 });
+                    assert.strictEqual(reply.textEncoding, "gbk", "the Agent read lost the channel encoding");
+                    type(0, "enc gbk");
+                    await expectText(0, /enc gbk: 中文 end\r?\n/u);
+                    return reply.textEncoding;
+                }),
+            60000
+        );
+        await step("vterm.switch", async () => {
+            await sleep(300);
+            await drain(0);
+            shown.set(0, "");
+            type(0, "vterm");
+            await expectShown(0, [
+                /\[T1\] vterm: one\r\nvterm: zero\r\n\[TA\] vterm: ten\r\nvterm: part\r\n\[T2\] vterm: two\r\n/u,
+                /\[T3\] vterm: split\r\nvterm: end\r\n/u
+            ]);
+            await sleep(500);
+            const log = fs.readFileSync(path.join(logDirectory, "rtt-ch0.log"), "utf8");
+            assert(log.includes("[T3] vterm: split"), "the log lost the terminal prefix");
+            await expectText(0, /vterm: end\r?\n/u);
+            assert(/\uFFFD1vterm: one/u.test(reader(0).text), "the Agent text lost the terminal markers");
+        });
+        await step(
+            "vterm.off",
+            () =>
+                withSettings({ "rtt.virtualTerminals": false, "rtt.encoding": "latin1" }, async () => {
+                    type(0, "vterm");
+                    await expectShown(0, [/ÿ1vterm: one\r\nÿ0vterm: zero\r\n/u, /ÿ3vterm: split\r\n/u]);
+                }),
+            60000
+        );
+        await step(
+            "log.raw",
+            async () => {
+                const contains = (file, bytes) =>
+                    fs.readFileSync(path.join(logDirectory, file)).includes(Buffer.from(bytes, "latin1"));
+                const sent = async (file) => {
+                    type(0, "enc gbk");
+                    type(0, "ansi");
+                    await expectText(0, /ansi: .*plain\r?\n/u);
+                    await sleep(500);
+                    assert(contains(file, "enc gbk: \xd6\xd0\xce\xc4 end\n"), `${file} changed the bytes`);
+                    assert(contains(file, "\x1b[31mred"), `${file} lost the ANSI sequences`);
+                };
+                await withSettings({ "rtt.logFile.raw": true, "rtt.channels": [0] }, () => sent("rtt.bin"));
+                await withSettings({ "rtt.logFile.raw": true }, async () => {
+                    type(1, "raw log");
+                    await sent("rtt-ch0.bin");
+                });
+                assert(fs.existsSync(path.join(logDirectory, "rtt-ch1.bin")), "no raw log for channel 1");
+            },
+            90000
+        );
+
         await step(
             "stream.8kB",
             async () => {
@@ -769,6 +1029,10 @@ async function run() {
                     await running("live-watch", 20000);
                     await call("debug.start");
                     await waitDebug((next) => next.state === "paused" || next.state === "running", 60000);
+                    // At the entry stop the startup code has cleared the control block; RTT attaches once it runs.
+                    const debug = await waitDebug((next) => next.paused, 20000).catch(() => call("debug.status"));
+                    if (debug.paused) await call("debug.control", { action: "continue" });
+                    await waitDebug((next) => next.state === "running");
                     const status = await running("debug-server", 30000);
                     return { source: status.source, debug: (await call("debug.status")).state };
                 } finally {
@@ -788,10 +1052,10 @@ async function run() {
             async () => {
                 await call("debug.start");
                 await waitDebug((next) => next.state === "paused" || next.state === "running", 60000);
-                const status = await running("debug-server", 30000);
                 let debug = await waitDebug((next) => next.paused, 20000).catch(() => call("debug.status"));
                 if (debug.paused) await call("debug.control", { action: "continue" });
                 await waitDebug((next) => next.state === "running");
+                const status = await running("debug-server", 30000);
                 await drain(0);
                 await expectText(0, /hb \d+/u, 15000);
                 await call("debug.control", { action: "pause" });
@@ -867,6 +1131,96 @@ async function run() {
             await stopped();
             await call("chip.read", { sections: ["identity"] });
         });
+
+        // --- autoStart: borrows a session that holds the probe, and never opens one ---
+        const stays = async (accept, durationMs = 2500) => {
+            const deadline = Date.now() + durationMs;
+            do {
+                const status = await call("rtt.status");
+                assert(accept(status), `RTT left its state: ${JSON.stringify(status).slice(0, 400)}`);
+                await sleep(100);
+            } while (Date.now() < deadline);
+        };
+        const samplingSession = async (action) => {
+            await call("sampling.start", { intervalMs: 100 });
+            try {
+                return await action();
+            } finally {
+                await call("sampling.stop");
+            }
+        };
+        await step(
+            "autoStart.noSession",
+            async () => {
+                await setting("rtt.autoStart", true);
+                await call("chip.read", { sections: ["identity"] });
+                await stays((status) => status.state === "stopped");
+            },
+            20000
+        );
+        await step(
+            "autoStart.sampling",
+            async () => {
+                await call("watch.add", { variables: ["g_rtt_test.uptimeSeconds"] });
+                const source = await samplingSession(async () => {
+                    const status = await running("live-watch", 20000);
+                    readers.clear();
+                    await expectText(0, /hb \d+/u);
+                    return status.source;
+                });
+                await stopped();
+                return source;
+            },
+            60000
+        );
+        await step(
+            "autoStart.userStopHolds",
+            () =>
+                samplingSession(async () => {
+                    await running("live-watch", 20000);
+                    await command("mcu-vscode.stopRtt");
+                    await stopped();
+                    await stays((status) => status.state === "stopped");
+                }),
+            60000
+        );
+        await step(
+            "autoStart.debug",
+            async () => {
+                await call("debug.start");
+                try {
+                    const status = await running("debug-server", 60000);
+                    return status.source;
+                } finally {
+                    // Stopping a paused session leaves the target halted, and the later steps need it running.
+                    const debug = await waitDebug((next) => next.paused, 20000).catch(() => call("debug.status"));
+                    if (debug.paused) {
+                        await call("debug.control", { action: "continue" });
+                        await waitDebug((next) => next.state === "running");
+                    }
+                    await call("debug.control", { action: "stop" });
+                    await waitDebug((next) => next.state === "none");
+                    await stopped();
+                }
+            },
+            120000
+        );
+        await step(
+            "autoStart.modeRefused",
+            async () => {
+                await setting("rtt.channels", [0, { index: 1, mode: "skip" }]);
+                try {
+                    return await samplingSession(async () => {
+                        await stays((status) => status.state === "stopped", 3000);
+                        return (await call("rtt.status")).error;
+                    });
+                } finally {
+                    await setting("rtt.channels", [0, 1]);
+                }
+            },
+            60000
+        );
+        await setting("rtt.autoStart", undefined);
 
         // --- Skill script and MCP server, over the real Bridge ---
         await step(

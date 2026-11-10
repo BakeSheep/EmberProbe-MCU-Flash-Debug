@@ -814,6 +814,7 @@ module.exports = Object.freeze({
         "Live watch is running; stop it before downloading (the probe can only be used by one OpenOCD at a time)",
     "msg.chipBusyForDownload": "Reading chip info; please download later",
     "msg.debugBusyForDownload": "The debugger is using the probe; end debugging before downloading",
+    "msg.probeBusyForDownload": "The probe is busy with another operation; please download later",
     "msg.downloadSuccess": "Firmware downloaded and verified",
     "msg.downloadRefreshFailed":
         "Firmware flashed, but ELF variables and memory information could not refresh: {error}",

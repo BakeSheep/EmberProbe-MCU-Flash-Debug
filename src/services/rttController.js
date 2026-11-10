@@ -24,9 +24,10 @@ const START_FIRST_DELAY_MS = 200;
 const START_BACKOFF_FACTOR = 1.5;
 const START_MAX_DELAY_MS = 2000;
 const START_MAX_ATTEMPTS = 12;
-// An automatic start may meet a target halted at reset. An exact block is cheap to ask for, so it waits about five
-// minutes for the user to resume; a scan keeps the short ladder.
-const AUTO_START_MAX_ATTEMPTS = 150;
+// An automatic start, or any start on a debug server, may meet a target halted before the firmware initialized RTT:
+// a debug launch stops at its entry point after the startup code cleared the control block. An exact block is cheap
+// to ask for, so it waits about five minutes for the user to resume; a scan keeps the short ladder.
+const HALTED_START_MAX_ATTEMPTS = 150;
 // OpenOCD binds the RTT TCP ports when `rtt server start` runs; connections retry until then.
 const CONNECT_FIRST_DELAY_MS = 25;
 const CONNECT_BACKOFF_FACTOR = 2;
@@ -83,6 +84,7 @@ class RttController {
         this._sockets = new Map(); // up channel index -> net.Socket
         this._pendingSockets = new Set();
         this._connectTimers = new Map();
+        this._recoveredChannels = new Set(); // Channels re-attached for a lost data port that have not connected since.
         this._servers = []; // [{ port, channel }]
         this._block = null;
         this._attachRun = 0;
@@ -199,19 +201,36 @@ class RttController {
                     "RTT_MODE_REQUIRES_UI_START",
                     "Start RTT from VS Code to apply configured channel modes"
                 );
+            const selection = this._selectHost();
+            if (selection?.blocked === "multicore")
+                throw rttError("RTT_MULTICORE_UNSUPPORTED", "RTT control is unavailable for multicore debug sessions");
+            if (selection?.blocked) throw probeBusy("The debug server is starting; start RTT once it is ready");
+            // A start that cannot get a session leaves a pending controller as it was: its intent to restore the
+            // owned session and its settle timer survive, so the wait still ends in a resume.
+            const waiting = {
+                _runSettings: this._runSettings,
+                _origin: this._origin,
+                _modeIdentity: this._modeIdentity,
+                _ownSessionIntent: this._ownSessionIntent,
+                _yieldOperation: this._yieldOperation
+            };
             this._runSettings = settings;
             this._origin = origin;
             this._modeIdentity = null;
             this._cancelTimers();
             this._ownSessionIntent = false;
             this._yieldOperation = null;
+            this._recoveredChannels.clear();
             this.error = null;
-            const selection = this._selectHost();
-            if (selection?.blocked === "multicore")
-                throw rttError("RTT_MULTICORE_UNSUPPORTED", "RTT control is unavailable for multicore debug sessions");
-            if (selection?.blocked) throw probeBusy("The debug server is starting; start RTT once it is ready");
-            if (!selection) await this._startOwnSession();
-            else {
+            if (!selection) {
+                try {
+                    await this._startOwnSession();
+                } catch (error) {
+                    Object.assign(this, waiting);
+                    if (this.state === "pending-host") this._armSettle();
+                    throw error;
+                }
+            } else {
                 this._hostSession = selection.session;
                 this.source = selection.source;
             }
@@ -495,8 +514,9 @@ class RttController {
     // Backoff ladder over _attemptStart. timeoutCode names what the exhausted ladder failed on.
     async _scheduleStartRetry(run, fullStart, reason, timeoutCode = "RTT_START_TIMEOUT") {
         this._startAttempts++;
-        const maxAttempts =
-            this._origin === "auto" && this._block?.exact ? AUTO_START_MAX_ATTEMPTS : START_MAX_ATTEMPTS;
+        const mayBeHalted =
+            this._origin === "auto" || (this.source === "debug-server" && timeoutCode === "RTT_START_TIMEOUT");
+        const maxAttempts = mayBeHalted && this._block?.exact ? HALTED_START_MAX_ATTEMPTS : START_MAX_ATTEMPTS;
         if (this._startAttempts > maxAttempts) {
             const error = rttError(timeoutCode, `RTT gave up after ${maxAttempts} attempts: ${reason}`);
             await this._fail(error);
@@ -785,6 +805,7 @@ class RttController {
                     return;
                 }
                 attempts = 0;
+                this._recoveredChannels.delete(server.channel);
                 this._sockets.set(server.channel, socket);
                 this._postStatus();
                 if (this._modeOverrides().length) {
@@ -808,11 +829,7 @@ class RttController {
                 if (run !== this._attachRun || this.state !== "running") return;
                 attempts++;
                 if (attempts > CONNECT_MAX_ATTEMPTS) {
-                    this.error = {
-                        code: "RTT_CHANNEL_DISCONNECTED",
-                        message: `RTT channel ${server.channel} lost its data connection`
-                    };
-                    this._postStatus();
+                    void this._enqueue(() => this._recoverChannel(run, server.channel));
                     return;
                 }
                 const delayMs = Math.min(
@@ -829,6 +846,20 @@ class RttController {
             });
         };
         attempt();
+    }
+
+    // A data port that stays closed means OpenOCD no longer serves the channel. One fresh attachment restarts RTT and
+    // its servers; a channel that still cannot connect after that ends the run instead of leaving it running dead.
+    async _recoverChannel(run, channel) {
+        if (run !== this._attachRun || this.state !== "running") return;
+        if (this._recoveredChannels.has(channel)) {
+            await this._fail(rttError("RTT_CHANNEL_DISCONNECTED", `RTT channel ${channel} lost its data connection`));
+            return;
+        }
+        this._recoveredChannels.add(channel);
+        this._ownSessionIntent ||= !!this._ownSession;
+        await this._detachToPending("channel-lost");
+        await this._reconcile();
     }
 
     // Starts the lightweight standalone session RTT owns when no other session holds the probe.
@@ -926,6 +957,7 @@ class RttController {
         if (nextState === "stopped") {
             this._ownSessionIntent = false;
             this._yieldOperation = null;
+            this._recoveredChannels.clear();
             this._runSettings = null;
             this._origin = null;
             this._modeIdentity = null;
