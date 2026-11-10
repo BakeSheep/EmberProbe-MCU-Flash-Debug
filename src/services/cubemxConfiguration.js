@@ -116,9 +116,15 @@ class CubeMxConfiguration {
             .filter(Boolean)
             .sort();
     }
-    async detectIoc() {
+    async detectIoc({ interactive = true } = {}) {
+        const previous = this.context.workspaceState.get("mcu.iocPath", "");
+        if (!interactive && previous) {
+            const valid = await workspaceIoc(this.vscode, previous).catch(() => "");
+            if (valid) return valid;
+        }
         const candidates = await this.iocCandidates();
         let value = candidates[0];
+        if (candidates.length > 1 && !interactive) return "";
         if (candidates.length > 1)
             value = (
                 await this.vscode.window.showQuickPick(
@@ -130,6 +136,9 @@ class CubeMxConfiguration {
                     { placeHolder: this.t("cubemx.chooseIoc") }
                 )
             )?.value;
+        // Background discovery must not replace a selection made while scanning.
+        if (!interactive && this.context.workspaceState.get("mcu.iocPath", "") !== previous)
+            return this.context.workspaceState.get("mcu.iocPath", "");
         if (value) {
             await this.context.workspaceState.update("mcu.iocPath", value);
             this.changed();

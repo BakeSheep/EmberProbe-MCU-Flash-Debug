@@ -154,7 +154,7 @@ class CubeMxFirmware {
         return {
             target: this.context.workspaceState.get("mcu.mcuCore", ""),
             cubemxPath: this.vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
-            // Firmware packages belong to legacy CubeMX; a CubeMX2 project is judged by the MCU target alone.
+            // Never pass a CubeMX2 file to the legacy firmware parser.
             iocPath: /\.ioc2$/i.test(this.context.workspaceState.get("mcu.iocPath", ""))
                 ? ""
                 : this.context.workspaceState.get("mcu.iocPath", "")
@@ -165,7 +165,8 @@ class CubeMxFirmware {
         let result = null;
         let error = "";
         try {
-            result = await this.inspect(this.config(), { resolveIoc: (file) => workspaceIoc(this.vscode, file) });
+            if (!/\.ioc2$/i.test(this.context.workspaceState.get("mcu.iocPath", "")))
+                result = await this.inspect(this.config(), { resolveIoc: (file) => workspaceIoc(this.vscode, file) });
         } catch (reason) {
             error = String(reason.message);
         }

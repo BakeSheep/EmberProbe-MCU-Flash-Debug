@@ -19,7 +19,7 @@ const VENDOR_HINTS = Object.freeze([
     [/^RP2040/i, "RaspberryPi"]
 ]);
 
-const PROJECT_METADATA = /(?:\.ioc|\.ya?ml|\.pdsc|\.cprj|\.uvprojx?|\.ewp)$/i;
+const PROJECT_METADATA = /(?:\.ioc2?|\.ya?ml|\.pdsc|\.cprj|\.uvprojx?|\.ewp)$/i;
 
 function normalizePart(value) {
     return String(value || "")

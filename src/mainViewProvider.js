@@ -1335,11 +1335,11 @@ class MainViewProvider {
     }
     async runAutoDetect(force) {
         if (force) this._assertConnectionEditable({ debugger: true, mcu: true });
-        const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
+        const detectedIoc = await this._cubemxConfiguration.detectIoc({ interactive: !!force });
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const currentMcu = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        // Only use scripts the current OpenOCD actually provides; a user-selected .ioc alone decides the MCU.
+        // Only use scripts the current OpenOCD provides; the selected .ioc/.ioc2 decides the MCU.
         const scripts = await this._availableOpenOcdScripts();
         const result = await autoDetect.detectWorkspace(vscode, {
             ioc: detectedIoc,
@@ -1378,7 +1378,7 @@ class MainViewProvider {
         if (writeDebugger) await this._connectedProbes.refresh();
         if (pickProbe && force) this._connectedProbes.reveal();
         const found = [
-            detectedIoc && ".ioc: " + path.basename(detectedIoc),
+            detectedIoc && this._t("cubemx.ioc") + ": " + path.basename(detectedIoc),
             result.elf && this._t("msg.foundElf", { name: path.basename(result.elf) }),
             result.mcu && this._t("msg.foundMcu", { name: result.mcu }),
             result.debugger && this._t("msg.foundDebugger", { name: result.debugger })
@@ -1425,7 +1425,9 @@ class MainViewProvider {
                 versionLabel: versionLabel(this._context.extension?.packageJSON?.version),
                 elf: elf ? path.basename(elf) : "",
                 iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",
-                cubemxStatus: this._cubemxConfiguration.status,
+                cubemxStatus: /\.ioc2$/i.test(this._context.workspaceState.get(CACHE_KEYS.iocPath) || "")
+                    ? this._cubemxConfiguration.status2
+                    : this._cubemxConfiguration.status,
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",

@@ -9,6 +9,13 @@ write back with a backup, record a manifest and offer `--check`.
 
 ## Tool discovery
 
+The sidebar project picker and auto-configuration discover both `.ioc` and `.ioc2`. Background
+auto-configuration preserves a valid existing selection and selects only a unique candidate, without prompting;
+explicit auto-configuration asks when several projects exist. The selected file determines the displayed tool
+status. Legacy firmware inspection and installation are skipped for `.ioc2` projects.
+Shared target detection treats both formats as authoritative project metadata. CubeMX2's `mcuUID` supplies
+the exact device, and the project directory scopes ELF ranking, consistently in the extension and bundled skills.
+
 `emberprobe.cubemx2Path` points to the CubeMX2 launcher, for example `stm32cubemx2-1.1.2.exe`, rather than the legacy
 `STM32CubeMX.exe` or bundled Java. Discovery first reads ST's official external bundle registration:
 `$CUBE_BUNDLE_PATH/.config/external_bundles.json`, or the default bundle root under
@@ -32,6 +39,8 @@ The baseline comparison preserves existing text line endings and recognizes equi
 Log completion/error state is tracked while reading stdout/stderr, independently of the retained diagnostic tail. Generation failures return the last 100 lines (up to 16 Ki characters), plus the first detected failure line when available. An unusually long individual line is rejected conservatively. A `KO` answer to `project generate` fails generation; `KO` from other script commands (for example `project path` on Linux) does not. CubeMX's online updater and home-page advertisement panel log network failures at ERROR level even in script mode. Records whose log4j source class is `WebUtils`, `HomeAdPanel` or an `*Updater*`/`*Advert*` class, plus the stack trace directly below them, are reported as warnings. Firmware package, migration and generation-failure messages still block regardless of their source, as do errors and exceptions from any other source.
 
 Each operation has a diagnostics directory in extension storage (`diagnosticsPath`): CubeMX logs stream directly into it (`baseline.log`, `generating.log`, `deepCheck.log`), drift failures add `baseline-drift/`, and a writeback adds `backup/` with the original bytes of each modified or deleted file. The backup is written before the first project file and is what `recoveryRequired` recovery uses. The newest 20 directories per project are kept; directories of operations whose source state is `recoveryRequired` or `unknown`, and directories holding a `backup/` that a retained operation record still reports, are never pruned (the operation store keeps the latest 50 records). A successful generation result is not a compilation or hardware test.
+
+Writeback writes each file to a sibling `.emberprobe-cubemx-write-<hex>` temporary and renames it over the target. A temporary left behind by a crashed extension host is removed at the start of the next generation or deep check, while the project's job slot is held; only temporaries older than 10 minutes are removed, so a write in progress from another window is spared. Removals are reported in the generation result's `warnings`.
 
 The project snapshot skips version control, editor and agent tool directories (`.git`, `.agents`, `.claude`, `.vscode`, …). Links in CubeMX inputs and outputs (`Core`, `Drivers`, `Middlewares`, `cmake`, the `.ioc`, linker scripts, startup files and generated root build files) are rejected, because they could redirect writes or feed linked sources into Keep User Code. Other links are skipped, and generation is rejected with `linked_output_path` if regenerated output would be written on or below a skipped link.
 

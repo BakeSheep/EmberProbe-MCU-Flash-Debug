@@ -100,6 +100,19 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
             code: "PATH_OUTSIDE_WORKSPACE"
         });
         assert.strictEqual((await store.update({ iocPath: "" })).iocPath, "");
+        await scenario("Accept a workspace CubeMX2 path and reject other file types and external paths", async () => {
+            const project2 = path.join(temp, "project space.IOC2");
+            fs.writeFileSync(project2, '["Project Description"]\n');
+            assert.strictEqual(
+                (await store.update({ iocPath: "project space.IOC2" })).iocPath,
+                await fs.promises.realpath(project2)
+            );
+            const external = path.join(outside, "outside.ioc2");
+            fs.writeFileSync(external, "fixture");
+            await assert.rejects(store.update({ iocPath: external }), { code: "PATH_OUTSIDE_WORKSPACE" });
+            await assert.rejects(store.update({ iocPath: "firmware.elf" }), { code: "INVALID_FILE_TYPE" });
+            await store.update({ iocPath: "" });
+        });
         await assert.rejects(
             () => store.update({ sampleFrequencyHz: 0 }),
             (error) => error.code === "INVALID_CONFIG_VALUE"

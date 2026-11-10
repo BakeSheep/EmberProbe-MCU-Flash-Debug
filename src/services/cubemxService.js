@@ -18,6 +18,7 @@ const {
     preserveTextFormatting,
     materialize,
     applyFiles,
+    sweepWriteTemporaries,
     assertUserCodePreserved
 } = require("./cubemxProject");
 const { runCubeMx } = require("./cubemxRunner");
@@ -181,6 +182,16 @@ class CubeMxService {
             const stat = await fs.lstat(target).catch(() => null);
             if (stat?.isDirectory() && now - stat.mtimeMs > STALE_STAGE_MS)
                 await fs.rm(target, { recursive: true, force: true }).catch(() => {});
+        }
+    }
+
+    // Called with the project's job slot held. A sweep failure never fails the operation.
+    async _sweepWriteTemporaries(root) {
+        try {
+            const removed = await sweepWriteTemporaries(root);
+            return removed.length ? [`Removed ${removed.length} stale writeback temporary file(s)`] : [];
+        } catch {
+            return [];
         }
     }
 
@@ -745,6 +756,7 @@ class CubeMxService {
         let backup;
         const runDir = this._runDir(plan.root, op.operationId);
         try {
+            const sweepWarnings = await this._sweepWriteTemporaries(plan.root);
             const produced =
                 plan.generator === "cubemx2"
                     ? await this.cubemx2.produce(plan, params, op, controller, progress, context)
@@ -840,6 +852,7 @@ class CubeMxService {
                 ...produced.manifest()
             };
 
+            const warnings = [...sweepWarnings, ...produced.warnings];
             const result = {
                 generated: true,
                 compiled: false,
@@ -850,8 +863,8 @@ class CubeMxService {
                 diagnosticsPath: runDir,
                 sourceProjectStatus: "committed",
                 permissionWarning,
-                warnings: produced.warnings.slice(0, 20),
-                warningCount: produced.warnings.length,
+                warnings: warnings.slice(0, 20),
+                warningCount: warnings.length,
                 permission: this.authorization.status(plan.trust)
             };
 
@@ -1037,10 +1050,11 @@ class CubeMxService {
             }
             job.operationId = op.operationId;
 
-            const execution =
+            const execution = this._sweepWriteTemporaries(project.root).then(() =>
                 project.generator === "cubemx2"
                     ? this.cubemx2.runDeepCheck(project, op, controller)
-                    : this._runDeepCheck(project, op, controller);
+                    : this._runDeepCheck(project, op, controller)
+            );
             this.activeExecutions.set(
                 op.operationId,
                 execution.catch(() => {})

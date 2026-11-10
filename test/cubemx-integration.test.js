@@ -16,12 +16,13 @@ const exec = promisify(execFile);
 
 (async () => {
     for (const lang of ["zh", "en"]) {
-        const value = "C:\\工程 <test>\\demo.ioc";
+        const value = "C:\\工程 <test>\\demo.ioc2";
         const view = render(getModernWebviewContent({ iocPath: value }, lang));
         try {
             view.assertHealthy();
             const button = view.document.querySelector('#otherConfig [data-command="mcu-vscode.selectIoc"]');
             assert(button);
+            assert(button.textContent.includes(".ioc2"));
             assert.strictEqual(button.querySelector("small").title, value);
             button.click();
             assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.selectIoc");
@@ -57,18 +58,35 @@ const exec = promisify(execFile);
     const provider = Object.create(Provider.prototype);
     provider._debugBridge = { hasAnySession: false };
     provider._cubemxConfiguration = {
-        detectIoc: async () => {
+        detectIoc: async ({ interactive }) => {
             scans++;
-            return "demo.ioc";
+            return interactive ? "demo.ioc" : "demo.ioc2";
         }
     };
     provider._context = { workspaceState: { get: () => "", update: async () => {} } };
     provider.updateView = () => {};
     provider._t = (key) => key;
     await provider.runAutoDetect(false);
-    assert.strictEqual(scans, 0, "automatic sidebar detection must not select an ioc");
+    assert.strictEqual(scans, 1, "background auto-configuration scans for an unambiguous project without prompting");
     await provider.runAutoDetect(true);
-    assert.strictEqual(scans, 1);
+    assert.strictEqual(scans, 2);
+    await scenario("Show the selected generator status in Other Configuration", async () => {
+        provider._cubemxConfiguration.status = "legacy missing";
+        provider._cubemxConfiguration.status2 = "CubeMX2 ready";
+        for (const [file, expected] of [
+            ["demo.ioc2", "CubeMX2 ready"],
+            ["demo.ioc", "legacy missing"]
+        ]) {
+            provider._context.workspaceState.get = (key) => (key === "mcu.iocPath" ? file : "");
+            const view = render(provider.getModernWebviewContent());
+            try {
+                view.assertHealthy();
+                assert.strictEqual(view.document.querySelector("#otherConfig .cubemx-status").textContent, expected);
+            } finally {
+                view.window.close();
+            }
+        }
+    });
 
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-bridge-")));
     const calls = [];

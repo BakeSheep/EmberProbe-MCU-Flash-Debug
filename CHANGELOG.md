@@ -36,6 +36,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Add native VS Code data breakpoints to the built-in debugger: right-click a variable or member to break on value changes, reads or accesses; manage enablement, removal and conditions in the Breakpoints view. Stops identify data breakpoints and include old/new values when GDB supplies them.
 - Watch confirmed, naturally aligned 1/2/4-byte storage using hardware watchpoints only, with explicit unsupported-object and resource errors. Watchpoints track fixed addresses within the current debug session; see `docs/guide/flash-debug.md`.
 
+### CubeMX
+
+- CubeMX/CubeMX2 写回途中扩展宿主崩溃时遗留在项目里的 `.emberprobe-cubemx-write-*` 临时文件，现在会在下一次生成或深度检查开始时删除（只删除 10 分钟前的），并在生成结果的 `warnings` 中说明。
+- Writeback temporaries (`.emberprobe-cubemx-write-*`) left in the project by an extension host crash during a CubeMX/CubeMX2 writeback are now removed when the next generation or deep check starts (only those older than 10 minutes) and reported in the generation result's `warnings`.
+
 ## [0.9.1] - 2026-11-05
 
 ### 查看列表 / Watch list

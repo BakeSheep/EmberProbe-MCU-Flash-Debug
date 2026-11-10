@@ -107,7 +107,9 @@ async function detectMcu(vscode, options = {}) {
     const entries = await projectEntries(vscode);
     if (options.ioc && !entries.some((entry) => entry.file === options.ioc)) {
         try {
-            entries.unshift({ file: options.ioc, text: await fs.readFile(options.ioc, "utf8") });
+            const stat = await fs.stat(options.ioc);
+            if (stat.isFile() && stat.size <= targets.MAX_PROJECT_FILE_BYTES)
+                entries.unshift({ file: options.ioc, text: await fs.readFile(options.ioc, "utf8") });
         } catch {}
     }
     const resolved = targets.resolveTarget(entries, { preferred: options.ioc });

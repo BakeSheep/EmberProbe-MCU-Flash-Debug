@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -253,6 +254,49 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
 
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "auto-detect-")));
     try {
+        await scenario("Infer CubeMX2 devices and pair their ELF in extension and shared skill detection", async () => {
+            const cubeRoot = path.join(root, "cube2");
+            const content = fs.readFileSync(path.join(__dirname, "fixtures/cubemx2/c593.ioc2"), "utf8");
+            const project = write(cubeRoot, "app/board.IOC2", content);
+            const image = write(cubeRoot, "app/build/debug.elf", elfHeader(40), 100);
+            write(cubeRoot, "other/newer.elf", elfHeader(40), 200);
+            write(cubeRoot, "app/STM32F407VGTX_FLASH.ld", "");
+            const v = fakeVscode(cubeRoot);
+            assert(targets.PROJECT_FILE_GLOB.includes("*.ioc2"));
+            assert(targets.PROJECT_FILE_GLOB.includes("*.IOC2"));
+            assert.strictEqual(targets.sourcePriority(project), 0);
+            assert.strictEqual(targets.deviceField(content), "STM32C593RET6");
+            assert.deepStrictEqual(extractProjectParts(content), ["STM32C593RET6"]);
+            const detected = await autoDetect.detectWorkspace(v, { detectProbe: noProbe });
+            assert.strictEqual(detected.mcu, "stm32c5x.cfg");
+            assert.strictEqual(detected.elf, image);
+            assert.strictEqual(detected.mcuSource, project);
+            const skill = flashCommon.inferTargetDetails(cubeRoot);
+            assert.strictEqual(skill.target, detected.mcu);
+            assert.strictEqual(skill.projectDir, path.dirname(project));
+            const identity = new DeviceIdentityService();
+            assert.strictEqual(identity.resolve({ workspacePath: cubeRoot }).device, "STM32C593RET6");
+            assert.strictEqual((await identity.resolveAsync({ workspacePath: cubeRoot })).device, "STM32C593RET6");
+            const conflict = write(cubeRoot, "boot/boot.ioc", "Mcu.UserName=STM32F407VGTx");
+            assert.strictEqual((await autoDetect.detectWorkspace(v, { detectProbe: noProbe })).mcu, "");
+            assert.strictEqual(
+                (await autoDetect.detectWorkspace(v, { ioc: project, detectProbe: noProbe })).mcu,
+                "stm32c5x.cfg"
+            );
+            fs.unlinkSync(conflict);
+            const unavailable = await autoDetect.detectWorkspace(v, {
+                detectProbe: noProbe,
+                targets: ["stm32f4x.cfg"]
+            });
+            assert.strictEqual(unavailable.mcu, "");
+            assert.strictEqual(unavailable.mcuUnavailable, "stm32c5x.cfg");
+            const oversized = write(cubeRoot, "build/large.ioc2", "x".repeat(targets.MAX_PROJECT_FILE_BYTES + 1));
+            assert.strictEqual(
+                (await autoDetect.detectWorkspace(v, { ioc: oversized, detectProbe: noProbe })).mcu,
+                "stm32c5x.cfg"
+            );
+            fs.rmSync(cubeRoot, { recursive: true });
+        });
         const now = Date.now() / 1000;
         write(root, "app/app.ioc", "Mcu.UserName=STM32F407VGTx\n", now - 50);
         write(root, "app/STM32F407VGTX_FLASH.ld", "/* migrated from stm32f103 */", now - 50);
@@ -396,7 +440,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     provider._debugBridge = { hasAnySession: false };
     provider._sampling.session = { active: true };
     provider._connectedProbes.assertDriverIdle = () => {};
-    provider._cubemxConfiguration = { detectIoc: async () => "/w/app/app.ioc" };
+    provider._cubemxConfiguration = { detectIoc: async ({ interactive }) => (interactive ? "/w/app/app.ioc" : "") };
     provider._elfView.refreshBindings = async () => refreshed++;
     provider._connectedProbes.refresh = async () => null;
     provider.updateView = async () => {};

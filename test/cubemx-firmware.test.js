@@ -1,4 +1,5 @@
 "use strict";
+const { scenario } = require("./helpers/scenario");
 const assert = require("assert");
 const fs = require("fs/promises");
 const os = require("os");
@@ -165,6 +166,23 @@ const { getModernWebviewContent } = require("../src/modernView");
         await service.install();
         assert.strictEqual(service.error, "invalid config");
         assert(changed > 0);
+        await scenario("Skip legacy firmware inspection and installation for a CubeMX2 project", async () => {
+            const previous = config.iocPath;
+            config.iocPath = "board.IOC2";
+            let inspections = 0;
+            service.inspect = async () => {
+                inspections++;
+                return result;
+            };
+            await service.refresh();
+            assert.strictEqual(inspections, 0);
+            assert.strictEqual(service.result, null);
+            assert.strictEqual(service.error, "");
+            const before = launches;
+            assert.strictEqual(await service.install(), false);
+            assert.strictEqual(launches, before);
+            config.iocPath = previous;
+        });
 
         for (const lang of ["zh", "en"]) {
             const view = render(getModernWebviewContent({ cubemxFirmware: { ...result, installed: false } }, lang));

@@ -79,7 +79,7 @@ const TARGET_RULES = Object.freeze([
 // linker/startup names, which win over free text in build scripts.
 /** @type {ReadonlyArray<[RegExp, number]>} */
 const SOURCE_PRIORITIES = Object.freeze([
-    [/\.ioc$/i, 0],
+    [/\.ioc2?$/i, 0],
     [/\.(?:uvprojx|uvproj|ewp)$/i, 1],
     [/^\.cproject$/i, 1],
     [/^(?:platformio\.ini|sdkconfig)$/i, 1],
@@ -90,9 +90,9 @@ const SOURCE_PRIORITIES = Object.freeze([
 ]);
 // Files that also identify the project root used to pair firmware images with the target.
 const PROJECT_ROOT_SOURCE =
-    /\.(?:ioc|uvprojx|uvproj|ewp)$|^(?:\.cproject|platformio\.ini|sdkconfig|CMakeLists\.txt|Makefile)$/i;
+    /\.(?:ioc2?|uvprojx|uvproj|ewp)$|^(?:\.cproject|platformio\.ini|sdkconfig|CMakeLists\.txt|Makefile)$/i;
 const PROJECT_FILE_GLOB =
-    "**/{*.ioc,*.IOC,*.uvprojx,*.uvproj,*.ewp,.cproject,platformio.ini,sdkconfig,*.ld,startup_*.s,startup_*.S,CMakeLists.txt,Makefile,*.cmake}";
+    "**/{*.ioc,*.IOC,*.ioc2,*.IOC2,*.uvprojx,*.uvproj,*.ewp,.cproject,platformio.ini,sdkconfig,*.ld,startup_*.s,startup_*.S,CMakeLists.txt,Makefile,*.cmake}";
 // Generated, vendored or tool-owned trees; metadata found there does not describe the project.
 const PROJECT_IGNORED_DIRS = Object.freeze([
     "node_modules",
@@ -163,6 +163,7 @@ const DEVICE_FIELDS = Object.freeze([
     /^Mcu\.UserName\s*=\s*(\S+)/im,
     /^Mcu\.CPN\s*=\s*(\S+)/im,
     /^ProjectManager\.DeviceId\s*=\s*(\S+)/im,
+    /"mcuUID"\s*:\s*"(?:[^"\r\n]*::)?([^"\r\n]+)"/i,
     /<Device>\s*([^<]+?)\s*<\/Device>/i,
     /OGChipSelectEditMenu<\/name>\s*<state>([^<\t]+)/i,
     /option\.target_mcu"[^>]*?\bvalue="([^"]+)"/i,

@@ -25,6 +25,11 @@ const IGNORED_NAMES = new Set([
     "Release"
 ]);
 const ignored = (name) => IGNORED_NAMES.has(name) || name.startsWith(".emberprobe-cubemx-");
+// Writeback writes each file to a sibling temporary and renames it over the target.
+const WRITE_TEMPORARY_PREFIX = ".emberprobe-cubemx-write-";
+const WRITE_TEMPORARY = /^\.emberprobe-cubemx-write-[0-9a-f]{16}$/;
+// A single write takes milliseconds; anything older is left over from a crashed writeback.
+const STALE_WRITE_TEMPORARY_MS = 10 * 60 * 1000;
 // Top-level entries CubeMX reads or regenerates. A link here could redirect generated writes or
 // feed linked sources into Keep User Code, so it is rejected; links elsewhere are skipped.
 const GENERATION_SCOPE =
@@ -347,7 +352,7 @@ async function applyFiles(root, before, after, backup, options = {}) {
             if (after.has(item.file)) {
                 const temporary = path.join(
                     path.dirname(file),
-                    ".emberprobe-cubemx-write-" + crypto.randomBytes(8).toString("hex")
+                    WRITE_TEMPORARY_PREFIX + crypto.randomBytes(8).toString("hex")
                 );
                 try {
                     await (options.writeFile || fs.writeFile)(temporary, after.get(item.file).bytes, { flag: "wx" });
@@ -386,6 +391,37 @@ async function applyFiles(root, before, after, backup, options = {}) {
     }
     return diff;
 }
+// Remove writeback temporaries a crashed extension host left in the project. Callers hold the
+// project's job slot; the age limit also spares a write in progress from another window.
+async function sweepWriteTemporaries(root, options = {}) {
+    const cutoff = (options.now ?? Date.now()) - (options.minAgeMs ?? STALE_WRITE_TEMPORARY_MS);
+    const removed = [];
+    const walk = async (relative) => {
+        const entries = await fs.readdir(path.join(root, relative), { withFileTypes: true }).catch(() => []);
+        for (const entry of entries) {
+            const name = path.join(relative, entry.name);
+            const absolute = path.join(root, name);
+            if (entry.isSymbolicLink()) continue;
+            if (entry.isDirectory()) {
+                if (ignored(entry.name)) continue;
+                const real = await fs.realpath(absolute).catch(() => null);
+                if (real && inside(root, real)) await walk(name);
+                continue;
+            }
+            if (!entry.isFile() || !WRITE_TEMPORARY.test(entry.name)) continue;
+            try {
+                const stat = await fs.lstat(absolute);
+                if (!stat.isFile() || stat.mtimeMs > cutoff) continue;
+                await fs.unlink(absolute);
+                removed.push(name);
+            } catch {
+                // Best effort: a temporary that cannot be removed is still ignored by snapshot().
+            }
+        }
+    };
+    await walk("");
+    return removed.sort();
+}
 module.exports = {
     hash,
     parseIoc,
@@ -399,5 +435,6 @@ module.exports = {
     preserveTextFormatting,
     materialize,
     applyFiles,
+    sweepWriteTemporaries,
     assertUserCodePreserved
 };

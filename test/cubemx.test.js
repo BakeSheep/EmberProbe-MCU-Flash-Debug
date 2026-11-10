@@ -11,7 +11,14 @@ const path = require("path");
 const { EventEmitter } = require("events");
 const { CubeMxAuthorization } = require("../src/cubemxAuthorization");
 const { CubeMxService } = require("../src/services/cubemxService");
-const { parseIoc, snapshot, applyFiles, hash, assertUserCodePreserved } = require("../src/services/cubemxProject");
+const {
+    parseIoc,
+    snapshot,
+    applyFiles,
+    hash,
+    assertUserCodePreserved,
+    sweepWriteTemporaries
+} = require("../src/services/cubemxProject");
 const { installation, discover, workspaceIoc } = require("../src/services/cubemxEnvironment");
 const { CubeMxConfiguration } = require("../src/services/cubemxConfiguration");
 const { runCubeMx } = require("../src/services/cubemxRunner");
@@ -292,6 +299,37 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         assertUserCodePreserved(user, user);
         assert.throws(() => assertUserCodePreserved(user, new Map()), /user code/);
 
+        await scenario("Sweep only stale writeback temporaries inside the project", async () => {
+            const sweepRoot = path.join(root, "sweep");
+            const outside = path.join(root, "sweep-outside");
+            const temp = (name) => ".emberprobe-cubemx-write-" + name;
+            const stale = path.join(sweepRoot, "Core", "Src", temp("0123456789abcdef"));
+            const fresh = path.join(sweepRoot, "Core", "Src", temp("fedcba9876543210"));
+            const kept = [
+                fresh,
+                path.join(sweepRoot, temp("not-hex-name-xyz")),
+                path.join(sweepRoot, ".emberprobe-cubemx-audit"),
+                path.join(sweepRoot, ".git", temp("0123456789abcdef")),
+                path.join(outside, temp("0123456789abcdef"))
+            ];
+            for (const file of [stale, ...kept]) {
+                await fs.mkdir(path.dirname(file), { recursive: true });
+                await fs.writeFile(file, "x");
+            }
+            const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+            for (const file of [stale, ...kept.slice(1)]) await fs.utimes(file, hourAgo, hourAgo);
+            const linked = await fs
+                .symlink(outside, path.join(sweepRoot, "linked"), "junction")
+                .then(() => true)
+                .catch(() => false);
+            const removed = await sweepWriteTemporaries(sweepRoot);
+            assert.deepStrictEqual(removed, [path.join("Core", "Src", temp("0123456789abcdef"))]);
+            await assert.rejects(fs.access(stale));
+            for (const file of kept) await fs.access(file);
+            if (linked) await fs.access(path.join(outside, temp("0123456789abcdef")));
+            assert.deepStrictEqual(await sweepWriteTemporaries(path.join(root, "missing")), []);
+        });
+
         const state = memory();
         const settings = new Map();
         let picked;
@@ -335,6 +373,44 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         await ui.selectIoc();
         assert.strictEqual(state.get("mcu.iocPath"), ioc);
         settings.set("cubemxPath", tool.executable);
+        await scenario("Select and auto-configure CubeMX2 projects without overwriting a manual choice", async () => {
+            const findFiles = v.workspace.findFiles;
+            const quickPick = v.window.showQuickPick;
+            const project2 = path.join(project, "board.ioc2");
+            await fs.writeFile(project2, '["Project Description"]\n');
+            let prompts = 0;
+            v.window.showQuickPick = async (items) => {
+                prompts++;
+                return items.find((item) => item.value === project2);
+            };
+            v.workspace.findFiles = async (glob) => {
+                assert(glob.includes("ioc2"));
+                return [{ fsPath: project2 }, { fsPath: tool.executable }];
+            };
+            await state.update("mcu.iocPath", "");
+            assert.strictEqual(await ui.detectIoc({ interactive: false }), project2);
+            assert.strictEqual(state.get("mcu.iocPath"), project2);
+            assert.strictEqual(prompts, 0);
+            v.workspace.findFiles = async () => [{ fsPath: ioc }, { fsPath: project2 }];
+            assert.strictEqual(await ui.detectIoc({ interactive: false }), project2, "keep a valid selection");
+            await state.update("mcu.iocPath", "");
+            assert.strictEqual(await ui.detectIoc({ interactive: false }), "", "ambiguous projects need a user choice");
+            assert.strictEqual(prompts, 0);
+            assert.strictEqual(await ui.detectIoc(), project2);
+            assert.strictEqual(prompts, 1);
+            await state.update("mcu.iocPath", "");
+            await ui.selectIoc();
+            assert.strictEqual(state.get("mcu.iocPath"), project2, "manual picker includes .ioc2");
+            await state.update("mcu.iocPath", "");
+            v.workspace.findFiles = async () => {
+                await state.update("mcu.iocPath", ioc);
+                return [{ fsPath: project2 }];
+            };
+            assert.strictEqual(await ui.detectIoc({ interactive: false }), ioc, "a concurrent user choice wins");
+            v.workspace.findFiles = findFiles;
+            v.window.showQuickPick = quickPick;
+            await fs.rm(project2);
+        });
         if (process.platform === "win32") {
             assert.strictEqual((await ui.detect()).executable, tool.executable);
             settings.set("cubemxPath", path.join(root, "bad.exe"));

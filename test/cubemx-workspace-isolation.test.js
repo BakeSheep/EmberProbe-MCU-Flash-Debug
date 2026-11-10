@@ -304,6 +304,25 @@ const link = (target, location) => fs.symlink(target, location, "junction");
             assert.deepStrictEqual(await stagingLeftovers(), ["unrelated"]);
             service.options.run = generate;
         });
+
+        await scenario("Remove writeback temporaries left by a crashed writeback", async () => {
+            const leftover = path.join(project, ".emberprobe-cubemx-write-0123456789abcdef");
+            const plant = async () => {
+                await fs.writeFile(leftover, "partial");
+                const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+                await fs.utimes(leftover, hourAgo, hourAgo);
+            };
+            await plant();
+            const result = await execute(content.replace("9600", "9601"));
+            assert(result.generated);
+            await assert.rejects(fs.access(leftover), { code: "ENOENT" });
+            assert.strictEqual(result.warnings[0], "Removed 1 stale writeback temporary file(s)");
+            assert.deepStrictEqual(await workspaceLeftovers(), []);
+
+            await plant();
+            assert.strictEqual((await service.check({ mode: "deep", wait: true })).status, "consistent");
+            await assert.rejects(fs.access(leftover), { code: "ENOENT" });
+        });
         console.log("CubeMX workspace isolation, benign log and link scope tests passed");
     } finally {
         await fs.rm(root, { recursive: true, force: true });

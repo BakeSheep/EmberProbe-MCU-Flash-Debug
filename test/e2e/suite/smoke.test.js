@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vscode = require("vscode");
+const { scenario } = require("../../helpers/scenario");
 
 async function waitFor(ready, label) {
     const deadline = Date.now() + 10000;
@@ -35,6 +36,7 @@ async function run() {
         "mcu-vscode.showRttTerminals",
         "mcu-vscode.rttSaveLog",
         "mcu-vscode.rttToggleTimestamps",
+        "mcu-vscode.rttClearTerminal",
         "mcu-vscode.checkOpenOcd",
         "mcu-vscode.installMcpServer",
         "mcu-vscode.enableAgentAccess",
@@ -153,6 +155,24 @@ async function run() {
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
     await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
     const provider = extension.exports.debugTestProvider;
+    await scenario("Discover and persist a CubeMX2 project through the real workspace search", async () => {
+        const project = path.join(workspace, "emberprobe-e2e.ioc2");
+        const previous = provider._context.workspaceState.get("mcu.iocPath");
+        fs.copyFileSync(path.resolve(__dirname, "../../fixtures/cubemx2/c593.ioc2"), project);
+        try {
+            await provider._context.workspaceState.update("mcu.iocPath", "");
+            const selected = await provider._cubemxConfiguration.detectIoc({ interactive: false });
+            assert.strictEqual(selected, await fs.promises.realpath(project));
+            assert.strictEqual(provider._context.workspaceState.get("mcu.iocPath"), selected);
+            assert(provider.getModernWebviewContent().includes("emberprobe-e2e.ioc2"));
+            await provider._cubemxFirmware.refresh();
+            assert.strictEqual(provider._cubemxFirmware.result, null);
+        } finally {
+            await provider._context.workspaceState.update("mcu.iocPath", previous);
+            fs.unlinkSync(project);
+        }
+    });
+    console.log("✓ discovers CubeMX2 projects and skips legacy firmware checks");
     const oldAgentAccess = extension.exports.debugTestProvider._context.workspaceState.get("emberprobe.agentAccess");
     try {
         assert.strictEqual(provider._agentPermissions.status().fullAccess, false);
