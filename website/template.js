@@ -249,8 +249,8 @@ function heroVisual(c, prefix) {
 
 function heroCopy(c, links, demo) {
     const letters = [..."EmberProbe"].map((letter, i) => `<span style="--i:${i}">${letter}</span>`).join("");
-    return `<div class="hero-copy"><p class="eyebrow" data-reveal>${escape(c.eyebrow)}</p><h1><span class="visually-hidden">EmberProbe</span><span class="title-letters" aria-hidden="true">${letters}</span></h1><p class="subtitle" data-reveal style="--i:3">${escape(c.subtitle)}</p>
-<div class="hero-actions" data-reveal style="--i:5"><a class="button primary" href="${links.install}">${c.install}</a><a class="button" href="${demo}">${c.tour}</a></div></div>`;
+    return `<div class="hero-copy"><h1><span class="visually-hidden">EmberProbe</span><span class="title-letters" aria-hidden="true">${letters}</span></h1><p class="subtitle" data-reveal style="--i:3">${escape(c.subtitle)}</p>
+<div class="hero-actions" data-reveal style="--i:5"><a class="button primary" href="${links.install}">${c.install}</a><a class="button" href="${demo}" hidden>${c.tour}</a></div></div>`;
 }
 
 function home(lang, version) {

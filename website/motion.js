@@ -50,8 +50,8 @@
             const box = heroScene.getBoundingClientRect();
             const x = clamp(((event.clientX - box.left) / box.width - 0.5) * 2, -1, 1);
             const y = clamp(((event.clientY - box.top) / box.height - 0.5) * 2, -1, 1);
-            heroCard.style.setProperty("--hero-rx", `${(3 - y * 2).toFixed(2)}deg`);
-            heroCard.style.setProperty("--hero-ry", `${(8 + x * 3).toFixed(2)}deg`);
+            heroCard.style.setProperty("--hero-rx", `${(-y).toFixed(2)}deg`);
+            heroCard.style.setProperty("--hero-ry", `${(28 + x * 2).toFixed(2)}deg`);
         });
         heroScene.addEventListener("pointerleave", () => {
             heroCard.style.removeProperty("--hero-rx");

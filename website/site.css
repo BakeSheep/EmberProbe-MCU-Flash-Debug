@@ -126,6 +126,9 @@ button {
     font-weight: 600;
     font-size: 15px;
 }
+.header .brand > img {
+    border-radius: 5px;
+}
 .header nav {
     position: relative;
     display: flex;
@@ -205,25 +208,8 @@ button {
 .hero-copy {
     grid-area: copy;
 }
-.eyebrow {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 3px 10px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: rgb(255 255 255 / 70%);
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 20px;
-}
-.eyebrow::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 0 3px rgb(217 72 15 / 16%);
+.hero-copy h1 {
+    margin-top: 0;
 }
 h1 {
     margin-top: 18px;
@@ -266,13 +252,17 @@ h1 {
     gap: 10px;
     margin-top: 32px;
 }
+.hero-actions [hidden] {
+    display: none;
+}
 .hero-visual {
     grid-area: visual;
+    width: 132%;
     margin: 0;
 }
 .hero-scene {
     position: relative;
-    perspective: 2200px;
+    perspective: 1100px;
 }
 .hero-glow {
     position: absolute;
@@ -284,7 +274,7 @@ h1 {
     filter: blur(48px);
     pointer-events: none;
 }
-/* One high-resolution screenshot, with a gentle perspective and no extra overlay cards. */
+/* The left edge comes toward the viewer while the right edge recedes. */
 .hero-card {
     position: relative;
     aspect-ratio: var(--shot);
@@ -294,7 +284,8 @@ h1 {
         0 0 0 1px rgb(24 24 27 / 8%),
         0 30px 60px -24px rgb(24 24 27 / 38%),
         0 12px 24px -12px rgb(24 24 27 / 18%);
-    transform: rotateX(var(--hero-rx, 3deg)) rotateY(var(--hero-ry, 8deg));
+    transform: rotateX(var(--hero-rx, 0deg)) rotateY(var(--hero-ry, 28deg));
+    transform-origin: left center;
     transition: transform 0.4s var(--ease);
 }
 .hero-card picture,
@@ -1275,6 +1266,9 @@ body:not(.tour-on) .tour {
     .hero-row {
         gap: 36px;
     }
+    .hero-visual {
+        width: 120%;
+    }
 }
 
 @media (max-width: 900px) {
@@ -1286,6 +1280,9 @@ body:not(.tour-on) .tour {
     }
     .hero-card {
         transform: none;
+    }
+    .hero-visual {
+        width: 100%;
     }
 }
 
