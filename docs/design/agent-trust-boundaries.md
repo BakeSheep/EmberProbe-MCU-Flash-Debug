@@ -62,6 +62,20 @@ Mode intent is also bound to the verified connection, selected probe/target, ELF
 address; an identity change requires a new user start. This adds no Agent mode setter or implicit
 approval through workspace configuration.
 
+RTT input (`rtt.write`) reaches firmware code that may act on it, so it is a sensitive operation like a
+variable write. Without full access the first call returns the exact bytes (text, line ending, size and
+SHA-256), the channel and the firmware identity, and a one-time ID bound to those bytes, the down channel,
+the buffer generation and the control-block address; a reattachment or any other byte needs a new plan.
+The 24-hour choice is bound to the channel, ELF path and digest, probe and target configuration; without a
+readable ELF digest only `once` is offered. Text the Agent sends is echoed in the user's RTT terminal with an
+`[Agent]` marker (control characters escaped); raw bytes are not echoed. A write that reached the socket
+reports `written: true`, which says nothing about what the firmware did.
+
+Agent data breakpoints use the sidebar's watchpoint group in the built-in adapter, with the same paused and
+stale-state guards (session, stop epoch, inspection epoch, ELF generation) and the adapter's own snapshot
+generation check. They arm hardware watchpoints only and write no target memory, so, like other breakpoint
+changes, they need no confirmation.
+
 During extension shutdown the Agent Bridge stops first, calls already in flight are refused
 with `EXTENSION_SHUTTING_DOWN`, and no new probe operation can start, so an Agent call cannot
 start OpenOCD after sampling and debugging have been stopped.

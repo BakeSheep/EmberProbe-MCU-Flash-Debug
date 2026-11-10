@@ -15,6 +15,7 @@
 // session, "rtt-log" for the log files, "rtt-channels" for the channel selection). Input problems stay in the panel,
 // next to the box they were typed in.
 
+const fs = require("fs");
 const path = require("path");
 const { SYSTEM_CLOCK } = require("../samplingClock");
 const { AnsiStripper, createRttFormatter } = require("../rttLineFormatter");
@@ -109,7 +110,11 @@ class RttTerminalService {
         this.clock = { ...SYSTEM_CLOCK, ...clock };
         this._controller = controller;
         this._t = t || ((key) => key);
-        this._settings = settings || (() => ({}));
+        // The file the save button chose applies to this window only and overrides the logFile settings.
+        this._logChoice = null;
+        this._lastLogDirectory = null;
+        const configured = settings || (() => ({}));
+        this._settings = () => this._withLogChoice(configured());
         this._onNotice = onNotice || (() => {});
         this._clearNotice = clearNotice;
         this._post = post;
@@ -174,23 +179,50 @@ class RttTerminalService {
         this.settingsChanged();
     }
 
+    // While saving, the button stops. Otherwise every start asks for the file, offering a timestamped name in the
+    // folder used last; the choice is not written to the settings, so the next start asks again.
     async saveLog() {
         const config = this._vscode.workspace.getConfiguration("emberprobe");
-        if (config.get("rtt.logFile.enabled", false)) {
-            await config.update("rtt.logFile.enabled", false, this._configurationTarget());
-        } else {
-            const folders = await this._vscode.window.showOpenDialog({
-                canSelectFiles: false,
-                canSelectFolders: true,
-                canSelectMany: false,
-                defaultUri: this._vscode.workspace.workspaceFolders?.[0]?.uri,
-                openLabel: this._t("rtt.saveLog")
-            });
-            if (!folders?.length) return;
-            await config.update("rtt.logFile.directory", folders[0].fsPath, this._configurationTarget());
-            await config.update("rtt.logFile.enabled", true, this._configurationTarget());
+        if (this._logChoice || config.get("rtt.logFile.enabled", false)) {
+            this._logChoice = null;
+            if (config.get("rtt.logFile.enabled", false))
+                await config.update("rtt.logFile.enabled", false, this._configurationTarget());
+            this.settingsChanged();
+            return false;
         }
+        const settings = this._settings();
+        const raw = settings.logRaw === true;
+        const folder = this._lastLogDirectory || settings.logDirectory || "";
+        const name = `rtt-${fileStamp(this.clock.now())}.${raw ? "bin" : "log"}`;
+        const uri = await this._vscode.window.showSaveDialog({
+            defaultUri: folder ? this._vscode.Uri.file(path.join(folder, name)) : undefined,
+            filters: raw
+                ? { [this._t("rtt.logFilterRaw")]: ["bin"] }
+                : { [this._t("rtt.logFilterText")]: ["log", "txt"] },
+            saveLabel: this._t("rtt.saveLog"),
+            title: this._t("rtt.saveLogDialogTitle")
+        });
+        if (!uri?.fsPath) return false;
+        // The dialog already confirmed replacing an existing file, so the log starts empty instead of appending.
+        try {
+            fs.rmSync(uri.fsPath, { force: true });
+        } catch {
+            /* The writer reports a path it cannot use. */
+        }
+        this._logChoice = uri.fsPath;
+        this._lastLogDirectory = path.dirname(uri.fsPath);
         this.settingsChanged();
+        return true;
+    }
+
+    _withLogChoice(settings) {
+        if (!this._logChoice) return settings;
+        return {
+            ...settings,
+            logEnabled: true,
+            logFile: this._logChoice,
+            logDirectory: path.dirname(this._logChoice)
+        };
     }
 
     // Picks the up channels to read from what the firmware listed last plus the configured ones. Configured entries
@@ -319,7 +351,11 @@ class RttTerminalService {
             selectedChannels: channelEntries(settings.channels ?? [0]).map((entry) => entry.index),
             terminals: this._channels.size,
             timestamps: settings.timestamps === true,
-            log: { enabled: settings.logEnabled === true, directory: settings.logDirectory || "" }
+            log: {
+                enabled: settings.logEnabled === true,
+                directory: settings.logDirectory || "",
+                file: settings.logEnabled === true ? settings.logFile || "" : ""
+            }
         };
     }
 
@@ -693,6 +729,40 @@ class RttTerminalService {
         return { ok: true };
     }
 
+    // The line ending the input box appends (emberprobe.rtt.input.lineEnding), for Agent text input.
+    configuredLineEnding() {
+        return LINE_ENDINGS[this._settings().inputLineEnding] ?? LINE_ENDINGS.lf;
+    }
+
+    // Agent input (rtt.write), already authorized. The same checks as the input box, but failures throw coded errors
+    // for the Bridge. Text input is echoed and logged like a typed line, marked as coming from the Agent, so the user
+    // sees in the panel what was sent; raw bytes are not echoed (the firmware echoes what it wants shown).
+    /** @param {number} channel @param {Buffer} bytes @param {{ echo?: string }} [options] */
+    writeAgentInput(channel, bytes, { echo = undefined } = {}) {
+        const fail = (code, message, details) => Object.assign(new Error(message), { code, details });
+        if (this.state !== "running") throw fail("RTT_NOT_RUNNING", "RTT is not running", { state: this.state });
+        const up = (this._status?.channels?.up || []).find((candidate) => candidate.index === channel);
+        if (!up) throw fail("RTT_UNKNOWN_CHANNEL", `RTT channel ${channel} is not available`, { channel });
+        const down = downSize(this._status, up);
+        if (!down) throw fail("RTT_INPUT_UNAVAILABLE", `RTT channel ${channel} has no down buffer`, { channel });
+        const max = Math.min(down - 1, MAX_WRITE_BYTES); // A ring buffer holds one byte less than its size.
+        if (bytes.length > max)
+            throw fail("RTT_WRITE_TOO_LARGE", `RTT input of ${bytes.length} bytes exceeds ${max}`, {
+                channel,
+                bytes: bytes.length,
+                maxBytes: max
+            });
+        const written = this._controller().write(channel, bytes);
+        const entry = this._channels.get(channel);
+        if (entry && typeof echo === "string") {
+            this._appendLog(entry, `${echo}\r\n`);
+            this._emit(entry, `\x1b[2m${this._t("rtt.agentInputEcho", { text: echo })}\x1b[0m\r\n`);
+            this._flushPanel();
+        }
+        this._postStatus();
+        return { bytes: written, maxBytes: max };
+    }
+
     _notePaused() {
         const active = this._active();
         if (this._paused || !active.length) return;
@@ -788,6 +858,16 @@ class RttTerminalService {
             /* A notice consumer must not break the service. */
         }
     }
+}
+
+// 2026-11-10 14:05:09 local time -> "20261110-140509".
+function fileStamp(ms) {
+    const date = new Date(ms);
+    const two = (value) => String(value).padStart(2, "0");
+    return (
+        `${date.getFullYear()}${two(date.getMonth() + 1)}${two(date.getDate())}-` +
+        `${two(date.getHours())}${two(date.getMinutes())}${two(date.getSeconds())}`
+    );
 }
 
 // The configured up channels as { index, raw }; malformed entries are left to the controller's validation.

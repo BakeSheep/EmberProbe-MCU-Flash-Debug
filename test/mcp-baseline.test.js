@@ -262,8 +262,10 @@ const named = (report, status) => report.steps.filter((step) => step.status === 
             assert.strictEqual(fake.state.verified, 2);
             assert.strictEqual(report.server.name, "emberprobe");
             assert.ok(!JSON.stringify(report).includes('"id-'), "the report contains a confirmation ID");
-            // The baseline walks the core workflow; these newer inspection tools have their own unit tests.
+            // The baseline walks the core workflow; these newer inspection tools have their own unit tests. RTT input
+            // is left out because what it does depends on the firmware under test.
             const notInBaseline = new Set([
+                "rtt_write",
                 "target_control",
                 "watch_list",
                 "watch_remove",

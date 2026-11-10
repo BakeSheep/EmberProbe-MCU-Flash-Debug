@@ -118,8 +118,29 @@ const { AgentService } = require("../src/services/agentService");
             "rtt.status",
             "rtt.read",
             "rtt.start",
-            "rtt.stop"
+            "rtt.stop",
+            "rtt.write",
+            "rtt.input.permission"
         ])
+    );
+    // Data breakpoints go to the sidebar's watchpoint group in the built-in debugger, not to VS Code breakpoints;
+    // listing still answers when no built-in session exists.
+    calls.length = 0;
+    const listed = await bridge.call("debug.breakpoints.list");
+    assert.deepStrictEqual(listed.dataBreakpoints, { available: false, paused: false, entries: [] });
+    const dataHost = {
+        _debugBridge: {
+            activeSession: null,
+            assertUniqueSession() {
+                throw Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE" });
+            }
+        },
+        _sidebarDataBreakpoints: { exclusive: (task) => task(), validateName: (name) => name },
+        _debugControlService: { updateBreakpoints: () => assert.fail("data breakpoints are not VS Code breakpoints") }
+    };
+    await assert.rejects(
+        createAgentRoutes(dataHost)["debug.breakpoints.update"]({ type: "data", action: "add", variable: "g" }),
+        { code: "DEBUG_SESSION_NOT_ACTIVE" }
     );
     const failure = new Error("stale session");
     const guarded = createAgentRoutes({

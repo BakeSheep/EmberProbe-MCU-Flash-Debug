@@ -19,6 +19,15 @@ function sessionFolderKey(session) {
     return session?.workspaceFolder?.uri?.toString?.() || "";
 }
 
+// Bounded description/text of a stopped event (the adapter sets them for data breakpoint hits); other stops have none.
+function stopDetails(body) {
+    const pick = (value) => (typeof value === "string" && value ? value.slice(0, 512) : undefined);
+    const description = pick(body?.description);
+    const text = pick(body?.text);
+    if (!description && !text) return null;
+    return { ...(description ? { description } : {}), ...(text ? { text } : {}) };
+}
+
 function unwrapResponse(value) {
     return value && typeof value === "object" && value.body && typeof value.body === "object"
         ? value.body
@@ -101,6 +110,7 @@ class DebugSessionBridge {
         this.paused = false;
         this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
         this.stopReason = "";
+        this.stopDetails = null;
         this.threadId = null;
         this.stopEpoch = 0;
         this.inspectionEpoch = 0;
@@ -185,6 +195,8 @@ class DebugSessionBridge {
             state,
             paused: state === "paused",
             reason: this.stopReason,
+            // A data breakpoint stop names the variable and, when GDB reports them, its old and new values.
+            ...(this.stopDetails ? { stop: { ...this.stopDetails } } : {}),
             threadId: this.threadId,
             epoch: this.stopEpoch,
             session: session
@@ -357,6 +369,7 @@ class DebugSessionBridge {
             this.paused = false;
             this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
             this.stopReason = "";
+            this.stopDetails = null;
             this.threadId = null;
             this.stopEpoch += 1;
             this.snapshotPending = false;
@@ -371,6 +384,7 @@ class DebugSessionBridge {
                 for (const field of [
                     "paused",
                     "stopReason",
+                    "stopDetails",
                     "threadId",
                     "transitionKind",
                     "transitionCommand",
@@ -580,6 +594,7 @@ class DebugSessionBridge {
             this.transitionRequestSeq = null;
             this.paused = true;
             this.stopReason = String(message.body?.reason || "paused");
+            this.stopDetails = stopDetails(message.body);
             this.threadId = Number.isInteger(message.body?.threadId) ? message.body.threadId : this.threadId;
             this.stopEpoch += 1;
             this.consecutiveErrors = 0;
@@ -605,6 +620,7 @@ class DebugSessionBridge {
             }
             this.paused = false;
             this.stopReason = "";
+            this.stopDetails = null;
             if (Number.isInteger(message.body?.threadId)) this.threadId = message.body.threadId;
             this.stopEpoch += 1;
             this._invalidate();
@@ -626,6 +642,7 @@ class DebugSessionBridge {
             this.transitionRequestSeq = null;
             this.paused = false;
             this.stopReason = message.event;
+            this.stopDetails = null;
             this.stopEpoch += 1;
             this._invalidate();
             this.snapshotPending = false;

@@ -73,11 +73,12 @@ const cubemx2Operation = object(
 const cubemx2CandidateHash = str(".ioc2 only: candidateHash returned by cubemx_prepare with operations", {
     pattern: "^[0-9a-f]{64}$"
 });
-const permissionKinds = { kind: str("Permission store.", { enum: ["flash", "variables", "cubemx"] }) };
+const permissionKinds = { kind: str("Permission store.", { enum: ["flash", "variables", "cubemx", "rtt"] }) };
 const PERMISSION_METHODS = {
     flash: "flash.permission",
     variables: "variables.write.permission",
-    cubemx: "cubemx.permission"
+    cubemx: "cubemx.permission",
+    rtt: "rtt.input.permission"
 };
 
 function timestamp(value, name) {
@@ -297,7 +298,8 @@ const TOOLS = [
         name: "permission_get",
         toolset: "core",
         title: "Read remembered permission",
-        description: "Show whether a 24-hour workspace permission is active for flash, variable writes or CubeMX.",
+        description:
+            "Show whether a 24-hour workspace permission is active for flash, variable writes, CubeMX or RTT input.",
         methods: Object.values(PERMISSION_METHODS),
         inputSchema: object(permissionKinds, ["kind"]),
         request: (args) => ({ method: PERMISSION_METHODS[args.kind], params: { action: "status" } })
@@ -513,11 +515,38 @@ const TOOLS = [
         toolset: "core",
         title: "Start or stop RTT logging",
         description:
-            "Start RTT attachment or stop it. Start returns once launched; poll rtt_status while it retries in the background. Agents cannot send input to the target.",
+            "Start RTT attachment or stop it. Start returns once launched; poll rtt_status while it retries in the background. Send input with rtt_write.",
         methods: ["rtt.start", "rtt.stop"],
         hardware: true,
         inputSchema: object({ action: str("Action", { enum: ["start", "stop"] }) }, ["action"]),
         request: (args) => ({ method: `rtt.${args.action}`, params: {} })
+    },
+    {
+        name: "rtt_write",
+        toolset: "core",
+        title: "Send input to firmware over RTT",
+        description:
+            "Send a line of text (with a line ending) or exact bytes to the firmware through the down buffer of a running RTT channel, as typed in the RTT terminal. Firmware decides what the input does, so this requires the user's approval of the returned plan. Read the reply with rtt_read.",
+        methods: ["rtt.write"],
+        confirm: true,
+        destructive: true,
+        hardware: true,
+        inputSchema: object({
+            channel: int("Up channel whose down buffer receives the input (default 0)", 0, 255),
+            text: str("Text to send; a line ending is appended", { maxLength: 1024 }),
+            lineEnding: str("Line ending after text (default: the RTT terminal's setting)", {
+                enum: ["configured", "lf", "crlf", "cr", "none"]
+            }),
+            dataBase64: str("Exact bytes to send instead of text, base64-encoded", { maxLength: 1368 }),
+            ...confirmation
+        }),
+        // The confirmation ID and remember are added by the confirmation exchange, never taken from the first call.
+        request: ({ channel, text, lineEnding, dataBase64 }) => ({
+            method: "rtt.write",
+            params: Object.fromEntries(
+                Object.entries({ channel, text, lineEnding, dataBase64 }).filter(([, value]) => value !== undefined)
+            )
+        })
     },
     {
         name: "sampling_status",
@@ -638,7 +667,8 @@ const TOOLS = [
         name: "debug_breakpoints_list",
         toolset: "debug",
         title: "List breakpoints",
-        description: "List source and function breakpoints with verification state.",
+        description:
+            "List source and function breakpoints with verification state, plus the built-in debugger's hardware data breakpoints (watchpoints) in dataBreakpoints.",
         methods: ["debug.breakpoints.list"],
         inputSchema: object(),
         request: () => ({ method: "debug.breakpoints.list" })
@@ -737,19 +767,25 @@ const TOOLS = [
         name: "debug_breakpoints_update",
         toolset: "debug",
         title: "Change breakpoints",
-        description: "Add, remove, enable or disable a source breakpoint (file + line) or function breakpoint.",
+        description:
+            "Add, remove, enable or disable a source breakpoint (file + line), function breakpoint, or hardware data breakpoint on a scalar variable (built-in debugger, paused target). Data breakpoints are shared with the sidebar.",
         methods: ["debug.breakpoints.update"],
         inputSchema: object(
             {
                 action: str("Change", { enum: ["add", "remove", "enable", "disable"] }),
-                type: str("Breakpoint kind", { enum: ["source", "function"] }),
+                type: str("Breakpoint kind", { enum: ["source", "function", "data"] }),
                 file: str("Workspace source path for source breakpoints"),
                 line: int("Line", 1, 10000000),
                 column: int("Column", 1, 100000),
                 function: str("Function name for function breakpoints"),
                 condition: str("Condition expression"),
                 hitCondition: str("Hit count condition"),
-                logMessage: str("Logpoint message")
+                logMessage: str("Logpoint message"),
+                variable: str("Data breakpoints: global scalar variable or leaf path (1, 2 or 4 bytes, aligned)"),
+                access: str("Data breakpoints: access that stops the target (default write)", {
+                    enum: ["write", "read", "readWrite"]
+                }),
+                id: str("Data breakpoints: id from debug_breakpoints_list, for remove/enable/disable")
             },
             ["action", "type"]
         ),

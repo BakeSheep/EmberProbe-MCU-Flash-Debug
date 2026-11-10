@@ -189,6 +189,7 @@ class MainViewProvider {
         this._samplingArchive = services.samplingArchive;
         this._chartHistory = services.chartHistory;
         this._writeAuthorization = services.writeAuthorization;
+        this._rttInputAuthorization = services.rttInputAuthorization;
         this._agentPermissions = services.agentPermissions;
         this._peripheralWriteAuthorization = services.peripheralWriteAuthorization;
         this._flashAuthorization = services.flashAuthorization;

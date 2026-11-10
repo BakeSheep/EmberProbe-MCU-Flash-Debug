@@ -1,7 +1,9 @@
 "use strict";
 
 const assert = require("assert");
+const crypto = require("crypto");
 const { scenario } = require("./helpers/scenario");
+const { RttInputAuthorization } = require("../src/rttInputAuthorization");
 const { createAgentRoutes } = require("../src/services/agentRoutes");
 const { RttController } = require("../src/services/rttController");
 const { RttTerminalService } = require("../src/services/rttTerminalService");
@@ -23,6 +25,56 @@ function fixture() {
     controller.onStatus = (status) => terminals.onStatus(status);
     const host = { _rtt: controller, _rttTerminals: terminals };
     return { controller, terminals, notices, posts, routes: createAgentRoutes(host) };
+}
+
+// A running two-channel attachment with a recording terminal, a real authorization and in-memory workspace state.
+function writeFixture() {
+    const values = new Map([
+        ["mcu.elfPath", "C:/fw/app.elf"],
+        ["mcu.debugger", "interface/stlink.cfg"],
+        ["mcu.mcuCore", "target/stm32h7x.cfg"]
+    ]);
+    const storage = {
+        get: (key) => values.get(key),
+        update: async (key, value) => (value === undefined ? values.delete(key) : values.set(key, value))
+    };
+    const writes = [];
+    const raw = [];
+    const host = {
+        state: "running",
+        generation: 1,
+        elfSha256: "abc",
+        fullAccess: false,
+        _context: { workspaceState: storage },
+        readElfSymbols: () => ({ elf: { sha256: host.elfSha256 } }),
+        _rtt: {
+            status: () => ({
+                state: host.state,
+                block: { address: 0x20000000 },
+                channels: {
+                    up: [{ index: 0 }, { index: 1 }],
+                    down: [
+                        { index: 0, size: 64 },
+                        { index: 1, size: 64 }
+                    ]
+                },
+                buffers: [
+                    { channel: 0, generation: host.generation },
+                    { channel: 1, generation: host.generation }
+                ]
+            })
+        },
+        _rttTerminals: {
+            configuredLineEnding: () => "\n",
+            writeAgentInput(channel, bytes, { echo }) {
+                raw.push(bytes);
+                writes.push({ channel, data: bytes.toString("utf8"), echo });
+                return { bytes: bytes.length, maxBytes: 63 };
+            }
+        }
+    };
+    host._rttInputAuthorization = new RttInputAuthorization(storage, { fullAccess: () => host.fullAccess });
+    return { host, storage, writes, raw, routes: createAgentRoutes(host) };
 }
 
 (async () => {
@@ -288,23 +340,64 @@ function fixture() {
         assert.strictEqual(stops, 2);
     });
 
-    await scenario("No RTT write surface exists in routes, tools or the skill client", () => {
+    await scenario("RTT input is exposed through one confirmed route, tool and skill option", () => {
         const routes = Object.keys(createAgentRoutes({})).filter((method) => method.startsWith("rtt."));
-        assert.deepStrictEqual(routes, ["rtt.status", "rtt.read", "rtt.start", "rtt.stop"]);
+        assert.deepStrictEqual(routes, [
+            "rtt.status",
+            "rtt.read",
+            "rtt.start",
+            "rtt.stop",
+            "rtt.write",
+            "rtt.input.permission"
+        ]);
         assert.deepStrictEqual(
             TOOLS.filter((tool) => tool.name.startsWith("rtt_")).map((tool) => tool.name),
-            ["rtt_status", "rtt_read", "rtt_control"]
+            ["rtt_status", "rtt_read", "rtt_control", "rtt_write"]
         );
+        const tool = TOOLS.find((entry) => entry.name === "rtt_write");
+        assert.strictEqual(tool.confirm, true);
+        assert.strictEqual(tool.destructive, true);
+        assert.deepStrictEqual(tool.request({ text: "help", confirmationId: "x", remember: true }), {
+            method: "rtt.write",
+            params: { text: "help" }
+        });
         for (const method of ["status", "read", "start", "stop"])
             assert.strictEqual(args([`--${method}`]).method, `rtt.${method}`);
+        assert.deepStrictEqual(args(["--write", "--text", "--help", "--channel", "1"]), {
+            workspace: process.cwd(),
+            method: "rtt.write",
+            params: { text: "--help", channel: 1 }
+        });
+        assert.deepStrictEqual(args(["--write", "--data-base64", "AQI=", "--confirm", "id", "--remember"]).params, {
+            dataBase64: "AQI=",
+            confirmationId: "id",
+            remember: true
+        });
+        assert.deepStrictEqual(args(["--reset-permission"]), {
+            workspace: process.cwd(),
+            method: "rtt.input.permission",
+            params: { action: "reset" }
+        });
         for (const argv of [
             ["--write", "x"],
             ["--read", "--data", "x"],
             ["--start", "--input", "x"]
         ])
             assert.throws(() => args(argv), /Unknown argument/);
-        for (const set of [client.OBSERVATION_METHODS, client.READ_ONLY_METHODS, client.DRIVER_SETUP_METHODS])
-            assert.strictEqual(set.has("rtt.write"), false);
+        for (const argv of [
+            ["--write"],
+            ["--write", "--text", "a", "--data-base64", "AQ=="],
+            ["--write", "--data-base64", "AQ==", "--line-ending", "lf"],
+            ["--write", "--text", "a", "--remember"],
+            ["--write", "--text", "a", "--line-ending", "LF"],
+            ["--read", "--text", "a"],
+            ["--write", "--text", "a", "--cursor", "1"],
+            ["--status", "--text", "a"]
+        ])
+            assert.throws(() => args(argv), Error, JSON.stringify(argv));
+        for (const set of [client.READ_ONLY_METHODS, client.OBSERVATION_METHODS, client.DRIVER_SETUP_METHODS])
+            assert.strictEqual(set.has("rtt.write"), false, "RTT input is state-changing and never retried");
+        assert.strictEqual(client.OBSERVATION_METHODS.has("rtt.input.permission"), true);
         assert.strictEqual(client.DRIVER_SETUP_METHODS.has("rtt.start"), true);
         assert.strictEqual(client.DRIVER_SETUP_METHODS.has("rtt.read"), false);
         assert.strictEqual(client.DRIVER_SETUP_METHODS.has("rtt.status"), false);
@@ -319,6 +412,113 @@ function fixture() {
             assert.ok(diagnostic.error.actions.some((action) => action.method === "rtt.status"));
         }
     });
+    await scenario("RTT input asks for a plan-bound confirmation and writes only the approved bytes", async () => {
+        const { host, routes, writes, storage } = writeFixture();
+        const plan = await routes["rtt.write"]({ text: "reset now" });
+        assert.strictEqual(plan.confirmationRequired, true);
+        assert.deepStrictEqual(plan.choices, ["once", "workspace", "deny"]);
+        assert.deepStrictEqual(plan.rttInput, {
+            channel: 0,
+            downChannel: 0,
+            bytes: 10,
+            sha256: crypto.createHash("sha256").update("reset now\n").digest("hex"),
+            text: "reset now",
+            lineEnding: "\n"
+        });
+        assert.deepStrictEqual(plan.elf, { path: "C:/fw/app.elf", sha256: "abc" });
+        assert.deepStrictEqual(writes, [], "the plan writes nothing");
+        // The ID is bound to the bytes: other text or another ending is refused.
+        for (const changed of [{ text: "reset" }, { text: "reset now", lineEnding: "crlf" }])
+            await assert.rejects(routes["rtt.write"]({ ...changed, confirmationId: plan.confirmationId }), {
+                code: "RTT_INPUT_CONFIRMATION_INVALID"
+            });
+        const again = await routes["rtt.write"]({ text: "reset now" });
+        const done = await routes["rtt.write"]({ text: "reset now", confirmationId: again.confirmationId });
+        assert.strictEqual(done.written, true);
+        assert.strictEqual(done.authorization.mode, "once");
+        assert.deepStrictEqual(writes, [{ channel: 0, data: "reset now\n", echo: "reset now" }]);
+        await assert.rejects(routes["rtt.write"]({ text: "reset now", confirmationId: again.confirmationId }), {
+            code: "RTT_INPUT_CONFIRMATION_INVALID"
+        });
+        // A reattachment between plan and confirmation invalidates the ID.
+        const stale = await routes["rtt.write"]({ text: "x", lineEnding: "none" });
+        host.generation = 9;
+        await assert.rejects(
+            routes["rtt.write"]({ text: "x", lineEnding: "none", confirmationId: stale.confirmationId }),
+            { code: "RTT_INPUT_CONFIRMATION_INVALID" }
+        );
+        assert.strictEqual(storage.get("agent.rttInputTrusted"), undefined, "once never remembers");
+    });
+
+    await scenario("A remembered RTT input grant covers one channel of one firmware build", async () => {
+        const { host, routes, writes } = writeFixture();
+        await assert.rejects(routes["rtt.write"]({ text: "a", remember: true }), {
+            code: "RTT_INPUT_CONFIRMATION_INVALID"
+        });
+        const plan = await routes["rtt.write"]({ text: "a" });
+        const done = await routes["rtt.write"]({ text: "a", confirmationId: plan.confirmationId, remember: true });
+        assert.strictEqual(done.authorization.mode, "workspace");
+        assert.strictEqual(done.authorization.trusted, true);
+        const direct = await routes["rtt.write"]({ text: "b" });
+        assert.strictEqual(direct.written, true);
+        assert.strictEqual(direct.authorization.mode, "workspace");
+        assert.strictEqual(writes.length, 2);
+        assert.strictEqual((await routes["rtt.write"]({ channel: 1, text: "b" })).confirmationRequired, true);
+        host.elfSha256 = "rebuilt";
+        assert.strictEqual((await routes["rtt.write"]({ text: "b" })).confirmationRequired, true);
+        host.elfSha256 = "abc";
+        const summary = await routes["rtt.input.permission"]({});
+        assert.deepStrictEqual(
+            summary.grants.map((grant) => grant.channel),
+            [0]
+        );
+        await routes["rtt.input.permission"]({ action: "reset" });
+        assert.strictEqual((await routes["rtt.write"]({ text: "b" })).confirmationRequired, true);
+        // Without a known ELF digest only a one-time approval is offered.
+        host.elfSha256 = "";
+        const anonymous = await routes["rtt.write"]({ text: "b" });
+        assert.deepStrictEqual(anonymous.choices, ["once", "deny"]);
+        await assert.rejects(
+            routes["rtt.write"]({ text: "b", confirmationId: anonymous.confirmationId, remember: true }),
+            { code: "RTT_INPUT_CONFIRMATION_INVALID" }
+        );
+    });
+
+    await scenario("Full access writes RTT input directly; raw bytes are sent exactly and not echoed", async () => {
+        const { host, routes, writes, raw } = writeFixture();
+        host.fullAccess = true;
+        const done = await routes["rtt.write"]({ dataBase64: Buffer.from([3, 0x1b, 0xff]).toString("base64") });
+        assert.strictEqual(done.authorization.mode, "full");
+        assert.strictEqual(writes[0].echo, undefined);
+        assert.deepStrictEqual([...raw[0]], [3, 0x1b, 0xff]);
+        // Control characters in text are echoed as escapes, never as live terminal sequences.
+        await routes["rtt.write"]({ text: "a\x1b[2Jb\tc", lineEnding: "none" });
+        assert.strictEqual(writes[1].echo, "a\\x1b[2Jb\tc");
+    });
+
+    await scenario("RTT input validates its parameters and the attachment before asking", async () => {
+        const { host, routes, writes } = writeFixture();
+        for (const params of [
+            {},
+            { text: "a", dataBase64: "AQ==" },
+            { text: 1 },
+            { text: "a", lineEnding: "LF" },
+            { dataBase64: "AQ==", lineEnding: "lf" },
+            { dataBase64: "not base64!" },
+            { dataBase64: "" },
+            { text: "", lineEnding: "none" },
+            { text: "x".repeat(1024) },
+            { channel: 256, text: "a" },
+            { channel: "0", text: "a" },
+            { text: "a", unknown: true }
+        ])
+            await assert.rejects(routes["rtt.write"](params), { code: "INVALID_PARAMS" }, JSON.stringify(params));
+        await assert.rejects(routes["rtt.write"]({ channel: 5, text: "a" }), { code: "RTT_UNKNOWN_CHANNEL" });
+        host.state = "stopped";
+        await assert.rejects(routes["rtt.write"]({ text: "a" }), { code: "RTT_NOT_RUNNING" });
+        assert.deepStrictEqual(writes, []);
+    });
+
     console.log("RTT Agent tests passed");
 })().catch((error) => {
     console.error(error);

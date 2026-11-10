@@ -90,6 +90,30 @@ const DIAGNOSTICS = {
         ["仅按用户要求通过 {{config}} 修正 RTT 地址。"],
         false
     ],
+    RTT_INPUT_UNAVAILABLE: [
+        "rtt_firmware",
+        "该 RTT 通道没有 down 缓冲，输入无法送达固件。",
+        ["用 {{method:rtt.status}} 查看 channels.down，改用固件配置了 down 缓冲的通道；不要为发送输入修改固件或配置。"],
+        false
+    ],
+    RTT_WRITE_TOO_LARGE: [
+        "rtt_input",
+        "输入超过 down 缓冲或单次 1024 字节的上限，未发送。",
+        ["按 details.maxBytes 缩短输入；不要自行拆分用户的命令，除非用户同意。"],
+        false
+    ],
+    RTT_INPUT_BUSY: [
+        "rtt_input",
+        "上一次 RTT 输入仍在发送。",
+        ["先用 {{method:rtt.read}} 读取固件回复，稍后再发送；不要自动重发。"],
+        true
+    ],
+    RTT_INPUT_CONFIRMATION_INVALID: [
+        "user_decision",
+        "RTT 输入确认已过期、已使用，或输入、通道、RTT 连接发生变化。",
+        ["重新请求发送计划，并在聊天中获得用户明确授权后使用新的 confirmationId。"],
+        false
+    ],
     RTT_INVALID_RANGE: [
         "rtt_configuration",
         "RTT 搜索范围无效。",
@@ -579,6 +603,30 @@ const DIAGNOSTICS = {
         ["检查 {{source}} 路径与工作区。"],
         false
     ],
+    DATA_BREAKPOINT_SESSION_UNSUPPORTED: [
+        "debug_configuration",
+        "数据断点只能用于 EmberProbe 内置调试器会话。",
+        ["使用 {{debugStart}} 启动内置调试器；不要改用外部 GDB 服务器。"],
+        false
+    ],
+    DATA_BREAKPOINT_UNSUPPORTED: [
+        "debug_value",
+        "该变量不能设置数据断点：只支持 ELF 中的全局标量或叶子路径。",
+        ["用 {{list}} 选择 1、2 或 4 字节的标量成员；结构体、位域和运行时显示路径不受支持。"],
+        false
+    ],
+    DATA_BREAKPOINT_UNAVAILABLE: [
+        "debug_value",
+        "无法解析该变量的固定存储地址，或其宽度/对齐不适合硬件观察点。",
+        ["根据 message 选择 1、2 或 4 字节且地址对齐的变量。"],
+        false
+    ],
+    DATA_BREAKPOINT_FAILED: [
+        "debug_resources",
+        "调试器未能设置或更新数据断点，常见原因是硬件观察点比较器已用完。",
+        ["先用 {{breakpoints}} 查看现有数据断点，按用户意见移除不需要的后再试。"],
+        false
+    ],
     BREAKPOINT_NOT_FOUND: [
         "debug_configuration",
         "没有找到要删除或切换的断点。",
@@ -623,6 +671,7 @@ const OBSERVATION_METHODS = new Set([
     "sampling.status",
     "rtt.status",
     "rtt.read",
+    "rtt.input.permission",
     "flash.permission",
     "variables.write.permission",
     "cubemx.permission"
@@ -650,6 +699,7 @@ const DRIVER_SETUP_METHODS = new Set([
 const STATUS_QUERY_FOR = {
     "rtt.start": "rtt.status",
     "rtt.stop": "rtt.status",
+    "rtt.write": "rtt.read",
     "chip.read": "probe.list",
     "fault.read": "probe.list",
     "peripherals.read": "probe.list",

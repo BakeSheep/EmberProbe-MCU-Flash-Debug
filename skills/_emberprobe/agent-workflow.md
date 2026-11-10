@@ -43,8 +43,8 @@ retain one-time-only Flash/variable-write permission, and a mismatched ELF still
 
 When `confirmationRequired` is true, confirm sensitive Bridge operations in the Agent conversation. Show the returned concrete
 plan and wait for the human's answer before submitting its confirmation ID. Flash programming,
-variable/peripheral writes, CubeMX generation, and Flash verification that temporarily halts
-the target use plan-bound IDs; EmberProbe does not show a second operation approval dialog.
+variable/peripheral writes, RTT input to the firmware, CubeMX generation, and Flash verification
+that temporarily halts the target use plan-bound IDs; EmberProbe does not show a second operation approval dialog.
 Pass `remember` only when the human explicitly chooses the documented 24-hour permission.
 Honor the returned `choices`: a probe without a reliable USB serial permits `once` only,
 even when the user previously granted workspace write trust. Its confirmation binds the
@@ -103,7 +103,7 @@ evidence that hardware is disconnected.
   `variables.sample`, `variables.exportCsv`): if preconditions are unchanged, retry **at most once**.
   If it fails again, stop and report the diagnostic.
 - **State-changing calls** (`config.set`, `debug.start`, `debug.control`, `target.control`, `watch.add`, `watch.remove`,
-  `debug.breakpoints.update`, `peripherals.write`, `variables.write`, flash programming): a
+  `debug.breakpoints.update`, `peripherals.write`, `variables.write`, `rtt.write`, flash programming): a
   transport timeout means the **result is unknown** (`details.resultUnknown` is `true`). The
   request may have taken effect, not taken effect, or still be running. **Do not resend it
   automatically.** Query the matching read-only method to learn the real state, report it, and
@@ -125,7 +125,9 @@ evidence that hardware is disconnected.
   `mcu-chip-info`; crash diagnosis via `mcu-fault-analyzer`; variables via `mcu-variables`;
   registers via `mcu-peripheral-debug`; session control and paused C/C++ object inspection via
   `mcu-debug-control`; RTOS task metadata via `mcu-rtos`; flashing via `mcu-flash`.
-- Read firmware RTT output and control its attachment via `mcu-rtt`; Agents cannot send target input.
+- Read firmware RTT output, control its attachment and send user-approved input via `mcu-rtt`.
+- Hardware data breakpoints (stop when a variable is written or read) via `mcu-debug-control`; they need a paused
+  built-in EmberProbe debug session and are shared with the sidebar.
 - Distinguish **no hardware dependency** from **no Bridge dependency**. Some reads need no probe
   (ELF analysis, `peripherals.list`, `config.get`) but every skill still needs the Bridge to be
   reachable; a Bridge failure is an extension/activation problem, not a wiring problem.

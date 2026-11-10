@@ -36,7 +36,7 @@ const root = path.resolve(__dirname, "..");
         const peripheral = path.join(root, "skills", "mcu-peripheral-debug", "scripts", "peripheral.js");
         const debug = path.join(root, "skills", "mcu-debug-control", "scripts", "debug.js");
 
-        await scenario("RTT CLI validates options and sends only the four supported Bridge methods", async () => {
+        await scenario("RTT CLI validates options and sends only its supported Bridge methods", async () => {
             const rtt = path.join(root, "skills", "mcu-rtt", "scripts", "rtt.js");
             for (const argv of [
                 [],
@@ -89,10 +89,10 @@ const root = path.resolve(__dirname, "..");
                 maxBytes: 65536,
                 encoding: "base64"
             });
-            await assert.rejects(execFileAsync(process.execPath, [rtt, "--write", "input"]), (error) => {
+            await assert.rejects(execFileAsync(process.execPath, [rtt, "--input", "x"]), (error) => {
                 const diagnostic = JSON.parse(error.stderr);
                 assert.strictEqual(diagnostic.type, "diagnostic");
-                assert.match(diagnostic.error.message, /Unknown argument: --write/);
+                assert.match(diagnostic.error.message, /Unknown argument: --input/);
                 return true;
             });
         });
@@ -224,6 +224,44 @@ const root = path.resolve(__dirname, "..");
         );
         assert.strictEqual(fn.params.action, "remove");
         assert.strictEqual(fn.params.function, "main");
+        const data = JSON.parse(
+            (
+                await execFileAsync(process.execPath, [
+                    debug,
+                    "--workspace",
+                    workspace,
+                    "--add-breakpoint",
+                    "--data",
+                    "g_state",
+                    "--access",
+                    "read",
+                    "--condition",
+                    "g_state == 2"
+                ])
+            ).stdout
+        );
+        assert.deepStrictEqual(data.params, {
+            action: "add",
+            type: "data",
+            variable: "g_state",
+            access: "read",
+            condition: "g_state == 2"
+        });
+        const { args: debugArgs, request: debugRequest } = require("../skills/mcu-debug-control/scripts/debug");
+        assert.deepStrictEqual(debugRequest(debugArgs(["--disable-breakpoint", "--id", "3"])).params, {
+            action: "disable",
+            type: "data",
+            id: "3"
+        });
+        for (const argv of [
+            ["--add-breakpoint", "--data", "g", "--source", "a.c", "--line", "1"],
+            ["--add-breakpoint", "--data", "g", "--hit-condition", "2"],
+            ["--add-breakpoint", "--id", "3"],
+            ["--add-breakpoint", "--data", "g", "--access", "execute"],
+            ["--remove-breakpoint", "--access", "read"],
+            ["--remove-breakpoint", "--id", "3", "--condition", "x"]
+        ])
+            assert.throws(() => debugRequest(debugArgs(argv)), Error, JSON.stringify(argv));
         assert(calls.some((entry) => entry.method === "peripherals.write"));
         assert(calls.some((entry) => entry.method === "debug.breakpoints.update"));
     } finally {

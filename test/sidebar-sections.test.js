@@ -254,9 +254,10 @@ scenario("RTT controls follow state, language and probe-driver ownership", async
                 selectedChannels: [0, 2],
                 terminals: 1,
                 timestamps: true,
-                log: { enabled: true, directory: "C:/logs" }
+                log: { enabled: true, directory: "C:/logs", file: "C:/logs/rtt-1.log" }
             }
         });
+        assert.match(saveLog.title, /Saving to C:\/logs\/rtt-1\.log/, "the save button names its file on hover");
         const channelPick = view.document.getElementById("rttChannelPick");
         assert.strictEqual(channelPick.textContent, "Channels 0, 2", "the card names the channels it reads");
         assert.strictEqual(terminals.disabled, false);
@@ -264,8 +265,9 @@ scenario("RTT controls follow state, language and probe-driver ownership", async
         assert.strictEqual(view.document.getElementById("rttTimestamps").getAttribute("aria-pressed"), "true");
         assert.strictEqual(view.document.getElementById("rttLogPath"), null, "the save path is not loose text");
         const box = view.document.getElementById("noticeRtt");
-        const head = view.document.querySelector("#rttSection .live-head");
-        assert.strictEqual(head.nextElementSibling, box, "notices sit right under the state they explain");
+        const options = view.document.querySelector("#rttSection .rtt-options");
+        assert.strictEqual(options.nextElementSibling, box, "notices sit under the card's buttons");
+        assert.strictEqual(view.window.getComputedStyle(options).justifyContent, "flex-end", "buttons align right");
         const section = view.document.getElementById("rttSection");
         section.open = false;
         view.send({
@@ -286,6 +288,7 @@ scenario("RTT controls follow state, language and probe-driver ownership", async
         view.send({ type: "rttStatus", state: "stopped", reason: "host-lost" });
         assert.match(view.document.getElementById("rttState").className, /err/);
         view.send({ ...running, view: { terminals: 1, timestamps: false, log: { enabled: false, directory: "" } } });
+        assert.match(saveLog.title, /Choose a log file/, "a stopped log goes back to the plain hint");
         view.send({ type: "setLang", lang: "zh" });
         assert.strictEqual(toggle.textContent, "停止");
         assert.strictEqual(channelPick.textContent, "通道 0", "an older view without a selection means channel 0");

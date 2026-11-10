@@ -10,6 +10,7 @@ const TEST_GROUPS = Object.freeze({
     fast: Object.freeze([
         "agent-access.test.js",
         "agent-chat-confirmation.test.js",
+        "agent-data-breakpoints.test.js",
         "agent-permissions.test.js",
         "agent-routes.test.js",
         "agent-sampling-control.test.js",

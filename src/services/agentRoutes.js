@@ -3,6 +3,7 @@ const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
 const { normalizeInventoryQuery } = require("../../skills/_emberprobe/probe-profile");
 const { AgentDebugInspection } = require("./agentDebugInspection");
 const { RttAgentService } = require("./rttAgentService");
+const { AgentDataBreakpoints } = require("./agentDataBreakpoints");
 
 function createAgentRoutes(host, probes = listProbes) {
     const listProbes = probes;
@@ -10,6 +11,13 @@ function createAgentRoutes(host, probes = listProbes) {
     const rtt = new RttAgentService(host);
     // One instance keeps the handle table shared by inspect, evaluate and memory reads.
     const debugInspection = () => (inspection ||= new AgentDebugInspection(host._debugBridge));
+    let watchpoints;
+    const dataBreakpoints = () =>
+        (watchpoints ||= new AgentDataBreakpoints({
+            host,
+            bridge: host._debugBridge,
+            group: host._sidebarDataBreakpoints
+        }));
     return {
         "config.get": () => host._configurationSnapshot(),
         "probe.list": async (params = {}) => {
@@ -72,6 +80,8 @@ function createAgentRoutes(host, probes = listProbes) {
         "rtt.read": (params) => rtt.read(params),
         "rtt.start": (params) => rtt.start(params),
         "rtt.stop": (params) => rtt.stop(params),
+        "rtt.write": (params) => rtt.write(params),
+        "rtt.input.permission": (params) => rtt.permission(params),
         "variables.write": (params) => host._writes.writeAgentVariables(params),
         "variables.write.permission": (params) => host._writes.agentPermission(params),
         "chip.read": () => host.readChipInfoAction(true),
@@ -96,8 +106,15 @@ function createAgentRoutes(host, probes = listProbes) {
         "debug.select": (params) => host._selectDebugSession(params || {}),
         "debug.start": (params) => host._debugControlService.start(params || {}),
         "debug.control": (params) => host._debugControlService.control(params || {}),
-        "debug.breakpoints.list": () => host._debugControlService.listBreakpoints(),
-        "debug.breakpoints.update": (params) => host._debugControlService.updateBreakpoints(params || {})
+        "debug.breakpoints.list": async () => ({
+            ...(await host._debugControlService.listBreakpoints()),
+            dataBreakpoints: await dataBreakpoints().list()
+        }),
+        // Data breakpoints are the sidebar's watchpoint group in the built-in debugger, not VS Code breakpoints.
+        "debug.breakpoints.update": (params) =>
+            params?.type === "data"
+                ? dataBreakpoints().update(params)
+                : host._debugControlService.updateBreakpoints(params || {})
     };
 }
 module.exports = { createAgentRoutes };

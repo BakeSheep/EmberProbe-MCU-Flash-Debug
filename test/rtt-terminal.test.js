@@ -780,6 +780,36 @@ const panelChannels = (panel) =>
         await service.stopCommand();
     });
 
+    await scenario(
+        "Agent input is refused with codes when it cannot be delivered and is echoed as the Agent's",
+        async () => {
+            const channels = { up: twoChannels.up, down: [{ index: 0, size: 8 }] };
+            const { service, controller, panel } = makeService({ channels, settings: { inputLineEnding: "crlf" } });
+            assert.throws(() => service.writeAgentInput(0, Buffer.from("a")), { code: "RTT_NOT_RUNNING" });
+            await service.startCommand();
+            const fired = outputOf(panel, 0);
+            assert.strictEqual(service.configuredLineEnding(), "\r\n");
+            assert.throws(() => service.writeAgentInput(2, Buffer.from("a")), { code: "RTT_INPUT_UNAVAILABLE" });
+            assert.throws(() => service.writeAgentInput(1, Buffer.from("a")), { code: "RTT_UNKNOWN_CHANNEL" });
+            assert.throws(
+                () => service.writeAgentInput(0, Buffer.from("12345678")),
+                (error) => error.code === "RTT_WRITE_TOO_LARGE" && error.details.maxBytes === 7
+            );
+            assert.deepStrictEqual(controller.writes, [], "a refused input sends nothing");
+            assert.deepStrictEqual(service.writeAgentInput(0, Buffer.from("ls\r\n"), { echo: "ls" }), {
+                bytes: 4,
+                maxBytes: 7
+            });
+            service.writeAgentInput(0, Buffer.from([3]));
+            assert.deepStrictEqual(
+                controller.writes.map((write) => write.data),
+                ["ls\r\n", "\x03"]
+            );
+            assert.strictEqual(fired().split("rtt.agentInputEcho").length - 1, 1, "only text input is echoed");
+            await service.stopCommand();
+        }
+    );
+
     await scenario("the log keeps session marks and only the input that was sent", async () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-rtt-term-"));
         const logFile = path.join(dir, "rtt.log");
@@ -852,7 +882,7 @@ const panelChannels = (panel) =>
         assert.strictEqual(noticeIds[0], "rtt-log");
         service.settingsChanged();
         assert.strictEqual(notices.length, 2);
-        assert.deepStrictEqual(posted.at(-1).view.log, { enabled: true, directory: "" });
+        assert.deepStrictEqual(posted.at(-1).view.log, { enabled: true, directory: "", file: "" });
         await service.stopCommand();
     });
 
@@ -883,7 +913,7 @@ const panelChannels = (panel) =>
             selectedChannels: [0],
             terminals: 0,
             timestamps: false,
-            log: { enabled: false, directory: "C:/logs" }
+            log: { enabled: false, directory: "C:/logs", file: "" }
         });
         settings.timestamps = true;
         service.settingsChanged();
@@ -1104,18 +1134,53 @@ const panelChannels = (panel) =>
                 }
             })
         };
-        vscode.window.showOpenDialog = async () => selected;
-        const { service } = makeService({ vscode });
+        const dialogs = [];
+        vscode.Uri = { file: (fsPath) => ({ fsPath }) };
+        vscode.window.showSaveDialog = async (options) => (dialogs.push(options), selected);
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rtt-save-"));
+        const { service, clock, posted } = makeService({ vscode, settings: { logDirectory: "C:/work" } });
         await service.toggleTimestamps();
         assert.deepStrictEqual(updates.pop(), { key: "rtt.timestamps", value: true, target: 2 });
-        await service.saveLog();
+        assert.strictEqual(await service.saveLog(), false, "a cancelled dialog saves nothing");
         assert.deepStrictEqual(updates, []);
-        selected = [{ fsPath: "C:/logs" }];
-        await service.saveLog();
-        assert.strictEqual(values["rtt.logFile.directory"], "C:/logs");
-        assert.strictEqual(values["rtt.logFile.enabled"], true);
-        await service.saveLog();
-        assert.strictEqual(values["rtt.logFile.enabled"], false);
+        assert.strictEqual(posted.at(-1)?.view?.log?.enabled ?? false, false);
+        const stamp = new Date(clock.now());
+        const two = (value) => String(value).padStart(2, "0");
+        assert.strictEqual(
+            dialogs[0].defaultUri.fsPath,
+            path.join(
+                "C:/work",
+                `rtt-${stamp.getFullYear()}${two(stamp.getMonth() + 1)}${two(stamp.getDate())}-` +
+                    `${two(stamp.getHours())}${two(stamp.getMinutes())}${two(stamp.getSeconds())}.log`
+            ),
+            "the first dialog offers a timestamped name in the configured folder"
+        );
+        try {
+            const first = path.join(dir, "first.log");
+            fs.writeFileSync(first, "old session");
+            selected = { fsPath: first };
+            assert.strictEqual(await service.saveLog(), true);
+            assert.strictEqual(fs.existsSync(first), false, "a confirmed replacement starts an empty log");
+            assert.deepStrictEqual(updates, [], "the chosen file is not written to the settings");
+            assert.deepStrictEqual(posted.at(-1).view.log, { enabled: true, directory: dir, file: first });
+            assert.strictEqual(service._settings().logFile, first);
+            assert.strictEqual(await service.saveLog(), false, "clicking while saving stops");
+            assert.strictEqual(posted.at(-1).view.log.enabled, false);
+            assert.strictEqual(service._settings().logFile, "");
+            selected = { fsPath: path.join(dir, "second.log") };
+            await service.saveLog();
+            assert.strictEqual(dialogs.length, 3, "every start asks for the file again");
+            assert.strictEqual(path.dirname(dialogs[2].defaultUri.fsPath), dir, "starting in the folder used last");
+            assert.strictEqual(service._settings().logFile, selected.fsPath);
+            await service.saveLog();
+            // A log the settings turned on is stopped by the button too.
+            values["rtt.logFile.enabled"] = true;
+            assert.strictEqual(await service.saveLog(), false);
+            assert.strictEqual(values["rtt.logFile.enabled"], false);
+            assert.strictEqual(dialogs.length, 3);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
         vscode.workspace.workspaceFolders = [];
         await service.toggleTimestamps();
         assert.deepStrictEqual(updates.at(-1), { key: "rtt.timestamps", value: false, target: 1 });

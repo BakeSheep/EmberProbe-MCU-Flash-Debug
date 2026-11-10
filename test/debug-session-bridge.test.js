@@ -146,6 +146,23 @@ async function testBackgroundStatusBroadcasts(debugType) {
 }
 
 (async () => {
+    await scenario("a data breakpoint stop reports its description until the target resumes", () => {
+        const bridge = new DebugSessionBridge({ schedule: clock.schedule, cancel: clock.cancel, now: clock.now });
+        const session = { id: "one", type: "emberprobe", configuration: {} };
+        bridge.attach(session);
+        bridge.handleMessage(session, { type: "event", event: "stopped", body: { reason: "breakpoint", threadId: 1 } });
+        assert.strictEqual("stop" in bridge.agentStatus(), false, "ordinary stops carry no details");
+        bridge.handleMessage(session, {
+            type: "event",
+            event: "stopped",
+            body: { reason: "data breakpoint", threadId: 1, description: "counter changed", text: "1 -> 2", x: 1 }
+        });
+        assert.strictEqual(bridge.agentStatus().reason, "data breakpoint");
+        assert.deepStrictEqual(bridge.agentStatus().stop, { description: "counter changed", text: "1 -> 2" });
+        bridge.handleMessage(session, { type: "event", event: "continued", body: { threadId: 1 } });
+        assert.strictEqual("stop" in bridge.agentStatus(), false, "resuming clears the details");
+        bridge.dispose();
+    });
     {
         await testBackgroundStatusBroadcasts("emberprobe");
         const groups = mergeReadPlan([

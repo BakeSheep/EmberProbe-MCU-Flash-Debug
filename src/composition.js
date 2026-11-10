@@ -14,6 +14,7 @@ const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization } = require("./writeAuthorization");
 const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization");
 const { FlashAuthorization } = require("./flashAuthorization");
+const { RttInputAuthorization } = require("./rttInputAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
 const { CACHE_KEYS } = require("./cacheKeys");
 const { inspectElf } = require("../skills/_emberprobe/elf-file");
@@ -515,6 +516,7 @@ function createServices(host, context, { vscode }) {
         rtosViewService: new RtosViewService(debugBridge),
         agentPermissions,
         writeAuthorization: new WriteAuthorization(context.workspaceState, { fullAccess }),
+        rttInputAuthorization: new RttInputAuthorization(context.workspaceState, { fullAccess }),
         peripheralWriteAuthorization,
         flashAuthorization,
         firmwareRecord,

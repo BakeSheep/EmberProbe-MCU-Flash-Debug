@@ -471,6 +471,25 @@ const inspection = new AgentDebugInspection(debugBridge);
                 ]
             });
             assert.ok(summary.includes("GPIOA.ODR.ODR31 = 1]"), summary);
+            // RTT input is shown whole, with control characters and the line ending made visible.
+            const input = confirm.summary({
+                question: "Send?",
+                elf: { path: "app.elf", sha256: "abc" },
+                rttInput: {
+                    channel: 0,
+                    downChannel: 1,
+                    bytes: 1026,
+                    sha256: "f00",
+                    text: `${"x".repeat(300)}\x1b[2J${"y".repeat(718)}`,
+                    lineEnding: "\r\n"
+                }
+            });
+            assert.ok(input.includes("RTT channel: 0 (down 1)"), input);
+            assert.ok(input.includes(`Text: "${"x".repeat(300)}\\u001b[2J${"y".repeat(718)}"`), input);
+            assert.ok(input.includes('Line ending: "\\r\\n"'), input);
+            assert.ok(input.includes("Size: 1026 bytes, SHA-256 f00"), input);
+            const bytes = confirm.summary({ rttInput: { channel: 2, dataBase64: "AQI=", bytes: 2, sha256: "e" } });
+            assert.ok(bytes.includes("Bytes (base64): AQI="), bytes);
             await client.close();
         });
 

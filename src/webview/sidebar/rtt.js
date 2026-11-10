@@ -231,6 +231,11 @@
             const view = state.view || {};
             if (terminals) terminals.disabled = !(view.terminals > 0);
             renderOption(saveLog, view.log?.enabled === true);
+            // The tooltip names the file being written; the card itself carries no path text.
+            if (saveLog)
+                saveLog.title = view.log?.file
+                    ? t("rtt.saveLogActiveTitle", { file: view.log.file })
+                    : t("rtt.saveLogTitle");
             renderOption(timestamps, view.timestamps === true);
             if (channelPick)
                 channelPick.textContent = t("rtt.channels", { list: (view.selectedChannels || [0]).join(", ") });

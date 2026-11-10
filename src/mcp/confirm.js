@@ -5,7 +5,7 @@
 // answer.
 
 // Plan fields as the Bridge returns them: flash plans, write plans (elf/connection), peripheral plans (svd)
-// and CubeMX plans (ioc/output/tool). File identities are { path, sha256 } objects.
+// and CubeMX plans (ioc/output/tool); RTT input plans add rttInput. File identities are { path, sha256 } objects.
 const PLAN_FIELDS = [
     ["elf", "ELF"],
     ["elfSha256", "ELF SHA-256"],
@@ -82,6 +82,20 @@ function itemLine(item) {
     return `${name}${address}${type}: ${from !== undefined ? `${valueText(from)} → ${to}` : to}${requested}`;
 }
 
+// RTT input is shown whole (at most 1024 bytes): the user approves exactly what reaches the firmware. JSON quoting
+// makes control characters and the line ending visible.
+function rttInputLines(input) {
+    if (!input || typeof input !== "object") return [];
+    const down =
+        input.downChannel !== undefined && input.downChannel !== input.channel ? ` (down ${input.downChannel})` : "";
+    const lines = [`RTT channel: ${input.channel}${down}`];
+    if (typeof input.text === "string")
+        lines.push(`Text: ${JSON.stringify(input.text)}`, `Line ending: ${JSON.stringify(input.lineEnding ?? "")}`);
+    if (typeof input.dataBase64 === "string") lines.push(`Bytes (base64): ${input.dataBase64}`);
+    lines.push(`Size: ${input.bytes} bytes, SHA-256 ${input.sha256}`);
+    return lines;
+}
+
 function summary(result) {
     const lines = [String(result.question || "Approve this EmberProbe operation?")];
     for (const [key, label] of PLAN_FIELDS) {
@@ -93,6 +107,7 @@ function summary(result) {
         if (digest && !(result[`${key}Sha256`] ?? result.plan?.[`${key}Sha256`]))
             lines.push(`${label} SHA-256: ${digest}`);
     }
+    lines.push(...rttInputLines(result.rttInput));
     for (const [key, label, limit] of ITEM_LISTS) {
         const items = result[key] ?? result.plan?.[key];
         if (!Array.isArray(items) || !items.length) continue;

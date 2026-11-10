@@ -21,13 +21,14 @@ Agent 访问按工作区开启，工作区必须受信任。在侧栏“Agent �
 
 ### 哪些操作要确认
 
-| 操作 | 确认方式 | 可以记住 24 小时 |
-| --- | --- | --- |
-| 烧录固件 | 对话确认 | 可以 |
-| 修改变量 | 对话确认 | 可以 |
-| CubeMX 生成 | 对话确认 | 可以 |
-| Flash 校验 | 对话确认 | 不可以 |
-| 修改外设寄存器 | 对话确认 | 不可以 |
+| 操作                | 确认方式 | 可以记住 24 小时 |
+| ------------------- | -------- | ---------------- |
+| 烧录固件            | 对话确认 | 可以             |
+| 修改变量            | 对话确认 | 可以             |
+| CubeMX 生成         | 对话确认 | 可以             |
+| 向固件发送 RTT 输入 | 对话确认 | 可以             |
+| Flash 校验          | 对话确认 | 不可以           |
+| 修改外设寄存器      | 对话确认 | 不可以           |
 
 确认时，Agent 会给出具体计划，比如固件路径和哈希、探针、写入的名称和新值。回答后才执行。
 
@@ -38,6 +39,7 @@ Agent 访问按工作区开启，工作区必须受信任。在侧栏“Agent �
 - **烧录**：同一 ELF 路径、目标、探针、传输方式、速度和 OpenOCD。重新编译同一路径的固件不需要再确认，结果里仍会报告实际写入的哈希。
 - **修改变量**：同一 ELF 内容和连接。ELF 与目标固件不一致时不生效。
 - **CubeMX**：同一工程和工具。
+- **RTT 输入**：同一 RTT 通道、同一 ELF 内容、探针和目标。重新编译固件后需要再次确认；读不到 ELF 时只能单次确认。
 
 没有可靠序列号的探针每次都要确认。
 
@@ -84,14 +86,14 @@ EmberProbe 随扩展提供 MCP 服务器，让支持 MCP 的 Agent 客户端直�
 
 其他客户端在侧栏“Agent 配置”的 **MCP 服务器** 区域安装：
 
-| 状态 | 含义 | 操作 |
-| --- | --- | --- |
-| 未安装 | 配置中没有 EmberProbe | 安装 |
-| 已安装 | 配置是最新的 | 移除 |
-| 可升级 | 启动路径或超时已过期 | 升级、移除 |
-| 无法读取 | 配置文件损坏或过大 | 复制配置 |
-| 手动配置 | 配置路径未知 | 复制配置 |
-| 默认安装 | 由 VS Code 直接提供 | 无 |
+| 状态     | 含义                  | 操作       |
+| -------- | --------------------- | ---------- |
+| 未安装   | 配置中没有 EmberProbe | 安装       |
+| 已安装   | 配置是最新的          | 移除       |
+| 可升级   | 启动路径或超时已过期  | 升级、移除 |
+| 无法读取 | 配置文件损坏或过大    | 复制配置   |
+| 手动配置 | 配置路径未知          | 复制配置   |
+| 默认安装 | 由 VS Code 直接提供   | 无         |
 
 安装后在客户端刷新或重启。安装只写用户级配置，保留其他服务器和设置，所有工程共用一份，切换工程不用重装。悬停状态可以看到目标文件。
 
@@ -99,16 +101,16 @@ EmberProbe 随扩展提供 MCP 服务器，让支持 MCP 的 Agent 客户端直�
 
 ### 支持的客户端
 
-| 客户端 | 配置位置 |
-| --- | --- |
-| Claude Code | `~/.claude.json`，支持 `CLAUDE_CONFIG_DIR` |
-| Codex | `$CODEX_HOME/config.toml`，默认 `~/.codex/config.toml` |
-| Gemini CLI | `~/.gemini/settings.json` |
-| OpenCode | `opencode.jsonc` 或 `opencode.json`，遵循 `OPENCODE_CONFIG` 和 `XDG_CONFIG_HOME` |
-| Cursor | 自动注册，或使用安装链接 |
-| Antigravity | `~/.gemini/config/mcp_config.json` |
-| DeepSeek Harness (DSH) | `$DSH_HOME/profiles/<profile>/cordis.patch.yml`，默认 `~/.dsh` |
-| 其他客户端 | 复制通用 JSON，自行合并 |
+| 客户端                 | 配置位置                                                                         |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| Claude Code            | `~/.claude.json`，支持 `CLAUDE_CONFIG_DIR`                                       |
+| Codex                  | `$CODEX_HOME/config.toml`，默认 `~/.codex/config.toml`                           |
+| Gemini CLI             | `~/.gemini/settings.json`                                                        |
+| OpenCode               | `opencode.jsonc` 或 `opencode.json`，遵循 `OPENCODE_CONFIG` 和 `XDG_CONFIG_HOME` |
+| Cursor                 | 自动注册，或使用安装链接                                                         |
+| Antigravity            | `~/.gemini/config/mcp_config.json`                                               |
+| DeepSeek Harness (DSH) | `$DSH_HOME/profiles/<profile>/cordis.patch.yml`，默认 `~/.dsh`                   |
+| 其他客户端             | 复制通用 JSON，自行合并                                                          |
 
 也可以运行命令 `EmberProbe: 安装 MCP 服务器到客户端`，在对话框中预览配置，或使用客户端 CLI、复制配置。
 
@@ -127,17 +129,19 @@ EmberProbe 按 Agent 客户端提供的根目录或工作目录找到工程，�
 
 MCP 固定提供全部工具和工作流提示，按功能分为三类：
 
-| 分类 | 工具 |
-| --- | --- |
-| 基础 | 配置、探针、芯片信息、故障读取、ELF 分析、烧录与校验、权限、变量读写与采样、外设、RTT 日志 |
-| 调试 | 调试启动与控制、断点、栈与变量检查、RTOS |
-| CubeMX | 检测、检查、准备、生成、取消 |
+| 分类   | 工具                                                                                             |
+| ------ | ------------------------------------------------------------------------------------------------ |
+| 基础   | 配置、探针、芯片信息、故障读取、ELF 分析、烧录与校验、权限、变量读写与采样、外设、RTT 日志与输入 |
+| 调试   | 调试启动与控制、断点与数据断点、栈与变量检查、RTOS                                               |
+| CubeMX | 检测、检查、准备、生成、取消                                                                     |
 
 另有六个工作流提示：`flash`、`fault_triage`、`variable_debug`、`rtos_inspect`、`rtt_logging`、`cubemx_generate`。
 
-Agent 可以启动和停止 [RTT](flash-debug.md#rtt-日志)、读取固件日志，但不能向固件发送输入。
+Agent 可以启动和停止 [RTT](flash-debug.md#rtt-日志)、读取固件日志，并在你确认后向固件发送一行输入或原始字节，例如固件 shell 命令。确认内容是要发送的完整字节；Agent 发送的文本会以 `[Agent]` 标记显示在 RTT 终端中。
 
-烧录、写入和 CubeMX 生成需要确认。客户端支持时以表单询问，默认选项是拒绝；不支持时在对话中确认。见 [Agent 权限](#agent-权限)。
+Agent 也可以在内置调试器暂停时设置、启停和删除[数据断点](flash-debug.md#数据断点查出是谁修改了变量)。这些断点与侧边栏的数据断点是同一组，可以在侧边栏中查看和删除；命中时调试状态会给出变量和新旧值。
+
+烧录、写入、RTT 输入和 CubeMX 生成需要确认。客户端支持时以表单询问，默认选项是拒绝；不支持时在对话中确认。见 [Agent 权限](#agent-权限)。
 
 ### 限制
 
@@ -148,16 +152,16 @@ Agent 可以启动和停止 [RTT](flash-debug.md#rtt-日志)、读取固件日�
 
 ### 常见问题
 
-| 现象 | 处理 |
-| --- | --- |
-| `BRIDGE_UNAVAILABLE`，提示工作区未启用 | 在侧栏启用 Agent 访问 |
-| `BRIDGE_UNAVAILABLE`，没有找到窗口 | 确认 EmberProbe 窗口在运行，从工程目录启动客户端，或在启动客户端的环境中设置 `EMBERPROBE_WORKSPACE` |
-| `BRIDGE_AMBIGUOUS` | 两个窗口打开了同一文件夹，关闭一个，或设置 `EMBERPROBE_BRIDGE_INSTANCE` |
-| 客户端无法启动服务器 | 打开一次 EmberProbe 窗口；编辑器换过位置时在侧栏升级 |
-| 已有同名服务器，CLI 安装失败 | 编辑已有的 `emberprobe` 条目，不要覆盖整个配置文件 |
-| 长操作超时 | 检查客户端超时：Codex 用 `tool_timeout_sec`（秒），Gemini 和 OpenCode 用 `timeout`（毫秒） |
-| Cursor 中看不到服务器 | 确认工作区受信任且已启用 Agent 访问 |
-| DSH 没有出现 `mcp__emberprobe__*` | 检查 patch 是否由该 profile 加载，查看启动日志 |
+| 现象                                   | 处理                                                                                                |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `BRIDGE_UNAVAILABLE`，提示工作区未启用 | 在侧栏启用 Agent 访问                                                                               |
+| `BRIDGE_UNAVAILABLE`，没有找到窗口     | 确认 EmberProbe 窗口在运行，从工程目录启动客户端，或在启动客户端的环境中设置 `EMBERPROBE_WORKSPACE` |
+| `BRIDGE_AMBIGUOUS`                     | 两个窗口打开了同一文件夹，关闭一个，或设置 `EMBERPROBE_BRIDGE_INSTANCE`                             |
+| 客户端无法启动服务器                   | 打开一次 EmberProbe 窗口；编辑器换过位置时在侧栏升级                                                |
+| 已有同名服务器，CLI 安装失败           | 编辑已有的 `emberprobe` 条目，不要覆盖整个配置文件                                                  |
+| 长操作超时                             | 检查客户端超时：Codex 用 `tool_timeout_sec`（秒），Gemini 和 OpenCode 用 `timeout`（毫秒）          |
+| Cursor 中看不到服务器                  | 确认工作区受信任且已启用 Agent 访问                                                                 |
+| DSH 没有出现 `mcp__emberprobe__*`      | 检查 patch 是否由该 profile 加载，查看启动日志                                                      |
 
 ## CubeMX 代码生成
 
@@ -167,9 +171,9 @@ Agent 可以启动和停止 [RTT](flash-debug.md#rtt-日志)、读取固件日�
 
 在 VS Code **用户设置**中配置，本机所有工作区共用：
 
-| 设置 | 工具 |
-| --- | --- |
-| `emberprobe.cubemxPath` | STM32CubeMX，用于 `.ioc` 工程 |
+| 设置                     | 工具                                                                  |
+| ------------------------ | --------------------------------------------------------------------- |
+| `emberprobe.cubemxPath`  | STM32CubeMX，用于 `.ioc` 工程                                         |
 | `emberprobe.cubemx2Path` | STM32CubeMX2 启动器（如 `stm32cubemx2-1.1.2.exe`），用于 `.ioc2` 工程 |
 
 留空时自动查找，找到后保存到用户设置，不会替换已保存的路径。Agent 能读取这两个路径，但不能修改。
