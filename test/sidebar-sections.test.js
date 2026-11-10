@@ -118,35 +118,60 @@ scenario("RTT diagnostics distinguish zero, unknown, stale target samples and ho
                 channels: [{ index: 2, usedBytes: 0, capacity: 1023, size: 1024 }]
             }
         };
-        const text = () => view.document.querySelector(".rtt-ch-diagnostics").textContent;
+        const text = () => view.document.getElementById("rttChannels").textContent;
+        // The channel's metrics as label -> shown value, and each cell's hover text.
+        const metrics = () =>
+            Object.fromEntries(
+                [...view.document.querySelectorAll(".rtt-metric")].map((cell) => [
+                    cell.querySelector(".rtt-metric-k").textContent,
+                    cell.querySelector(".rtt-metric-v").textContent
+                ])
+            );
+        const hint = (index) => view.document.querySelectorAll(".rtt-metric")[index].title;
         view.send(running);
-        assert.match(text(), /Receive 0 B\/s/);
-        assert.match(text(), /Received 12345 B/);
-        assert.match(text(), /Target sampled 0\/1023 B/);
-        assert.match(text(), /Host history evicted 42 B/);
-        assert.match(text(), /Target loss unknown/);
+        assert.deepStrictEqual(metrics(), {
+            Rate: "0 B/s",
+            Received: "12.1 KiB",
+            "Target used": "0/1023 B",
+            Evicted: "42 B"
+        });
+        assert.strictEqual(hint(1), "12345 B", "the exact count is on hover");
+        assert.match(hint(3), /target-side loss is unknown/);
         assert.match(text(), /Mode pending: requested Block, actual Trim/);
+        assert.ok(view.document.querySelector(".rtt-ch-note.warn"), "a mode problem stands out");
+        assert.strictEqual(view.document.querySelector(".rtt-channels-note"), null);
         assert.strictEqual(view.document.querySelector(".rtt-ch .tag").textContent, "Trim");
         assert.strictEqual(view.document.querySelector("#rttChannels img"), null);
         const rowStyle = view.window.getComputedStyle(view.document.querySelector(".rtt-ch"));
         assert.strictEqual(rowStyle.flexWrap, "wrap", "the diagnostics wrap below the compact channel header");
-        const detailStyle = view.window.getComputedStyle(view.document.querySelector(".rtt-ch-diagnostics"));
-        assert.strictEqual(detailStyle.overflowWrap, "anywhere", "localized reasons can wrap at narrow widths");
-        view.send({ ...running, buffers: [{ ...running.buffers[0], rateBytesPerSecond: 1234.567890123 }] });
-        assert.match(text(), /Receive 1235 B\/s/);
+        const noteStyle = view.window.getComputedStyle(view.document.querySelector(".rtt-ch-note"));
+        assert.strictEqual(noteStyle.overflowWrap, "anywhere", "localized reasons can wrap at narrow widths");
+        view.send({
+            ...running,
+            buffers: [{ ...running.buffers[0], rateBytesPerSecond: 1234.567890123, receivedBytes: 5 * 1024 * 1024 }]
+        });
+        assert.strictEqual(metrics().Rate, "1235 B/s");
+        assert.strictEqual(metrics().Received, "5.0 MiB");
         view.send({
             ...running,
             buffers: [{ ...running.buffers[0], rateBytesPerSecond: null }],
             targetTelemetry: { ...running.targetTelemetry, available: false, reason: "RTT_EXACT_ADDRESS_REQUIRED" }
         });
-        assert.match(text(), /Receive unknown B\/s/);
-        assert.match(text(), /Target occupancy unknown: Set the RTT control-block address/);
+        assert.strictEqual(metrics().Rate, "—");
+        assert.strictEqual(hint(0), "unknown");
+        assert.strictEqual(metrics()["Target used"], "—");
+        assert.match(hint(2), /Target occupancy unknown: Set the RTT control-block address/);
+        assert.match(
+            view.document.querySelector(".rtt-channels-note").textContent,
+            /Target occupancy unknown: Set the RTT control-block address/,
+            "the shared reason is shown once below the channels"
+        );
         assert.ok(!text().includes("0/1023"), "a failed sample cannot show the previous occupancy as current");
         view.send({ type: "setLang", lang: "zh" });
-        assert.match(text(), /接收 未知 B\/s/);
+        assert.deepStrictEqual(Object.keys(metrics()), ["接收速率", "累计接收", "目标占用", "历史淘汰"]);
         assert.match(text(), /目标占用未知：目标遥测和模式设置需要明确/);
-        assert.match(text(), /主机历史淘汰 42 B/);
-        assert.match(text(), /目标丢失量未知/);
+        assert.strictEqual(metrics()["历史淘汰"], "42 B");
+        assert.match(hint(3), /目标端的丢失量未知/);
         view.send({
             ...running,
             channels: { up: [{ ...running.channels.up[0], modeState: "mismatch" }], down: [] },
@@ -158,10 +183,21 @@ scenario("RTT diagnostics distinguish zero, unknown, stale target samples and ho
         assert.match(text(), /目标占用未知：未知/);
         assert.ok(!text().includes("NEW_BACKEND_CODE"));
         view.send({ ...running, state: "stopped" });
-        assert.match(text(), /接收 未知 B\/s/);
+        assert.strictEqual(metrics()["接收速率"], "—");
         assert.ok(!text().includes("0/1023"), "stopped status cannot present a running sample as current");
         view.send({ ...running, targetTelemetry: { ...running.targetTelemetry, channels: [] } });
         assert.match(text(), /目标占用未知：未知/, "a missing selected channel remains unknown");
+        view.assertHealthy();
+    } finally {
+        view.close();
+    }
+});
+
+scenario("the RTT card leaves input to the bottom panel", () => {
+    const view = render(html);
+    try {
+        for (const id of ["rttInputRow", "rttInput", "rttSend", "rttInputChannel", "rttInputError"])
+            assert.strictEqual(view.document.getElementById(id), null, id);
         view.assertHealthy();
     } finally {
         view.close();

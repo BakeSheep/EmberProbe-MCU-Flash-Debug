@@ -20,11 +20,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### RTT 日志 / RTT logging
 
-- 新增 SEGGER RTT 日志：侧栏“RTT 日志”卡片和命令可启动、停止，J-Link 与 CMSIS-DAP 用法相同，调试或采样时也能查看。每个 up 通道一个终端，回车把一行发送到同号 down 通道，可选主机时间戳，可保存为按大小轮转的日志文件。控制块从设置的地址、ELF `_SEGGER_RTT` 或 RAM 范围定位。只支持单核目标，外部 GDB Server 模式下不可用。
+- 新增 SEGGER RTT 日志：侧栏“RTT 日志”卡片和命令可启动、停止，J-Link 与 CMSIS-DAP 用法相同，调试或采样时也能查看。输出显示在底部面板的“RTT 终端”标签页中，每个 up 通道一个标签，用法同调试控制台：在独立的输入框回车把一行发送到同号 down 通道，标签页停止后保留，可选主机时间戳，可保存为按大小轮转的日志文件。控制块从设置的地址、ELF `_SEGGER_RTT` 或 RAM 范围定位。只支持单核目标，外部 GDB Server 模式下不可用。
 - RTT 通道可以选择 `text`、`raw`、`hex` 显示格式和文本编码（UTF-8、GBK、GB18030、Big5、Shift-JIS、EUC-KR、Latin-1），也可以把输入发往不同编号的 down 通道。通道 0 支持 SEGGER 虚拟终端，非 0 终端的行带 `[Tn]` 前缀。
 - 新增按键直发的 raw 输入和可选行尾，新增保存原始字节的 `rtt.bin` 日志；新增 `rtt.autoStart`，调试或采样开始时自动附加 RTT，不单独占用探针。
 - 新增 `mcu-rtt` skill 和 MCP 工具 `rtt_status`、`rtt_read`、`rtt_control`，Agent 可以启动、停止 RTT 并按游标读取日志，但不能向固件发送输入。
-- Add SEGGER RTT logging: the sidebar's RTT Log card and commands start and stop it, J-Link and CMSIS-DAP work the same way, and it runs alongside debugging or sampling. Each up channel has a terminal, Enter sends a line to the matching down channel, and host timestamps and size-rotated log files are optional. The control block is located from a configured address, the ELF `_SEGGER_RTT` symbol or a RAM range. Single-core targets only; unavailable with an external GDB server.
+- Add SEGGER RTT logging: the sidebar's RTT Log card and commands start and stop it, J-Link and CMSIS-DAP work the same way, and it runs alongside debugging or sampling. Output appears in an RTT Terminal tab in the bottom panel with one tab per up channel; like the Debug Console, Enter in its separate input box sends a line to the matching down channel, and the tab stays after RTT stops, and host timestamps and size-rotated log files are optional. The control block is located from a configured address, the ELF `_SEGGER_RTT` symbol or a RAM range. Single-core targets only; unavailable with an external GDB server.
 - RTT channels can choose a `text`, `raw` or `hex` display format and a text encoding (UTF-8, GBK, GB18030, Big5, Shift-JIS, EUC-KR, Latin-1), and can send input to a differently numbered down channel. Channel 0 follows SEGGER virtual terminals and prefixes lines from other terminals with `[Tn]`.
 - Add raw keystroke input, selectable line endings and a byte-exact `rtt.bin` log, plus `rtt.autoStart`, which attaches RTT when debugging or sampling starts and never opens the probe for it alone.
 - Add the `mcu-rtt` skill and the MCP tools `rtt_status`, `rtt_read` and `rtt_control`, so Agents can start and stop RTT and read its output through a cursor. Agents cannot send input to the firmware.

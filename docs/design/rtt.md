@@ -12,7 +12,7 @@ EmberProbe 用 OpenOCD 内建的 `rtt` 命令读取 SEGGER RTT，J-Link 和 CMSI
 | 目标描述符   | `src/rttTarget.js`                                      | 验证小端 ARM32 控制块，采样环占用，单次 Flags 写入和读回    |
 | 会话控制     | `src/rttControl.js`，`ManagedOpenOcdSession.rttControl` | 在独占锁下发送 `rtt` 命令及有界描述符事务                   |
 | 编排         | `src/services/rttController.js`                         | 宿主选择、跟随、租约、退避重试、停止顺序                    |
-| 终端与日志   | `src/services/rttTerminalService.js`、`rttLogWriter.js` | 伪终端、down 输入、时间戳、日志轮转、侧栏状态               |
+| 终端与日志   | `src/services/rttTerminalService.js`、`rttLogWriter.js` | 通道回滚缓存、down 输入、时间戳、日志轮转、侧栏状态         |
 | Agent        | `rtt.*` 路由、`rtt_*` MCP 工具、`skills/mcu-rtt`        | 状态、游标读取、启动和停止                                  |
 
 ## 不变量
@@ -81,6 +81,12 @@ OpenOCD 的 RTT 轮询只要读失败一次（例如轮询正好落在目标复�
 时间戳是主机接收时间。默认随 50 ms 终端节拍读取，打开时间戳后每个 socket 块到达时就读取，避免节拍再引入误差；关闭时不这样做，高数据率下不产生额外的同步日志写入。同一次 OpenOCD 轮询的数据仍共享时间。RTT 没有标准的时间戳帧，固件时间需要 defmt 这类约定，这里不解析。
 
 原始日志（`rtt.logFile.raw`）在格式化之前写入，保证文件内容与线上字节完全一致，因此不写边界和缺口标记。
+
+## 终端面板
+
+输出显示在底部面板的 webview 视图 `emberprobe.rttTerminal`（`src/services/rttPanelHost.js`，页面在 `src/webview/rttPanel/`），而不是 VS Code 伪终端：伪终端的输入行和固件输出共用一个光标，流式日志会打断正在输入的行。视图用 `when: emberprobe.rttTerminalVisible` 贡献，第一次进入 starting/running 时设置该上下文键，窗口内不再清除，所以停止后标签页仍在。
+
+`rttTerminalService` 为每个 up 通道保留约 1 MiB 的格式化文本（按行首裁剪），每次读取节拍把新增文本合并为一条 `rttOutput` 发给面板；页面加载或因切换语言重建时发 `ready`，取回 `rttPanelSnapshot` 重建全部通道，因此视图未解析、隐藏或重建期间不会丢输出。面板页面只解释日志常用的控制序列（SGR 颜色和属性、CR 覆盖、退格、制表、行内擦除），光标移动和清屏被丢弃；需要完整终端语义的固件 shell 应使用 `format: "raw"` 并接受这一限制。停止的通道保留文本和结束原因，下次启动复用；新一次启动时不在通道列表中的已停止通道被移除。
 
 ## 输入
 

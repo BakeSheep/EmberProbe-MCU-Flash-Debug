@@ -11,7 +11,7 @@ const { WEBVIEW_ROOT, rendererPrelude } = require("../../src/webviewTemplate");
 // back to its source, so render() runs a known block file by file instead, each under its own name. One compiled
 // script per file is shared by every page that runs it.
 const PAGE_SCRIPTS = [
-    ...["sidebar", "liveWatch"].map((area) => [...rendererPrelude(area), [area, "renderer.js"]]),
+    ...["sidebar", "liveWatch", "rttPanel"].map((area) => [...rendererPrelude(area), [area, "renderer.js"]]),
     [["liveWatch", "viewport.js"]]
 ].map((files) => {
     const sources = files.map(([dir, name]) => path.join(WEBVIEW_ROOT, dir, name));

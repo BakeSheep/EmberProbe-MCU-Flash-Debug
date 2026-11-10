@@ -11,22 +11,6 @@ const { formatTimestamp } = require("../src/rttLineFormatter");
 const { FakeClock } = require("./helpers/fake-clock");
 const { createRttTerminals, createRttController } = require("../src/composition");
 
-class FakeEventEmitter {
-    constructor() {
-        this.listeners = new Set();
-        this.event = (listener) => {
-            this.listeners.add(listener);
-            return { dispose: () => this.listeners.delete(listener) };
-        };
-    }
-    fire(data) {
-        for (const listener of [...this.listeners]) listener(data);
-    }
-    dispose() {
-        this.listeners.clear();
-    }
-}
-
 const oneChannel = {
     up: [{ index: 0, name: "Terminal", size: 1024, flags: 2, mode: "block" }],
     down: [{ index: 0, name: "Input", size: 2048, flags: 0, mode: "skip" }]
@@ -40,25 +24,24 @@ const twoChannels = {
 };
 
 function fakeVscode() {
-    const terminals = [];
+    return { window: {} };
+}
+
+// The bottom panel's view: what the service posts to it and how often it asked to show it.
+function fakePanel() {
     return {
-        EventEmitter: FakeEventEmitter,
-        window: {
-            createTerminal: (options) => {
-                const terminal = {
-                    name: options.name,
-                    pty: options.pty,
-                    shown: 0,
-                    show: () => {
-                        terminal.shown++;
-                    }
-                };
-                terminals.push(terminal);
-                options.pty.open();
-                return terminal;
-            }
+        messages: [],
+        visible: 0,
+        reveals: [],
+        post(message) {
+            this.messages.push(message);
         },
-        terminals
+        ensureVisible() {
+            this.visible++;
+        },
+        reveal(preserveFocus) {
+            this.reveals.push(preserveFocus);
+        }
     };
 }
 
@@ -137,6 +120,7 @@ function makeService({ channels = oneChannel, settings = {}, vscode } = {}) {
     const cleared = [];
     const posted = [];
     const clock = new FakeClock();
+    const panel = fakePanel();
     const service = new RttTerminalService({
         vscode: vscode || fakeVscode(),
         clock,
@@ -148,38 +132,49 @@ function makeService({ channels = oneChannel, settings = {}, vscode } = {}) {
             noticeIds.push(id);
         },
         clearNotice: (id) => cleared.push(id),
-        post: (message) => posted.push(message)
+        post: (message) => posted.push(message),
+        panel: () => panel
     });
     controller.notify = (status) => service.onStatus(status);
-    return { service, controller, clock, notices, noticeIds, cleared, posted, vscode: service._vscode };
+    return { service, controller, clock, notices, noticeIds, cleared, posted, panel, vscode: service._vscode };
 }
 
-// Everything the service fires at one terminal's pty, collected from the moment this is called.
-const firedOf = (terminal) => {
-    const chunks = [];
-    terminal.pty.onDidWrite((text) => chunks.push(text));
-    return () => chunks.join("");
+// The text the panel received for one channel, collected from the moment this is called.
+const outputOf = (panel, channel) => {
+    const from = panel.messages.length;
+    return () =>
+        panel.messages
+            .slice(from)
+            .filter((message) => message.type === "rttOutput" && message.channel === channel)
+            .map((message) => message.text)
+            .join("");
 };
+// The panel's latest view of the channels.
+const panelChannels = (panel) =>
+    panel.messages.filter((message) => message.type === "rttPanelStatus").at(-1)?.channels || [];
 
 (async () => {
-    await scenario("start creates one revealed terminal per up channel", async () => {
-        const { service, vscode } = makeService({ channels: twoChannels });
+    await scenario("start shows the panel with one channel per up channel", async () => {
+        const { service, panel } = makeService({ channels: twoChannels });
         await service.startCommand();
-        assert.deepStrictEqual(
-            vscode.terminals.map((terminal) => terminal.name),
-            ["EmberProbe RTT #0 Terminal", "EmberProbe RTT #2 Log"]
-        );
-        assert.ok(
-            vscode.terminals.every((terminal) => terminal.shown >= 1),
-            "the terminals are revealed"
-        );
+        assert.deepStrictEqual(panelChannels(panel), [
+            { index: 0, name: "Terminal", active: true, hasInput: true },
+            { index: 2, name: "Log", active: true, hasInput: false }
+        ]);
+        assert.ok(panel.visible > 0, "the panel tab appears");
+        assert.deepStrictEqual(panel.reveals, [true], "a user start brings it forward without taking focus");
         await service.stopCommand();
+        assert.deepStrictEqual(
+            panelChannels(panel).map((channel) => channel.active),
+            [false, false],
+            "stopped channels stay listed"
+        );
     });
 
     await scenario("channel data reaches the terminal as CRLF terminal text", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("hello\nwor"));
         await clock.advance(50);
         controller.emit(0, Buffer.from("ld\r\n"));
@@ -189,9 +184,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("UTF-8 split across chunks is joined before it is shown", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("度"));
         await clock.advance(50);
         controller.emit(0, Buffer.from("r\n"));
@@ -201,9 +196,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("host timestamps prefix each line when enabled", async () => {
-        const { service, controller, clock, vscode } = makeService({ settings: { timestamps: true } });
+        const { service, controller, clock, panel } = makeService({ settings: { timestamps: true } });
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("a\nb\n"));
         await clock.advance(50);
         const stamp = `[${formatTimestamp(clock.now())}] `;
@@ -211,49 +206,82 @@ const firedOf = (terminal) => {
         await service.stopCommand();
     });
 
-    await scenario("Enter sends the echoed line to the down channel", async () => {
-        const { service, controller, vscode } = makeService();
+    await scenario("sendInput sends a line, shows it in the panel and keeps the history", async () => {
+        const { service, controller, panel, posted } = makeService();
         await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        const fired = firedOf(vscode.terminals[0]);
-        pty.handleInput("ab\x7fc\r");
-        assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "ac\n" }]);
-        assert.strictEqual(fired(), "ab\b \bc\r\n");
+        const fired = outputOf(panel, 0);
+        assert.deepStrictEqual(service.sendInput(0, "help"), { ok: true });
+        assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "help\n" }]);
+        assert.strictEqual(fired(), "\x1b[2m> help\x1b[0m\r\n");
+        const status = panel.messages.filter((message) => message.type === "rttPanelStatus").at(-1);
+        assert.deepStrictEqual(status.history, { 0: ["help"] }, "the panel walks the history with Up and Down");
+        assert.strictEqual(posted.at(-1).view.history, undefined, "the sidebar has no input box any more");
+        service.sendInput(0, "quiet", { echo: false });
+        assert.ok(!fired().includes("quiet"));
         await service.stopCommand();
     });
 
-    await scenario("escape sequences and control characters never reach the line", async () => {
-        const { service, controller, vscode } = makeService();
+    await scenario("sendInput refuses what cannot be sent and says why", async () => {
+        const { service, controller, panel } = makeService();
+        assert.strictEqual(service.sendInput(0, "x").ok, false, "RTT is not running");
         await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        const fired = firedOf(vscode.terminals[0]);
-        pty.handleInput("\u001b[A\u0003ok\r");
-        assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "ok\n" }]);
-        assert.strictEqual(fired(), "ok\r\n");
+        assert.strictEqual(service.sendInput(7, "x").ok, false, "unknown channel");
+        const tooLong = service.sendInput(0, "x".repeat(5000));
+        assert.strictEqual(tooLong.ok, false);
+        assert.strictEqual(tooLong.message.includes("rtt.inputTooLong"), true);
+        controller.write = () => {
+            throw new Error("boom");
+        };
+        const failed = service.sendInput(0, "x");
+        assert.strictEqual(failed.ok, false);
+        assert.ok(failed.message.includes("boom"));
+        assert.ok(!service._history.has(0), "a refused line is not remembered");
+        assert.strictEqual(outputOf(panel, 0)(), "");
         await service.stopCommand();
     });
 
-    await scenario("oversized input is capped at the line limit", async () => {
-        const { service, controller, vscode } = makeService();
+    await scenario("the panel route validates a typed line and reports how it ended", async () => {
+        const { createRttPanelHandler } = require("../src/controllers/rttPanelRoutes");
+        const { service, panel } = makeService();
         await service.startCommand();
-        vscode.terminals[0].pty.handleInput("x".repeat(MAX_INPUT_BYTES + 40));
-        vscode.terminals[0].pty.handleInput("\r");
-        assert.strictEqual(controller.writes.length, 1);
-        assert.strictEqual(controller.writes[0].data.length, MAX_INPUT_BYTES + 1);
+        const replies = [];
+        const route = createRttPanelHandler(
+            { _rttTerminals: service, _t: (key) => key },
+            { _view: { webview: { postMessage: (message) => replies.push(message) } } },
+            { window: {} }
+        );
+        const fired = outputOf(panel, 0);
+        await route({ type: "rttSend", id: 1, channel: 0, text: "ping" });
+        assert.deepStrictEqual(replies.at(-1), { type: "rttSendResult", id: 1, ok: true, message: undefined });
+        assert.strictEqual(fired(), "\x1b[2m> ping\x1b[0m\r\n");
+        for (const bad of [
+            { channel: "0", text: "x" },
+            { channel: -1, text: "x" },
+            { channel: 0, text: 5 },
+            { channel: 0, text: "a\x1bb" },
+            { channel: 0, text: "x".repeat(MAX_INPUT_BYTES + 1) }
+        ]) {
+            await route({ type: "rttSend", id: 2, ...bad });
+            assert.deepStrictEqual(replies.at(-1), {
+                type: "rttSendResult",
+                id: 2,
+                ok: false,
+                message: "rtt.input.invalid"
+            });
+        }
         await service.stopCommand();
     });
 
     await scenario("the line ending setting applies to the next line", async () => {
         const settings = { inputLineEnding: "crlf" };
-        const { service, controller, vscode } = makeService({ settings });
+        const { service, controller } = makeService({ settings });
         await service.startCommand();
-        const { pty } = vscode.terminals[0];
-        pty.handleInput("a\r");
+        service.sendInput(0, "a");
         settings.inputLineEnding = "none";
-        pty.handleInput("\r");
-        pty.handleInput("b\r");
+        service.sendInput(0, "");
+        service.sendInput(0, "b");
         settings.inputLineEnding = "cr";
-        pty.handleInput("c\r");
+        service.sendInput(0, "c");
         assert.deepStrictEqual(
             controller.writes.map((write) => write.data),
             ["a\r\n", "b", "c\r"]
@@ -262,14 +290,16 @@ const firedOf = (terminal) => {
     });
 
     await scenario("raw input sends keystrokes at once with no local echo", async () => {
-        const { service, controller, vscode } = makeService({ settings: { inputMode: "raw" } });
+        const { service, controller, panel } = makeService({ settings: { inputMode: "raw" } });
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
-        const { pty } = vscode.terminals[0];
-        pty.handleInput("a");
-        pty.handleInput("\u0003");
-        pty.handleInput("\u001b[A");
-        pty.handleInput("\r");
+        assert.strictEqual(
+            panel.messages.filter((message) => message.type === "rttPanelStatus").at(-1).inputMode,
+            "raw",
+            "the panel swaps its input box for keystrokes"
+        );
+        const fired = outputOf(panel, 0);
+        for (const key of ["a", "\u0003", "\u001b[A", "\r"])
+            assert.deepStrictEqual(service.sendRaw(0, key), { ok: true });
         assert.deepStrictEqual(
             controller.writes.map((write) => write.data),
             ["a", "\u0003", "\u001b[A", "\r"]
@@ -279,15 +309,20 @@ const firedOf = (terminal) => {
     });
 
     await scenario("raw input over the down buffer is refused whole", async () => {
-        const { service, controller, vscode } = makeService({ channels: twoChannels, settings: { inputMode: "raw" } });
+        const { service, controller } = makeService({ channels: twoChannels, settings: { inputMode: "raw" } });
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
-        vscode.terminals[0].pty.handleInput("x".repeat(16));
+        const tooLong = service.sendRaw(0, "x".repeat(16));
         assert.deepStrictEqual(controller.writes, []);
-        assert.ok(fired().includes("rtt.inputTooLong 16"));
-        vscode.terminals[1].pty.handleInput("x");
+        assert.strictEqual(tooLong.ok, false);
+        assert.ok(tooLong.message.includes("rtt.inputTooLong 16"));
+        assert.strictEqual(service.sendRaw(2, "x").message, "rtt.inputUnavailable");
         assert.deepStrictEqual(controller.writes, [], "a channel with no down buffer sends nothing");
+        controller.write = () => {
+            throw Object.assign(new Error("lost"), { code: "RTT_CHANNEL_DISCONNECTED" });
+        };
+        assert.strictEqual(service.sendRaw(0, "y").message, "rtt.writeFailed: rtt.err.channelDisconnected");
         await service.stopCommand();
+        assert.strictEqual(service.sendRaw(0, "y").message, "rtt.err.notRunning");
     });
 
     await scenario(
@@ -300,9 +335,9 @@ const firedOf = (terminal) => {
                     { index: 1, size: 8 }
                 ]
             };
-            const { service, controller, vscode } = makeService({ channels });
+            const { service, controller } = makeService({ channels });
             await service.startCommand();
-            vscode.terminals[0].pty.handleInput("hi\r");
+            service.sendInput(0, "hi");
             assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "hi\n" }]);
             await service.stopCommand();
         }
@@ -317,9 +352,9 @@ const firedOf = (terminal) => {
             ],
             down: []
         };
-        const { service, controller, clock, vscode } = makeService({ channels });
+        const { service, controller, clock, panel } = makeService({ channels });
         await service.startCommand();
-        const fired = vscode.terminals.map(firedOf);
+        const fired = [0, 1, 2].map((channel) => outputOf(panel, channel));
         controller.emit(0, Buffer.of(0xce, 0xc2, 0x0a));
         controller.emit(1, Buffer.of(0x41));
         controller.emit(2, Buffer.from("\x1b[2J\n"));
@@ -333,9 +368,9 @@ const firedOf = (terminal) => {
     await scenario("virtual terminals apply only to channel 0 and follow the setting", async () => {
         const marked = Buffer.concat([Buffer.of(0xff, 0x31), Buffer.from("x\n")]);
         const run = async (settings) => {
-            const { service, controller, clock, vscode } = makeService({ channels: twoChannels, settings });
+            const { service, controller, clock, panel } = makeService({ channels: twoChannels, settings });
             await service.startCommand();
-            const fired = vscode.terminals.map(firedOf);
+            const fired = [0, 2].map((channel) => outputOf(panel, channel));
             for (const channel of [0, 2]) controller.emit(channel, marked);
             await clock.advance(100);
             const text = fired.map((read) => read());
@@ -349,9 +384,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("with timestamps, arriving bytes take their time at once", async () => {
-        const { service, controller, clock, vscode } = makeService({ settings: { timestamps: true } });
+        const { service, controller, clock, panel } = makeService({ settings: { timestamps: true } });
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, "a\n");
         service.dataArrived(0);
         assert.strictEqual(fired(), `[${formatTimestamp(clock.now())}] a\r\n`);
@@ -360,9 +395,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("without timestamps, arriving bytes wait for the tick", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, "a\n");
         service.dataArrived(0);
         assert.strictEqual(fired(), "");
@@ -372,9 +407,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("a gap finishes the partial line before its marker", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, "partial\r");
         await clock.advance(100);
         const read = controller.read;
@@ -406,10 +441,11 @@ const firedOf = (terminal) => {
     });
 
     await scenario("automatic start keeps focus and reports a failure without throwing", async () => {
-        const { service, controller, notices, vscode } = makeService();
+        const { service, controller, notices, panel } = makeService();
         const status = await service.startAutoCommand();
         assert.strictEqual(status.state, "running");
-        assert.strictEqual(vscode.terminals[0].shown, 1, "only the creation show, which keeps focus");
+        assert.deepStrictEqual(panel.reveals, [], "the tab appears but is not brought forward");
+        assert.ok(panel.visible > 0);
         await service.stopCommand();
         controller.start = async () => {
             throw Object.assign(new Error("nope"), { code: "RTT_INVALID_CHANNELS" });
@@ -418,49 +454,45 @@ const firedOf = (terminal) => {
         assert.strictEqual(notices.length, 1);
     });
 
-    await scenario("input without a down buffer warns and writes nothing", async () => {
+    await scenario("input without a down buffer is refused and writes nothing", async () => {
         const channels = { up: oneChannel.up, down: [] };
-        const { service, controller, notices, vscode } = makeService({ channels });
+        const { service, controller, notices, panel } = makeService({ channels });
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
-        vscode.terminals[0].pty.handleInput("hi\r");
+        const fired = outputOf(panel, 0);
+        assert.deepStrictEqual(service.sendInput(0, "hi"), { ok: false, message: "rtt.inputUnavailable" });
         assert.deepStrictEqual(controller.writes, []);
-        assert.strictEqual(fired(), "hi\r\n\x1b[33mrtt.inputUnavailable\x1b[0m\r\n");
-        assert.deepStrictEqual(notices, [], "the problem stays in the terminal being typed in");
+        assert.strictEqual(fired(), "");
+        assert.deepStrictEqual(panelChannels(panel)[0].hasInput, false, "the panel disables its box");
+        assert.deepStrictEqual(notices, [], "the problem stays next to the box it was typed in");
         await service.stopCommand();
     });
 
-    await scenario("a write failure is shown in the terminal", async () => {
-        const { service, controller, notices, vscode } = makeService();
+    await scenario("a write failure names its cause", async () => {
+        const { service, controller, notices, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.write = () => {
             throw Object.assign(new Error("RTT channel 0 lost its data connection"), {
                 code: "RTT_CHANNEL_DISCONNECTED"
             });
         };
-        vscode.terminals[0].pty.handleInput("hi\r");
-        assert.ok(fired().includes("rtt.writeFailed: rtt.err.channelDisconnected"), JSON.stringify(fired()));
+        assert.strictEqual(service.sendInput(0, "hi").message, "rtt.writeFailed: rtt.err.channelDisconnected");
+        assert.strictEqual(fired(), "", "nothing is echoed for a line that did not go out");
         assert.deepStrictEqual(notices, []);
         await service.stopCommand();
     });
 
-    await scenario("stopping flushes the formatter, marks the stop and keeps the terminal", async () => {
-        const { service, controller, clock, vscode } = makeService();
+    await scenario("stopping flushes the formatter, marks the stop and keeps the channel", async () => {
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const terminal = vscode.terminals[0];
-        const fired = firedOf(terminal);
-        let closed = false;
-        terminal.pty.onDidClose(() => {
-            closed = true;
-        });
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("tail")); // No newline: the flush emits it on close.
         await clock.advance(50);
         await service.stopCommand();
         assert.ok(fired().endsWith("tail\r\nrtt.termStopped\r\n"), `unexpected tail: ${JSON.stringify(fired())}`);
-        assert.strictEqual(closed, false, "the output stays readable");
-        terminal.pty.handleInput("ignored\r");
-        assert.deepStrictEqual(controller.writes, [], "a stopped terminal takes no input");
+        assert.strictEqual(service.panelSnapshot().channels[0].text, fired(), "the output stays readable");
+        assert.strictEqual(service.sendInput(0, "ignored").ok, false);
+        assert.deepStrictEqual(controller.writes, [], "a stopped channel takes no input");
         const afterStop = fired();
         controller.emit(0, Buffer.from("late\n"));
         await clock.advance(200);
@@ -468,9 +500,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("a yield pauses the terminals and a re-attach marks the boundary", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("before\n"));
         await clock.advance(50);
         controller.setState("pending-host", { yieldedFor: "download" });
@@ -483,26 +515,6 @@ const firedOf = (terminal) => {
         controller.emit(0, Buffer.from("after\n"));
         await clock.advance(50);
         assert.ok(fired().endsWith("after\r\n"), "data flows again from the new attachment");
-        await service.stopCommand();
-    });
-
-    await scenario("a closed terminal keeps its channel and can be reopened", async () => {
-        const { service, controller, clock, vscode } = makeService();
-        await service.startCommand();
-        const first = vscode.terminals[0];
-        const firedFirst = firedOf(first);
-        first.pty.close();
-        controller.emit(0, Buffer.from("while closed\n"));
-        await clock.advance(50);
-        assert.strictEqual(firedFirst(), "", "a closed terminal receives nothing");
-        assert.ok(service.showTerminals(), "the channel is shown again");
-        const second = vscode.terminals.at(-1);
-        assert.notStrictEqual(second, first);
-        assert.ok(second.shown >= 1);
-        const firedSecond = firedOf(second);
-        controller.emit(0, Buffer.from("reopened\n"));
-        await clock.advance(50);
-        assert.strictEqual(firedSecond(), "reopened\r\n");
         await service.stopCommand();
     });
 
@@ -558,11 +570,11 @@ const firedOf = (terminal) => {
         assert.strictEqual(notice.error.i18nKey, "rtt.err.configIncomplete");
     });
 
-    await scenario("Agent starts reveal the same terminals and propagate noticed failures once", async () => {
-        const { service, controller, notices, vscode } = makeService();
+    await scenario("Agent starts reveal the same panel and propagate noticed failures once", async () => {
+        const { service, controller, notices, panel } = makeService();
         const status = await service.startAgentCommand();
         assert.strictEqual(status.state, "running");
-        assert.ok(vscode.terminals[0].shown > 0);
+        assert.deepStrictEqual(panel.reveals, [true]);
         await service.stopCommand();
         const failure = Object.assign(new Error("start timed out"), { code: "RTT_START_TIMEOUT" });
         controller.start = async () => {
@@ -576,47 +588,78 @@ const firedOf = (terminal) => {
         service.dispose();
     });
 
-    await scenario("a restart reuses the stopped terminal and marks the boundary", async () => {
-        const { service, controller, clock, posted, vscode } = makeService();
+    await scenario("a restart reuses the stopped channel and marks the boundary", async () => {
+        const { service, controller, clock, posted, panel } = makeService();
         await service.startCommand();
-        const terminal = vscode.terminals[0];
-        const fired = firedOf(terminal);
+        const fired = outputOf(panel, 0);
         await service.stopCommand();
-        assert.strictEqual(posted.at(-1).view.terminals, 1, "the stopped terminal can still be shown");
+        assert.strictEqual(posted.at(-1).view.terminals, 1, "the stopped channel can still be shown");
+        assert.strictEqual(service.showTerminals(), true);
+        assert.deepStrictEqual(panel.reveals.at(-1), false, "the sidebar button focuses the panel");
         await service.startCommand();
-        assert.strictEqual(vscode.terminals.length, 1, "no second terminal appears");
+        assert.strictEqual(panelChannels(panel).length, 1, "no second channel appears");
         controller.emit(0, "again\n");
         await clock.advance(50);
         assert.ok(fired().includes("rtt.termStopped\r\n\r\nrtt.termReattached\r\nagain\r\n"), JSON.stringify(fired()));
         await service.stopCommand();
     });
 
-    await scenario("closing a stopped terminal releases it and a closed one does not come back", async () => {
-        const { service, posted, vscode } = makeService();
+    await scenario("a renamed channel keeps its text and a vanished one leaves at the next start", async () => {
+        const channels = { up: [{ ...twoChannels.up[0] }, { ...twoChannels.up[1] }], down: [] };
+        const { service, controller, clock, panel } = makeService({ channels });
         await service.startCommand();
-        await service.stopCommand();
-        vscode.terminals[0].pty.close();
-        assert.strictEqual(posted.at(-1).view.terminals, 0);
-        await service.startCommand();
-        assert.strictEqual(vscode.terminals.length, 2, "a released terminal is created anew");
-        vscode.terminals[1].pty.close();
-        await service.stopCommand();
-        assert.strictEqual(posted.at(-1).view.terminals, 0, "nothing is kept for a terminal already closed");
-        assert.strictEqual(service.showTerminals(), false);
-        assert.strictEqual(vscode.terminals.length, 2);
-    });
-
-    await scenario("a channel the firmware renamed gets a new terminal", async () => {
-        const channels = { up: [{ ...oneChannel.up[0] }], down: [] };
-        const { service, vscode } = makeService({ channels });
-        await service.startCommand();
+        controller.emit(0, "kept\n");
+        await clock.advance(50);
         await service.stopCommand();
         channels.up[0].name = "Console";
+        channels.up.pop();
         await service.startCommand();
+        assert.deepStrictEqual(panelChannels(panel), [{ index: 0, name: "Console", active: true, hasInput: false }]);
+        assert.ok(service.panelSnapshot().channels[0].text.startsWith("kept\r\n"));
+        await service.stopCommand();
+    });
+
+    await scenario("the snapshot rebuilds the panel, keeps a bounded scrollback and forgets cleared text", async () => {
+        const { service, controller, clock, panel } = makeService({ channels: twoChannels });
+        await service.startCommand();
+        controller.emit(0, "a\n");
+        controller.emit(2, "b\n");
+        await clock.advance(50);
+        const snapshot = service.panelSnapshot();
+        assert.strictEqual(snapshot.type, "rttPanelSnapshot");
         assert.deepStrictEqual(
-            vscode.terminals.map((terminal) => terminal.name),
-            ["EmberProbe RTT #0 Terminal", "EmberProbe RTT #0 Console"]
+            snapshot.channels.map((channel) => [channel.index, channel.text]),
+            [
+                [0, "a\r\n"],
+                [2, "b\r\n"]
+            ]
         );
+        service.clearChannel(0);
+        service.clearChannel(9);
+        assert.strictEqual(service.panelSnapshot().channels[0].text, "");
+        for (let index = 0; index < 20; index++) {
+            controller.emit(2, `${index}`.padEnd(64 * 1024, "y") + "\n");
+            await clock.advance(50);
+        }
+        const text = service.panelSnapshot().channels[1].text;
+        assert.ok(text.length <= 1024 * 1024, `scrollback ${text.length}`);
+        assert.ok(/^\d+y/.test(text), "the scrollback is cut at a line start");
+        assert.ok(panel.messages.every((message) => message.type !== "rttOutput" || message.text));
+        await service.stopCommand();
+    });
+
+    await scenario("a panel that throws does not break the channel", async () => {
+        const { service, controller, clock, panel } = makeService();
+        panel.post = () => {
+            throw new Error("view gone");
+        };
+        panel.reveal = async () => {
+            throw new Error("view gone");
+        };
+        await service.startCommand();
+        controller.emit(0, "a\n");
+        await clock.advance(50);
+        assert.strictEqual(service.panelSnapshot().channels[0].text, "a\r\n");
         await service.stopCommand();
     });
 
@@ -633,9 +676,9 @@ const firedOf = (terminal) => {
                 "rtt.termStopped\r\nraw text\r\n"
             ]
         ]) {
-            const { service, controller, vscode } = makeService();
+            const { service, controller, panel } = makeService();
             await service.startCommand();
-            const fired = firedOf(vscode.terminals[0]);
+            const fired = outputOf(panel, 0);
             controller.setState("stopped", options);
             assert.ok(fired().endsWith(expected), JSON.stringify(fired()));
         }
@@ -711,9 +754,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("a yield is noted once however many states it passes through", async () => {
-        const { service, controller, vscode } = makeService();
+        const { service, controller, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.setState("pending-host", { reason: "yielded" });
         controller.setState("pending-host", { reason: "host-switched" });
         controller.setState("starting");
@@ -725,45 +768,14 @@ const firedOf = (terminal) => {
         await service.stopCommand();
     });
 
-    await scenario("Esc alone does not swallow the keys after it", async () => {
-        const { service, controller, vscode } = makeService();
-        await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        pty.handleInput("\x1b");
-        pty.handleInput("1");
-        pty.handleInput("2");
-        pty.handleInput("\x1bOA\x1b[1;5C\x1bx");
-        pty.handleInput("\r");
-        assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "12\n" }]);
-        await service.stopCommand();
-    });
-
-    await scenario("backspace erases the cells a character took", async () => {
-        const { service, controller, vscode } = makeService();
-        await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        const fired = firedOf(vscode.terminals[0]);
-        pty.handleInput("中");
-        pty.handleInput("\x7f");
-        assert.strictEqual(fired(), "中\b\b  \b\b");
-        pty.handleInput("\x7f");
-        assert.strictEqual(fired(), "中\b\b  \b\b", "an empty line has nothing to erase");
-        pty.handleInput("😀é\x7f\x7f\r");
-        assert.strictEqual(controller.writes[0].data, "\n");
-        assert.ok(fired().includes("😀é\b \b\b\b  \b\b"), JSON.stringify(fired()));
-        await service.stopCommand();
-    });
-
     await scenario("a line that cannot fit the down buffer is refused whole", async () => {
         const channels = { up: oneChannel.up, down: [{ index: 0, size: 16 }] };
-        const { service, controller, vscode } = makeService({ channels });
+        const { service, controller } = makeService({ channels });
         await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        const fired = firedOf(vscode.terminals[0]);
-        pty.handleInput("x".repeat(15) + "\r");
+        const refused = service.sendInput(0, "x".repeat(15));
         assert.deepStrictEqual(controller.writes, []);
-        assert.ok(fired().includes("rtt.inputTooLong"));
-        pty.handleInput("x".repeat(14) + "\r");
+        assert.ok(refused.message.includes("rtt.inputTooLong"));
+        service.sendInput(0, "x".repeat(14));
         assert.strictEqual(controller.writes[0].data.length, 15, "size minus one fits");
         await service.stopCommand();
     });
@@ -772,15 +784,14 @@ const firedOf = (terminal) => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-rtt-term-"));
         const logFile = path.join(dir, "rtt.log");
         try {
-            const { service, controller, clock, vscode } = makeService({ settings: { logFile } });
+            const { service, controller, clock } = makeService({ settings: { logFile } });
             await service.startCommand();
-            const pty = vscode.terminals[0].pty;
-            pty.handleInput("sent\r");
+            service.sendInput(0, "sent");
             const write = controller.write;
             controller.write = () => {
                 throw Object.assign(new Error("busy"), { code: "RTT_INPUT_BUSY" });
             };
-            pty.handleInput("dropped\r");
+            service.sendInput(0, "dropped");
             controller.write = write;
             controller.emit(0, "first\n");
             await clock.advance(50);
@@ -916,9 +927,9 @@ const firedOf = (terminal) => {
 
     await scenario("timestamp settings apply to the running terminals", async () => {
         const settings = { timestamps: false };
-        const { service, controller, clock, vscode } = makeService({ settings });
+        const { service, controller, clock, panel } = makeService({ settings });
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("plain\n"));
         await clock.advance(50);
         settings.timestamps = true;
@@ -931,9 +942,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("dispose closes the entries without stop notes", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from("x\n"));
         await clock.advance(50);
         service.dispose();
@@ -941,29 +952,26 @@ const firedOf = (terminal) => {
         assert.strictEqual(service.state, "stopped");
     });
     await scenario("UTF-8 input including Enter fits the controller byte cap", async () => {
-        const { service, controller, vscode } = makeService();
+        const { service, controller } = makeService();
         await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        pty.handleInput("中".repeat(400) + "\r");
+        assert.ok(service.sendInput(0, "中".repeat(340)).ok);
         assert.strictEqual(Buffer.byteLength(controller.writes[0].data), MAX_INPUT_BYTES - 1);
-        pty.handleInput("😀\b好\r");
-        assert.strictEqual(controller.writes[1].data, "好\n");
+        assert.ok(service.sendInput(0, "😀好").ok);
+        assert.strictEqual(controller.writes[1].data, "😀好\n");
         await service.stopCommand();
     });
 
-    await scenario("a session switch discards unfinished input and partial UTF-8 output", async () => {
-        const { service, controller, clock, vscode } = makeService();
+    await scenario("a session switch refuses input while paused and drops partial UTF-8 output", async () => {
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const pty = vscode.terminals[0].pty;
-        const fired = firedOf(vscode.terminals[0]);
-        pty.handleInput("old");
+        const fired = outputOf(panel, 0);
         controller.emit(0, Buffer.from([0xe4, 0xb8]));
         await clock.advance(50);
         controller.setState("pending-host");
-        pty.handleInput("ignored\r");
+        assert.strictEqual(service.sendInput(0, "ignored").ok, false);
         controller.setState("running");
         controller.reattach();
-        pty.handleInput("new\r");
+        service.sendInput(0, "new", { echo: false });
         controller.emit(0, Buffer.from("new\n"));
         await clock.advance(50);
         assert.deepStrictEqual(controller.writes, [{ channel: 0, data: "new\n" }]);
@@ -973,9 +981,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("known generations count evictions before the first terminal poll", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, "x".repeat(300000));
         await clock.advance(50);
         assert.ok(fired().includes("rtt.termGap 37856\r\n"));
@@ -990,10 +998,10 @@ const firedOf = (terminal) => {
         async () => {
             const dir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-rtt-term-"));
             const logFile = path.join(dir, "rtt.log");
-            const { service, controller, vscode } = makeService({ settings: { logFile } });
+            const { service, controller, panel } = makeService({ settings: { logFile } });
             try {
                 await service.startCommand();
-                const fired = firedOf(vscode.terminals[0]);
+                const fired = outputOf(panel, 0);
                 let result = {
                     generation: 1,
                     cursor: 24,
@@ -1025,9 +1033,9 @@ const firedOf = (terminal) => {
     );
 
     await scenario("status generation changes mark unknown gaps once and count the new history eviction", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.reattach();
         controller.emit(0, "x".repeat(300000));
         controller.notify(controller.status());
@@ -1038,9 +1046,9 @@ const firedOf = (terminal) => {
     });
 
     await scenario("buffer overruns mark the gap and continue from retained data", async () => {
-        const { service, controller, clock, vscode } = makeService();
+        const { service, controller, clock, panel } = makeService();
         await service.startCommand();
-        const fired = firedOf(vscode.terminals[0]);
+        const fired = outputOf(panel, 0);
         controller.emit(0, "first\n");
         await clock.advance(50);
         controller.emit(0, "x".repeat(300000));

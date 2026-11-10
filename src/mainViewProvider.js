@@ -33,6 +33,7 @@ const { DebugLaunch } = require("./services/debugLaunch");
 const { WriteExecution } = require("./services/writeExecution");
 const { AgentOperations } = require("./services/agentOperations");
 const { ConnectedProbes } = require("./services/connectedProbes");
+const { RttPanelHost } = require("./services/rttPanelHost");
 const { ChartHistoryFeed } = require("./services/chartHistoryFeed");
 const { createServices, createRttController, createRttTerminals } = require("./composition");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
@@ -107,6 +108,7 @@ class MainViewProvider {
     _historyFeedController = null;
     _rttController = null;
     _rttTerminalController = null;
+    _rttPanelHost = null;
     // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
         return (this._samplingController ??= createSamplingController(this));
@@ -140,6 +142,11 @@ class MainViewProvider {
     // The RTT terminals follow the controller's statuses; created on first use like the controller itself.
     get _rttTerminals() {
         return (this._rttTerminalController ??= createRttTerminals(this, vscode));
+    }
+
+    // The bottom panel's RTT terminal view; VS Code resolves it once its tab is shown.
+    get rttPanel() {
+        return (this._rttPanelHost ??= new RttPanelHost(this, { vscode }));
     }
 
     rttConfigurationChanged() {
@@ -251,6 +258,7 @@ class MainViewProvider {
         this._context.globalState.update("emberprobe.lang", this._lang);
         for (const entry of this._livePanels.values())
             entry.panel.title = this._t("lw.panelTitle", { n: entry.panelId });
+        this._rttPanelHost?.languageChanged();
         // Running built-in debug sessions switch the language of their error messages too.
         for (const session of this._debugBridge?.allSessions.values() || [])
             if (session.type === "emberprobe")

@@ -118,6 +118,7 @@ const TEST_GROUPS = Object.freeze({
         "rtt-controller.test.js",
         "rtt-line-formatter.test.js",
         "rtt-log-writer.test.js",
+        "rtt-panel.test.js",
         "rtt-stream.test.js",
         "rtt-target.test.js",
         "rtt-terminal.test.js",

@@ -1,0 +1,251 @@
+html,
+body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--vscode-panel-background, var(--vscode-editor-background));
+    color: var(--vscode-foreground);
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+}
+[hidden] {
+    display: none !important;
+}
+
+.tabs {
+    display: flex;
+    flex: none;
+    gap: 2px;
+    padding: 2px 8px 0;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+.tab {
+    position: relative;
+    padding: 3px 10px;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    background: none;
+    color: var(--vscode-panelTitle-inactiveForeground, var(--vscode-descriptionForeground));
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.tab:hover {
+    color: var(--vscode-panelTitle-activeForeground, var(--vscode-foreground));
+}
+.tab.selected {
+    color: var(--vscode-panelTitle-activeForeground, var(--vscode-foreground));
+    border-bottom-color: var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder));
+}
+.tab.stopped {
+    opacity: 0.6;
+}
+.tab.unread::after {
+    content: "";
+    position: absolute;
+    top: 4px;
+    right: 3px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--vscode-activityBarBadge-background, var(--vscode-focusBorder));
+}
+.tab:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+
+.output {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 20px 4px 12px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+    line-height: 1.4;
+    user-select: text;
+    cursor: text;
+}
+.output:focus {
+    outline: none;
+}
+.output:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+.empty {
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-font-family);
+}
+.line {
+    min-height: 1.4em;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 8;
+}
+
+.input-error {
+    flex: none;
+    padding: 2px 12px;
+    color: var(--vscode-errorForeground);
+    font-size: 12px;
+}
+.input-row {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    padding: 2px 12px 4px;
+    border-top: 1px solid var(--vscode-panel-border, transparent);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+}
+.prompt {
+    color: var(--vscode-descriptionForeground);
+}
+.input-row input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 3px 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--vscode-input-foreground, var(--vscode-foreground));
+    font: inherit;
+}
+.input-row input::placeholder {
+    color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+.input-row input:disabled {
+    cursor: default;
+}
+.raw-hint {
+    flex: none;
+    padding: 3px 12px 4px;
+    border-top: 1px solid var(--vscode-panel-border, transparent);
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+}
+
+/* ANSI attributes and the theme's terminal palette. */
+.bold {
+    font-weight: bold;
+}
+.dim {
+    opacity: 0.6;
+}
+.italic {
+    font-style: italic;
+}
+.underline {
+    text-decoration: underline;
+}
+.fg-inverse {
+    color: var(--vscode-panel-background, var(--vscode-editor-background));
+}
+.bg-inverse {
+    background: var(--vscode-foreground);
+}
+.fg-0 {
+    color: var(--vscode-terminal-ansiBlack);
+}
+.fg-1 {
+    color: var(--vscode-terminal-ansiRed);
+}
+.fg-2 {
+    color: var(--vscode-terminal-ansiGreen);
+}
+.fg-3 {
+    color: var(--vscode-terminal-ansiYellow);
+}
+.fg-4 {
+    color: var(--vscode-terminal-ansiBlue);
+}
+.fg-5 {
+    color: var(--vscode-terminal-ansiMagenta);
+}
+.fg-6 {
+    color: var(--vscode-terminal-ansiCyan);
+}
+.fg-7 {
+    color: var(--vscode-terminal-ansiWhite);
+}
+.fg-8 {
+    color: var(--vscode-terminal-ansiBrightBlack);
+}
+.fg-9 {
+    color: var(--vscode-terminal-ansiBrightRed);
+}
+.fg-10 {
+    color: var(--vscode-terminal-ansiBrightGreen);
+}
+.fg-11 {
+    color: var(--vscode-terminal-ansiBrightYellow);
+}
+.fg-12 {
+    color: var(--vscode-terminal-ansiBrightBlue);
+}
+.fg-13 {
+    color: var(--vscode-terminal-ansiBrightMagenta);
+}
+.fg-14 {
+    color: var(--vscode-terminal-ansiBrightCyan);
+}
+.fg-15 {
+    color: var(--vscode-terminal-ansiBrightWhite);
+}
+.bg-0 {
+    background: var(--vscode-terminal-ansiBlack);
+}
+.bg-1 {
+    background: var(--vscode-terminal-ansiRed);
+}
+.bg-2 {
+    background: var(--vscode-terminal-ansiGreen);
+}
+.bg-3 {
+    background: var(--vscode-terminal-ansiYellow);
+}
+.bg-4 {
+    background: var(--vscode-terminal-ansiBlue);
+}
+.bg-5 {
+    background: var(--vscode-terminal-ansiMagenta);
+}
+.bg-6 {
+    background: var(--vscode-terminal-ansiCyan);
+}
+.bg-7 {
+    background: var(--vscode-terminal-ansiWhite);
+}
+.bg-8 {
+    background: var(--vscode-terminal-ansiBrightBlack);
+}
+.bg-9 {
+    background: var(--vscode-terminal-ansiBrightRed);
+}
+.bg-10 {
+    background: var(--vscode-terminal-ansiBrightGreen);
+}
+.bg-11 {
+    background: var(--vscode-terminal-ansiBrightYellow);
+}
+.bg-12 {
+    background: var(--vscode-terminal-ansiBrightBlue);
+}
+.bg-13 {
+    background: var(--vscode-terminal-ansiBrightMagenta);
+}
+.bg-14 {
+    background: var(--vscode-terminal-ansiBrightCyan);
+}
+.bg-15 {
+    background: var(--vscode-terminal-ansiBrightWhite);
+}

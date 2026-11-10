@@ -73,6 +73,7 @@ function createRttTerminals(host, vscode) {
     return new RttTerminalService({
         vscode,
         controller: () => host._rtt,
+        panel: () => host.rttPanel,
         t: (key, params) => host._t(key, params),
         settings: () => {
             const config = vscode.workspace.getConfiguration("emberprobe");

@@ -43,6 +43,7 @@
     "onStartupFinished",
     "workspaceContains:.agents/skills/mcu-variables/SKILL.md",
     "onView:mcu-vscode.mainView",
+    "onView:emberprobe.rttTerminal",
     "onCommand:mcu-vscode.folderDebug",
     "onCommand:mcu-vscode.folderAttachDebug",
     "onCommand:mcu-vscode.folderDownload",
@@ -72,6 +73,13 @@
           "title": "EmberProbe",
           "icon": "media/activity-icon.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "emberprobe-rtt",
+          "title": "RTT 终端",
+          "icon": "media/activity-icon.svg"
+        }
       ]
     },
     "views": {
@@ -80,6 +88,14 @@
           "type": "webview",
           "id": "mcu-vscode.mainView",
           "name": "Flash & Debug"
+        }
+      ],
+      "emberprobe-rtt": [
+        {
+          "type": "webview",
+          "id": "emberprobe.rttTerminal",
+          "name": "RTT 终端",
+          "when": "emberprobe.rttTerminalVisible"
         }
       ]
     },
@@ -119,6 +135,11 @@
       {
         "command": "mcu-vscode.rttToggleTimestamps",
         "title": "EmberProbe: 切换 RTT 时间戳"
+      },
+      {
+        "command": "mcu-vscode.rttClearTerminal",
+        "title": "EmberProbe: 清空 RTT 终端",
+        "icon": "$(clear-all)"
       },
       {
         "command": "mcu-vscode.selectChartBackgroundIcon",
@@ -162,6 +183,19 @@
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "mcu-vscode.rttClearTerminal",
+          "group": "navigation",
+          "when": "view == emberprobe.rttTerminal"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mcu-vscode.rttClearTerminal",
+          "when": "emberprobe.rttTerminalVisible"
+        }
+      ],
       "explorer/context": [
         {
           "command": "mcu-vscode.folderDebug",
@@ -499,7 +533,7 @@
               "raw"
             ],
             "default": "line",
-            "description": "终端输入方式。line：本地回显和编辑，回车发送一行。raw：按键立即发送，包括控制字符，不做本地回显。修改立即生效。 / How terminals send input. line: local echo and editing, Enter sends the line. raw: keystrokes go out at once, control characters included, with no local echo. Applies immediately.",
+            "description": "RTT 终端面板的输入方式。line：在底部输入框编辑，回车发送一行。raw：在输出区按键立即发送，包括控制字符，不做本地回显。修改立即生效。 / How the RTT terminal panel sends input. line: edit in the input box, Enter sends the line. raw: keystrokes typed in the output area go out at once, control characters included, with no local echo. Applies immediately.",
             "order": 9
           },
           "emberprobe.rtt.input.lineEnding": {

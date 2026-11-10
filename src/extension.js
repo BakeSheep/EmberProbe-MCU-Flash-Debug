@@ -22,6 +22,10 @@ function activate(context) {
         vscode.window.registerWebviewViewProvider("mcu-vscode.mainView", provider, {
             webviewOptions: { retainContextWhenHidden: true }
         }),
+        vscode.window.registerWebviewViewProvider("emberprobe.rttTerminal", provider.rttPanel, {
+            webviewOptions: { retainContextWhenHidden: true }
+        }),
+        vscode.commands.registerCommand("mcu-vscode.rttClearTerminal", () => provider.rttPanel.clear()),
         vscode.commands.registerCommand("mcu-vscode.folderDebug", resource => provider.commandHandlers["mcu-vscode.debug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderAttachDebug", resource => provider.commandHandlers["mcu-vscode.attachDebug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderDownload", resource => provider.commandHandlers["mcu-vscode.download"](resource)),

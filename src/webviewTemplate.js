@@ -40,6 +40,7 @@ const PAGE_PRELUDE = {
         "writeList.js",
         "agentControls.js"
     ],
+    rttPanel: ["ansi.js"],
     liveWatch: [
         "seriesStyles.js",
         "analysisState.js",

@@ -1,8 +1,8 @@
 "use strict";
 
 // Extension Host half of run-smoke.js --suite rtt. Needs firmware with the protocol of the H750_RttTest project: a text
-// terminal on channel 0, a numbered line stream on channel 1. Commands and terminal input take the same paths as the
-// sidebar and a user typing; Agent routes are called through the dispatcher.
+// terminal on channel 0, a numbered line stream on channel 1. Commands take the same paths as the sidebar, input the
+// service calls behind the RTT terminal panel's input box and raw keys; Agent routes are called through the dispatcher.
 const assert = require("assert");
 const { execFile } = require("child_process");
 const crypto = require("crypto");
@@ -245,23 +245,19 @@ async function run() {
         return expectText(0, /hb \d+ stream seq=\d+ dropped=\d+\r?\n/u);
     };
 
-    // What each pseudoterminal showed, captured at its write event.
+    // What the panel was given for each channel, captured as the service emits it.
     const shown = new Map();
-    const watched = new WeakSet();
-    const watchTerminals = () => {
-        for (const [channel, entry] of terminals._channels) {
-            if (!entry.write || watched.has(entry.write)) continue;
-            watched.add(entry.write);
-            shown.set(channel, shown.get(channel) || "");
-            entry.write.event((text) => shown.set(channel, shown.get(channel) + text));
-        }
+    const emit = terminals._emit.bind(terminals);
+    terminals._emit = (entry, text) => {
+        if (text) shown.set(entry.channel, (shown.get(entry.channel) || "") + text);
+        emit(entry, text);
     };
-    const terminal = (channel) => {
-        const entry = terminals._channels.get(channel);
-        assert(entry?.terminal, `no terminal for channel ${channel}`);
-        return entry.terminal;
+    // A line typed into the panel's input box; returns how it ended.
+    const type = (channel, text) => terminals.sendInput(channel, text);
+    const typeRaw = (channel, data) => {
+        const result = terminals.sendRaw(channel, data);
+        assert(result.ok, `raw input refused: ${result.message}`);
     };
-    const type = (channel, text) => terminal(channel).sendText(`${text}\r`, false);
     const expectShown = async (channel, patterns, timeoutMs = 8000) => {
         const deadline = Date.now() + timeoutMs;
         const missing = () => patterns.filter((pattern) => !pattern.test(shown.get(channel) || ""));
@@ -282,7 +278,6 @@ async function run() {
         const status = await running(null, 30000);
         readers.clear();
         shown.clear();
-        watchTerminals();
         await drain(0);
         await expectText(0, /hb \d+/u);
         return status;
@@ -518,20 +513,19 @@ async function run() {
                 const names = status.channels.up.map((channel) => channel.name);
                 assert(names.includes("Terminal") && names.includes("Stream"), `channels: ${names}`);
                 assert(!("servers" in status), "Agent status must not expose local ports");
-                watchTerminals();
                 return status;
             },
             45000
         );
         await step("ui.terminals", async () => {
-            const names = vscode.window.terminals.map((item) => item.name).filter((name) => /RTT/u.test(name));
+            const names = terminals.panelSnapshot().channels.map((item) => `#${item.index} ${item.name}`);
             assert(
                 names.some((name) => /#0 .*Terminal/u.test(name)),
-                `terminals: ${names}`
+                `panel channels: ${names}`
             );
             assert(
                 names.some((name) => /#1 .*Stream/u.test(name)),
-                `terminals: ${names}`
+                `panel channels: ${names}`
             );
             const view = terminals._view();
             return { names, view };
@@ -542,7 +536,7 @@ async function run() {
         await step("output.heartbeat", heartbeat);
         await step("output.terminalMirrors", async () => {
             await sleep(600);
-            assert(/hb \d+/u.test(shown.get(0) || ""), `terminal showed: ${(shown.get(0) || "").slice(-200)}`);
+            assert(/hb \d+/u.test(shown.get(0) || ""), `panel showed: ${(shown.get(0) || "").slice(-200)}`);
         });
 
         await step("input.channel0", async () => {
@@ -559,12 +553,10 @@ async function run() {
             return expectText(1, /down1: ping/u);
         });
         await step("input.tooLong", async () => {
-            const before = (shown.get(0) || "").length;
             await drain(0);
-            type(0, "x".repeat(200));
+            const result = type(0, "x".repeat(200));
+            assert(!result.ok && /200/u.test(result.message), `no refusal: ${JSON.stringify(result)}`);
             await sleep(500);
-            const notice = (shown.get(0) || "").slice(before);
-            assert(/\x1b\[33m/u.test(notice), `no refusal shown: ${JSON.stringify(notice.slice(-200))}`);
             await pull(0);
             assert(!reader(0).text.includes("xxxx"), "an oversized line reached the firmware");
         });
@@ -576,7 +568,7 @@ async function run() {
             assert.strictEqual(line, "utf8: 中文 🔥 end");
             assert(!reader(0).text.includes(REPLACEMENT));
             await sleep(300);
-            assert(!(shown.get(0) || "").includes(REPLACEMENT), "the terminal split a character");
+            assert(!(shown.get(0) || "").includes(REPLACEMENT), "the panel split a character");
             return line;
         });
         await step("agent.readSmallLimit", async () => {
@@ -662,7 +654,7 @@ async function run() {
             try {
                 await received();
                 const before = (shown.get(1) || "").length;
-                terminal(1).sendText("ab\x03\x7f中", false);
+                typeRaw(1, "ab\x03\x7f中");
                 await sleep(300);
                 const bytes = await received();
                 assert.strictEqual(bytes, "61 62 03 7f e4 b8 ad", "raw keys were not sent as typed");
@@ -673,7 +665,7 @@ async function run() {
                 return bytes;
             } finally {
                 // The next start must not see half a line.
-                terminal(1).sendText("\r", false);
+                typeRaw(1, "\r");
                 await sleep(200);
                 await setting("rtt.input.mode", undefined);
             }
@@ -922,7 +914,6 @@ async function run() {
                                 assert(Number.isInteger(actual.flags), "actual channel Flags readback is missing");
                                 assert.strictEqual(actual.flags & 3, { skip: 0, trim: 1, block: 2 }[mode]);
                                 readers.clear();
-                                watchTerminals();
                                 await drain(0);
                                 type(0, "auto off");
                                 await expectText(0, /ok: auto=off/u);
@@ -983,7 +974,6 @@ async function run() {
                                 await command("mcu-vscode.startRtt");
                                 await running("own-session", 30000);
                                 readers.clear();
-                                watchTerminals();
                             }
                         },
                         240000
@@ -1152,7 +1142,6 @@ async function run() {
             async () => {
                 const reply = await call("rtt.start");
                 const status = await running(null, 30000);
-                watchTerminals();
                 readers.clear();
                 await expectText(0, /hb \d+/u);
                 return { reply: reply.state, source: status.source };

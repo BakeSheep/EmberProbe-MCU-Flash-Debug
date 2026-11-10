@@ -1,19 +1,19 @@
 "use strict";
 
-// Terminal UI for RTT: one VS Code pseudoterminal per up channel, fed by cursor reads of the controller's channel
-// buffer on an injected clock, formatted per channel (createRttFormatter: text, raw or hex, with optional host
-// timestamps) and with an optional log file per channel, formatted or as received (RttLogWriter). With timestamps on,
-// each socket chunk is read as it arrives, so its time is when the bytes reached the host and not the next poll tick.
-// Line input echoes printable characters locally and Enter sends the line plus the configured ending to the channel's
-// down channel; raw input sends each keystroke as typed and leaves the echo to the firmware. The controller's statuses
-// drive the lifecycle: terminals appear when an attachment runs, stay open across yields (paused with a notice line)
-// and stay readable after RTT stops, with the reason as their last line; the next start reuses them. A terminal the
-// user closed does not stop the channel; its cursor, formatter and log keep running, and a fresh terminal can be
-// opened for the same entry at any time. Once stopped, closing a terminal removes its entry.
+// Terminal UI for RTT: the "RTT 终端" view in VS Code's bottom panel (RttPanelHost), fed by cursor reads of the
+// controller's channel buffer on an injected clock, formatted per channel (createRttFormatter: text, raw or hex, with
+// optional host timestamps) and with an optional log file per channel, formatted or as received (RttLogWriter). With
+// timestamps on, each socket chunk is read as it arrives, so its time is when the bytes reached the host and not the
+// next poll tick. Each up channel keeps a bounded scrollback here, so the panel can be rebuilt whenever its page loads,
+// and the panel gets what arrived since as one message per channel and read pass. The panel's input box sends a line
+// plus the configured ending to the channel's down channel; raw input sends each keystroke as typed and leaves the
+// echo to the firmware. The controller's statuses drive the lifecycle: the panel tab appears with the first start and
+// stays for the window's life, channels pause with a notice line across yields and stay readable after RTT stops, with
+// the reason as their last line; the next start reuses them.
 //
 // Failures reach the user once: the sidebar's notice box through onNotice, keyed by what they concern ("rtt" for the
-// session, "rtt-log" for the log files, "rtt-channels" for the channel selection). Line input problems stay in the
-// terminal the user is typing in.
+// session, "rtt-log" for the log files, "rtt-channels" for the channel selection). Input problems stay in the panel,
+// next to the box they were typed in.
 
 const path = require("path");
 const { SYSTEM_CLOCK } = require("../samplingClock");
@@ -24,7 +24,7 @@ const { RttLogWriter } = require("./rttLogWriter");
 const POLL_INTERVAL_MS = 50;
 const READ_CHUNK_BYTES = 64 * 1024;
 const MAX_READS_PER_TICK = 4;
-// The line editor's bound; the controller's write cap is the hard safety net behind it.
+// The input box's bound; the controller's write cap is the hard safety net behind it.
 const MAX_INPUT_BYTES = 1022; // Reserve room for the longest line ending in the controller's 1024-byte cap.
 const MAX_WRITE_BYTES = 1024;
 const LINE_ENDINGS = Object.freeze({ lf: "\n", crlf: "\r\n", cr: "\r", none: "" });
@@ -84,34 +84,15 @@ const downSize = (status, channel) => {
     return (status?.channels?.down || []).find((entry) => entry.index === index)?.size || 0;
 };
 
-const channelName = (channel) => `EmberProbe RTT #${channel.index}${channel.name ? ` ${channel.name}` : ""}`;
-
-// East Asian wide and emoji ranges: these take two terminal cells, so erasing one takes two.
-const WIDE_RANGES = [
-    [0x1100, 0x115f],
-    [0x2e80, 0x303e],
-    [0x3041, 0x33ff],
-    [0x3400, 0x4dbf],
-    [0x4e00, 0x9fff],
-    [0xa000, 0xa4cf],
-    [0xac00, 0xd7a3],
-    [0xf900, 0xfaff],
-    [0xfe30, 0xfe6f],
-    [0xff00, 0xff60],
-    [0xffe0, 0xffe6],
-    [0x1f300, 0x1f64f],
-    [0x1f900, 0x1f9ff],
-    [0x20000, 0x3fffd]
-];
-const isWide = (char) => {
-    const code = char.codePointAt(0);
-    return WIDE_RANGES.some(([first, last]) => code >= first && code <= last);
-};
+const MAX_HISTORY = 100;
+// Text kept per channel for rebuilding the panel; older rows are dropped at a line boundary.
+const MAX_SCROLLBACK_CHARS = 1024 * 1024;
 
 class RttTerminalService {
-    // options: { vscode, clock, controller, t, settings, onNotice, clearNotice, post }. controller() returns the
-    // RttController; settings() returns { timestamps, logFile, logEnabled, logDirectory, logMaxBytes, stripAnsi };
-    // onNotice(notice, id) and clearNotice(id) address the sidebar's RTT notices.
+    // options: { vscode, clock, controller, t, settings, onNotice, clearNotice, post, panel }. controller() returns the
+    // RttController; settings() returns { timestamps, logFile, logEnabled, logDirectory, logMaxBytes, stripAnsi, ... };
+    // onNotice(notice, id) and clearNotice(id) address the sidebar's RTT notices; post reaches the sidebar; panel()
+    // returns the bottom panel view: { post(message), ensureVisible(), reveal(preserveFocus) }.
     constructor({
         vscode,
         clock = undefined,
@@ -120,7 +101,8 @@ class RttTerminalService {
         settings,
         onNotice,
         clearNotice = (_id) => {},
-        post = (_message) => {}
+        post = (_message) => {},
+        panel = () => null
     }) {
         this._vscode = vscode;
         this.clock = { ...SYSTEM_CLOCK, ...clock };
@@ -130,8 +112,10 @@ class RttTerminalService {
         this._onNotice = onNotice || (() => {});
         this._clearNotice = clearNotice;
         this._post = post;
+        this._panel = panel;
         this._status = { state: "stopped" };
-        this._channels = new Map(); // up channel index -> entry, including stopped entries kept for their terminal
+        this._history = new Map(); // up channel index -> lines sent, oldest first
+        this._channels = new Map(); // up channel index -> entry, including stopped entries kept for their text
         this._timer = null;
         this._paused = false;
         this._failureNoticed = null; // The code a failed start already reported through its status.
@@ -143,13 +127,13 @@ class RttTerminalService {
         return this._status?.state || "stopped";
     }
 
-    // Starts RTT and reveals the terminals; starting an already running attachment only reveals them. A failure is
-    // reported here, once, whichever path it arrived on, so callers get false and report nothing further.
+    // Starts RTT and reveals the panel; starting an already running attachment only reveals it. A failure is reported
+    // here, once, whichever path it arrived on, so callers get false and report nothing further.
     async startCommand() {
         return this._startCommand("user");
     }
 
-    // Agent callers share terminal/card/notice updates but must receive the original failure.
+    // Agent callers share panel/card/notice updates but must receive the original failure.
     async startAgentCommand() {
         return this._startCommand("agent");
     }
@@ -176,7 +160,7 @@ class RttTerminalService {
     }
 
     async stopCommand() {
-        await this._controller().stop(); // The stopped status notes the end in the terminals.
+        await this._controller().stop(); // The stopped status notes the end in the panel.
     }
 
     postStatus(post = this._post) {
@@ -214,7 +198,7 @@ class RttTerminalService {
             : this._vscode.ConfigurationTarget.Global;
     }
 
-    // Reveals the terminals, recreating any the user closed; reports when there is nothing to show yet.
+    // Brings the panel to the front; reports when there is nothing to show yet.
     showTerminals() {
         if (!this._channels.size) {
             const waiting = this.state === "starting" || this.state === "pending-host";
@@ -225,20 +209,21 @@ class RttTerminalService {
             );
             return false;
         }
-        for (const entry of this._channels.values()) this._revealEntry(entry);
+        this._callPanel((panel) => panel.reveal(false));
         return true;
     }
 
-    // Applies the current status and optionally brings the terminals to the front.
+    // Applies the current status and optionally brings the panel to the front without taking focus.
     sync(status, reveal = false) {
         this.onStatus(status);
-        if (reveal) for (const entry of this._channels.values()) this._revealEntry(entry);
+        if (reveal) this._callPanel((panel) => panel.reveal(true));
     }
 
     onStatus(status) {
         const previous = this.state;
         this._status = status || { state: "stopped" };
         const state = this.state;
+        if (state !== "stopped") this._callPanel((panel) => panel.ensureVisible());
         if (state === "running") {
             this._paused = false;
             if (previous !== "running") this._enterRunning();
@@ -250,11 +235,13 @@ class RttTerminalService {
             if (state !== "stopped") this._notePaused();
             else if (previous !== "stopped") this._enterStopped();
         }
+        this._flushPanel();
         this._postStatus();
     }
 
     _postStatus() {
         this._post(rttStatusMessage(this._status, this._view()));
+        this._postPanel(this._panelStatus());
     }
 
     // What the sidebar shows besides the controller's status.
@@ -267,15 +254,54 @@ class RttTerminalService {
         };
     }
 
+    // What the panel shows besides each channel's text.
+    _panelStatus() {
+        return {
+            type: "rttPanelStatus",
+            state: this.state,
+            inputMode: this._settings().inputMode === "raw" ? "raw" : "line",
+            history: Object.fromEntries(this._history),
+            channels: [...this._channels.values()].map((entry) => ({
+                index: entry.channel,
+                name: entry.name,
+                active: entry.active,
+                hasInput: entry.down > 0
+            }))
+        };
+    }
+
+    // Everything the panel needs when its page (re)loads: the status and each channel's scrollback.
+    panelSnapshot() {
+        const status = this._panelStatus();
+        const text = new Map([...this._channels.values()].map((entry) => [entry.channel, entry.scrollback]));
+        return {
+            ...status,
+            type: "rttPanelSnapshot",
+            channels: status.channels.map((channel) => ({ ...channel, text: text.get(channel.index) || "" }))
+        };
+    }
+
+    // The panel cleared what it shows of a channel; a reload must not bring it back.
+    clearChannel(channel) {
+        const entry = this._channels.get(channel);
+        if (!entry) return;
+        entry.scrollback = "";
+        entry.pending = "";
+    }
+
     _active() {
         return [...this._channels.values()].filter((entry) => entry.active);
     }
 
+    // A new attachment starts: channels it no longer has drop out of the panel.
     _enterRunning() {
         this._clearNotice("rtt");
         this._clearNotice("rtt-channels");
         this._warnedError = null;
         this._warnedMissing = "";
+        const live = new Set((this._status.channels?.up || []).map((channel) => channel.index));
+        for (const entry of [...this._channels.values()])
+            if (!entry.active && !live.has(entry.channel)) this._disposeEntry(entry);
         this._warnLogTarget(this._settings());
     }
 
@@ -310,7 +336,7 @@ class RttTerminalService {
         }
     }
 
-    // The terminal's last words: why RTT ended, and the failure when there was one.
+    // A channel's last words: why RTT ended, and the failure when there was one.
     _stopNote() {
         const { reason, error } = this._status;
         const key =
@@ -352,7 +378,7 @@ class RttTerminalService {
         this._poll();
     }
 
-    // Extension shutdown: no stop notes, terminals close with the window.
+    // Extension shutdown: no stop notes, the panel goes with the window.
     dispose() {
         this.flush();
         this._stopTick();
@@ -364,9 +390,9 @@ class RttTerminalService {
         }
     }
 
-    // Brings the channel set of the running attachment and the entries in line: new channels get terminals, stopped
-    // entries resume in the terminal they left open, vanished channels stop, and a new buffer generation restarts its
-    // entry at the attachment's first byte.
+    // Brings the channel set of the running attachment and the entries in line: new channels get an entry, stopped
+    // entries resume where they left off, vanished channels stop, and a new buffer generation restarts its entry at the
+    // attachment's first byte.
     _syncChannels(status) {
         const up = status.channels?.up || [];
         const live = new Set(up.map((channel) => channel.index));
@@ -375,13 +401,8 @@ class RttTerminalService {
         const generations = new Map((status.buffers || []).map((buffer) => [buffer.channel, buffer.generation]));
         const settings = this._settings();
         for (const channel of up) {
-            let entry = this._channels.get(channel.index);
-            // VS Code cannot rename a terminal, so a channel the firmware renamed starts a new one.
-            if (entry && !entry.active && entry.name !== channelName(channel)) {
-                this._disposeEntry(entry);
-                entry = null;
-            }
-            if (!entry) entry = this._createEntry(channel, status);
+            const entry = this._channels.get(channel.index) || this._createEntry(channel, status);
+            entry.name = channel.name || "";
             entry.active = true;
             this._applyLog(entry, settings);
             entry.down = downSize(status, channel);
@@ -394,7 +415,6 @@ class RttTerminalService {
                 // A new attachment replaced the buffers; mark the boundary and read from its beginning.
                 this._mark(entry, "rtt.termReattached");
                 entry.formatter = this._newFormatter(entry);
-                entry.input = "";
             } else if (formatChanged) entry.formatter = this._newFormatter(entry);
             // A known generation starts at zero, even if its first poll follows an eviction.
             if (entry.generation !== generation) entry.cursor = 0;
@@ -416,77 +436,23 @@ class RttTerminalService {
     _createEntry(channel, status) {
         const entry = {
             channel: channel.index,
-            name: channelName(channel),
+            name: channel.name || "",
             down: downSize(status, channel),
             format: channel.format,
             encoding: channel.encoding,
             formatter: null,
             generation: undefined,
             cursor: undefined,
-            input: "",
             ansi: new AnsiStripper(),
             active: true,
-            open: true,
             log: null,
             logFailed: null,
-            write: null,
-            close: null,
-            pty: null,
-            terminal: null
+            scrollback: "",
+            pending: ""
         };
         entry.formatter = this._newFormatter(entry);
         this._channels.set(entry.channel, entry);
-        this._attachTerminal(entry);
         return entry;
-    }
-
-    // (Re)creates the pseudoterminal of an entry. Reused when the user closed the terminal but the channel runs on.
-    _attachTerminal(entry) {
-        entry.write?.dispose?.();
-        entry.close?.dispose?.();
-        const write = new this._vscode.EventEmitter();
-        const close = new this._vscode.EventEmitter();
-        entry.write = write;
-        entry.close = close;
-        entry.open = true;
-        entry.input = "";
-        entry.ready = false;
-        entry.pendingText = "";
-        const pty = {
-            onDidWrite: write.event,
-            onDidClose: close.event,
-            open: () => {
-                if (entry.pty !== pty) return;
-                entry.open = true;
-                entry.ready = true;
-                write.fire(entry.pendingText);
-                entry.pendingText = "";
-            },
-            close: () => {
-                if (entry.pty !== pty) return;
-                // The user closed the terminal; a live channel, its cursor and log continue without it.
-                entry.open = false;
-                entry.input = "";
-                if (entry.active) return;
-                this._disposeEntry(entry);
-                this._postStatus();
-            },
-            handleInput: (data) => {
-                if (entry.pty === pty) this._handleInput(entry, data);
-            }
-        };
-        entry.pty = pty;
-        entry.terminal = this._vscode.window.createTerminal({ name: entry.name, pty: entry.pty });
-        entry.terminal.show?.(true);
-    }
-
-    _revealEntry(entry) {
-        if (entry.open) {
-            entry.terminal?.show?.();
-            return;
-        }
-        this._attachTerminal(entry);
-        entry.terminal?.show?.();
     }
 
     // Keeps the writer unless its target changed. A path that failed stays off until the settings change or RTT
@@ -550,13 +516,16 @@ class RttTerminalService {
 
     _poll() {
         if (this.state !== "running") return;
-        for (const entry of this._active()) if (!this._drain(entry)) return;
+        for (const entry of this._active()) if (!this._drain(entry)) break;
+        this._flushPanel();
     }
 
     // Bytes reached the host: a timestamped line takes its time now rather than at the next tick.
     dataArrived(channel) {
         const entry = this._channels.get(channel);
-        if (this.state === "running" && entry?.active && entry.formatter.timestamps) this._drain(entry);
+        if (this.state !== "running" || !entry?.active || !entry.formatter.timestamps) return;
+        this._drain(entry);
+        this._flushPanel();
     }
 
     // Reads what arrived since the last drain; the bound keeps one channel from starving the others. False when RTT
@@ -581,7 +550,7 @@ class RttTerminalService {
             const gap = result.droppedBytes || (reset ? result.cursor : 0);
             if (reset || gap) {
                 const tail = entry.formatter.flush();
-                this._fire(entry, tail);
+                this._emit(entry, tail);
                 this._appendLog(entry, tail);
                 entry.formatter = this._newFormatter(entry);
             }
@@ -592,7 +561,7 @@ class RttTerminalService {
             if (result.data?.length) {
                 if (entry.log?.raw) entry.log.appendBytes(result.data);
                 const text = entry.formatter.push(result.data, result.cursor);
-                this._fire(entry, text);
+                this._emit(entry, text);
                 this._appendLog(entry, text);
             }
             if (!result.more) break;
@@ -600,122 +569,78 @@ class RttTerminalService {
         return true;
     }
 
-    // Line editor: printable input is echoed locally, Enter sends the line to the down channel, backspace edits;
-    // control characters and escape sequences are not part of the line and are dropped. VS Code delivers a key's
-    // whole sequence in one call, so a lone Esc cannot swallow the next key.
-    _handleInput(entry, data) {
-        if (!entry.open || !entry.active || this.state !== "running") return;
-        if (this._settings().inputMode === "raw") {
-            this._sendRaw(entry, data);
-            return;
-        }
-        let escape = null;
-        for (const char of String(data ?? "")) {
-            if (escape === "csi") {
-                if (/[@-~]/.test(char)) escape = null;
-                continue;
-            }
-            if (escape === "esc") {
-                escape = char === "[" || char === "O" ? "csi" : null;
-                continue;
-            }
-            if (char === "\x1b") {
-                escape = "esc";
-                continue;
-            }
-            if (char === "\r") {
-                this._sendLine(entry);
-                continue;
-            }
-            if (char === "\x7f" || char === "\b") {
-                this._eraseChar(entry);
-                continue;
-            }
-            if (char < " ") continue;
-            if (Buffer.byteLength(entry.input + char, "utf8") > MAX_INPUT_BYTES) continue;
-            entry.input += char;
-            this._fire(entry, char);
-        }
+    _remember(channel, line) {
+        if (!line) return;
+        const history = this._history.get(channel) ?? [];
+        if (history[history.length - 1] !== line) history.push(line);
+        if (history.length > MAX_HISTORY) history.shift();
+        this._history.set(channel, history);
     }
 
-    _eraseChar(entry) {
-        const chars = [...entry.input];
-        const last = chars.pop();
-        if (last === undefined) return;
-        entry.input = chars.join("");
-        this._fire(entry, isWide(last) ? "\b\b  \b\b" : "\b \b");
-    }
-
-    // Problems with a line are shown where it was typed and never reach the log.
-    _inputProblem(entry, text) {
-        this._fire(entry, `\x1b[33m${text}\x1b[0m\r\n`);
-    }
-
-    // OpenOCD drops what does not fit the down buffer, so a line that cannot fit is refused rather than truncated.
-    _sendLine(entry) {
-        const line = entry.input;
-        entry.input = "";
-        this._fire(entry, "\r\n");
-        if (!entry.down) {
-            this._inputProblem(entry, this._t("rtt.inputUnavailable", { channel: entry.channel }));
-            return;
-        }
+    // Sends one line from the panel's input box to a channel's down buffer. OpenOCD drops what does not fit the down
+    // buffer, so a line that cannot fit is refused rather than truncated. A sent line is echoed, dimmed, so the
+    // transcript tells what went out. Returns { ok: true } or { ok: false, message } with the translated reason.
+    sendInput(channel, line, { echo = true } = {}) {
+        if (this.state !== "running") return { ok: false, message: this._t("rtt.err.notRunning") };
+        const up = (this._status?.channels?.up || []).find((candidate) => candidate.index === channel);
+        const down = up ? downSize(this._status, up) : 0;
+        if (!down) return { ok: false, message: this._t("rtt.inputUnavailable", { channel }) };
+        const text = String(line ?? "");
         const ending = LINE_ENDINGS[this._settings().inputLineEnding] ?? LINE_ENDINGS.lf;
-        if (!line && !ending) return;
-        const bytes = Buffer.byteLength(line + ending, "utf8");
-        const max = entry.down - 1; // A ring buffer holds one byte less than its size.
-        if (bytes > max) {
-            this._inputProblem(entry, this._t("rtt.inputTooLong", { bytes, max }));
-            return;
-        }
+        if (!text && !ending) return { ok: true };
+        const bytes = Buffer.byteLength(text + ending, "utf8");
+        const max = down - 1; // A ring buffer holds one byte less than its size.
+        if (bytes > max) return { ok: false, message: this._t("rtt.inputTooLong", { bytes, max }) };
         try {
-            this._controller().write(entry.channel, line + ending);
+            this._controller().write(channel, text + ending);
         } catch (error) {
-            this._inputProblem(entry, `${this._t("rtt.writeFailed")}: ${this._errorText(error)}`);
-            return;
+            return { ok: false, message: `${this._t("rtt.writeFailed")}: ${this._errorText(error)}` };
         }
-        this._appendLog(entry, `${line}\r\n`);
+        const entry = this._channels.get(channel);
+        if (entry) {
+            this._appendLog(entry, `${text}\r\n`);
+            if (echo) this._emit(entry, `\x1b[2m> ${text}\x1b[0m\r\n`);
+        }
+        this._remember(channel, text);
+        this._flushPanel();
+        this._postStatus();
+        return { ok: true };
     }
 
     // Keystrokes, including control characters, go out as typed. The firmware echoes what it wants shown.
-    _sendRaw(entry, data) {
-        if (!entry.down) {
-            this._inputProblem(entry, this._t("rtt.inputUnavailable", { channel: entry.channel }));
-            return;
-        }
+    sendRaw(channel, data) {
+        if (this.state !== "running") return { ok: false, message: this._t("rtt.err.notRunning") };
+        const entry = this._channels.get(channel);
+        if (!entry?.active || !entry.down) return { ok: false, message: this._t("rtt.inputUnavailable", { channel }) };
         const bytes = Buffer.from(String(data ?? ""), "utf8");
         const max = Math.min(entry.down - 1, MAX_WRITE_BYTES);
-        if (bytes.length > max) {
-            this._inputProblem(entry, this._t("rtt.inputTooLong", { bytes: bytes.length, max }));
-            return;
-        }
+        if (bytes.length > max)
+            return { ok: false, message: this._t("rtt.inputTooLong", { bytes: bytes.length, max }) };
         try {
-            this._controller().write(entry.channel, bytes);
+            this._controller().write(channel, bytes);
         } catch (error) {
-            this._inputProblem(entry, `${this._t("rtt.writeFailed")}: ${this._errorText(error)}`);
+            return { ok: false, message: `${this._t("rtt.writeFailed")}: ${this._errorText(error)}` };
         }
+        return { ok: true };
     }
 
     _notePaused() {
         const active = this._active();
         if (this._paused || !active.length) return;
         this._paused = true;
-        for (const entry of active) {
-            entry.input = "";
-            this._fire(entry, `\r\n${this._t("rtt.termPending")}\r\n`);
-        }
+        for (const entry of active) this._emit(entry, `\r\n${this._t("rtt.termPending")}\r\n`);
     }
 
-    // A session boundary shown in the terminal and recorded in its log.
+    // A session boundary shown in the panel and recorded in its log.
     _mark(entry, key, params = undefined) {
         const line = `\r\n${this._t(key, params)}\r\n`;
         entry.ansi.reset();
-        this._fire(entry, line);
+        this._emit(entry, line);
         if (!entry.log?.raw) entry.log?.append(line);
     }
 
-    // RTT ended for this channel: everything held back goes out, and the terminal stays readable with the reason as
-    // its last line. Without an open terminal nothing is left to keep.
+    // RTT ended for this channel: what the formatter held goes out, and the channel stays readable with the reason as
+    // its last line.
     _stopEntry(entry, note) {
         entry.active = false;
         const tail = entry.formatter.flush();
@@ -724,12 +649,7 @@ class RttTerminalService {
         entry.log = null;
         entry.logFailed = null;
         entry.ansi.reset();
-        entry.input = "";
-        if (!entry.open) {
-            this._disposeEntry(entry);
-            return;
-        }
-        this._fire(entry, `${tail}\r\n${note}\r\n`);
+        this._emit(entry, `${tail}\r\n${note}\r\n`);
     }
 
     _disposeEntry(entry) {
@@ -737,15 +657,6 @@ class RttTerminalService {
         entry.active = false;
         entry.log?.close();
         entry.log = null;
-        entry.pty = null; // Ignore the close callback the terminal answers with.
-        try {
-            entry.close?.fire();
-        } catch {
-            /* A closing terminal must not break the teardown. */
-        }
-        entry.write?.dispose?.();
-        entry.close?.dispose?.();
-        entry.terminal = null;
     }
 
     // Keeps partial escape sequences across chunks so ANSI never leaks into plain-text logs.
@@ -757,16 +668,40 @@ class RttTerminalService {
         } else entry.log.append(entry.ansi.push(text));
     }
 
-    _fire(entry, text) {
-        if (!entry.open) return;
-        if (!entry.ready) {
-            entry.pendingText = (entry.pendingText + text).slice(-READ_CHUNK_BYTES);
-            return;
+    // Output for the panel: kept in the scrollback and queued until the next flush.
+    _emit(entry, text) {
+        if (!text) return;
+        entry.pending += text;
+        let scrollback = entry.scrollback + text;
+        if (scrollback.length > MAX_SCROLLBACK_CHARS) {
+            const cut = scrollback.length - MAX_SCROLLBACK_CHARS;
+            const line = scrollback.indexOf("\n", cut);
+            scrollback = scrollback.slice(line >= 0 ? line + 1 : cut);
         }
+        entry.scrollback = scrollback;
+    }
+
+    // One message per channel with what it gained since the last flush.
+    _flushPanel() {
+        for (const entry of this._channels.values()) {
+            if (!entry.pending) continue;
+            const text = entry.pending;
+            entry.pending = "";
+            this._postPanel({ type: "rttOutput", channel: entry.channel, text });
+        }
+    }
+
+    _postPanel(message) {
+        this._callPanel((panel) => panel.post(message));
+    }
+
+    // The panel is UI: its failures must not break the channel.
+    _callPanel(action) {
         try {
-            entry.write?.fire(text);
+            const panel = this._panel();
+            if (panel) void Promise.resolve(action(panel)).catch(() => {});
         } catch {
-            /* The terminal's renderer must not break the channel. */
+            /* A panel that cannot be reached shows the scrollback when it loads. */
         }
     }
 
@@ -790,4 +725,11 @@ function rttStatusMessage(status, view) {
     return { type: "rttStatus", ...(status || {}), view };
 }
 
-module.exports = { MAX_INPUT_BYTES, POLL_INTERVAL_MS, RTT_ERROR_KEYS, RttTerminalService, rttStatusMessage };
+module.exports = {
+    MAX_INPUT_BYTES,
+    MAX_WRITE_BYTES,
+    POLL_INTERVAL_MS,
+    RTT_ERROR_KEYS,
+    RttTerminalService,
+    rttStatusMessage
+};
