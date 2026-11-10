@@ -1347,6 +1347,9 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .chart-overview {
     flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 4px 12px 7px;
     border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%);
@@ -1354,6 +1357,38 @@ input[type="number"]::-webkit-outer-spin-button {
 .chart-overview.disabled {
     opacity: 0.42;
     pointer-events: none;
+}
+#chartTimeline {
+    flex: 1;
+    min-width: 0;
+}
+.chart-fit-control {
+    display: inline-flex;
+    flex: none;
+}
+.chart-fit-control > button {
+    height: 26px;
+    white-space: nowrap;
+    touch-action: none;
+    user-select: none;
+}
+#chartFit {
+    border-radius: 4px 0 0 4px;
+    border-right: 0;
+}
+#chartFitToggle {
+    padding: 0 6px;
+    border-radius: 0 4px 4px 0;
+}
+.chart-fit-control.automatic > button {
+    border-color: var(--vscode-focusBorder);
+}
+#chartFit.holding {
+    box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+#chartFit.held {
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
 }
 .chart-overview-head {
     display: flex;
@@ -3159,6 +3194,33 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Every toolbar control shares one height and corner radius so the row reads as one strip. */
+.chart-fit-menu {
+    position: fixed;
+    z-index: 1000;
+    display: flex;
+    width: max-content;
+    max-width: calc(100 * var(--emberprobe-vw, 1vw) - 8px);
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    max-height: calc(100 * var(--emberprobe-vh, 1vh) - 16px);
+    overflow-y: auto;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-focusBorder));
+    border-radius: 5px;
+    background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
+}
+.chart-fit-menu.hidden {
+    display: none;
+}
+.chart-fit-menu > button {
+    text-align: left;
+    white-space: nowrap;
+}
+#chart:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
 .toolbar {
     --toolbar-control-height: 26px;
     --toolbar-control-radius: 4px;

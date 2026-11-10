@@ -1616,6 +1616,8 @@ var chartState = {
     x: null,
     y: null,
     autoY: true,
+    fitMode: "fill",
+    windowValue: windowPreset,
     follow: true,
     startPinned: false,
     endpointDrag: null,
@@ -1627,11 +1629,13 @@ var chartState = {
 };
 function resetChartView() {
     resetFollowClock();
+    viewportController?.reset();
     chartState.rangeStats = null;
     chartState.bounds = null;
     chartState.x = null;
     chartState.y = null;
     chartState.autoY = true;
+    chartState.fitMode = "fill";
     chartState.follow = true;
     chartState.startPinned = false;
     chartState.endpointDrag = null;
@@ -1649,12 +1653,14 @@ function freezeChart() {
     syncTimeBounds();
     resetFollowClock();
     if (state.remoteHistory.operation || state.frozen) return;
+    viewportController.reset();
     state.remoteHistory.operation = ++state.remoteHistory.nextId;
     state.dirty = true;
     chartState.fastDirty = true;
     post({ type: "chartFreeze", requestId: state.remoteHistory.operation, historyRevision: historyRevision });
 }
 function resumeChart() {
+    viewportController.reset();
     resetFollowClock();
     $("freeze").textContent = t("lw.freeze");
     state.remoteHistory.operation = null;
@@ -1722,9 +1728,40 @@ function updateChartEmpty(series, hasBounds) {
     };
     empty.appendChild(button);
 }
+var viewportController = EmberProbeChartViewportController.create({
+    canvas,
+    stage: chartStage,
+    chartState,
+    state,
+    VP,
+    clock: {
+        now: function () {
+            return performance.now();
+        }
+    },
+    point: function (event) {
+        return EmberProbePageZoom.point(event, canvas);
+    },
+    region: chartRegion,
+    settle: settleFollowView,
+    custom: setWindowCustom,
+    follow: updateFollowFromView,
+    minimumXSpan,
+    saveUi,
+    getWindow: function () {
+        return { preset: windowPreset, value: chartState.windowValue };
+    },
+    setWindow: function (view) {
+        windowPreset = view.preset;
+        chartState.windowValue = view.value;
+        $("timeWindow").querySelector("option[value=custom]").hidden = view.value !== "custom";
+        $("timeWindow").value = view.value;
+    }
+});
 var chartAction = EmberProbeChartControls.createActions({
     state,
     chartState,
+    viewportController,
     analysis,
     gain: seriesGain,
     post,
@@ -1767,12 +1804,11 @@ controls = window.EmberProbeChartControls.create({
         };
     }
 });
-var suppressClickUntil = 0;
 canvas.addEventListener("click", function (e) {
     var point = EmberProbePageZoom.point(e, canvas);
     if (
         e.button !== 0 ||
-        Date.now() < suppressClickUntil ||
+        !viewportController.allowClick() ||
         !chartState.x ||
         $("chartEmpty").classList.contains("hidden") === false ||
         chartRegion(point.x, point.y) !== "plot" ||
@@ -1863,11 +1899,13 @@ function retainedTimeBounds() {
 function minimumXSpan() {
     return chartState.bounds ? Math.min(VP.span(chartState.bounds), 1) : 1;
 }
-function endTolerance() {
-    var width = $("chartTimeline").clientWidth || 1;
-    return chartState.bounds ? (VP.span(chartState.bounds) * 8) / width : 0;
+function endTolerance(timeline) {
+    var width = timeline ? $("chartTimeline").clientWidth : chartState.geometry?.pw;
+    var range = timeline ? chartState.bounds : chartState.x;
+    return range ? (VP.span(range) * 8) / Math.max(1, width || 1) : 0;
 }
 function setWindowCustom() {
+    chartState.windowValue = "custom";
     var option = $("timeWindow").querySelector("option[value=custom]");
     option.hidden = false;
     $("timeWindow").value = "custom";
@@ -1875,6 +1913,7 @@ function setWindowCustom() {
 function applyWindowPreset(value) {
     resetFollowClock();
     if (value !== "custom") windowPreset = String(value);
+    chartState.windowValue = windowPreset;
     var custom = $("timeWindow").querySelector("option[value=custom]");
     custom.hidden = true;
     $("timeWindow").value = windowPreset;
@@ -1902,7 +1941,7 @@ function updateFollowFromView(snap) {
 }
 function snapDraggedRangeEdges() {
     if (!chartState.x || !chartState.bounds) return;
-    var tolerance = endTolerance(),
+    var tolerance = endTolerance(true),
         width = VP.span(chartState.x);
     if (chartState.x.min - chartState.bounds.min <= tolerance) {
         chartState.x = VP.clamp(
@@ -2051,7 +2090,8 @@ function draw(now) {
         styleFor,
         inspection: Inspection,
         formatChartTime,
-        t
+        t,
+        now
     });
     updateChartEmpty(series, hasBounds);
     historyLoading.textContent = t("lw.historyLoading");
@@ -2078,6 +2118,7 @@ function draw(now) {
         $("chartEmpty").textContent = t("lw.historyLoading");
     }
     if (controls) controls.refresh(series);
+    if (chartState.autoY && chartState.fitHold != null) state.dirty = true;
     var duration = performance.now() - drawStarted;
     chartState.drawDuration =
         chartState.drawDuration == null
@@ -2092,117 +2133,15 @@ function chartRegion(x, y) {
     if (x < g.padL && y >= g.padT && y <= g.padT + g.ph) return "y";
     return "none";
 }
-function chartYAt(py, range) {
-    var g = chartState.geometry,
-        ratio = Math.max(0, Math.min(1, (py - g.padT) / g.ph));
-    return range.max - ratio * VP.span(range);
-}
-
-function setCanvasCursor(region) {
-    canvas.style.cursor =
-        region === "plot" ? "crosshair" : region === "x" ? "ew-resize" : region === "y" ? "ns-resize" : "default";
-}
-canvas.addEventListener("pointermove", function (e) {
-    var p = EmberProbePageZoom.point(e, canvas);
-    if (chartState.drag) {
-        var g = chartState.geometry,
-            drag = chartState.drag,
-            dx = p.x - drag.start.x,
-            dy = p.y - drag.start.y;
-        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-        chartState.x = VP.panClamped(drag.x, (-dx / g.pw) * VP.span(drag.x), chartState.bounds, minimumXSpan());
-        if (drag.mode === "pan") {
-            chartState.y = VP.pan(drag.y, (dy / g.ph) * VP.span(drag.y));
-            chartState.autoY = false;
-        }
-        setWindowCustom();
-        updateFollowFromView(false);
-        chartState.pointer = p;
-        chartState.fastDirty = true;
-        state.dirty = true;
-        return;
-    }
-    var region = chartRegion(p.x, p.y);
-    setCanvasCursor(region);
-    chartState.pointer = region === "plot" ? p : null;
-    chartState.fastDirty = true;
-    state.dirty = true;
-});
-canvas.addEventListener("pointerleave", function () {
-    if (chartState.drag) return;
-    chartState.pointer = null;
-    canvas.style.cursor = "default";
-    chartState.fastDirty = true;
-    state.dirty = true;
-});
-canvas.addEventListener("pointerdown", function (e) {
-    var p = EmberProbePageZoom.point(e, canvas);
-    if ((e.button !== 0 && e.button !== 1) || chartRegion(p.x, p.y) !== "plot" || !chartState.x || !chartState.y)
-        return;
-    e.preventDefault();
-    settleFollowView();
-    chartState.drag = {
-        mode: e.button === 1 ? "x" : "pan",
-        moved: false,
-        pointerId: e.pointerId,
-        start: p,
-        x: { min: chartState.x.min, max: chartState.x.max },
-        y: { min: chartState.y.min, max: chartState.y.max }
-    };
-    chartState.pointer = p;
-    chartStage.classList.add("dragging");
-    canvas.setPointerCapture(e.pointerId);
-});
-function endChartDrag(e) {
-    if (!chartState.drag || e.pointerId !== chartState.drag.pointerId) return;
-    suppressClickUntil = chartState.drag.moved ? Date.now() + 50 : 0;
-    chartState.drag = null;
-    chartStage.classList.remove("dragging");
-    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-    setCanvasCursor(chartState.pointer ? "plot" : "none");
-    chartState.fastDirty = true;
-    state.dirty = true;
-}
-canvas.addEventListener("pointerup", endChartDrag);
-canvas.addEventListener("pointercancel", endChartDrag);
-canvas.addEventListener("auxclick", function (e) {
-    if (e.button === 1) e.preventDefault();
-});
-canvas.addEventListener(
-    "wheel",
-    function (e) {
-        var p = EmberProbePageZoom.point(e, canvas),
-            region = chartRegion(p.x, p.y);
-        if (region === "none" || !chartState.x || !chartState.y) return;
-        e.preventDefault();
-        var scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 120 : 1,
-            factor = Math.exp(Math.max(-4, Math.min(4, e.deltaY * scale * 0.0015)));
-        if (region === "plot" || region === "x") {
-            settleFollowView();
-            var anchor =
-                chartState.x.min + ((p.x - chartState.geometry.padL) / chartState.geometry.pw) * VP.span(chartState.x);
-            chartState.x = VP.zoomClamped(chartState.x, factor, anchor, chartState.bounds, minimumXSpan());
-            setWindowCustom();
-            updateFollowFromView(true);
-        }
-        if (region === "plot" || region === "y") {
-            var minY = Math.max(Number.EPSILON, Math.abs((chartState.y.min + chartState.y.max) / 2) * 1e-12);
-            chartState.y = VP.zoom(chartState.y, factor, chartYAt(p.y, chartState.y), minY);
-            chartState.autoY = false;
-        }
-        chartState.pointer = region === "plot" ? p : null;
-        chartState.fastDirty = true;
-        state.dirty = true;
-    },
-    { passive: false }
-);
 function updateTimelineEndpoint(edge) {
     if (!chartState.bounds || !chartState.x) return;
     // Keyboard changes arrive without a pointerdown; settle the trailing display clock here instead.
     if (!chartState.endpointDrag) settleFollowView();
+    if (!chartState.endpointDrag || !chartState.endpointRemembered) viewportController.remember();
+    chartState.endpointRemembered = true;
     var input = edge === "min" ? $("chartFromRange") : $("chartToRange"),
         value = chartState.bounds.min + Number(input.value),
-        tolerance = endTolerance(),
+        tolerance = endTolerance(true),
         // Moving the left handle never detaches a right end that was attached when the change started.
         keepEnd = edge === "min" && (chartState.endpointDrag ? chartState.endpointFollow : chartState.follow);
     chartState.x = VP.updateEndpoint(chartState.x, edge, value, chartState.bounds, minimumXSpan());
@@ -2220,6 +2159,7 @@ function updateTimelineEndpoint(edge) {
 function beginTimelineEndpoint(edge, event) {
     if (!chartState.bounds || !chartState.x || (event && event.button !== 0)) return;
     settleFollowView();
+    chartState.endpointRemembered = false;
     chartState.endpointDrag = edge;
     chartState.endpointFollow = chartState.follow;
     if (event && Number.isFinite(event.pointerId) && event.currentTarget.setPointerCapture)
@@ -2257,19 +2197,24 @@ $("chartToRange").onpointerup =
     $("chartToRange").onchange =
         endTimelineEndpoint;
 $("chartRangeFill").addEventListener("pointerdown", function (e) {
-    if (!chartState.bounds || !chartState.x) return;
+    if (e.button !== 0 || !chartState.bounds || !chartState.x) return;
     e.preventDefault();
     settleFollowView();
     var fill = this,
         track = $("chartTimeline"),
         startX = EmberProbePageZoom.coordinate(e.clientX, document),
         startRange = { min: chartState.x.min, max: chartState.x.max },
+        previousView = viewportController.snapshot(),
+        remembered = false,
         pointerId = e.pointerId;
     chartState.follow = false;
     chartState.timelineDrag = true;
     fill.classList.add("dragging");
     fill.setPointerCapture(pointerId);
     var move = function (ev) {
+        if (ev.pointerId !== pointerId) return;
+        if (!remembered) viewportController.remember(previousView);
+        remembered = true;
         var width = EmberProbePageZoom.rect(track).width || 1,
             delta =
                 ((EmberProbePageZoom.coordinate(ev.clientX, document) - startX) / width) * VP.span(chartState.bounds);
@@ -2612,7 +2557,9 @@ $("freeze").onclick = function () {
 };
 $("timeWindow").onchange = function () {
     if (this.value !== "custom") {
-        applyWindowPreset(this.value);
+        var selected = this.value;
+        viewportController.remember();
+        applyWindowPreset(selected);
         saveUi();
     }
 };
@@ -2680,12 +2627,20 @@ $("frequencyPicker").addEventListener("focusout", function (e) {
     if (!$("frequencyPicker").contains(e.relatedTarget)) setFrequencyPopup(false);
 });
 $("norm").onclick = function () {
-    axisModes[norm ? "norm" : "raw"] = { y: chartState.y, autoY: chartState.autoY, origin: chartState.axisOrigin };
+    axisModes[norm ? "norm" : "raw"] = {
+        y: chartState.y,
+        autoY: chartState.autoY,
+        origin: chartState.axisOrigin,
+        fitMode: chartState.fitMode
+    };
+    viewportController.reset();
     norm = !norm;
     var mode = axisModes[norm ? "norm" : "raw"] || { y: null, autoY: true };
     chartState.y = mode.y;
     chartState.axisOrigin = mode.origin;
     chartState.autoY = mode.autoY;
+    chartState.fitMode = mode.fitMode || "fill";
+    chartState.fitRequested = mode.autoY;
     chartState.visibleKey = "";
     $("norm").classList.toggle("ghost", !norm);
     saveUi();

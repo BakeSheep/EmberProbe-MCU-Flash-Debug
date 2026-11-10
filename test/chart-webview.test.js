@@ -18,11 +18,12 @@ const { encodeViewport } = require("../src/webview/liveWatch/chartTransport");
 const { render } = require("./helpers/render-webview");
 const { chartHistoryHost } = require("./helpers/chart-history-host");
 const { scenario } = require("./helpers/scenario");
+const { FakeClock } = require("./helpers/fake-clock");
 
 // Toolbar controls, accessibility and overlap
 async function controls() {
     const dom = new JSDOM(
-        '<button id="freeze"></button><div class="side-head"></div><div class="chart-head"></div><section><div><div id="chartStage"><canvas id="chart"></canvas><div id="chartEmpty"></div></div></div></section><span id="points"></span><span id="range"></span>'
+        '<div id="chartOverview"><div id="chartTimeline"></div></div><button id="freeze"></button><div class="side-head"></div><div class="chart-head"></div><section><div><div id="chartStage"><canvas id="chart"></canvas><div id="chartEmpty"></div></div></div></section><span id="points"></span><span id="range"></span>'
     );
     try {
         const doc = dom.window.document,
@@ -146,7 +147,7 @@ async function controls() {
         doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
         doc.getElementById("importSidebar").click();
         assert.deepEqual(actions.at(-1), ["importSidebar"]);
-        for (const id of ["showAll", "hideAll", "restoreCurves", "autoY"]) doc.getElementById(id).click();
+        for (const id of ["showAll", "hideAll", "restoreCurves"]) doc.getElementById(id).click();
         state.frozen = true;
         state.chart.hits = [{ name: "b", point: series[0].arr[1] }];
         controls.refresh(series);
@@ -463,7 +464,8 @@ async function experience() {
             assert.equal(doc.getElementById(id), null, `removed control: ${id}`);
         assert.ok(doc.querySelector(".side-curve-tools #showAll"));
         assert.ok(doc.querySelector(".side-curve-tools #hideAll"));
-        assert.equal(doc.getElementById("autoY").parentNode, doc.getElementById("freeze").parentNode);
+        assert.equal(doc.getElementById("autoY"), null);
+        assert.equal(doc.getElementById("chartFit").parentNode.previousElementSibling.id, "chartTimeline");
         assert.equal(doc.querySelector(".remove").textContent, "×");
         const hitPoint = w.Inspection.pointAt(w.chartState.curveGeometry.value[0], 0);
         w.chartState.hits = [];
@@ -1839,6 +1841,79 @@ async function smoothRender() {
 }
 
 // Viewport arithmetic
+async function zoomRegressions() {
+    const page = render(getLiveWatchContent({}, "en"));
+    try {
+        const w = page.window,
+            canvas = page.document.getElementById("chart"),
+            host = chartHistoryHost(page);
+        page.send({ type: "watchList", items: [{ name: "a", address: 0x20000000, size: 4, type: "u32" }] });
+        host.samples([
+            { name: "a", value: 1, t: 1000 },
+            { name: "a", value: 5, t: 11000 }
+        ]);
+        host.draw(100);
+        canvas.setPointerCapture = () => {};
+        canvas.hasPointerCapture = () => false;
+        const g = w.chartState.geometry;
+        const pointer = (type, dx, dy) =>
+            canvas.dispatchEvent(
+                Object.assign(
+                    new w.MouseEvent(type, {
+                        button: 0,
+                        clientX: g.padL + g.pw / 2 + dx,
+                        clientY: g.padT + g.ph / 2 + dy,
+                        cancelable: true
+                    }),
+                    { pointerId: 7 }
+                )
+            );
+        for (const dx of [1, 30]) {
+            w.chartState.autoY = true;
+            const before = { ...w.chartState.x };
+            pointer("pointerdown", 0, 0);
+            pointer("pointermove", dx, 0);
+            assert.equal(w.chartState.autoY, true, "horizontal movement preserves automatic Y");
+            if (dx === 1) assert.deepEqual({ ...w.chartState.x }, before, "pointer jitter cannot change the view");
+            pointer("pointerup", dx, 0);
+        }
+        w.chartState.autoY = true;
+        pointer("pointerdown", 0, 0);
+        pointer("pointermove", 0, 30);
+        assert.equal(w.chartState.autoY, false, "vertical dragging switches to manual Y");
+        pointer("lostpointercapture", 0, 30);
+        assert.equal(w.chartState.drag, null, "capture loss cannot leave a stuck drag");
+        Object.defineProperty(page.document.getElementById("chartTimeline"), "clientWidth", { value: 800 });
+        w.chartState.bounds = { min: 0, max: 8 * 3600 * 1000 };
+        w.chartState.x = { min: w.chartState.bounds.max - 20000, max: w.chartState.bounds.max - 10000 };
+        w.updateFollowFromView(true);
+        assert.equal(w.chartState.follow, false, "plot gestures use viewport pixels rather than session duration");
+        w.chartState.bounds = { min: 1000, max: 11000 };
+        w.chartState.x = { min: 4000, max: 6000 };
+        w.setWindowCustom();
+        host.draw(200);
+        assert.ok(
+            page.document.getElementById("chartEmpty").classList.contains("hidden"),
+            "clipped valid segments remain visible"
+        );
+        assert.ok(w.chartState.y.min < 2.2 && w.chartState.y.max > 3, "Y fits interpolated segment endpoints");
+        w.chartState.x = { min: 1000, max: 1100 };
+        const labels = [],
+            ctx = w.ctx;
+        w.ctx = new Proxy(ctx, {
+            get(target, key) {
+                return key === "fillText" ? (...args) => labels.push(String(args[0])) : target[key];
+            }
+        });
+        host.draw(300);
+        const ticks = labels.filter((label) => /^\d\d:\d\d\.\d{3}$/.test(label));
+        assert.equal(new Set(ticks).size, 5, "subsecond ticks show distinct millisecond labels");
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+}
+
 async function viewportArithmetic() {
     const viewport = require("../src/webview/liveWatch/viewport");
     function close(actual, expected, message) {
@@ -1894,6 +1969,325 @@ async function viewportArithmetic() {
     );
 
     console.log("Chart viewport tests passed");
+}
+
+async function fitAndUndo() {
+    const clock = new FakeClock();
+    const page = render(
+        getLiveWatchContent({}, "en"),
+        {},
+        {
+            clock,
+            beforeParse(window) {
+                window.performance.now = () => clock.now();
+            }
+        }
+    );
+    try {
+        const w = page.window,
+            doc = page.document,
+            host = chartHistoryHost(page);
+        const chart = w.chartState;
+        page.send({ type: "watchList", items: [{ name: "a", address: 0x20000000, size: 4, type: "u32" }] });
+        host.samples([
+            { name: "a", value: 1, t: 1000 },
+            { name: "a", value: 5, t: 2000 }
+        ]);
+        host.draw(100);
+        const initialX = { ...chart.x };
+        const fit = (mode, automatic) => {
+            doc.getElementById("chartFitToggle").click();
+            assert.equal(doc.getElementById("chartFitToggle").getAttribute("aria-expanded"), "true");
+            assert.equal(doc.activeElement, doc.querySelector("#chartFitMenu button"));
+            doc.querySelector(`#chartFitMenu [data-fit-mode=${mode}][data-automatic=${automatic}]`).click();
+            host.draw(200);
+            assert.equal(doc.activeElement.id, "chartFitToggle");
+            assert.equal(chart.autoY, automatic);
+            assert.equal(chart.fitMode, mode);
+            assert.deepEqual({ ...chart.x }, initialX, "fitting Y preserves the time viewport");
+        };
+        for (const automatic of [false, true]) {
+            fit("center", automatic);
+            assert.ok(Math.abs(4 / w.VP.span(chart.y) - 0.4) < 1e-9, "centered data occupies 40% of height");
+            assert.ok(
+                doc.getElementById("chartViewStatus").textContent.includes(automatic ? "Y auto center" : "Y manual")
+            );
+            fit("fill", automatic);
+            assert.ok(Math.abs(w.VP.span(chart.y) - 4.64) < 1e-9, "filled fitting keeps 8% data padding on each side");
+        }
+        doc.getElementById("chartUndo").click();
+        host.draw(210);
+        assert.equal(chart.fitMode, "center");
+        assert.equal(chart.autoY, true);
+        doc.getElementById("chartFitToggle").click();
+        doc.activeElement.dispatchEvent(new w.KeyboardEvent("keydown", { key: "End", bubbles: true }));
+        assert.equal(doc.activeElement, doc.querySelector("#chartFitMenu button:last-child"));
+        doc.activeElement.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        assert.equal(doc.activeElement.id, "chartFitToggle");
+        assert.equal(doc.getElementById("chartFitToggle").getAttribute("aria-expanded"), "false");
+
+        const canvas = doc.getElementById("chart"),
+            g = chart.geometry;
+        const wheel = () =>
+            canvas.dispatchEvent(
+                new w.WheelEvent("wheel", {
+                    clientX: g.padL + g.pw / 2,
+                    clientY: g.padT + g.ph + 10,
+                    deltaY: -100,
+                    cancelable: true
+                })
+            );
+        w.viewportController.reset();
+        const before = { ...chart.x };
+        wheel();
+        wheel();
+        assert.equal(chart.viewHistory.length, 1, "a wheel burst is one undo step");
+        assert.equal(chart.autoY, true, "X-axis zoom preserves automatic Y");
+        canvas.dispatchEvent(
+            new w.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true })
+        );
+        assert.deepEqual({ ...chart.x }, before);
+        assert.equal(chart.viewHistory.length, 0);
+        const oldWindow = doc.getElementById("timeWindow").value;
+        const windowSelect = doc.getElementById("timeWindow");
+        windowSelect.value = "10";
+        windowSelect.dispatchEvent(new w.Event("change"));
+        w.viewportController.undo();
+        assert.equal(windowSelect.value, oldWindow, "undo restores the previous window preset");
+        assert.equal(page.getState().timeWindow, oldWindow, "restored presets are also saved for reload");
+        const oldRange = { ...chart.x };
+        const from = doc.getElementById("chartFromRange");
+        from.value = "300";
+        from.dispatchEvent(new w.Event("input"));
+        w.viewportController.undo();
+        assert.deepEqual({ ...chart.x }, oldRange, "keyboard timeline selection is undoable");
+        for (let i = 0; i < 25; i++) w.viewportController.fit(i % 2 ? "center" : "fill", true);
+        assert.equal(chart.viewHistory.length, 20, "undo memory is bounded independently of session length");
+
+        chart.autoY = false;
+        chart.y = { min: -10, max: 10 };
+        w.chartAction("gain", { name: "a", gain: -2 });
+        host.draw(220);
+        fit("center", false);
+        assert.ok(
+            Math.abs(chart.y.min + 16) < 1e-9 && Math.abs(chart.y.max - 4) < 1e-9,
+            "fit uses displayed negative gain"
+        );
+        assert.equal(w.eval("state").latest.a, 5, "fitting never changes raw readings");
+        const rawY = { ...chart.y };
+        doc.getElementById("norm").click();
+        host.draw(230);
+        fit("fill", true);
+        doc.getElementById("norm").click();
+        host.draw(240);
+        assert.deepEqual({ ...chart.y }, rawY, "raw and normalized Y modes stay independent");
+        assert.equal(chart.autoY, false);
+        assert.equal(chart.fitMode, "center");
+        assert.equal(chart.viewHistory.length, 0, "mode changes discard coordinate-incompatible undo entries");
+
+        w.chartAction("gain", { name: "a", gain: 1 });
+        host.draw(250);
+        w.viewportController.fit("fill", true);
+        assert.equal(chart.autoY, true, "auto fit is enabled after refreshing gain statistics");
+        chart.follow = false;
+        host.samples([{ name: "a", value: 100, t: 3000 }]);
+        await clock.advance(1100);
+        host.draw(300);
+        chart.x = { min: 2000, max: 3000 };
+        host.draw(310);
+        assert.ok(chart.y.max > 100, "a new committed spike expands auto Y immediately");
+        host.samples([
+            { name: "a", value: 4, t: 4000 },
+            { name: "a", value: 5, t: 5000 }
+        ]);
+        await clock.advance(1100);
+        host.draw(390);
+        chart.x = { min: 4000, max: 5000 };
+        host.draw(400);
+        assert.ok(chart.y.max > 100, "auto Y holds before shrinking");
+        host.draw(1500);
+        assert.ok(w.VP.span(chart.y) < 2, "auto Y shrinks after a second of spare space");
+        w.freezeChart();
+        host.pump();
+        host.draw(1600);
+        w.viewportController.fit("center", false);
+        host.draw(1700);
+        assert.equal(w.eval("state").frozen, true, "fit does not resume a frozen chart");
+        const frozenSteps = chart.viewHistory.length;
+        w.freezeChart();
+        assert.equal(chart.viewHistory.length, frozenSteps, "inspecting an already frozen chart preserves view undo");
+        w.chartAction("hideAll");
+        host.draw(1800);
+        const noDataY = { ...chart.y };
+        assert.equal(doc.getElementById("chartFit").disabled, true);
+        w.viewportController.fit("fill", true);
+        host.draw(1900);
+        assert.deepEqual({ ...chart.y }, noDataY, "no-data fits preserve the view");
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+
+    const viewport = require("../src/webview/liveWatch/viewport");
+    assert.deepEqual(
+        viewport.visibleRange(
+            [
+                { t: 0, v: 1 },
+                { t: 5, v: null },
+                { t: 10, v: 3 }
+            ],
+            { min: 3, max: 7 }
+        ),
+        { min: Infinity, max: -Infinity, count: 0 },
+        "explicit gaps cannot become interpolated data"
+    );
+    const clipped = viewport.visibleRange(
+        [
+            { t: 0, v: 1 },
+            { t: 10, v: 3 }
+        ],
+        { min: 3, max: 7 }
+    );
+    assert.ok(Math.abs(clipped.min - 1.6) < 1e-9 && Math.abs(clipped.max - 2.4) < 1e-9);
+    assert.equal(clipped.count, 0, "segment endpoints are clipped without adding sample counts");
+    const constant = viewport.fitY({ min: 5, max: 5 }, "center", { min: 4, max: 6 });
+    assert.ok(viewport.validRange(constant), "constant values have a finite, nonzero fit range");
+}
+
+async function fitButtonGestures() {
+    const clock = new FakeClock();
+    const page = render(
+        getLiveWatchContent({}, "en"),
+        {},
+        {
+            clock,
+            beforeParse(window) {
+                window.performance.now = () => clock.now();
+            }
+        }
+    );
+    try {
+        const w = page.window,
+            doc = page.document,
+            host = chartHistoryHost(page),
+            chart = w.chartState;
+        page.send({ type: "watchList", items: [{ name: "a", address: 0x20000000, size: 4, type: "u32" }] });
+        host.samples([
+            { name: "a", value: 1, t: 1000 },
+            { name: "a", value: 5, t: 2000 }
+        ]);
+        host.draw(clock.now());
+        const main = doc.getElementById("chartFit"),
+            toggle = doc.getElementById("chartFitToggle");
+        const pointer = (type, button, extra = {}) => {
+            const event = new w.MouseEvent(type, {
+                button,
+                clientX: 10,
+                clientY: 10,
+                bubbles: true,
+                cancelable: true,
+                ...extra
+            });
+            Object.assign(event, { pointerId: 7, ...(extra.pointerId == null ? {} : { pointerId: extra.pointerId }) });
+            main.dispatchEvent(event);
+            return event;
+        };
+        assert.equal(doc.getElementById("autoY"), null);
+        assert.equal(main.parentNode.previousElementSibling.id, "chartTimeline");
+        for (const [button, duration, mode, automatic] of [
+            [0, 499, "center", false],
+            [0, 500, "fill", false],
+            [2, 499, "center", true],
+            [2, 500, "fill", true]
+        ]) {
+            const before = chart.viewHistory.length;
+            pointer("pointerdown", button);
+            await clock.advance(duration);
+            assert.equal(
+                chart.viewHistory.length,
+                before + (duration === 500 ? 1 : 0),
+                "only the long-press threshold fires while held"
+            );
+            if (duration === 500) {
+                assert.ok(main.classList.contains("held"));
+                await clock.advance(800);
+                assert.equal(chart.viewHistory.length, before + 1, "a sustained hold fires once");
+            }
+            pointer("pointerup", button);
+            main.dispatchEvent(new w.MouseEvent("click", { button, detail: 1, bubbles: true }));
+            assert.equal(
+                chart.viewHistory.length,
+                before + 1,
+                "release and compatibility clicks cannot repeat a gesture"
+            );
+            assert.equal(chart.fitMode, mode);
+            assert.equal(chart.autoY, automatic);
+            assert.equal(chart.fitPress, null);
+            assert.equal(main.classList.contains("holding"), false);
+            host.draw(clock.now());
+        }
+        assert.equal(
+            pointer("contextmenu", 2).defaultPrevented,
+            true,
+            "right fitting suppresses the native context menu"
+        );
+        assert.equal(pointer("auxclick", 2).defaultPrevented, true);
+        for (const cancellation of ["pointercancel", "lostpointercapture", "pointermove", "blur", "visibilitychange"]) {
+            const before = chart.viewHistory.length;
+            pointer("pointerdown", 2);
+            if (cancellation === "blur") w.dispatchEvent(new w.Event("blur"));
+            else if (cancellation === "visibilitychange") {
+                Object.defineProperty(doc, "hidden", { value: true, configurable: true });
+                doc.dispatchEvent(new w.Event("visibilitychange"));
+            } else pointer(cancellation, 2, { clientX: 30 });
+            await clock.advance(600);
+            pointer("pointerup", 2);
+            assert.equal(chart.viewHistory.length, before, `${cancellation} cancels without fitting`);
+            assert.equal(chart.fitPress, null);
+            Object.defineProperty(doc, "hidden", { value: false, configurable: true });
+        }
+        const before = chart.viewHistory.length;
+        pointer("pointerdown", 0);
+        pointer("pointerup", 0, { pointerId: 8 });
+        assert.equal(chart.viewHistory.length, before, "foreign pointers cannot release a press");
+        pointer("pointercancel", 0);
+        main.click();
+        assert.equal(chart.fitMode, "center", "keyboard and assistive clicks perform a single centered fit");
+        assert.equal(chart.autoY, false);
+        const menu = doc.getElementById("chartFitMenu");
+        Object.defineProperty(menu, "offsetHeight", { value: 150 });
+        Object.defineProperty(menu, "offsetWidth", { value: 160 });
+        toggle.getBoundingClientRect = () => ({ left: 570, right: 600, top: 350, bottom: 376, width: 30, height: 26 });
+        main.dispatchEvent(new w.KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+        assert.equal(toggle.getAttribute("aria-expanded"), "true");
+        assert.equal(menu.style.top, "196px", "the menu opens above the timeline button");
+        assert.equal(doc.activeElement, menu.querySelector("button"));
+        const labels = ["lw.fitCenterOnce", "lw.fitFillOnce", "lw.fitCenterAuto", "lw.fitFillAuto"];
+        for (const lang of ["zh", "en"]) {
+            const messages = require("../src/i18n/" + lang);
+            assert.equal(
+                new Set(labels.map((key) => messages[key].length)).size,
+                1,
+                `${lang} options have equal character counts`
+            );
+            assert.ok(
+                labels.every((key) => !messages[key].includes("40%")),
+                "menu labels describe intent instead of percentages"
+            );
+        }
+        doc.activeElement.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        pointer("pointerdown", 2);
+        w.chartAction("hideAll");
+        host.draw(clock.now());
+        assert.equal(main.disabled, true);
+        assert.equal(toggle.disabled, true);
+        assert.equal(chart.fitPress, null, "losing data cancels a pending hold");
+        await clock.advance(600);
+        assert.equal(main.classList.contains("held"), false);
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
 }
 
 // Drag, overscan, overview, atomic follow, revision throttling and memoization
@@ -2834,7 +3228,10 @@ async function remoteHistory() {
     await scenario("Temporary display gain, controls, raw history, normalized geometry and lifecycle", temporaryGain);
     await scenario("Rendering, viewport and empty states", presentation);
     await scenario("Translation geometry, exact axes, gaps, smooth follow and adaptive frame cadence", smoothRender);
+    await scenario("Zoom gesture, follow, sparse segment and time-label regressions", zoomRegressions);
     await scenario("Viewport arithmetic", viewportArithmetic);
+    await scenario("Y fit modes, automatic stability, keyboard menu and view undo", fitAndUndo);
+    await scenario("Timeline split-button short/long left/right gestures and cancellation", fitButtonGestures);
     await scenario("Drag, overscan, overview, atomic follow, revision throttling and memoization", viewportRequests);
     await scenario(
         "Remote viewports, silent history, stale replies, freeze, clear races and raw export",

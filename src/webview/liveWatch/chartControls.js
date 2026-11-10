@@ -86,9 +86,179 @@
                 updateValues();
             }
             if (action === "remove") removeVar(value);
-            if (action === "autoY") chartState.autoY = !chartState.autoY;
+            if (action === "fitY") env.viewportController?.fit(value.mode, value.automatic);
+            if (action === "undoView") env.viewportController?.undo();
             chartState.fastDirty = true;
             state.dirty = true;
+        };
+    }
+    function yModeKey(chart) {
+        return !chart.autoY ? "lw.yManual" : chart.fitMode === "center" ? "lw.yAutoCenter" : "lw.yAutoFill";
+    }
+    function createFitControl(env) {
+        const { document: doc, t, change, get, button } = env;
+        const win = doc.defaultView;
+        const clock = env.clock || {
+            now: () => win.performance.now(),
+            schedule: (fn, delay) => win.setTimeout(fn, delay),
+            cancel: (timer) => win.clearTimeout(timer)
+        };
+        const chart = get().chart;
+        const group = doc.createElement("div");
+        group.className = "chart-fit-control";
+        doc.getElementById("chartTimeline").after(group);
+        const main = button("chartFit", "lw.fitYMenu", null, group);
+        main.onclick = (event) => {
+            // Pointer gestures finish on pointerup; keyboard and assistive clicks have no click count.
+            if (event.detail === 0 && !chart.fitPress) change("fitY", { mode: "center", automatic: false });
+        };
+        const toggle = doc.createElement("button");
+        toggle.id = "chartFitToggle";
+        toggle.type = "button";
+        toggle.className = "ghost";
+        toggle.textContent = "▴";
+        toggle.setAttribute("aria-label", t("lw.fitYOptions"));
+        toggle.title = t("lw.fitYOptions");
+        toggle.dataset.i18nAria = toggle.dataset.i18nTitle = "lw.fitYOptions";
+        toggle.setAttribute("aria-haspopup", "dialog");
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.setAttribute("aria-controls", "chartFitMenu");
+        group.append(toggle);
+        const menu = doc.createElement("div");
+        menu.className = "chart-fit-menu hidden";
+        menu.id = "chartFitMenu";
+        menu.setAttribute("role", "dialog");
+        menu.setAttribute("aria-label", t("lw.fitYOptions"));
+        doc.body.append(menu);
+        function openMenu(open, restoreFocus = false) {
+            menu.classList.toggle("hidden", !open);
+            toggle.setAttribute("aria-expanded", String(open));
+            if (open) {
+                const rect = pageZoom.rect(toggle),
+                    viewport = pageZoom.viewport(win);
+                menu.style.left =
+                    Math.max(4, Math.min(rect.right - menu.offsetWidth, viewport.width - menu.offsetWidth - 4)) + "px";
+                const above = rect.top - menu.offsetHeight - 4;
+                menu.style.top =
+                    Math.max(
+                        4,
+                        above >= 4 ? above : Math.min(rect.bottom + 4, viewport.height - menu.offsetHeight - 4)
+                    ) + "px";
+                menu.querySelector("button").focus();
+            } else if (restoreFocus) toggle.focus();
+        }
+        for (const [key, mode, automatic] of [
+            ["lw.fitCenterOnce", "center", false],
+            ["lw.fitFillOnce", "fill", false],
+            ["lw.fitCenterAuto", "center", true],
+            ["lw.fitFillAuto", "fill", true]
+        ]) {
+            const option = button(
+                "chartFit" + mode + automatic,
+                key,
+                () => {
+                    change("fitY", { mode, automatic });
+                    openMenu(false, true);
+                },
+                menu
+            );
+            option.dataset.fitMode = mode;
+            option.dataset.automatic = String(automatic);
+        }
+        function cancel(event) {
+            const press = chart.fitPress;
+            if (!press || (event?.pointerId != null && event.pointerId !== press.pointerId)) return;
+            chart.fitPress = null;
+            clock.cancel(press.timer);
+            main.classList.remove("holding", "held");
+            if (main.hasPointerCapture?.(press.pointerId)) main.releasePointerCapture(press.pointerId);
+        }
+        main.addEventListener("pointerdown", (event) => {
+            if (main.disabled || chart.fitPress || event.isPrimary === false || ![0, 2].includes(event.button)) return;
+            event.preventDefault();
+            main.focus({ preventScroll: true });
+            openMenu(false);
+            const press = (chart.fitPress = {
+                pointerId: event.pointerId,
+                button: event.button,
+                started: clock.now(),
+                x: event.clientX,
+                y: event.clientY,
+                fired: false
+            });
+            main.classList.add("holding");
+            main.setPointerCapture?.(event.pointerId);
+            press.timer = clock.schedule(() => {
+                if (chart.fitPress !== press || main.disabled) return;
+                press.fired = true;
+                main.classList.add("held");
+                change("fitY", { mode: "fill", automatic: press.button === 2 });
+            }, 500);
+        });
+        main.addEventListener("pointerup", (event) => {
+            const press = chart.fitPress;
+            if (!press || press.pointerId !== event.pointerId) return;
+            cancel(event);
+            if (!main.disabled && !press.fired && event.button === press.button)
+                change("fitY", {
+                    mode: clock.now() - press.started >= 500 ? "fill" : "center",
+                    automatic: press.button === 2
+                });
+        });
+        main.addEventListener("pointermove", (event) => {
+            const press = chart.fitPress;
+            if (press && Math.abs(event.clientX - press.x) + Math.abs(event.clientY - press.y) > 6) cancel(event);
+        });
+        for (const type of ["pointercancel", "lostpointercapture"]) main.addEventListener(type, cancel);
+        for (const type of ["contextmenu", "auxclick"]) main.addEventListener(type, (event) => event.preventDefault());
+        win.addEventListener("blur", cancel);
+        doc.addEventListener("visibilitychange", () => {
+            if (doc.hidden) cancel();
+        });
+        main.addEventListener("keydown", (event) => {
+            if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+            event.preventDefault();
+            cancel();
+            openMenu(true);
+        });
+        toggle.onclick = () => {
+            cancel();
+            openMenu(menu.classList.contains("hidden"));
+        };
+        doc.addEventListener("pointerdown", (event) => {
+            if (!menu.contains(event.target) && !group.contains(event.target)) openMenu(false);
+        });
+        doc.addEventListener("keydown", (event) => {
+            if (menu.classList.contains("hidden")) return;
+            if (event.key === "Escape") {
+                event.preventDefault();
+                openMenu(false, true);
+            } else if (menu.contains(event.target) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                event.preventDefault();
+                const buttons = [...menu.querySelectorAll("button")],
+                    index = buttons.indexOf(doc.activeElement);
+                const next =
+                    event.key === "Home"
+                        ? 0
+                        : event.key === "End"
+                          ? buttons.length - 1
+                          : (index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length;
+                buttons[next].focus();
+            }
+        });
+        doc.addEventListener("focusin", (event) => {
+            if (!menu.contains(event.target) && !group.contains(event.target)) openMenu(false);
+        });
+        return {
+            refresh() {
+                main.disabled = toggle.disabled = !Number.isFinite(chart.rangeStats?.vMin);
+                main.title = t(yModeKey(chart)) + "\n" + t("lw.fitYGestures");
+                group.classList.toggle("automatic", !!chart.autoY);
+                if (main.disabled) {
+                    cancel();
+                    openMenu(false);
+                }
+            }
         };
     }
     function create(env) {
@@ -113,7 +283,9 @@
         button("restoreCurves", "lw.restoreCurves", () => change("restore"));
         button("hideAll", "lw.hideAll", () => change("hideAll"));
         button("importSidebar", "lw.importSidebar", () => change("importSidebar"));
-        button("autoY", "lw.autoY", () => change("autoY"), $("freeze").parentNode);
+        const fitControl = createFitControl({ ...env, button });
+        button("chartUndo", "lw.undoView", () => change("undoView"), $("freeze").parentNode);
+        $("chart")?.setAttribute("aria-label", t("lw.chartNavigation"));
         const status = doc.createElement("span");
         status.id = "chartViewStatus";
         doc.querySelector(".chart-head").append(status);
@@ -318,16 +490,20 @@
                 c = s.chart,
                 a = s.analysis;
             $("restoreCurves").hidden = !a.previousHidden;
-            $("autoY").setAttribute("aria-pressed", String(!!c.autoY));
-            status.textContent = t(
-                s.frozen
-                    ? s.running
-                        ? "lw.viewFrozenRunning"
-                        : "lw.viewFrozen"
-                    : c.follow
-                      ? "lw.viewFollowing"
-                      : "lw.viewHistory"
-            );
+            fitControl.refresh();
+            $("chartUndo").disabled = !c.viewHistory?.length || !!(c.drag || c.endpointDrag || c.timelineDrag);
+            status.textContent =
+                t(
+                    s.frozen
+                        ? s.running
+                            ? "lw.viewFrozenRunning"
+                            : "lw.viewFrozen"
+                        : c.follow
+                          ? "lw.viewFollowing"
+                          : "lw.viewHistory"
+                ) +
+                " · " +
+                t(yModeKey(c));
             $("freeze").textContent = t(s.frozen ? "lw.resume" : "lw.freeze");
             const hits = c.hits || [];
             const labels = hits.map((hit) => (env.tooltipName ? env.tooltipName(hit.name) : hit.name));

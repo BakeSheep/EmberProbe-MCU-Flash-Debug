@@ -113,6 +113,79 @@
         return clamp({ min: newBounds.max - wantedSpan, max: newBounds.max }, newBounds, minimumSpan);
     }
 
+    // Include clipped, continuous line segments without inventing samples or bridging explicit gaps.
+    function visibleRange(points, range) {
+        let min = Infinity,
+            max = -Infinity,
+            count = 0;
+        const include = (value) => {
+            if (!Number.isFinite(value)) return;
+            min = Math.min(min, value);
+            max = Math.max(max, value);
+        };
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i],
+                previous = points[i - 1];
+            if (Number.isFinite(p.v) && p.t >= range.min && p.t <= range.max) {
+                include(p.v);
+                count++;
+            }
+            if (!previous || !Number.isFinite(previous.v) || !Number.isFinite(p.v) || p.t <= previous.t) continue;
+            const from = Math.max(previous.t, range.min),
+                to = Math.min(p.t, range.max);
+            if (from >= to) continue;
+            for (const time of [from, to]) {
+                if (time === previous.t || time === p.t) continue;
+                const ratio = (time - previous.t) / (p.t - previous.t);
+                include(previous.v * (1 - ratio) + p.v * ratio);
+            }
+        }
+        return { min, max, count };
+    }
+
+    function fitY(range, mode, padded) {
+        if (mode !== "center") return padded;
+        if (!validRange(range)) return zoomCentered(padded, 2.5);
+        const center = range.min / 2 + range.max / 2;
+        const half = span(range) / 0.8;
+        const result = { min: center - half, max: center + half };
+        return validRange(result) ? result : padded;
+    }
+
+    // Expand immediately to keep spikes visible; contract only after a second of substantial spare space.
+    function stabilizeY(state, target, now) {
+        if (!validRange(state.y) || state.fitRequested || !state.fitMode) {
+            state.fitHold = null;
+            return target;
+        }
+        const current = state.y;
+        if (target.min < current.min || target.max > current.max) {
+            state.fitHold = null;
+            return { min: Math.min(target.min, current.min), max: Math.max(target.max, current.max) };
+        }
+        const spare = span(current) - span(target);
+        const shift = Math.abs(target.min - current.min + (target.max - current.max)) / 2;
+        if (spare < span(current) * 0.15 && shift < span(current) * 0.1) {
+            state.fitHold = null;
+            return current;
+        }
+        if (state.fitHold == null) state.fitHold = now;
+        if (now - state.fitHold < 1000) return current;
+        state.fitHold = null;
+        return target;
+    }
+
+    function timeTick(time, width) {
+        const date = new Date(time);
+        const base =
+            width >= 3600000
+                ? date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                : date.toLocaleTimeString([], { hour12: false, minute: "2-digit", second: "2-digit" });
+        if (width >= 4000) return base;
+        const fraction = width < 4 ? String(Math.floor((time - Math.floor(time)) * 1000)).padStart(3, "0") : "";
+        return base + "." + String(date.getMilliseconds()).padStart(3, "0") + fraction;
+    }
+
     return {
         validRange,
         makeRange,
@@ -126,6 +199,10 @@
         updateEndpoint,
         toPercent,
         isAtEnd,
-        followEnd
+        followEnd,
+        visibleRange,
+        fitY,
+        stabilizeY,
+        timeTick
     };
 });

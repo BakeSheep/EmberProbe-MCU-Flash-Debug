@@ -66,7 +66,8 @@
         styleFor,
         inspection,
         formatChartTime,
-        t
+        t,
+        now = 0
     }) {
         const $ = (id) => elements[id];
         const sourceSeries = series;
@@ -180,6 +181,8 @@
             var empty = $("chartEmpty");
             if (!hasBounds || !series.length) {
                 chartState.hits = [];
+                chartState.rangeStats = null;
+                chartState.geometry = null;
                 empty.classList.remove("hidden");
                 $("points").textContent = t("lw.points", { n: 0 });
                 $("range").textContent = "-";
@@ -224,17 +227,9 @@
             ) {
                 const ranges = new Map();
                 series.forEach(function (s) {
-                    var lo = Infinity,
-                        hi = -Infinity,
-                        count = 0;
-                    s.arr.forEach(function (p) {
-                        if (p.v === null || p.t < chartState.x.min || p.t > chartState.x.max) return;
-                        count++;
-                        lo = Math.min(lo, p.v);
-                        hi = Math.max(hi, p.v);
-                        vMin = Math.min(vMin, p.v);
-                        vMax = Math.max(vMax, p.v);
-                    });
+                    const { min: lo, max: hi, count } = VP.visibleRange(s.arr, chartState.x);
+                    vMin = Math.min(vMin, lo);
+                    vMax = Math.max(vMax, hi);
                     total += s.visibleCount ?? count;
                     const previous = ranges.get(s.item.name) || { min: Infinity, max: -Infinity };
                     ranges.set(s.item.name, { min: Math.min(previous.min, lo), max: Math.max(previous.max, hi) });
@@ -258,7 +253,7 @@
                 s.vMin = base.min;
                 s.vMax = base.max;
             });
-            if (!total) {
+            if (!Number.isFinite(vMin) || !Number.isFinite(vMax)) {
                 chartState.hits = [];
                 empty.classList.remove("hidden");
                 $("points").textContent = t("lw.points", { n: 0 });
@@ -266,8 +261,13 @@
                 return;
             }
             empty.classList.add("hidden");
-            if (chartState.autoY || !VP.validRange(chartState.y))
-                chartState.y = norm ? { min: -0.08, max: 1.08 } : padRange(vMin, vMax);
+            if (chartState.autoY || chartState.fitRequested || !VP.validRange(chartState.y)) {
+                const range = norm ? { min: 0, max: 1 } : { min: vMin, max: vMax };
+                const padded = norm ? { min: -0.08, max: 1.08 } : padRange(vMin, vMax);
+                const target = VP.fitY(range, chartState.fitMode, padded);
+                chartState.y = VP.stabilizeY(chartState, target, now);
+                chartState.fitRequested = false;
+            }
             var bs = style,
                 fontFam = bs.fontFamily,
                 descColor = bs.getPropertyValue("--vscode-descriptionForeground") || "#999",
@@ -381,11 +381,7 @@
                 ctx.stroke();
                 ctx.textAlign = "center";
                 ctx.fillStyle = descColor;
-                ctx.fillText(
-                    new Date(tt).toLocaleTimeString([], { hour12: false, minute: "2-digit", second: "2-digit" }),
-                    x,
-                    padT + ph + 18
-                );
+                ctx.fillText(VP.timeTick(tt, xSpan), x, padT + ph + 18);
             }
             // Fills the noise band, strokes the trend line with the current dash, returns the last visible sample.
             function paintBanded(s, color, left, right) {
