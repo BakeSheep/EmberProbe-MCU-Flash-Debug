@@ -21,7 +21,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 - Visual Studio Code 1.85 或更高版本
 - ARM GDB 工具链（可选，将自动探测）
 
-当前扩展版本为 `0.9.1`。
+当前扩展版本为 `0.9.2`。
 
 ## 使用教程
 
@@ -357,6 +357,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 | 芯片信息与故障分析 | `mcu-chip-info`、`mcu-fault-analyzer` |
 | ELF 与外设分析 | `mcu-elf-analyze`、`mcu-peripheral-debug` |
 | 断点与 FreeRTOS 调试 | `mcu-debug-control`、`mcu-rtos` |
+| RTT 日志与授权输入 | `mcu-rtt` |
 | 配置管理与 CubeMX 代码生成 | `mcu-config`、`mcu-cubemx` |
 
 ## 更多文档

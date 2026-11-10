@@ -58,6 +58,7 @@ The sidebar lists global/static variables of the selected ELF. Search by variabl
 - `mcu-debug-control`: starts, stops, and controls debug sessions, including pause/continue/stepping/restart plus source-line and function breakpoints.
 - `mcu-debug-control`'s `inspect.js`: reads paused native task stacks, scopes and C++ class/STL objects with paging and stale-handle protection.
 - `mcu-rtos`: reads paused FreeRTOS task states, priorities and stack fill estimates, and inspects a selected task's stack and C/C++ locals. Structured snapshots currently require single-core little-endian Cortex-M ARM32.
+- `mcu-rtt`: starts or stops RTT logging, reads firmware output, and sends text or raw bytes after user approval.
 
 Sensitive operations require the Agent to present a plan and get confirmation in the conversation. Some operations can remember an explicitly selected permission for up to 24 hours; Flash verification and peripheral writes require confirmation each time. See [Agent permissions](docs/guide/agent.md#agent-权限).
 
@@ -76,7 +77,7 @@ npm run package
 
 Normal tests are explicitly grouped in `scripts/test-groups.js`: `npm run test:fast` runs pure logic tests, while `npm run test:integration` runs filesystem, service, and asynchronous integration tests. `npm run test:unit` still runs both groups. The runner uses up to four isolated child processes; use `npm run test:unit -- --jobs 1` for serial debugging and `--keep-logs` to retain passing logs. Summaries are written to `test-results/`. GDB, E2E, HIL, and release consistency tests retain separate entry points.
 
-Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/development/releasing.md](docs/development/releasing.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.9.1`.
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/development/releasing.md](docs/development/releasing.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.9.2`.
 
 ## Project Structure
 

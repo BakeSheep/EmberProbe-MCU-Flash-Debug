@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-11
+
 ### MCP
 
 - 新增工具：`debug_evaluate`（在暂停的原生会话中对无副作用的变量路径求值）、`memory_read`（读取 Code 与 SRAM 区最多 4096 字节，外设区改用 `peripherals_read`）、`target_control`（无调试会话时暂停、继续或复位目标）、`variables_list`（搜索并分页列出 ELF 变量）、`watch_list` 与 `watch_remove`（查看和移除观察列表项）。Agent Bridge 新增对应方法 `debug.evaluate`、`memory.read`、`target.control`、`variables.list`、`watch.list`、`watch.remove`；skill 脚本尚未提供对应参数。
@@ -39,6 +41,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Agents can add, enable, disable and remove data breakpoints in a paused built-in debug session through the MCP tool `debug_breakpoints_update` (`type: "data"`) and the `mcu-debug-control` skill (`--data`, `--id`, `--access`); they share the sidebar's data breakpoints. `debug_breakpoints_list` lists them under `dataBreakpoints`, and `debug_status` reports `stop.description`/`stop.text` when one is hit.
 - Add native VS Code data breakpoints to the built-in debugger: right-click a variable or member to break on value changes, reads or accesses; manage enablement, removal and conditions in the Breakpoints view. Stops identify data breakpoints and include old/new values when GDB supplies them.
 - Watch confirmed, naturally aligned 1/2/4-byte storage using hardware watchpoints only, with explicit unsupported-object and resource errors. Watchpoints track fixed addresses within the current debug session; see `docs/guide/flash-debug.md`.
+- 提前拒绝同一地址上不兼容的硬件监视点；恢复执行失败时同步真实暂停状态，避免调试界面停留在运行中。
+- Reject incompatible hardware watchpoints at the same address before resuming, and report the actual paused state when execution cannot resume.
+
+### 界面与日志保存 / Interface and log saving
+
+- RTT 保存日志改为选择具体文件，默认文件名带时间戳，记住上次目录；悬停保存按钮可查看当前文件路径。
+- 更新 README 与官网首图，补充官网 RTT 终端演示，并调整首页布局与截图透视。
+- Save RTT logs to a chosen file with a timestamped default name and the last-used directory; the save button tooltip shows the current file path.
+- Refresh the README and website overview screenshots, add an RTT terminal demo, and refine the homepage layout and screenshot perspective.
 
 ### CubeMX
 
