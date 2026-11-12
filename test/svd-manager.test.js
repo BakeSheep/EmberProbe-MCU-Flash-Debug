@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { SvdManager, findFiles } = require("../src/services/svdManager");
+const { scenario } = require("./helpers/scenario");
+const { waitFor } = require("./helpers/wait");
 
 const SVD = Buffer.from(
     `<?xml version="1.0"?><device><name>STM32F40x</name><vendor>STMicroelectronics</vendor><peripherals><peripheral><name>GPIOA</name><baseAddress>0x40020000</baseAddress></peripheral></peripherals></device>`
@@ -140,8 +142,57 @@ const SVD = Buffer.from(
 
     assert.strictEqual(manager.workspaceForElf(), folder);
     assert.strictEqual(manager.identityFor(folder).device, "STM32F407VGT6");
+    await scenario("unbound debugging bypasses discovery and an explicit clear wins over a pending scan", async () => {
+        const findCompatible = manager.library.findCompatible.bind(manager.library);
+        let scanCount = 0;
+        let releaseScan;
+        const scanGate = new Promise((resolve) => (releaseScan = resolve));
+        manager.library.findCompatible = async (...args) => {
+            scanCount++;
+            await scanGate;
+            return findCompatible(...args);
+        };
+        try {
+            assert.strictEqual(await manager.boundForDebug(folder), "");
+            assert.strictEqual(scanCount, 0);
+            manager.discoverAfterDebug(folder);
+            await waitFor(() => scanCount === 1);
+            const pending = manager.resolveForFolder(folder);
+            assert.strictEqual(await manager.boundForDebug(folder), "");
+            await manager.library.bind(folder.uri, "");
+            releaseScan();
+            assert.strictEqual(await pending, null);
+            await waitFor(() => manager.discoveries.size === 0);
+            assert.strictEqual(scanCount, 1);
+            assert.strictEqual(await manager.peekBound(folder), null);
+        } finally {
+            releaseScan();
+            manager.library.findCompatible = findCompatible;
+        }
+    });
+    await scenario("device mismatches reuse the XML parse and validate each identity", async () => {
+        const validate = manager.library.validator.validate.bind(manager.library.validator);
+        let parses = 0;
+        manager.library.validator.validate = (...args) => {
+            parses++;
+            return validate(...args);
+        };
+        try {
+            await assert.rejects(manager.library.validate(SVD, { device: "STM32H750VBT6" }), {
+                code: "SVD_DEVICE_MISMATCH"
+            });
+            assert.strictEqual((await manager.library.validate(SVD, { device: "STM32F407VGT6" })).device, "STM32F40x");
+            await assert.rejects(manager.library.validate(SVD, { device: "STM32H750VBT6" }), {
+                code: "SVD_DEVICE_MISMATCH"
+            });
+            assert.strictEqual(parses, 1);
+        } finally {
+            manager.library.validator.validate = validate;
+        }
+    });
     const auto = await manager.resolveForFolder(folder);
     assert(auto?.path.includes("svd-library"));
+    assert.strictEqual(await manager.boundForDebug(folder), auto.path);
     assert.strictEqual(await manager.currentPath(folder), auto.path);
     assert.strictEqual((await manager.selectExisting(folder)).hash, auto.hash);
 

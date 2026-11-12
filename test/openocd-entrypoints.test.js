@@ -6,10 +6,16 @@ const { PassThrough } = require("stream");
 const shared = require("../src/openocdScripts");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { loadModule } = require("./helpers/load-module");
+const { scenario } = require("./helpers/scenario");
+const { waitFor } = require("./helpers/wait");
+const { ChipInfoService } = require("../src/services/chipInfoService");
 
 (async () => {
     const captured = [];
+    const children = [];
     let successfulSpawn = false;
+    let holdFailure = false;
+    let failureOutput = "Error: LIBUSB_ERROR_NOT_FOUND\n" + "Info: trailing output\n".repeat(30) + "Error: init failed";
     const scripts = {
         ...shared,
         resolveOpenOcdLaunch: () => ({
@@ -32,10 +38,12 @@ const { loadModule } = require("./helpers/load-module");
             process.nextTick(() => child.emit("close", 0));
         };
         child.exitCode = null;
+        children.push(child);
         process.nextTick(() => {
             if (successfulSpawn) return;
-            child.stderr.write("Error: LIBUSB_ERROR_NOT_");
-            child.stderr.write("FOUND\n" + "Info: trailing output\n".repeat(30) + "Error: init failed");
+            child.stderr.write(failureOutput.slice(0, 25));
+            child.stderr.write(failureOutput.slice(25));
+            if (holdFailure) return;
             child.exitCode = 1;
             child.emit("close", 1);
         });
@@ -257,6 +265,100 @@ const { loadModule } = require("./helpers/load-module");
         assert.strictEqual(coordinator.isActive("chipInfo"), false);
         coordinator.acquire("agentRead").release();
     }
+
+    await scenario("CMSIS-DAP HID failures retain their diagnostic across OpenOCD entrypoints", async () => {
+        failureOutput =
+            "Error: error writing data: hid_write/WaitForSingleObject: (0x000003E5)\n" +
+            "Error: CMSIS-DAP command CMD_INFO failed.\n";
+        const before = captured.length;
+        const expected = { code: "PROBE_COMMUNICATION_FAILED", category: "probe_connection", retryable: false };
+        await assert.rejects(
+            runner.runOpenOcd(vscode, options, () => {}),
+            expected
+        );
+        await assert.rejects(chip.readChipInfo(vscode, options), expected);
+        await assert.rejects(fault.readFaultInfo(options), expected);
+        for (const mode of ["standalone", "debug"]) {
+            const session = new live.ManagedOpenOcdSession({ ...options, mode, gdbPort: 13337 }, {});
+            await assert.rejects(session.start(), expected);
+            assert.strictEqual(await session.stop(), true);
+            assert.strictEqual(session.server.child, null);
+            assert.strictEqual(session.tcl.socket, null);
+        }
+        assert.strictEqual(captured.length - before, 5, "a communication failure never retries automatically");
+    });
+
+    await scenario("Tcl event errors preserve their exception across OpenOCD entrypoints", async () => {
+        const exception = 'can\'t read "_CHIPNAME": no such variable';
+        failureOutput =
+            "[stm32c5x.cpu] Execution of event examine-end failed:\n" +
+            exception +
+            "\nEP_FLASH_STAGE=program\n" +
+            "Info : trailing output\n".repeat(30) +
+            "auto_probe failed\n** Programming Failed **\nshutdown error\n";
+        const check = (error) => {
+            assert.strictEqual(error.code, "OPENOCD_SCRIPT_ERROR");
+            assert.strictEqual(error.retryable, false);
+            assert.strictEqual(error.details.scriptError.message, exception);
+            assert.strictEqual(error.stage, "program");
+            return true;
+        };
+        const before = captured.length;
+        await assert.rejects(
+            runner.runOpenOcd(vscode, options, () => {}),
+            check
+        );
+        await assert.rejects(chip.readChipInfo(vscode, options), check);
+        await assert.rejects(fault.readFaultInfo(options), check);
+        for (const mode of ["standalone", "debug"]) {
+            const session = new live.ManagedOpenOcdSession({ ...options, mode, gdbPort: 13338 }, {});
+            await assert.rejects(session.start(), check);
+            assert.strictEqual(await session.stop(), true);
+        }
+        assert.strictEqual(captured.length - before, 5, "script errors never start an automatic hardware retry");
+        failureOutput = "Error: error writing data: hid_write failed\n";
+    });
+
+    await scenario("Chip read keeps exclusive ownership through a HID failure until OpenOCD closes", async () => {
+        const coordinator = new ProbeCoordinator();
+        const posts = [];
+        const service = new ChipInfoService({
+            vscode: { workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
+            context: { workspaceState: { get: (key) => (key === "probe" ? "cmsis-dap.cfg" : "stm32c5x.cfg") } },
+            cacheKeys: { debugger: "probe", mcuCore: "target" },
+            chipInfo: chip,
+            coordinator,
+            t: (key) => key,
+            resolveExecutable: async () => "fake",
+            commandContext: () => ({}),
+            onPost: (message) => posts.push(message),
+            onDiagnostics() {},
+            isDebugActive: () => false
+        });
+        const before = children.length;
+        holdFailure = true;
+        let settled = false;
+        const reading = service.read(true).finally(() => {
+            settled = true;
+        });
+        const rejected = assert.rejects(reading, { code: "PROBE_COMMUNICATION_FAILED", stage: "openocd_start" });
+        try {
+            await waitFor(() => children.length > before);
+            assert.strictEqual(settled, false);
+            for (const operation of ["debugStart", "liveStart", "download", "agentRead", "targetScan"])
+                assert.throws(() => coordinator.acquire(operation), { code: "PROBE_BUSY" });
+            await assert.rejects(service.read(true), { code: "CHIP_READ_RUNNING" });
+            assert.strictEqual(children.length, before + 1, "competing requests cannot spawn another OpenOCD");
+        } finally {
+            holdFailure = false;
+            children.at(-1).exitCode = 1;
+            children.at(-1).emit("close", 1);
+            await rejected;
+        }
+        assert.strictEqual(coordinator.anyActive(), false);
+        assert.strictEqual(posts.at(-1).diagnostic.code, "PROBE_COMMUNICATION_FAILED");
+        coordinator.acquire("debugStart").release();
+    });
 
     // Automatic mode: every entrypoint checks the target chip right after init and stops on a different chip.
     const checkedArgs = [];

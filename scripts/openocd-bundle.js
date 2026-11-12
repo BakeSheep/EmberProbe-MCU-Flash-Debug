@@ -92,7 +92,7 @@ function checkBuild(info, identity, platform) {
     assert.strictEqual(info.buildId, sha256(JSON.stringify(identity)), "Mixed build identity");
 }
 
-async function verifySources(file, identity) {
+async function verifySources(file, identity, scriptOverrides) {
     const entries = new Map((await inspectArchive(file)).map((entry) => [entry.path, entry]));
     const source = await archiveJson(file, "source-manifest.json");
     assert.deepStrictEqual(source.identity, identity, "Corresponding sources belong to another build");
@@ -126,6 +126,25 @@ async function verifySources(file, identity) {
     assert.strictEqual(entries.get("recipes/prepare-build.js").sha256, identity.prepareScriptSha256);
     for (const name of PATCHES)
         assert.strictEqual(entries.get(`recipes/${name}`).sha256, identity.patches[name], `Patch mismatch: ${name}`);
+    const overrides = source.runtimeScriptOverrides || [];
+    if (scriptOverrides) assert.deepStrictEqual(overrides, scriptOverrides, "Runtime script sources mismatch");
+    const paths = new Set();
+    for (const override of overrides) {
+        const name = safePath(override.path);
+        assert.ok(/^target\/[^\s]+\.cfg$/.test(name), "Only target Tcl scripts can override a compiled build");
+        assert.ok(!paths.has(name), `Duplicate script override: ${name}`);
+        paths.add(name);
+        assert.strictEqual(
+            entries.get(`openocd/tcl/${name}`)?.sha256,
+            override.baseSha256,
+            `Base script changed: ${name}`
+        );
+        assert.strictEqual(
+            entries.get(`runtime-script-overrides/${name}`)?.sha256,
+            override.sha256,
+            `Runtime script source changed: ${name}`
+        );
+    }
     return source;
 }
 
@@ -139,7 +158,7 @@ async function verifyBundle(root = ROOT) {
     assert.strictEqual(manifest.source.file, SOURCE_FILE);
     const sourcePath = path.join(root, safePath(manifest.source.file));
     assert.strictEqual(sha256(fs.readFileSync(sourcePath)), manifest.source.sha256, "Source archive changed");
-    await verifySources(sourcePath, identity);
+    await verifySources(sourcePath, identity, manifest.scriptOverrides || []);
     for (const archive of manifest.archives) {
         const file = path.join(root, "resources", safePath(archive.file));
         assert.strictEqual(sha256(fs.readFileSync(file)), archive.sha256, "Runtime archive changed");
@@ -159,6 +178,12 @@ async function verifyBundle(root = ROOT) {
         }
         for (const loader of manifest.flashLoaders || [])
             assert.strictEqual(entries.get(`${archive.scriptsRoot}/${loader.path}`)?.sha256, loader.sha256);
+        for (const override of manifest.scriptOverrides || [])
+            assert.strictEqual(
+                entries.get(`${archive.scriptsRoot}/${override.path}`)?.sha256,
+                override.sha256,
+                `Runtime script changed: ${override.path}`
+            );
         checkBuild(await archiveJson(file, `${archive.prefix}BUILD-INFO.json`), identity, archive.platform);
         const provenance = await archiveJson(file, `${archive.prefix}distro-info/emberprobe-targets.json`);
         assert.deepStrictEqual(provenance, {
@@ -168,7 +193,8 @@ async function verifyBundle(root = ROOT) {
             binarySha256: archive.binarySha256,
             originalPayloadSha256: archive.originalPayloadSha256,
             targets: manifest.targets,
-            ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {})
+            ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {}),
+            ...(manifest.scriptOverrides ? { scriptOverrides: manifest.scriptOverrides } : {})
         });
     }
     return manifest;

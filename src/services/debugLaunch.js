@@ -121,7 +121,7 @@ class DebugLaunch {
                 serverOptions.serverpath ||
                 this._vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const [resolvedSvdPath, openocdPath] = await Promise.all([
-                this.host._svdManager.currentPath(workspaceFolder),
+                configuration?.svdFile || this.host._svdManager.boundForDebug(workspaceFolder),
                 this.host._resolveOpenOcdPath(configuredOpenOcdPath)
             ]);
             if (!openocdPath) return false;
@@ -760,7 +760,7 @@ class DebugLaunch {
                 },
                 validated.cwd || folder.uri.fsPath
             );
-            const svd = await this.host._svdManager.currentPath(folder);
+            const svd = validated.svdFile || (await this.host._svdManager.boundForDebug(folder));
             const rtos = resolveRtos(validated, own.get("rtos", ""));
             if (!own.get("experimental.externalGdb.enabled", false))
                 throw new Error("External GDB was disabled during startup");
@@ -859,6 +859,16 @@ class DebugLaunch {
     handleAdapterMessage(session, message) {
         this.host._sidebarDataBreakpoints?.adapterMessage(session, message);
         void this.host._externalDebug?.message(session, message).catch(console.error);
+        if (
+            message?.type === "response" &&
+            message.command === "configurationDone" &&
+            message.success &&
+            isSupportedDebugSession(session) &&
+            !session.configuration?.svdFile &&
+            !this.terminatedSessionIds.has(session.id)
+        ) {
+            this.host._svdManager?.discoverAfterDebug?.(session.workspaceFolder || this.host._commandContext().folder);
+        }
         if (
             message?.type === "event" &&
             message.event === "emberprobe.firmwareLoaded" &&

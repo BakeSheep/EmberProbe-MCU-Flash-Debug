@@ -37,7 +37,10 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
         _t: (key) => key,
         _commandContext: () => ({ folder }),
         _postProbeOperationStatus() {},
-        _svdManager: { currentPath: async () => "" },
+        _svdManager: {
+            boundForDebug: async () => "",
+            currentPath: () => assert.fail("starting debug must not run SVD discovery")
+        },
         _resolveOpenOcdPath: async () => "openocd",
         _probeCoordinator: new ProbeCoordinator()
     });

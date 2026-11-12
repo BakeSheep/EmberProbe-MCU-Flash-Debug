@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const tar = require("tar");
+const { scenario } = require("./helpers/scenario");
 const targetManifest = require("../resources/openocd-targets-manifest.json");
 const installer = require("../src/openocdInstaller");
 const { discoverTargetConfigs } = require("../src/openocdScripts");
@@ -291,6 +292,71 @@ const {
         assert.match(c5Output, /EP_TARGETS=[\s\S]*stm32c5x\.cpu/);
         assert.match(c5Output, /EP_BANKS=[\s\S]*driver\s+stldr\s+base\s+0x08000000/);
         assert.deepStrictEqual(c5Output.match(/^EP_LOADER=.*$/gm), ["EP_LOADER=1", "EP_LOADER=1", "EP_LOADER=1"]);
+
+        const runC5Event = (commands, chipName = "stm32c5x") => {
+            const loaded = spawnSync(
+                runtime,
+                [
+                    "-c",
+                    `set CHIPNAME ${chipName}`,
+                    "-f",
+                    path.join(__dirname, "fixtures/openocd-c5-event.cfg"),
+                    ...[...commands, "shutdown"].flatMap((command) => ["-c", command])
+                ],
+                { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+            );
+            const output = `${loaded.stdout || ""}\n${loaded.stderr || ""}`;
+            assert.ifError(loaded.error);
+            assert.strictEqual(loaded.status, 0, output);
+            return output;
+        };
+
+        await scenario("C5 loader events resolve all device IDs inside a programming procedure", () => {
+            for (const chipName of ["stm32c5x", "boardC5"]) {
+                for (const loader of targetManifest.flashLoaders.filter((item) => item.devId)) {
+                    const output = runC5Event(
+                        [
+                            `set _ep_devid ${loader.devId}`,
+                            "_ep_test_examine; echo EP_EXAMINED=$EXAMINED",
+                            "_ep_test_examine; echo EP_REEXAMINED=$EXAMINED"
+                        ],
+                        chipName
+                    );
+                    assert.ok(output.includes(`EP_STLDR=set_loader ${chipName}.flash `), output);
+                    assert.ok(output.includes(path.basename(loader.path)), output);
+                    assert.ok(output.includes(`EP_STLDR=set_size ${chipName}.flash 524288`), output);
+                    assert.match(output, /EP_EXAMINED=1/);
+                    assert.match(output, /EP_REEXAMINED=1/);
+                    assert.strictEqual(output.match(/EP_STLDR=set_loader/g)?.length, 1, output);
+                    assert.doesNotMatch(output, /no such variable|Error : No STLDR/);
+                }
+            }
+        });
+
+        await scenario("C5 loader failures leave initialization pending and permit a corrected retry", () => {
+            for (const failure of ["missing-file", "unknown-device", "set_loader", "set_size"]) {
+                const setup = {
+                    "missing-file": "set dev_id_loader(0x45A) flash_loaders/missing.xldr",
+                    "unknown-device": "set _ep_devid 0xFFF",
+                    set_loader: "set _ep_fail set_loader",
+                    set_size: "set _ep_fail set_size"
+                }[failure];
+                const output = runC5Event([
+                    "set _ep_devid 0x45A; set saved_loader $dev_id_loader(0x45A)",
+                    setup,
+                    "set rc [catch {_ep_test_examine} msg]; echo EP_FAILURE=$rc; echo EP_MESSAGE=$msg; " +
+                        "echo EP_PENDING=$EXAMINED",
+                    "set _ep_devid 0x45A; set _ep_fail {}; set dev_id_loader(0x45A) $saved_loader",
+                    "_ep_test_examine; echo EP_RECOVERED=$EXAMINED"
+                ]);
+                assert.match(output, /EP_FAILURE=1/);
+                assert.match(output, /EP_PENDING=0/);
+                assert.match(output, /EP_RECOVERED=1/);
+                assert.match(output, /EP_STLDR=set_size stm32c5x.flash 524288/);
+                if (failure.startsWith("set_")) assert.match(output, /EP_MESSAGE=EP_LOADER_FAILURE/);
+                else assert.match(output, /Error : No STLDR loader file found/);
+            }
+        });
     }
 
     try {

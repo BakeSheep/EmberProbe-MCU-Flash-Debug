@@ -1139,7 +1139,7 @@ class MainViewProvider {
     }
     disposeDebugBridge() {
         this._svdPeripheralService?.dispose();
-        this._svdManager?.library?.dispose();
+        this._svdManager?.dispose();
         this._debugBridge.dispose();
     }
     shutdown() {

@@ -133,4 +133,111 @@ scenario("Diagnose STM32C5 HLA refusal and missing stldr loaders", () => {
     assert.strictEqual(loader.code, "FLASH_LOADER_MISSING");
 });
 
+scenario("Probe command failures outrank Flash, init and timeout symptoms", () => {
+    const reported = [
+        "Error: error writing data: hid_write/WaitForSingleObject: (0x000003E5)",
+        "Error: CMSIS-DAP command CMD_INFO failed."
+    ];
+    const details = { platform: "win32", probe: "cmsis-dap.cfg", target: "stm32c5x.cfg", transport: "auto" };
+    for (const lines of [
+        reported,
+        [...reported, "Error: init failed", "Error: timeout", "Error: flash write failed"],
+        [reported[1]],
+        ["Error: hid_write failed"],
+        ["Error: hid_read_timeout: ReadFile failed"],
+        ["Error: error reading data"],
+        ["Error: LIBUSB_ERROR_IO"],
+        ["Error: LIBUSB_ERROR_PIPE"]
+    ]) {
+        const result = diagnoseOpenOcdFailure(lines, details);
+        assert.strictEqual(result.code, "PROBE_COMMUNICATION_FAILED");
+        assert.strictEqual(result.category, "probe_connection");
+        assert.strictEqual(result.stage, "openocd_start");
+        assert.strictEqual(result.retryable, false, "recovery requires a changed precondition");
+        assert.deepStrictEqual(result.details.openocdTail, lines);
+        assert.strictEqual(result.details.target, "stm32c5x.cfg");
+        assert(result.suggestedActions.some((action) => action.includes("进程已退出")));
+        assert(result.suggestedActions.some((action) => action.includes("重新插拔")));
+        assert(!result.suggestedActions.join(" ").includes("写保护"));
+    }
+    for (const [line, code] of [
+        ["LIBUSB_ERROR_BUSY", "PROBE_BUSY"],
+        ["LIBUSB_ERROR_ACCESS", "PROBE_PERMISSION_DENIED"],
+        ["LIBUSB_ERROR_NO_DEVICE", "PROBE_DISCONNECTED"],
+        ["*** buffer overflow detected ***", "OPENOCD_NATIVE_CRASH"]
+    ])
+        assert.strictEqual(diagnoseOpenOcdFailure([...reported, line], details).code, code);
+    const duringFlash = diagnoseOpenOcdFailure(["EP_FLASH_STAGE=program", ...reported], details);
+    assert.strictEqual(duringFlash.code, "PROBE_COMMUNICATION_FAILED");
+    assert.strictEqual(duringFlash.stage, "program", "a link failure preserves the operation phase");
+});
+
+scenario("Flash write diagnostics require Flash context for generic write failures", () => {
+    for (const line of [
+        "Error: flash write failed",
+        "Error: failed erasing sectors",
+        "Error: error erasing flash",
+        "Error: write discontinued",
+        "Error: failed to write flash",
+        "Error: error writing to flash at address 0x08000000"
+    ])
+        assert.strictEqual(diagnoseOpenOcdFailure([line]).code, "FLASH_WRITE_FAILED", line);
+    for (const line of ["Error: failed to write file", "Error: error writing socket", "Info: CMSIS-DAP: SWD supported"])
+        assert.strictEqual(diagnoseOpenOcdFailure([line]).code, "OPENOCD_START_FAILED", line);
+});
+
+scenario("Tcl scope errors retain their first exception before the programming shutdown traceback", () => {
+    const first = 'can\'t read "_CHIPNAME": no such variable';
+    const lines = [
+        "EP_FLASH_STAGE=init",
+        "[stm32c5x.cpu] Execution of event examine-end failed:",
+        first,
+        ...Array(30).fill("Info : more output"),
+        "EP_FLASH_STAGE=program",
+        "Please check if you have set correctly the loader file",
+        "auto_probe failed",
+        "** Programming Failed **",
+        "embedded:startup.tcl:1893: Error:",
+        "Traceback (most recent call last):",
+        ", in _ep_flash_program",
+        "program firmware.elf verify reset exit",
+        'File "embedded:startup.tcl", line 1961, in program',
+        "program_error {** Programming Failed **} 1",
+        'File "embedded:startup.tcl", line 1893, in program_error',
+        "shutdown error"
+    ];
+    const details = { target: "stm32c5x.cfg", probeSerial: "D861FE88D88E", exitCode: 1 };
+    const result = diagnoseOpenOcdFailure(lines, details);
+    assert.strictEqual(result.code, "OPENOCD_SCRIPT_ERROR");
+    assert.strictEqual(result.category, "configuration");
+    assert.strictEqual(result.stage, "program");
+    assert.strictEqual(result.retryable, false);
+    assert.ok(result.message.includes(first));
+    assert.strictEqual(result.details.scriptError.message, first);
+    assert.ok(result.details.scriptError.context.includes(lines[1]));
+    assert.deepStrictEqual(result.details.openocdTail, lines.slice(-8));
+    assert.strictEqual(result.details.probeSerial, details.probeSerial);
+    assert.ok(result.suggestedActions.some((action) => action.includes("变量作用域")));
+    const next = diagnoseOpenOcdFailure([...lines, 'can\'t read "other": no such variable']);
+    assert.strictEqual(next.details.scriptError.message, first, "a later error must not replace the first exception");
+    const bounded = diagnoseOpenOcdFailure(['invalid command name "' + "x".repeat(2000) + '"']);
+    assert.strictEqual(bounded.code, "OPENOCD_SCRIPT_ERROR");
+    assert.strictEqual(bounded.details.scriptError.message.length, 500);
+    assert.ok(bounded.details.scriptError.context.every((line) => line.length <= 500));
+    for (const [line, code] of [
+        ["LIBUSB_ERROR_BUSY", "PROBE_BUSY"],
+        ["LIBUSB_ERROR_ACCESS", "PROBE_PERMISSION_DENIED"],
+        ["LIBUSB_ERROR_NO_DEVICE", "PROBE_DISCONNECTED"],
+        ["CMSIS-DAP command CMD_INFO failed.", "PROBE_COMMUNICATION_FAILED"],
+        ["*** buffer overflow detected ***", "OPENOCD_NATIVE_CRASH"]
+    ])
+        assert.strictEqual(diagnoseOpenOcdFailure([...lines, line]).code, code);
+    assert.strictEqual(diagnoseOpenOcdFailure(["shutdown error"]).code, "OPENOCD_START_FAILED");
+    assert.strictEqual(diagnoseOpenOcdFailure(["Error: failed to read memory"]).code, "OPENOCD_START_FAILED");
+    assert.strictEqual(
+        diagnoseOpenOcdFailure(['wrong # args: should be "proc name args body"']).code,
+        "OPENOCD_SCRIPT_ERROR"
+    );
+});
+
 console.log("OpenOCD parser tests passed");

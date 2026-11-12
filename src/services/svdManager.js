@@ -72,6 +72,8 @@ class SvdManager {
         this.library = new SvdLibraryService({ context: options.context, workerPath: options.workerPath });
         this.official = options.official || new OfficialSvdService();
         this.activeDownload = null;
+        this.discoveries = new Map();
+        this.disposed = false;
     }
 
     workspaceForElf() {
@@ -101,6 +103,11 @@ class SvdManager {
     async importAndBind(file, folder, identity, metadata = {}) {
         const imported = await this.library.importFile(file, metadata, identity?.exact ? identity : null);
         await this.library.bind(folder.uri, imported.hash);
+        await this.publishBinding(imported);
+        return imported;
+    }
+
+    async publishBinding(imported) {
         await this.context.workspaceState.update(this.cacheKeys.svdPath, imported.path);
         this.onStatus({
             state: "configured",
@@ -109,20 +116,56 @@ class SvdManager {
             device: imported.svd.device,
             hash: imported.hash
         });
-        return imported;
     }
 
-    async resolveForFolder(folder, options = {}) {
-        if (!folder) return null;
-        const identity = options.identity || (await this.identityForAsync(folder));
-        const bound = await this.library.resolveBound(folder.uri, identity.exact ? identity : null);
-        if (bound) return bound;
+    async boundForDebug(folder) {
+        if (!this.library.bindings()[folder.uri.toString()]) return "";
+        const identity = await this.identityForAsync(folder);
+        return (await this.library.resolveBound(folder.uri, identity.exact ? identity : null))?.path || "";
+    }
 
-        const compatible = await this.library.findCompatible(identity.exact ? identity : null);
-        if (identity.exact && compatible.length === 1) {
-            await this.library.bind(folder.uri, compatible[0].hash);
-            return { ...compatible[0], source: "global-library" };
+    discoverAfterDebug(folder) {
+        if (!folder || this.disposed) return;
+        void this.resolveForFolder(folder).catch((error) => console.error("SVD discovery failed:", error.message));
+    }
+
+    async resolveForFolder(folder) {
+        if (!folder || this.disposed) return null;
+        let stamp = this.library.bindingStamp(folder.uri);
+        const key = folder.uri.toString();
+        const hadBinding = !!this.library.bindings()[key];
+        const identity = await this.identityForAsync(folder);
+        const bound = await this.library.resolveBound(folder.uri, identity.exact ? identity : null, { readOnly: true });
+        if (bound) return bound;
+        if (hadBinding && !this.disposed) {
+            const cleared = await this.library.bind(folder.uri, "", stamp);
+            if (!cleared) return null;
+            stamp = cleared;
         }
+        if (this.disposed || this.library.bindingStamp(folder.uri) !== stamp) return null;
+        const active = this.discoveries.get(key);
+        if (active) return active;
+        const pending = this.discoverForFolder(folder, identity, stamp).finally(() => this.discoveries.delete(key));
+        this.discoveries.set(key, pending);
+        return pending;
+    }
+
+    async discoverForFolder(folder, identity, stamp) {
+        const current = () => !this.disposed && this.library.bindingStamp(folder.uri) === stamp;
+        const bind = async (entry, source) => {
+            if (!current()) return null;
+            const now = await this.identityForAsync(folder);
+            if (now.device !== identity.device || now.vendor !== identity.vendor || now.family !== identity.family)
+                return null;
+            if (!current()) return null;
+            const boundStamp = await this.library.bind(folder.uri, entry.hash, stamp);
+            if (!boundStamp || this.library.bindingStamp(folder.uri) !== boundStamp) return null;
+            if (!this.disposed && this.workspaceForElf()?.uri.toString() === folder.uri.toString())
+                await this.publishBinding(entry);
+            return { ...entry, source };
+        };
+        const compatible = await this.library.findCompatible(identity.exact ? identity : null);
+        if (identity.exact && compatible.length === 1) return bind(compatible[0], "global-library");
 
         const matchingIdentity = identity.exact
             ? identity
@@ -132,6 +175,7 @@ class SvdManager {
         const selectUnique = async (files, source) => {
             const matches = [];
             for (const file of files) {
+                if (!current()) return null;
                 try {
                     await this.library.validate(await this.library.read(file), matchingIdentity);
                     matches.push(file);
@@ -139,14 +183,16 @@ class SvdManager {
                     /* incompatible */
                 }
             }
-            if (matches.length !== 1) return null;
-            return {
-                ...(await this.importAndBind(matches[0], folder, matchingIdentity || identity, {
+            if (matches.length !== 1 || !current()) return null;
+            const imported = await this.library.importFile(
+                matches[0],
+                {
                     source,
                     originalPath: matches[0]
-                })),
-                source
-            };
+                },
+                matchingIdentity?.exact ? matchingIdentity : null
+            );
+            return bind(imported, source);
         };
 
         const project = await selectUnique(
@@ -159,6 +205,7 @@ class SvdManager {
             .split(path.delimiter)
             .filter(Boolean);
         for (const root of roots) {
+            if (!current()) return null;
             const cmsis = await selectUnique(
                 await findFilesAsync(root, (candidate) => /\.svd$/i.test(candidate), 1500),
                 "CMSIS_PACK_ROOT"
@@ -166,6 +213,11 @@ class SvdManager {
             if (cmsis) return { ...cmsis, source: "cmsis-pack-root" };
         }
         return null;
+    }
+
+    dispose() {
+        this.disposed = true;
+        this.library.dispose();
     }
 
     async peekBound(folder = this.workspaceForElf()) {

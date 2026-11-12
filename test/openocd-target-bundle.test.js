@@ -49,6 +49,11 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
             assert.strictEqual(sha256(bytes), loader.sha256, loader.path);
             assert.strictEqual(entries.get(`${archive.scriptsRoot}/${loader.path}`)?.sha256, loader.sha256);
         }
+        for (const override of manifest.scriptOverrides || []) {
+            const bytes = fs.readFileSync(path.join(root, "resources/openocd-targets", override.path));
+            assert.strictEqual(sha256(bytes), override.sha256, override.path);
+            assert.strictEqual(entries.get(`${archive.scriptsRoot}/${override.path}`)?.sha256, override.sha256);
+        }
         for (const name of MCU_CORE_LIST) {
             assert.ok(entries.has(`${archive.scriptsRoot}/target/${name}`), `catalog entry absent: ${name}`);
         }

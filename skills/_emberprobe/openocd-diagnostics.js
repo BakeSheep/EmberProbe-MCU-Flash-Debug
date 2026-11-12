@@ -17,6 +17,48 @@ function parseTargetVoltage(line) {
     return match ? Number(match[1]) : null;
 }
 
+function diagnoseProbeCommunication(text, make) {
+    // HID writes send probe commands, including CMD_INFO before target access; they are not Flash writes.
+    if (
+        /error (?:writing|reading) data\b|hid_(?:write|read)(?:_timeout)?(?:\/|(?:\(\))?\s*(?::|failed|error))|cmsis[-_]dap command\b[^\n]*\bfailed\b|libusb_error_(?:io|pipe)/.test(
+            text
+        )
+    ) {
+        return make(
+            "PROBE_COMMUNICATION_FAILED",
+            "probe_connection",
+            "OpenOCD 与调试探针通信失败；占用、USB/HID 后端或探针固件异常均有可能。",
+            [
+                "先停止 EmberProbe 调试、采样及其他使用该探针的工具，确认相关 OpenOCD 进程已退出。",
+                "确认退出后仍失败，可重新插拔探针 USB，再手动重试；系统仍能枚举设备不代表通信正常。",
+                "保留原始日志、OpenOCD/HIDAPI 版本及探针固件信息，以区分后端与固件问题。"
+            ],
+            false
+        );
+    }
+}
+
+function diagnoseScriptFailure(lines, make) {
+    const index = lines.findIndex((line) =>
+        /can't read "[^"]+": no such variable|invalid command name "[^"]+"|wrong # args: should be/i.test(line)
+    );
+    if (index < 0) return;
+    const message = lines[index].slice(0, 500);
+    const context = lines.slice(Math.max(0, index - 2), index + 3).map((line) => line.slice(0, 500));
+    const diagnostic = make(
+        "OPENOCD_SCRIPT_ERROR",
+        "configuration",
+        `OpenOCD Tcl 配置脚本执行失败：${message}`,
+        [
+            "检查 scriptError 中的首个 Tcl 异常及目标事件上下文。",
+            "使用包含修正脚本的 EmberProbe 内置 OpenOCD；自定义脚本需检查变量作用域与命令参数。",
+            "修正脚本后再手动重试；重复烧录、调整接线或更换驱动不能修复 Tcl 脚本错误。"
+        ],
+        false
+    );
+    return { ...diagnostic, details: { ...diagnostic.details, scriptError: { message, context } } };
+}
+
 // Normalizes raw OpenOCD logs into stable machine-readable diagnostics shared by the UI and Agent Skills. Match order
 // matters: an unconnected target chip and a missing debug probe are different faults.
 function diagnoseOpenOcdFailure(lines, details = {}) {
@@ -148,6 +190,12 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             false
         );
     }
+    // Keep explicit busy/access/disconnect diagnostics above, but outrank generic init, timeout and Flash errors.
+    const communicationFailure = diagnoseProbeCommunication(text, make);
+    if (communicationFailure) return communicationFailure;
+    // Preserve the first Tcl exception even when program_error's traceback fills the displayed log tail.
+    const scriptFailure = diagnoseScriptFailure(retained, make);
+    if (scriptFailure) return scriptFailure;
     if (
         /(can't find|cannot find|no such file|unknown command|invalid command).*(\.cfg|interface|target)|\.cfg.*(can't find|cannot find)/.test(
             text
@@ -289,7 +337,11 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             false
         );
     }
-    if (/flash write failed|failed erasing|failed to write|error writing|error erasing|write discontinued/.test(text)) {
+    if (
+        /flash write failed|failed erasing|error erasing|write discontinued|(?:failed to write|error writing)[^\n]*\bflash\b/.test(
+            text
+        )
+    ) {
         return make(
             "FLASH_WRITE_FAILED",
             "flash",

@@ -93,6 +93,28 @@ J-Link 不走这个后端，因此 J-Link 读取成功与此故障可以同时�
 
 `probe.list` 只读取操作系统 USB 元数据。`config.get` 返回 `selectedProbe`，`probe.list` 用 `selected: true` 标出该设备；Agent 不能修改这一选择。
 
+## 探针通信失败与退出确认
+
+Tcl 变量缺失、命令名或参数数量错误报告为 `OPENOCD_SCRIPT_ERROR`（`configuration`），
+保留首个异常及最多五行、每行最多 500 字符的 `scriptError` 上下文；原始输出末八行仍留在
+`openocdTail`。该诊断优先于后续通用 init、timeout、Flash 与 shutdown 错误，
+但不覆盖明确的原生崩溃、USB 占用／权限／断开和探针通信失败；修正脚本前不可自动重试。
+
+OpenOCD 的 `error writing data`、HID 读写失败、CMSIS-DAP 命令失败和 libusb IO/PIPE 错误统一报告为
+`PROBE_COMMUNICATION_FAILED`（`probe_connection`）。明确的 busy、access、no-device 和原生崩溃仍优先；
+通信错误优先于随后出现的 init、timeout、Flash 错误，保留操作阶段与有界原始日志。
+通用 `failed to write` / `error writing` 仅在同一行明确包含 Flash 时归为 Flash 写入失败。
+恢复需要先清理会话、确认进程退出或重新连接探针，不自动重试，也不自动复位 USB、切换驱动或解除写保护。
+
+同一 provider 的 `ProbeCoordinator` 互斥芯片读取、下载、采样、Agent 临时读取、目标扫描和调试；
+共享调试组持有一个租约，组内核复用服务器。临时 OpenOCD 操作在关闭后才释放租约，
+采样及调试停止确认进程退出后释放；退出未确认则保留服务器和租约以便再次清理。
+这不是跨 VS Code 窗口或跨应用的 USB 锁，进程退出也不能证明探针固件或 USB 端点恢复。
+扩展宿主被强制终止时，不能承诺运行完正常的异步清理流程。
+
+Windows CMSIS-DAP 报告、源码检查与待验证恢复步骤见
+[2026-11-10 诊断记录](../records/diagnostics/2026-11-10-windows-cmsis-dap.md)。
+
 ## 验证边界
 
 软件测试覆盖各系统枚举样例、接口解析、设备选择及授权失效；随包 OpenOCD 的接口检查验证 Tcl 命令兼容性。这些检查不证明真机支持，硬件结果须按 [HIL 流程](../../test/hil/README.md) 单独记录。

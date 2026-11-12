@@ -36,7 +36,7 @@ async function archiveInventory(file) {
 
 // Reviewed files EmberProbe adds under the scripts root: target wrappers and vendor flash loaders.
 function scriptAdditions(manifest) {
-    return [...manifest.targets, ...(manifest.flashLoaders || [])];
+    return [...manifest.targets, ...(manifest.flashLoaders || []), ...(manifest.scriptOverrides || [])];
 }
 
 function originalPayloadDigest(entries, archive, additions) {
@@ -84,7 +84,8 @@ async function packageTargets() {
                         binarySha256: archive.binarySha256,
                         originalPayloadSha256: archive.originalPayloadSha256,
                         targets: manifest.targets,
-                        ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {})
+                        ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {}),
+                        ...(manifest.scriptOverrides ? { scriptOverrides: manifest.scriptOverrides } : {})
                     },
                     null,
                     4

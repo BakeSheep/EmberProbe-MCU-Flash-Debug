@@ -49,7 +49,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     host._debugBridge = new DebugSessionBridge();
     host.debugLaunch.lifecycle = new DebugLifecycle();
     host.debugLaunch.terminatedSessionIds = new Set();
-    host._svdManager = { currentPath: async () => "" };
+    host._svdManager = { boundForDebug: async () => "" };
     host._samplingCoordinator = { setDebugIntent: (bridge, intent) => bridge.setIntent(intent) };
     host._postConsumerStatuses = () => {};
     host._t = (key) => key;

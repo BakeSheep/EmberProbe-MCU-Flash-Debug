@@ -33,6 +33,8 @@ Windows 上 GDB 冷启动可能需要数秒。隔离的 VS Code 扩展宿主连�
 
 ## 启动耗时记录
 
+调试配置阶段只校验工作区已有的 SVD 绑定。适配器成功完成 `configurationDone` 后，扩展为尚无 SVD 的会话启动后台发现。同一工作区并发请求共用一次扫描。自动绑定前会重新核对设备身份与绑定版本，以免覆盖扫描期间的手动选择。SVD 库按文件摘要缓存 XML 校验结果，型号匹配在缓存之后执行。
+
 在 launch 配置中设置 `"performanceTrace": true`，调试控制台会输出 launch 各阶段耗时（`gdbStart`、`gdbSetup`、`symbols`、`connect`、`preHooks`、`reset` 或 `halt`、`download`、`postDownloadReset`、`postHooks`、`threads`）、固件是否已烧录（`programmed`）或未请求下载（`none`）、提速下载时的实际时钟 `downloadClockKhz` 及是否回退（`speedFallback`），以及从 `launch` 开始到入口断点的 `entryStop.sinceLaunchMs`。托管 launch 还会以 `startup` 输出适配器启动前扩展侧的耗时（`tools`：工具链查找，`openocd`：OpenOCD 与 SVD 解析，`prepare`：停止采样，`preflight`：探针预检，`server`：OpenOCD 启动至 GDB 端口就绪）及其总和 `startupMs`，并以 `entryStop.sinceStartMs` 给出从调试命令开始到入口断点的墙钟时间。记录只含耗时，不含路径、表达式或目标数据。
 
 托管调试新增 `startup.warmup`，表示启动时尚需等候的预热时间；`gdbWarmup` 记录预热状态及包含后台工作的完整耗时。因此，已完成且耗时数秒的预热可以对应零毫秒的启动等待。转交适配器前仅保留已知状态名与非负整数耗时，不包含可执行文件路径。

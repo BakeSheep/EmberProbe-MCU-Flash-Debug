@@ -7,6 +7,7 @@ const path = require("path");
 const tar = require("tar");
 const yazl = require("yazl");
 const { pipeline } = require("stream/promises");
+const { scenario } = require("./helpers/scenario");
 const {
     PLATFORMS,
     SOURCE_FILE,
@@ -19,7 +20,7 @@ const {
     verifySources,
     inspectArchive
 } = require("../scripts/openocd-bundle");
-const { packageRuntime, publishFiles } = require("../scripts/package-openocd-runtime");
+const { packageRuntime, packageScriptUpdate, publishFiles } = require("../scripts/package-openocd-runtime");
 const { verifyOpenOcdVsix } = require("../scripts/verify-openocd-vsix");
 
 async function main() {
@@ -70,6 +71,8 @@ async function main() {
             "openocd/COPYING"
         ])
             put(path.join(sourceDir, name), "source " + name);
+        const baseScript = "# original target script\n";
+        put(path.join(sourceDir, "openocd/tcl/target/fixture.cfg"), baseScript);
         for (const name of ["build.sh", "prepare-build.js", "build-lock.json", ...PATCHES])
             put(path.join(sourceDir, "recipes", name), fs.readFileSync(path.join(root, "native/openocd", name)));
         put(path.join(sourceDir, "downloads/dependency.tar.gz"), "dependency source");
@@ -109,6 +112,7 @@ async function main() {
                       ])
             ])
                 put(path.join(dir, name), "fixture " + name);
+            put(path.join(dir, "openocd/scripts/target/fixture.cfg"), baseScript);
             fs.chmodSync(path.join(dir, binary), 0o755);
             json(path.join(dir, "BUILD-INFO.json"), { platform, buildId, identity, ...overrides });
             await tar.c(
@@ -136,6 +140,74 @@ async function main() {
         assert.strictEqual(manifest.schemaVersion, 2);
         assert.deepStrictEqual(manifest.flashLoaders, flashLoaders);
         await verifyBundle(root);
+        await scenario(
+            "Script-only updates preserve native identities and ship auditable source overrides",
+            async () => {
+                const corrected = "# corrected target event scope\n";
+                put(path.join(root, "resources/openocd-targets/target/fixture.cfg"), corrected);
+                const updated = await packageScriptUpdate(["target/fixture.cfg"], root);
+                assert.strictEqual(
+                    updated.build.buildId,
+                    manifest.build.buildId,
+                    "Tcl edits do not recompile native code"
+                );
+                assert.notStrictEqual(updated.source.sha256, manifest.source.sha256);
+                assert.deepStrictEqual(updated.scriptOverrides, [
+                    {
+                        path: "target/fixture.cfg",
+                        baseSha256: sha256(Buffer.from(baseScript)),
+                        sha256: sha256(Buffer.from(corrected))
+                    }
+                ]);
+                const sources = await verifySources(path.join(root, SOURCE_FILE), identity, updated.scriptOverrides);
+                assert.deepStrictEqual(sources.runtimeScriptOverrides, updated.scriptOverrides);
+                for (const archive of updated.archives) {
+                    const previous = manifest.archives.find((item) => item.platform === archive.platform);
+                    assert.strictEqual(archive.binarySha256, previous.binarySha256);
+                    const entries = await inspectArchive(path.join(root, "resources", archive.file));
+                    assert.strictEqual(
+                        entries.find((item) => item.path === "openocd/scripts/target/fixture.cfg").sha256,
+                        updated.scriptOverrides[0].sha256
+                    );
+                }
+                await verifyBundle(root);
+                // Repeating the update is supported; the original native source remains the base, not a previous overlay.
+                const repeated = await packageScriptUpdate(["target/fixture.cfg"], root);
+                assert.deepStrictEqual(repeated.scriptOverrides, updated.scriptOverrides);
+                const unchanged = fs.readFileSync(path.join(root, "resources/openocd-targets-manifest.json"));
+                await assert.rejects(packageScriptUpdate(["../escape.cfg"], root), /escapes/);
+                await assert.rejects(packageScriptUpdate(["src/target.c"], root), /Only target Tcl/);
+                await assert.rejects(packageScriptUpdate(["target/absent.cfg"], root), /no source/);
+                await assert.rejects(
+                    packageRuntime(input, root, {
+                        scriptOverrides: [{ ...updated.scriptOverrides[0], baseSha256: "0".repeat(64) }]
+                    }),
+                    /Base script changed/
+                );
+                await assert.rejects(
+                    packageRuntime(input, root, {
+                        scriptOverrides: [{ ...updated.scriptOverrides[0], sha256: "0".repeat(64) }]
+                    }),
+                    /Review changed script/
+                );
+                const rawTarget = path.join(rawDirs["win32-x64"], "openocd/scripts/target/fixture.cfg");
+                fs.rmSync(rawTarget);
+                await tar.c(
+                    { file: path.join(input, "win32-x64.tar.gz"), cwd: rawDirs["win32-x64"], gzip: true },
+                    fs.readdirSync(rawDirs["win32-x64"])
+                );
+                await assert.rejects(packageRuntime(input, root), /Target collision/);
+                put(rawTarget, baseScript);
+                await tar.c(
+                    { file: path.join(input, "win32-x64.tar.gz"), cwd: rawDirs["win32-x64"], gzip: true },
+                    fs.readdirSync(rawDirs["win32-x64"])
+                );
+                assert.deepStrictEqual(
+                    fs.readFileSync(path.join(root, "resources/openocd-targets-manifest.json")),
+                    unchanged
+                );
+            }
+        );
         // Flash loaders are reviewed additions like target wrappers: shipped in every archive, bytes pinned.
         for (const platform of PLATFORMS) {
             const entries = await inspectArchive(path.join(root, `resources/openocd-${platform}.tar.gz`));

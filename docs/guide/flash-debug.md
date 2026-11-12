@@ -26,6 +26,13 @@
 
 擦除时间由 Flash 本身决定，提高时钟只缩短写入部分。
 
+### 脚本错误
+
+若下载报告 `OPENOCD_SCRIPT_ERROR`，请查看提示中的首个 Tcl 错误。使用内置 OpenOCD 时更新
+EmberProbe 后重试；使用外部 OpenOCD 或自定义配置时，需修正对应脚本。
+这类错误可能表现为 `can't read ... no such variable`，后面再出现 `auto_probe failed` 或
+`shutdown error`。反复下载、调低速度或更换 USB 驱动不能修复脚本错误。
+
 ### launch 配置
 
 | 配置                            | 效果                         |
@@ -40,6 +47,8 @@
 调试启动慢时，在 launch 配置中加上 `"performanceTrace": true`。调试控制台会输出各阶段耗时，比如查找工具链、启动 OpenOCD、启动 GDB、下载。记录里只有耗时，不含路径或目标数据。
 
 Windows 上首次启动 GDB 可能需要几秒。EmberProbe 会在后台提前准备，打开工程后立刻调试时仍可能等待。
+
+已绑定的 SVD 会随调试会话加载。工作区尚未绑定时，EmberProbe 会在调试开始后查找 SVD，找到唯一匹配项后更新侧栏外设视图。需要在启动时向 VS Code 的外设查看器提供 SVD，可以先用命令面板中的「EmberProbe: 切换当前工作区 SVD」完成绑定。
 
 ## GDB 控制台
 

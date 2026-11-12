@@ -53,6 +53,21 @@ uses archive hashes in its cache key, so the default runtime receives a new cach
 directory without replacing a runtime used by another window. See the
 [build and source distribution guide](../../native/openocd/README.md).
 
+Target Tcl fixes that do not change native code can be packaged against the verified existing build:
+
+```sh
+npm run openocd:package -- --scripts target/stm32c5x.cfg
+```
+
+The reviewed replacement lives in `resources/openocd-targets/`. `scriptOverrides` records its
+path, original native-build script digest and replacement digest. Packaging first verifies the
+current bundle, requires the original script in the matching source archive, and updates both
+platform archives and their provenance transactionally. Native binary hashes and `BUILD-INFO.json`
+retain the actual compiled build identity; no native recompilation is implied. Corresponding
+sources keep the original build inputs and add `runtime-script-overrides/` and its inventory.
+Regular `--input` packaging also applies the registered overrides to a matching native build.
+Changes to C, dependencies, native patches or build recipes still require the locked full build.
+
 ## STM32C0 and STM32C5
 
 STM32C0 needs no additional files: the canonical `stm32c0x.cfg` and the `stm32l4x` flash
@@ -90,6 +105,13 @@ Limits of this support:
 - Erase/program speed and timeouts come from the loader. They have not been measured.
 - An external OpenOCD needs its own C5 scripts and loaders; a missing loader is reported as
   `FLASH_LOADER_MISSING`.
+
+The reviewed C5 script override derives the chip name from the event target and declares the
+loader table global. This permits `examine-end` inside OpenOCD's `program`/reset procedures;
+it must not depend on the caller's `_CHIPNAME` or `dev_id_loader`. Failed loader lookup or setup
+leaves `EXAMINED=0`, so a corrected initialization can run again. Offline event tests cover all
+three DEV_ID mappings, custom target names and failed lookup/setup with retry; register and
+loader operations are stubbed and `noinit` prevents physical probe initialization.
 
 ## Compatibility boundary
 

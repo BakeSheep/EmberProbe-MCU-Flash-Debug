@@ -64,10 +64,22 @@ function validateSvdBuffer(buffer, identity = null) {
         throw Object.assign(new Error("SVD must contain device/name and at least one peripheral"), {
             code: "INVALID_SVD_STRUCTURE"
         });
-    if (identity?.device && !wildcardMatches(name, identity.device)) {
-        throw Object.assign(new Error(`SVD device ${name} does not match ${identity.device}`), {
+    const metadata = {
+        device: name,
+        vendor,
+        version: textValue(device?.version).trim(),
+        description: textValue(device?.description).trim(),
+        peripheralCount: Array.isArray(peripherals) ? peripherals.length : 1
+    };
+    return validateSvdIdentity(metadata, identity);
+}
+
+function validateSvdIdentity(metadata, identity) {
+    const { device, vendor } = metadata;
+    if (identity?.device && !wildcardMatches(device, identity.device)) {
+        throw Object.assign(new Error(`SVD device ${device} does not match ${identity.device}`), {
             code: "SVD_DEVICE_MISMATCH",
-            details: { svdDevice: name, expected: identity.device }
+            details: { svdDevice: device, expected: identity.device }
         });
     }
     if (identity?.vendor && vendor && normalizeVendor(identity.vendor) !== normalizeVendor(vendor)) {
@@ -76,19 +88,14 @@ function validateSvdBuffer(buffer, identity = null) {
             details: { svdVendor: vendor, expected: identity.vendor }
         });
     }
-    return {
-        device: name,
-        vendor,
-        version: textValue(device?.version).trim(),
-        description: textValue(device?.description).trim(),
-        peripheralCount: Array.isArray(peripherals) ? peripherals.length : 1
-    };
+    return metadata;
 }
 
 class SvdLibraryService {
     constructor(options) {
         this.context = options.context;
         this.validationCache = new Map();
+        this.bindingVersions = new Map();
         this.hashedFile = null;
         const { SvdModelService } = require("./svdModelService");
         this.validator = new SvdModelService({
@@ -122,17 +129,28 @@ class SvdLibraryService {
         return this.hashedFile;
     }
     validate(buffer, identity = null, digest = crypto.createHash("sha256").update(buffer).digest("hex")) {
-        const key = digest + JSON.stringify(identity);
-        if (!this.validationCache.has(key)) {
-            const pending = this.validator.validate(buffer, identity, digest);
-            this.validationCache.set(key, pending);
-            pending.catch(() => {
-                if (this.validationCache.get(key) === pending) this.validationCache.delete(key);
-            });
-            while (this.validationCache.size > 32)
-                this.validationCache.delete(this.validationCache.keys().next().value);
+        // XML validation depends on the content. A device mismatch can reuse the parsed metadata on later scans.
+        let pending = this.validationCache.get(digest);
+        if (!pending) {
+            pending = this.validator.validate(buffer, null, digest);
+            const evict = () => {
+                if (this.validationCache.get(digest) === pending) this.validationCache.delete(digest);
+            };
+            pending.then((metadata) => {
+                if (
+                    metadata.description.length +
+                        metadata.device.length +
+                        metadata.vendor.length +
+                        metadata.version.length >
+                    16384
+                )
+                    evict();
+            }, evict);
         }
-        return this.validationCache.get(key);
+        this.validationCache.delete(digest);
+        this.validationCache.set(digest, pending);
+        while (this.validationCache.size > 128) this.validationCache.delete(this.validationCache.keys().next().value);
+        return identity ? pending.then((metadata) => validateSvdIdentity(metadata, identity)) : pending;
     }
     dispose() {
         this.validator.dispose();
@@ -173,14 +191,23 @@ class SvdLibraryService {
         return { ...(this.context.globalState.get(BINDINGS_KEY) || {}) };
     }
 
-    async bind(folderUri, hash) {
+    bindingStamp(folderUri) {
+        const key = folderUri.toString();
+        return `${this.bindingVersions.get(key) || 0}:${this.bindings()[key] || ""}`;
+    }
+
+    async bind(folderUri, hash, expectedStamp) {
         const key = folderUri?.toString?.() || String(folderUri || "");
         if (!key)
             throw Object.assign(new Error("A workspace folder is required for SVD binding"), { code: "NO_WORKSPACE" });
+        if (expectedStamp !== undefined && this.bindingStamp(folderUri) !== expectedStamp) return false;
         const bindings = this.bindings();
         if (hash) bindings[key] = hash;
         else delete bindings[key];
+        const version = (this.bindingVersions.get(key) || 0) + 1;
+        this.bindingVersions.set(key, version);
         await this.context.globalState.update(BINDINGS_KEY, bindings);
+        return `${version}:${hash || ""}`;
     }
 
     async importFile(filePath, metadata = {}, identity = null) {
@@ -269,13 +296,16 @@ class SvdLibraryService {
         const key = folderUri?.toString?.() || String(folderUri || "");
         const hash = this.bindings()[key];
         if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) return null;
+        const stamp = this.bindingStamp(folderUri);
         const file = path.join(this.root, hash, "device.svd");
         try {
             const { buffer, sha256 } = await this.readHashed(file);
             const svd = await this.validate(buffer, identity, sha256);
-            return { hash, path: file, metadata: await this.metadata(hash), svd, source: "binding", buffer, sha256 };
+            const metadata = await this.metadata(hash);
+            if (this.bindingStamp(folderUri) !== stamp) return null;
+            return { hash, path: file, metadata, svd, source: "binding", buffer, sha256 };
         } catch {
-            if (!options.readOnly) await this.bind(folderUri, "");
+            if (!options.readOnly) await this.bind(folderUri, "", stamp);
             return null;
         }
     }

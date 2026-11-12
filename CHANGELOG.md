@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 调试 / Debug
+
+- 未绑定 SVD 的工作区在调试会话就绪后才扫描 CMSIS 包目录。复用已校验文件的元数据，减少后续自动发现的重复解析。
+- Defer CMSIS pack discovery for workspaces without a bound SVD until the debug session is configured. Reuse metadata from validated files across discovery runs.
+
+### 探针诊断 / Probe diagnostics
+
+- 修复 STM32C5 烧录时目标事件中的 Tcl 变量作用域错误，确保正确初始化 Flash loader；更新 Windows/Linux 内置 OpenOCD 的目标脚本及对应源码。脚本异常保留首个错误上下文，报告为 `OPENOCD_SCRIPT_ERROR`，不再被后续 `shutdown error` 掩盖。
+- Fix Tcl variable scope in STM32C5 target events so flashing initializes the correct Flash loader. Update the target script and corresponding sources in both bundled OpenOCD runtimes. Preserve the first script exception as `OPENOCD_SCRIPT_ERROR` instead of reporting the trailing `shutdown error`.
+- 修复 CMSIS-DAP HID 读写和命令通信错误被误报为 Flash 写入失败：优先报告 `PROBE_COMMUNICATION_FAILED`，提示停止占用会话、确认 OpenOCD 退出及必要时重新连接 USB；通用写入错误需明确 Flash 上下文，不自动重试。
+- Classify CMSIS-DAP HID and command communication failures as `PROBE_COMMUNICATION_FAILED`, with guidance to stop competing sessions, confirm OpenOCD exit and reconnect USB if needed. Require explicit Flash context for generic write failures and do not retry automatically.
+
 ## [0.9.2] - 2026-11-11
 
 ### MCP

@@ -83,14 +83,14 @@
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd.exe",
             "binarySha256": "ed0be5ce635b6a8dcf9b8388a993c47490d7073effb91651eaec8e59f70af022",
-            "originalPayloadSha256": "8f6d61abe28a2eac5df3c2a4e50d90cc0abc1c15975e7c2393055e6d01178433",
+            "originalPayloadSha256": "799d68dd06f5dfaf5d1b10457c037e023853241b06a82270e40f283af7533c21",
             "requiredFiles": [
                 "bin/openocd.exe",
                 "distro-info/licenses/openocd-0.12.0/COPYING",
                 "bin/libusb-1.0.dll",
                 "bin/libftdi1.dll"
             ],
-            "sha256": "227754ab5493ed5b2b05500cddfe081cc93f3f3620068c4fb33c67c7688892fe"
+            "sha256": "0a643295654bb7bdfac95c302c08539c9c1d95fb5a6923663991c57acbb03996"
         },
         {
             "platform": "linux-x64",
@@ -99,7 +99,7 @@
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd",
             "binarySha256": "c79ab1b8aff1424ad635e07eb25c9d59fb01c51d4dbf477a285dfd6d72338f13",
-            "originalPayloadSha256": "f44e3438c732159b2a9192c1bdb7c5601bac53d64d73bc8b5bf4f46d507bbccd",
+            "originalPayloadSha256": "7cad249c4271793d03d5b4e7c20d85a9795977556a722afb9db47b8597d9a973",
             "requiredFiles": [
                 "bin/openocd",
                 "distro-info/licenses/openocd-0.12.0/COPYING",
@@ -110,7 +110,7 @@
                 "distro-info/licenses/libudev-241/LICENSE.LGPL2.1",
                 "distro-info/licenses/libudev-241/SOURCE.txt"
             ],
-            "sha256": "c56fea1f249504dab0a78c918c84182054930754fd8d1061d03856e63a29286a"
+            "sha256": "6d98c0dcc4e4528b1295e439be0900fc63ecb64fab4c9f15f8aa93c6924aa4f1"
         }
     ],
     "build": {
@@ -137,6 +137,13 @@
     },
     "source": {
         "file": "native/openocd/emberprobe-openocd-source.tar.gz",
-        "sha256": "101f0fb58c800b9d0a2079fa1e392a3974adf364fe973e4bc047d1d652bd5086"
-    }
+        "sha256": "5e0e24c9434f5871fbd86e67d899d901475e08eae0a2e8bf97689e3513785ac1"
+    },
+    "scriptOverrides": [
+        {
+            "path": "target/stm32c5x.cfg",
+            "baseSha256": "9f38050ff1a8751e1d16b9aa44a65dea3066f656b327cc2cb08db0d224731366",
+            "sha256": "0c9ad2a94779011e416c1c4f1fe43b49a48ddd85a026d5453b18f695a646be03"
+        }
+    ]
 }
