@@ -109,6 +109,7 @@ module.exports = Object.freeze({
     "rtos.snapshot": "快照",
     "rtos.diagnostics": "诊断",
     "probe.usbDriver": "J-Link USB 驱动",
+    "probe.driverInUse": "请先停止采样、RTT 或调试，或等待当前探针操作结束，再切换驱动。",
     "probe.winusbRequired": "{probe} 使用 SEGGER 驱动；EmberProbe 需要 WinUSB。点击“切换到 WinUSB”完成切换。",
     "probe.driverNotSwitchableWarning":
         "{probe} 使用 SEGGER 驱动，EmberProbe 需要 WinUSB，但无法自动切换：{reason}。请用 Zadig 等工具手动改为 WinUSB；接口详情已写入“EmberProbe 芯片信息”输出面板。",

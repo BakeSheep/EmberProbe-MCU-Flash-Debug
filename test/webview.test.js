@@ -334,6 +334,16 @@ try {
     assert.strictEqual(section.open, false, "Auto in the summary does not unfold the list");
 
     driver.value = "winusb";
+    const beforeBlockedDriverChange = jlinkSidebar.messages.length;
+    jlinkSidebar.send({ type: "probeOperationStatus", operations: { liveWatch: true } });
+    assert.strictEqual(driver.disabled, true);
+    assert.strictEqual(driverOf(winusb).disabled, true);
+    assert(driver.title.includes("停止采样"));
+    driver.dispatchEvent(new jlinkSidebar.window.Event("change"));
+    assert.strictEqual(jlinkSidebar.messages.length, beforeBlockedDriverChange);
+    assert.strictEqual(doc.getElementById("jlinkDriverBusy").hidden, true);
+    jlinkSidebar.send({ type: "probeOperationStatus", operations: {} });
+    assert.strictEqual(driver.disabled, false);
     driver.dispatchEvent(new jlinkSidebar.window.Event("change"));
     assert.deepStrictEqual(jlinkSidebar.messages.at(-1), {
         type: "selectProbeDriver",

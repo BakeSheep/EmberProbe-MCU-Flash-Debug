@@ -750,7 +750,6 @@
                         probeDrivers[message.deviceId] = message.driver === "winusb" ? "ready" : "repair";
                         send({ type: "probeDriverSwitch", busy: false });
                         send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
-                        send({ type: "probeDriverStatus", state: message.driver === "winusb" ? "ready" : "restored" });
                         send({ type: "commandSuccess", cmd: "selectProbeDriver" });
                     }, 900);
                     break;

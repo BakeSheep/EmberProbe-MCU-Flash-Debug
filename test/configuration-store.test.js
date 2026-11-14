@@ -100,6 +100,23 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
             code: "PATH_OUTSIDE_WORKSPACE"
         });
         assert.strictEqual((await store.update({ iocPath: "" })).iocPath, "");
+        await scenario("Recheck probe ownership before applying a validated configuration transaction", async () => {
+            const beforeChange = store.beforeChange;
+            let checks = 0;
+            store.beforeChange = () => {
+                if (++checks === 2)
+                    throw Object.assign(new Error("Probe session started"), { code: "PROBE_CONFIGURATION_BUSY" });
+            };
+            try {
+                await assert.rejects(store.update({ iocPath: "project space.ioc", debugger: "jlink.cfg" }), {
+                    code: "PROBE_CONFIGURATION_BUSY"
+                });
+                assert.strictEqual(store.snapshot().iocPath, "");
+                assert.strictEqual(store.snapshot().debugger, "cmsis-dap.cfg");
+            } finally {
+                store.beforeChange = beforeChange;
+            }
+        });
         await scenario("Accept a workspace CubeMX2 path and reject other file types and external paths", async () => {
             const project2 = path.join(temp, "project space.IOC2");
             fs.writeFileSync(project2, '["Project Description"]\n');

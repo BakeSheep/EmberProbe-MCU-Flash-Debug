@@ -819,6 +819,44 @@ function makeController(host, options = {}) {
         }
     );
 
+    await scenario("RTT retains the probe until a failed start or yield can confirm OpenOCD exit", async () => {
+        for (const failStart of [false, true]) {
+            const host = fakeHost();
+            const order = [];
+            const { controller } = makeController(host, { net: { connect: idleSocket } });
+            let exitConfirmed = false;
+            controller._ManagedOpenOcdSession = class extends ownSessionClass(order) {
+                async start() {
+                    if (failStart) throw new Error("OpenOCD startup failed");
+                    return super.start();
+                }
+                async stop() {
+                    return exitConfirmed ? super.stop() : false;
+                }
+            };
+            const failure = { code: "PROBE_EXIT_UNCONFIRMED" };
+            if (failStart) await assert.rejects(controller.start(), failure);
+            else {
+                await controller.start();
+                await assert.rejects(controller.yieldForRestart("download"), failure);
+            }
+            assert.strictEqual(controller.status().state, "stop-failed");
+            assert.strictEqual(controller.status().error.code, failure.code);
+            assert.strictEqual(host._probeCoordinator.isActive("rtt"), true);
+            assert.throws(() => host._probeCoordinator.acquire("driverSwitch"), {
+                code: "PROBE_BUSY",
+                activeOperation: "rtt"
+            });
+            await assert.rejects(controller.start(), failure);
+            await assert.rejects(controller.stop(), failure);
+            exitConfirmed = true;
+            await controller.stop();
+            assert.strictEqual(controller.status().state, "stopped");
+            const driver = host._probeCoordinator.acquire("driverSwitch");
+            driver.release();
+        }
+    });
+
     await scenario("a borrowed attachment stops when its session ends without a successor", async () => {
         const host = fakeHost();
         const live = fakeHostSession();

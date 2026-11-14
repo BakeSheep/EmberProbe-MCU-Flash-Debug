@@ -171,6 +171,25 @@ const panelChannels = (panel) =>
         );
     });
 
+    await scenario("unconfirmed OpenOCD exit closes terminal input and keeps Stop retryable", async () => {
+        const { service, controller, panel, notices, cleared, posted } = makeService();
+        await service.startCommand();
+        const originalStop = controller.stop;
+        const error = Object.assign(new Error("OpenOCD exit is unconfirmed"), { code: "PROBE_EXIT_UNCONFIRMED" });
+        controller.stop = async () => {
+            controller.setState("stop-failed", { reason: "user-stopped", error });
+            throw error;
+        };
+        await assert.rejects(service.stopCommand(), { code: "PROBE_EXIT_UNCONFIRMED", reported: true });
+        assert.strictEqual(posted.at(-1).state, "stop-failed");
+        assert.strictEqual(notices.at(-1).error.i18nKey, "live.exitUnconfirmed");
+        assert.strictEqual(panelChannels(panel)[0].active, false);
+        controller.stop = originalStop;
+        await service.stopCommand();
+        assert.strictEqual(posted.at(-1).state, "stopped");
+        assert.strictEqual(cleared.at(-1), "rtt");
+    });
+
     await scenario("channel data reaches the terminal as CRLF terminal text", async () => {
         const { service, controller, clock, panel } = makeService();
         await service.startCommand();

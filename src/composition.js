@@ -128,10 +128,7 @@ function createProbeServices(host, context, vscode) {
                 });
             await waitForJlinkReady(executable, connection.probeSerial);
         },
-        onStatus: (status) => {
-            host._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status });
-            host._connectedProbes.notifyDriverStatus(status);
-        },
+        onStatus: (status) => host._connectedProbes.notifyDriverStatus(status),
         log: (message) => {
             console.log(message);
             if (host._chipOutput) host._chipOutput.appendLine(message);

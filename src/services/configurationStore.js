@@ -171,6 +171,7 @@ class ConfigurationStore {
                 addSetting(key, executable);
             }
         }
+        await this.beforeChange(values);
         const applied = [];
         try {
             for (const operation of operations) {

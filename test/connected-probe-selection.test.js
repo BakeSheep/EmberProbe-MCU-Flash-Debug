@@ -68,6 +68,27 @@ async function main() {
     });
     const shown = () => messages.filter((message) => message.type === "connectedProbes").at(-1);
     const selectedId = () => shown().devices.find((device) => device.selected)?.id || "";
+    await scenario("A same-family selection rechecks ownership after waiting for USB inventory", async () => {
+        const connected = provider._connectedProbes;
+        const originalScan = connected.inventoryService.scan;
+        const coordinator = new ProbeCoordinator();
+        provider._probeCoordinator = coordinator;
+        provider._debugBridge = { hasAnySession: false };
+        delete provider._assertConnectionEditable;
+        let finishScan;
+        connected.inventoryService.scan = () => new Promise((resolve) => (finishScan = resolve));
+        const selecting = connected.select(second.id);
+        const rtt = coordinator.acquire("rtt");
+        try {
+            finishScan({ inventory });
+            await assert.rejects(selecting, { code: "PROBE_CONFIGURATION_BUSY" });
+            assert.strictEqual(state.has(SELECTED_PROBE_KEY), false);
+        } finally {
+            rtt.release();
+            connected.inventoryService.scan = originalScan;
+            provider._assertConnectionEditable = () => {};
+        }
+    });
 
     // Several J-Links: nothing is chosen until the user picks one, which is remembered for the workspace.
     await provider._connectedProbes.refresh();

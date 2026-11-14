@@ -1,6 +1,9 @@
 "use strict";
 const assert = require("assert");
 const path = require("path");
+const { EventEmitter } = require("events");
+const { loadModule } = require("./helpers/load-module");
+const { scenario } = require("./helpers/scenario");
 const checker = require("../src/openocdChecker");
 const {
     parseVersion,
@@ -101,6 +104,32 @@ const {
         { uri: "", key: "openocdPath", value: "new-openocd", target: 2 },
         { uri: "a", key: "openocdPath", value: "new-openocd", target: 3 }
     ]);
+
+    await scenario("Recheck probe ownership after validating the picked OpenOCD executable", async () => {
+        const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+        const picked = loadModule("src/openocdChecker.js", {
+            "./openocdScripts": { resolveExecutablePath: (file) => file },
+            child_process: { spawn: () => child }
+        });
+        const vscode = {
+            workspace: { getConfiguration: () => ({ get: () => "openocd" }) },
+            window: { showOpenDialog: async () => [{ fsPath: "new-openocd" }] }
+        };
+        const blocked = Object.assign(new Error("Probe session started"), { code: "PROBE_CONFIGURATION_BUSY" });
+        const selecting = picked.pickOpenOcdPath(
+            vscode,
+            null,
+            () => {},
+            "en",
+            () => {
+                throw blocked;
+            }
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        child.stdout.emit("data", "Open On-Chip Debugger 0.12.0");
+        child.emit("close", 0);
+        await assert.rejects(selecting, (error) => error === blocked);
+    });
 
     // Passing an existing probe result to the bootstrap function returns the final path without starting another probe
     // process.

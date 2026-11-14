@@ -35,6 +35,7 @@ const DEFAULT_LOG_MAX_BYTES = 8 * 1024 * 1024;
 const RTT_ERROR_KEYS = Object.freeze({
     RTT_MULTICORE_UNSUPPORTED: "rtt.err.multicore",
     PROBE_BUSY: "rtt.err.probeBusy",
+    PROBE_EXIT_UNCONFIRMED: "live.exitUnconfirmed",
     CONFIG_INCOMPLETE: "rtt.err.configIncomplete",
     OPENOCD_NOT_READY: "rtt.err.openocdMissing",
     RTT_START_TIMEOUT: "rtt.err.startTimeout",
@@ -166,7 +167,12 @@ class RttTerminalService {
     }
 
     async stopCommand() {
-        await this._controller().stop(); // The stopped status notes the end in the panel.
+        try {
+            await this._controller().stop();
+        } catch (error) {
+            if (this._failureNoticed === error?.code) error.reported = true;
+            throw error;
+        }
     }
 
     postStatus(post = this._post) {
@@ -323,7 +329,8 @@ class RttTerminalService {
         const previous = this.state;
         this._status = status || { state: "stopped" };
         const state = this.state;
-        if (state !== "stopped") this._callPanel((panel) => panel.ensureVisible());
+        const ended = state === "stopped" || state === "stop-failed";
+        if (!ended) this._callPanel((panel) => panel.ensureVisible());
         if (state === "running") {
             this._paused = false;
             if (previous !== "running") this._enterRunning();
@@ -332,7 +339,8 @@ class RttTerminalService {
             this._ensureTick();
         } else {
             this._stopTick();
-            if (state !== "stopped") this._notePaused();
+            if (!ended) this._notePaused();
+            else if (state === "stop-failed") this._enterStopped();
             else if (previous !== "stopped") this._enterStopped();
         }
         this._flushPanel();
@@ -438,6 +446,9 @@ class RttTerminalService {
             });
         } else if (reason === "host-lost") {
             this._notice({ level: "warning", key: "rtt.err.hostLost" });
+        } else if (reason === "user-stopped" && this._failureNoticed === "PROBE_EXIT_UNCONFIRMED") {
+            this._clearNotice("rtt");
+            this._failureNoticed = null;
         }
     }
 

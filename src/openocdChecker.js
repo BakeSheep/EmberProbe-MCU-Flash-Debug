@@ -241,7 +241,7 @@ async function persistOpenOcdPath(vscode, fsPath, previousPath) {
 
 // Lets the user pick openocd(.exe) in a file dialog, validates it and writes the extension setting; returns the final
 // path or null.
-async function pickOpenOcdPath(vscode, context, report, lang) {
+async function pickOpenOcdPath(vscode, context, report, lang, beforeSave = () => {}) {
     const isWin = process.platform === "win32";
     const previousPath = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
     const exeLabel = i18n.t(lang, "oc.pickExe");
@@ -256,6 +256,7 @@ async function pickOpenOcdPath(vscode, context, report, lang) {
     reportStatus(report, { state: "checking", key: "oc.validatingSelected" });
     const result = await probeOpenOcd(fsPath);
     if (isCompatibleResult(result)) {
+        beforeSave();
         await persistOpenOcdPath(vscode, fsPath, previousPath);
         // The configuration change listener resets the cache; update it here as well so the rest of this action can use
         // it immediately

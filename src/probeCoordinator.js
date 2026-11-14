@@ -10,7 +10,8 @@ const PROBE_OPERATIONS = Object.freeze([
     "debugStart",
     "debugServer",
     "externalDebug",
-    "targetScan"
+    "targetScan",
+    "driverSwitch"
 ]);
 
 class ProbeCoordinator {

@@ -114,6 +114,8 @@ module.exports = Object.freeze({
     "rtos.snapshot": "Snapshot",
     "rtos.diagnostics": "Diagnostics",
     "probe.usbDriver": "J-Link USB driver",
+    "probe.driverInUse":
+        "Stop sampling, RTT or debugging, or wait for the current probe operation to finish before changing the driver.",
     "probe.winusbRequired": "{probe} is using the SEGGER driver. EmberProbe needs WinUSB; choose Switch to WinUSB.",
     "probe.driverNotSwitchableWarning":
         "{probe} is using the SEGGER driver and EmberProbe needs WinUSB, but cannot switch it automatically: {reason}. Change it to WinUSB manually, for example with Zadig; interface details are in the EmberProbe Chip Info output.",

@@ -52,11 +52,17 @@ class OpenOcdStatusService {
         return this.checker.resolveOpenOcdStatus(target, this.context, result, report);
     }
 
-    async handleAction(action) {
+    async handleAction(action, beforeSave = () => {}) {
         if (action !== "select") return this.refresh(true);
         const operation = ++this.operation;
         const report = this.reporter(operation);
-        const resolved = await this.checker.pickOpenOcdPath(this.vscode, this.context, report, this.getLang());
+        const resolved = await this.checker.pickOpenOcdPath(
+            this.vscode,
+            this.context,
+            report,
+            this.getLang(),
+            beforeSave
+        );
         return resolved;
     }
 

@@ -311,8 +311,9 @@ class MainViewProvider {
         return this._cubemxConfiguration.refresh();
     }
     async _handleOpenOcdAction(action) {
-        if (action === "select") this._assertConnectionEditable({ openocdPath: true });
-        return this._openOcdStatusService.handleAction(action);
+        const assertEditable = () => this._assertConnectionEditable({ openocdPath: true });
+        if (action === "select") assertEditable();
+        return this._openOcdStatusService.handleAction(action, assertEditable);
     }
     // Resolves a usable OpenOCD path before programming, debugging or live watch; a missing OpenOCD is only reported to
     // the sidebar.
@@ -450,6 +451,7 @@ class MainViewProvider {
             (this._sampling.session ||
                 this.debugLaunch.managedServer ||
                 this._agentOps.readSession ||
+                this._probeCoordinator?.isActive("rtt") ||
                 this._debugBridge.hasAnySession)
         )
             throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
@@ -1134,6 +1136,7 @@ class MainViewProvider {
         this._webviewView?.webview.postMessage({
             type: "probeOperationStatus",
             operations: this._probeCoordinator?.snapshot(),
+            debugSessionActive: !!this._debugBridge?.hasAnySession,
             debugPending: !!this.debugLaunch.commandPending
         });
     }

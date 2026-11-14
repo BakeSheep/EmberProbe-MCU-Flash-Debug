@@ -249,9 +249,9 @@ let chipHasData = false,
     driverSwitchDeviceId = "";
 function setProbeDriverBusy(busy) {
     probeDriverBusy = busy;
-    if (jlinkDriverChoice) jlinkDriverChoice.disabled = busy;
     connectedProbeList?.querySelectorAll("select.jlink-driver-choice").forEach((control) => {
-        control.disabled = busy;
+        control.disabled = busy || state.probeOperationActive;
+        control.title = state.probeOperationActive && !busy ? t("probe.driverInUse") : t("probe.usbDriver");
     });
     connectedProbeList?.querySelectorAll("button.probe-card-main").forEach((button) => {
         button.disabled = busy || connectedProbeLocked || !button.dataset.selectable;
@@ -1345,6 +1345,7 @@ if (svdSelect)
     svdSelect.onclick = () => api && api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.selectExistingSvd" });
 // A J-Link card's driver control asks for that J-Link's driver; it shows the confirmed one until the new list.
 function changeProbeDriver(control) {
+    if (control.disabled) return;
     if (!api) return setStat("error", "sb.extNotConnected");
     const requested = control.value;
     if (control.dataset.confirmed) control.value = control.dataset.confirmed;
@@ -1503,10 +1504,6 @@ window.EmberProbeMessages.connect(window, {
     },
     noticeClear: function (m) {
         clearNotice(m.area, m.id);
-    },
-    // The driver's progress and result arrive as config notices; this only locks the probe controls.
-    probeDriverStatus: function (m) {
-        if (m.state === "installing" || m.state === "restoring") setProbeDriverBusy(true);
     },
     connectedProbes: function (m) {
         renderConnectedProbes(m);
@@ -1689,6 +1686,7 @@ window.EmberProbeMessages.connect(window, {
     },
     probeOperationStatus: function (m) {
         probeTargetScan = !!m.operations?.targetScan;
+        state.probeOperationActive = !!m.debugSessionActive || Object.values(m.operations || {}).some(Boolean);
         setProbeDriverBusy(probeDriverBusy);
     },
     rtosSnapshot: function (m) {

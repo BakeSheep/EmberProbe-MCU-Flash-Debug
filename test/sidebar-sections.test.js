@@ -301,7 +301,7 @@ scenario("RTT controls follow state, language and probe-driver ownership", async
             view.document.querySelector(`[data-command="${command}"]`).click();
             assert.strictEqual(view.messages.at(-1).cmd, command);
         }
-        view.send({ type: "probeDriverStatus", state: "installing", busy: true });
+        view.send({ type: "probeDriverSwitch", busy: true });
         assert.strictEqual(toggle.disabled, true);
         view.assertHealthy();
     } finally {

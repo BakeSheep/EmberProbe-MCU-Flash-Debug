@@ -170,6 +170,8 @@ async function probeAction({ host, post }, message) {
         host._connectedProbes
             .refresh()
             .catch((refreshError) => console.error("Probe inventory check failed:", refreshError.message));
+        if (message.type === "selectProbeDriver")
+            post({ type: "probeDriverSwitch", busy: host._connectedProbes.driverSwitching });
     }
 }
 

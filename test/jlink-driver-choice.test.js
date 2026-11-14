@@ -7,6 +7,9 @@ const jlinkDriverChoice = (inventory, probeSerial, selection, platform, arch) =>
 const { requireJlinkWinUsb } = require("../skills/_emberprobe/jlink-driver");
 const { loadProvider } = require("./helpers/load-provider");
 const { ProbeInventoryService } = require("../src/services/probeInventoryService");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
+const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
+const { scenario } = require("./helpers/scenario");
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const probeLists = (messages) => messages.filter((message) => message.type === "connectedProbes");
@@ -390,6 +393,7 @@ async function main() {
         }
     };
     provider._webviewView = { webview: { postMessage: (message) => messages.push(message) } };
+    provider._probeCoordinator = new ProbeCoordinator();
     provider._t = (key) => key;
     provider._assertConnectionEditable = () => {};
     provider._probeDriverService = {
@@ -405,6 +409,32 @@ async function main() {
             return currentInventory;
         }
     };
+    await scenario("A refused sidebar switch clears its pending UI and leaves the probe owner in place", async () => {
+        const dispatch = createSidebarHandler(provider, provider._webviewView, {});
+        for (const operation of [
+            "liveStart",
+            "liveWatch",
+            "rtt",
+            "debugServer",
+            "download",
+            "agentRead",
+            "targetScan"
+        ]) {
+            const lease = provider._probeCoordinator.acquire(operation);
+            try {
+                await dispatch({ type: "selectProbeDriver", driver: "winusb", deviceId: first.id });
+                assert.strictEqual(lastNotice(messages).error.diagnostic.code, "PROBE_BUSY");
+                assert.deepStrictEqual(messages.at(-1), { type: "probeDriverSwitch", busy: false });
+                assert.strictEqual(provider._probeCoordinator.firstActive(), operation);
+                assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink");
+            } finally {
+                lease.release();
+            }
+        }
+        await flush();
+        messages.length = 0;
+        provider._connectedProbes.lastMessage = "";
+    });
     if (process.platform === "win32") {
         let finishOlderScan;
         delayedInventory = new Promise((resolve) => (finishOlderScan = resolve));
@@ -446,8 +476,13 @@ async function main() {
         const changing = provider._connectedProbes.changeDriver("winusb");
         assert.throws(() => provider._connectedProbes.assertDriverIdle(), { code: "PROBE_DRIVER_BUSY" });
         await assert.rejects(provider._connectedProbes.changeDriver("segger"), { code: "PROBE_DRIVER_BUSY" });
+        assert.throws(() => provider._probeCoordinator.acquire("targetScan"), {
+            code: "PROBE_BUSY",
+            activeOperation: "driverSwitch"
+        });
         completeInstall();
         await changing;
+        assert.strictEqual(provider._probeCoordinator.anyActive(), false);
         await assert.rejects(provider._connectedProbes.changeDriver("invalid"), {
             code: "PROBE_DRIVER_INVALID_CHOICE"
         });
@@ -556,20 +591,21 @@ async function main() {
         warningResponse = "probe.switchToWinUsb";
 
         currentInventory = { available: true, devices: [device("1234")] };
-        provider._probeCoordinator = { anyActive: () => true, isActive: () => false };
+        const sampling = provider._probeCoordinator.acquire("liveWatch");
         await provider._connectedProbes.showDriverWarning(firstTarget);
         assert.strictEqual(
             lastNotice(messages).error.diagnostic.code,
             "PROBE_BUSY",
             "notification preserves probe ownership"
         );
-        provider._probeCoordinator = null;
+        sampling.release();
 
         provider._probeDriverService.ensure = async () => {
             throw new Error("UAC cancelled");
         };
         await provider._connectedProbes.showDriverWarning(firstTarget);
         assert.strictEqual(lastNotice(messages).error.message, "UAC cancelled");
+        assert.strictEqual(provider._probeCoordinator.anyActive(), false);
         assert.strictEqual(
             provider._connectedProbes.driverSwitching,
             false,

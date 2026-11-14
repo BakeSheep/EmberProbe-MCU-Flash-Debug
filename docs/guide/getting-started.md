@@ -130,7 +130,7 @@ Windows 会把序列号中的空格显示为 `_`，例如真实序列号 `ATK 20
 
 ## J-Link
 
-EmberProbe 通过 OpenOCD 使用 J-Link，这要求 J-Link 在 Windows 上使用 WinUSB 驱动。侧栏可以直接切换，也可以随时切回 SEGGER 驱动。Linux 使用 udev 权限，macOS 没有驱动步骤。
+EmberProbe 通过 OpenOCD 使用 J-Link，这要求 J-Link 在 Windows 上使用 WinUSB 驱动。侧栏可在探针空闲时切换 WinUSB 或 SEGGER 驱动。Linux 使用 udev 权限，macOS 没有驱动步骤。
 
 ### 连接
 
@@ -149,6 +149,8 @@ EmberProbe 通过 OpenOCD 使用 J-Link，这要求 J-Link 在 Windows 上使用
 ### 切换到 WinUSB（Windows x64）
 
 Windows 上使用 SEGGER 驱动的 J-Link 不能读取、采样、调试或下载。
+
+驱动下拉灰显时，先停止当前采样、RTT 或调试，或等待烧录、芯片读取等操作完成。若提示 OpenOCD 尚未退出，请重试停止。
 
 1. 在“已连接调试器”中找到这台 J-Link 的卡片，把驱动下拉改为 **WinUSB**，不需要先选中它。
 2. 同意管理员授权。发布包中的驱动工具未签名，Windows 可能提示未知发布者，也可能被本机策略阻止。

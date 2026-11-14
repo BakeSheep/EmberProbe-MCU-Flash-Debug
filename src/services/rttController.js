@@ -207,6 +207,7 @@ class RttController {
     start({ origin = "user" } = {}) {
         return this._enqueue(async () => {
             if (this.state === "running" || this.state === "starting") return this.status();
+            if (this.state === "stop-failed") throw this._exitUnconfirmed();
             if (origin === "auto" && (this.state !== "stopped" || !this._selectHost()?.session)) return this.status();
             const settings = normalizeRttSettings(this._settings());
             if (origin !== "user" && settings.channels?.some((channel) => channel.mode !== undefined))
@@ -241,7 +242,7 @@ class RttController {
                 try {
                     await this._startOwnSession();
                 } catch (error) {
-                    Object.assign(this, waiting);
+                    if (this.state !== "stop-failed") Object.assign(this, waiting);
                     if (this.state === "pending-host") this._armSettle();
                     throw error;
                 }
@@ -258,7 +259,10 @@ class RttController {
     stop() {
         this._interrupts++;
         this._autoHost = this._hostSession ?? this._autoHost; // Stopped here means stay stopped for this session.
-        return this._enqueue(() => this._stopInternal("user-stopped"));
+        return this._enqueue(async () => {
+            const failure = await this._stopInternal("user-stopped");
+            if (failure) throw failure;
+        });
     }
 
     // True when yielding would actually release something: the owned session and lease, an active attachment, or a
@@ -286,9 +290,11 @@ class RttController {
         this._interrupts++;
         return this._enqueue(async () => {
             if (this.state === "stopped" || (ownOnly && !this._ownSession)) return;
+            if (this.state === "stop-failed") throw this._exitUnconfirmed();
             this._ownSessionIntent ||= !!this._ownSession;
             this._yieldOperation = operation || null;
-            await this._detachToPending("yielded");
+            const failure = await this._detachToPending("yielded");
+            if (failure) throw failure;
         });
     }
 
@@ -332,6 +338,7 @@ class RttController {
     }
 
     async _reconcile() {
+        if (this.state === "stop-failed") return;
         if (this.state === "stopped") {
             this._maybeAutoStart();
             return;
@@ -344,7 +351,7 @@ class RttController {
                 this.source = selection.source;
                 await this._attach();
             } else if (selection.session !== this._hostSession) {
-                await this._detachToPending("host-switched");
+                if (await this._detachToPending("host-switched")) return;
                 this._cancelSettle();
                 this._hostSession = selection.session;
                 this.source = selection.source;
@@ -385,6 +392,7 @@ class RttController {
         try {
             await this._startOwnSession();
         } catch (error) {
+            if (this.state === "stop-failed") return;
             this.error = { code: error.code, message: error.message };
             // Another operation took the probe between events; the intent survives and its release tries again.
             if (error?.retryable) this._postStatus();
@@ -945,7 +953,6 @@ class RttController {
             throw probeBusy("The debug probe is busy with another operation");
         const lease = this.host._probeCoordinator.acquire("rtt");
         this._lease = lease;
-        let session = null;
         try {
             const debuggerCfg =
                 this.host._context.workspaceState.get(CACHE_KEYS.debugger) ||
@@ -964,7 +971,7 @@ class RttController {
                 sampling: true
             });
             const port = await this.host._resolveTclPort(configuration);
-            session = new this._ManagedOpenOcdSession(
+            const session = new this._ManagedOpenOcdSession(
                 {
                     executable,
                     isolated: true,
@@ -978,28 +985,28 @@ class RttController {
                 },
                 {
                     onConnectionConfirmed: () => {
-                        if (!lease.released && this._ownSession === session)
+                        if (!lease.released && this._hostSession === session)
                             void this.host._probeConnectionService.recordSuccess(session.options);
                     },
                     onDisconnect: () => {
                         void this._enqueue(async () => {
-                            if (this._ownSession === session) await this._stopInternal("host-lost");
+                            if (this._ownSession === session && this.state !== "stop-failed")
+                                await this._stopInternal("host-lost");
                         });
                     }
                 }
             );
-            await session.start();
-            if (lease.released) {
-                await session.stop().catch(() => {});
-                throw rttError("RTT_CANCELLED", "The RTT session was cancelled");
-            }
             this._ownSession = session;
+            await session.start();
+            if (lease.released) throw rttError("RTT_CANCELLED", "The RTT session was cancelled");
             this._hostSession = session;
             this.source = "own-session";
         } catch (error) {
-            if (session && this._ownSession !== session) await session.stop().catch(() => {});
-            this._lease = null;
-            lease.release();
+            try {
+                await this._stopOwnSession();
+            } catch {
+                throw this._recordExitUnconfirmed("start-failed");
+            }
             throw error;
         }
     }
@@ -1010,8 +1017,25 @@ class RttController {
     }
 
     async _detachToPending(reason) {
-        await this._stopInternal(reason, "pending-host");
-        this._armSettle();
+        const failure = await this._stopInternal(reason, "pending-host");
+        if (!failure) this._armSettle();
+        return failure;
+    }
+
+    _exitUnconfirmed() {
+        return rttError(
+            "PROBE_EXIT_UNCONFIRMED",
+            "OpenOCD exit is unconfirmed. The probe remains reserved; retry Stop."
+        );
+    }
+
+    _recordExitUnconfirmed(reason) {
+        const failure = this._exitUnconfirmed();
+        this.state = "stop-failed";
+        this.reason = reason;
+        this.error = { code: failure.code, message: failure.message };
+        this._postStatus();
+        return failure;
     }
 
     async _stopInternal(reason, nextState = "stopped") {
@@ -1035,7 +1059,11 @@ class RttController {
             this._origin = null;
             this._modeIdentity = null;
         }
-        await this._detach().catch(() => {});
+        try {
+            await this._detach();
+        } catch {
+            return this._recordExitUnconfirmed(reason);
+        }
         this._postStatus();
     }
 
@@ -1043,18 +1071,18 @@ class RttController {
     // stop a session we own and release its lease.
     async _detach() {
         await this._detachRtt();
-        const own = this._ownSession;
-        if (own) {
-            this._ownSession = null;
-            // An unconfirmed OpenOCD exit is left to the session's own reporting; RTT still releases the lease.
-            await own.stop().catch(() => {});
-        }
+        this._hostSession = null;
+        this.source = null;
+        await this._stopOwnSession();
+    }
+
+    async _stopOwnSession() {
+        if (this._ownSession && (await this._ownSession.stop()) === false) throw this._exitUnconfirmed();
+        this._ownSession = null;
         if (this._lease) {
             this._lease.release();
             this._lease = null;
         }
-        this._hostSession = null;
-        this.source = null;
     }
 
     // The attachment without its host: a restart keeps the session and its lease.

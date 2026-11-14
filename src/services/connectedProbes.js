@@ -272,7 +272,7 @@ class ConnectedProbes {
             });
         const current = view.debugger;
         const probe = probeFamily({ probe: current }) === device.family ? current : device.defaultConfig;
-        if (probe !== current) this.host._assertConnectionEditable({ debugger: probe });
+        this.host._assertConnectionEditable({ probeSerial: true });
         if (probe !== current) await this.host._context.workspaceState.update(CACHE_KEYS.debugger, probe);
         try {
             // Without a trusted serial the device is the only one of its family and is chosen as the unique device,
@@ -388,13 +388,9 @@ class ConnectedProbes {
         this.host._notices.clear("config", "probe-driver");
         this.assertDriverIdle();
         this.host._assertConnectionEditable({ probeSerial: true });
-        if (this.host._probeCoordinator?.anyActive())
-            throw Object.assign(new Error("Wait for the current probe operation to finish before changing drivers"), {
-                code: "PROBE_BUSY"
-            });
+        const lease = this.host._probeCoordinator.acquire("driverSwitch");
         this.driverSwitching = true;
         this._revision = (this._revision || 0) + 1;
-        this.host._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: true });
         const resolveTarget = (inventory) => {
             const resolved = resolveJlinkDriverTarget(
                 inventory,
@@ -406,6 +402,7 @@ class ConnectedProbes {
             return resolved.choice;
         };
         try {
+            this.host._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: true });
             const choice = resolveTarget((await this.inventory().scan()).inventory);
             if (target?.instanceId && choice.instanceId !== target.instanceId)
                 throw Object.assign(new Error("The selected J-Link changed; select its USB driver in the sidebar"), {
@@ -431,6 +428,7 @@ class ConnectedProbes {
             this.host._resolvedProbeConnection = null;
         } finally {
             this.driverSwitching = false;
+            lease.release();
             this.host._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: false });
             this.refresh().catch((error) => console.error("Probe inventory check failed:", error.message));
         }

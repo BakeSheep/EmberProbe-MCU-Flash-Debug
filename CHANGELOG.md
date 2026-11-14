@@ -24,6 +24,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 探针诊断 / Probe diagnostics
 
+- 探针被采样、RTT、调试等操作占用时禁用 J-Link 驱动下拉。若切换请求被拒绝，侧栏会结束加载；驱动切换期间占用探针，独立 RTT 确认 OpenOCD 退出后才释放探针。
+- Disable the J-Link driver selector while sampling, RTT, debugging or another operation owns the probe. A rejected switch clears the loading state. Driver switching reserves the probe, and standalone RTT releases it only after confirming OpenOCD exit.
+
 - 修复 STM32C5 烧录时目标事件中的 Tcl 变量作用域错误，确保正确初始化 Flash loader；更新 Windows/Linux 内置 OpenOCD 的目标脚本及对应源码。脚本异常保留首个错误上下文，报告为 `OPENOCD_SCRIPT_ERROR`，不再被后续 `shutdown error` 掩盖。
 - Fix Tcl variable scope in STM32C5 target events so flashing initializes the correct Flash loader. Update the target script and corresponding sources in both bundled OpenOCD runtimes. Preserve the first script exception as `OPENOCD_SCRIPT_ERROR` instead of reporting the trailing `shutdown error`.
 - 修复 CMSIS-DAP HID 读写和命令通信错误被误报为 Flash 写入失败：优先报告 `PROBE_COMMUNICATION_FAILED`，提示停止占用会话、确认 OpenOCD 退出及必要时重新连接 USB；通用写入错误需明确 Flash 上下文，不自动重试。
