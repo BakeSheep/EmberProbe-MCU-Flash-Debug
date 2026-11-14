@@ -830,6 +830,7 @@ class MainViewProvider {
             type: item.type,
             ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {}),
             ...(item.layoutExpanded ? { layoutExpanded: true } : {}),
+            ...(item.fromWatch ? { fromWatch: true } : {}),
             ...(item.min !== undefined ? { min: item.min } : {}),
             ...(item.max !== undefined ? { max: item.max } : {}),
             ...(item.value !== undefined ? { value: item.value } : {})

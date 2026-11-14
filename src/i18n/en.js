@@ -594,7 +594,16 @@ module.exports = Object.freeze({
     "sb.commandFailed": "Operation failed",
     "sb.removeFromWatch": "Remove from watch list",
     "sb.writeList": "Write List",
-    "sb.writeEmpty": "Click ✎ in the ELF list to add",
+    "sb.writeEmpty": "Right-click a watched variable and choose Add to write list, or click ✎ beside an ELF variable",
+    "sb.variableMenu": "Variable actions",
+    "sb.writeSampleRequired": "Wait for a valid sample before adding to the write list",
+    "sb.writeWatchRequired": "Add to the watch list again and wait for a valid sample",
+    "sb.writeScalarOnly": "Select a single scalar member",
+    "sb.writeReadOnly": "This member is read-only",
+    "sb.writePointerStorage": "Select a dereferenced scalar member; pointer storage is read-only",
+    "sb.writeTypeUnknown": "The write type could not be determined",
+    "sb.writeDynamicChanged": "The target changed before writing. Wait for a fresh sample before retrying",
+    "sb.writeResultUnknown": "The write result is unconfirmed. Read the current value before deciding whether to retry",
     "sb.addToWrite": "Add to write list",
     "sb.removeFromWrite": "Remove from write list",
     "sb.dragToReorder": "Drag to reorder {name} (Alt+↑/↓)",
@@ -623,9 +632,9 @@ module.exports = Object.freeze({
     "sb.writeVerifyFailedHalted":
         "The value read back still differs while the target was halted; check RAM accessibility, MPU/cache configuration and the debug connection",
     "sb.writeRisk.subword":
-        "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, writes only the variable's own bytes at their width (or read-modify-writes the containing 32-bit word if the target drops narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+        "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, writes only the variable's own bytes at their width (or read-modify-writes the containing 32-bit word for static targets that drop narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Dynamic targets stop on a read-back mismatch. Not writable while a debug session is running.",
     "sb.writeRisk.unaligned":
-        "Write risk: this variable's address {addr} is not 4-byte aligned. The write briefly halts the CPU, writes only the variable's own bytes with aligned 8/16-bit accesses (or read-modify-writes the spanned 32-bit words if the target drops narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+        "Write risk: this variable's address {addr} is not 4-byte aligned. The write briefly halts the CPU, writes only the variable's own bytes with aligned 8/16-bit accesses (or read-modify-writes the spanned 32-bit words for static targets that drop narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Dynamic targets stop on a read-back mismatch. Not writable while a debug session is running.",
     "sb.writeRisk.wide":
         "Write risk: this variable is {bits}-bit and needs two 32-bit word writes. To keep firmware from reading a half-written value the write briefly halts the CPU, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
     "sb.invalidWriteValue": "Enter an in-range decimal integer",
@@ -1252,6 +1261,8 @@ module.exports = Object.freeze({
     "err.VARIABLE_NOT_FOUND": "The variable was not found in the current ELF (names are case-sensitive).",
     "err.WRITE_CONNECTION_CHANGED": "The connection changed after confirmation; write again.",
     "err.WRITE_NOT_ALLOWED": "This variable cannot be written.",
+    "err.WRITE_TARGET_CHANGED":
+        "Dynamic write target descriptors or session state changed; resolve and retry carefully.",
     "err.WRITE_TYPE_UNKNOWN": "The write encoding of this variable is unknown.",
     "dbg.alreadyStarted": "The debug session has already started or ended.",
     "dbg.commandRequired": "Enter a single-line GDB command of at most 16384 characters.",

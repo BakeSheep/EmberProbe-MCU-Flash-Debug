@@ -261,7 +261,7 @@ function serviceFixture() {
             });
             menu = view.document.querySelector('[role="menu"]');
             assert([...menu.querySelectorAll("button")].some((button) => button.textContent === "编辑条件…"));
-            assert.strictEqual(menu.querySelector(".data-breakpoint-note"), null);
+            assert.strictEqual(menu.querySelector(".data-breakpoint-note:not(.watch-write-note)"), null);
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
             assert.strictEqual(view.document.activeElement.textContent, "删除数据断点");
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -312,7 +312,7 @@ function serviceFixture() {
             member.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
             const title = () => view.document.querySelector(".data-breakpoint-head-name").textContent;
             assert.strictEqual(title(), "app::g_pid.integral_");
-            view.document.querySelector('[role="menu"] button').click();
+            view.document.querySelector('[role="menu"] button:not(.watch-write-action)').click();
             const pause = view.messages.at(-1);
             view.send({ ...status, epoch: 2, paused: true });
             view.send({ ...status, epoch: 2, paused: true, requestId: pause.requestId });
@@ -328,7 +328,7 @@ function serviceFixture() {
                 info: { dataId: "storage", accessTypes: ["write"] }
             });
             assert.strictEqual(title(), "app::g_pid.integral_");
-            view.document.querySelector('[role="menu"] button').click();
+            view.document.querySelector('[role="menu"] button:not(.watch-write-action)').click();
             assert.strictEqual(view.messages.at(-1).action, "add");
             assert.strictEqual(view.messages.at(-1).name, root + ".integral_");
             for (const [name, label] of [
@@ -361,7 +361,7 @@ function serviceFixture() {
             view.send(status);
             const row = view.document.querySelector('[data-breakpoint-path="counter"]');
             row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
-            view.document.querySelector('[role="menu"] button').click();
+            view.document.querySelector('[role="menu"] button:not(.watch-write-action)').click();
             const pause = view.messages.at(-1);
             assert.strictEqual(pause.action, "pause");
             view.send({ ...status, epoch: 2, paused: true });

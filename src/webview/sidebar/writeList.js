@@ -22,6 +22,8 @@
     if (commonJs) module.exports = writeList;
     else root.EmberProbeWriteList = writeList;
 })(typeof globalThis === "object" ? globalThis : this, function (runtime, valueTree, cardReorder, notice, pageZoom) {
+    const watchWriteModule =
+        typeof module === "object" && module.exports ? require("./watchWrites") : globalThis.EmberProbeWatchWrites;
     const { fmtNum } = valueTree;
     const WRITE_INTERVAL_MS = 100;
     // While the debugger is paused the CPU never sees intermediate drag values, yet every write makes the debugger
@@ -141,6 +143,7 @@
             confirmed = Object.create(null),
             seq = 0,
             access = { canWrite: false, haltWrite: false, halted: false, unavailableKey: "sb.writeNeedSampling" };
+        const watchWrites = watchWriteModule.create({ state, canRead: () => access.canWrite, has, toggle });
         const reorder =
             box &&
             cardReorder.attach(box, {
@@ -160,6 +163,11 @@
         }
         function gateKey(item) {
             if (!access.canWrite) return access.unavailableKey;
+            if (item.fromWatch) {
+                const candidate = watchWrites.entry(item.name);
+                if (!candidate?.entry) return candidate?.key || "sb.writeSampleRequired";
+                if (candidate.entry.type !== item.type) return "sb.writeTypeUnknown";
+            }
             return !access.haltWrite && writeRisk(item) ? "sb.writeNeedHalt" : "";
         }
         // The risk note is a custom overlay: a native title cannot limit its width and would stack with the name's
@@ -233,7 +241,8 @@
                     name: entry.name,
                     displayName: page.displayName(entry),
                     address: entry.address,
-                    size: entry.size
+                    size: entry.size,
+                    ...(entry.fromWatch ? { fromWatch: true } : {})
                 };
             if (entry.isBoolean) {
                 state.writeList.push({
@@ -242,12 +251,16 @@
                     isBoolean: true,
                     min: 0,
                     max: 1,
-                    value: Number(state.latest[entry.name]) ? 1 : 0
+                    value: Number(entry.value ?? state.latest[entry.name]) ? 1 : 0
                 });
             } else if (isWideInt(type)) {
-                state.writeList.push({ ...base, type, value: state.latestText[entry.name] || "0" });
+                state.writeList.push({
+                    ...base,
+                    type,
+                    value: entry.valueText ?? state.latestText[entry.name] ?? "0"
+                });
             } else {
-                let v = Number(state.latest[entry.name]);
+                let v = Number(entry.value ?? state.latest[entry.name]);
                 if (!Number.isFinite(v)) v = 0;
                 const item = { ...base, type, min: bounds[0], max: bounds[1], value: v };
                 widenWriteBounds(item, v);
@@ -266,7 +279,13 @@
             }
             latestSeq[item.name] = ++seq;
             cells[item.name]?.input.classList.add("pending");
-            page.post({ type: "writeVariable", name: item.name, value: item.value, seq });
+            page.post({
+                type: "writeVariable",
+                name: item.name,
+                value: item.value,
+                seq,
+                ...(item.fromWatch ? { fromWatch: true } : {})
+            });
         }
         function send(item, immediate) {
             const name = item.name;
@@ -558,6 +577,10 @@
             const gate = gateKey(card.item),
                 title = gate ? t(gate) : "";
             card.row.classList.toggle("gated", !!gate);
+            if (gate && timers[card.item.name]) {
+                clearTimeout(timers[card.item.name]);
+                delete timers[card.item.name];
+            }
             card.controls.forEach((control) => {
                 control.disabled = !!gate;
                 control.title = title;
@@ -569,8 +592,10 @@
                 next.canWrite !== access.canWrite ||
                 next.haltWrite !== access.haltWrite ||
                 next.unavailableKey !== access.unavailableKey;
+            if (!next.canWrite) watchWrites.invalidate();
             access = next;
             if (changed) Object.values(cells).forEach(applyGate);
+            page.refreshMenu?.();
         }
         // Input checks fade on their own; a failed write stays until dismissed or the next write succeeds.
         function feedback(next) {
@@ -578,6 +603,10 @@
             page.notice.set(next.level === "error" ? next : { level: "warning", timeoutMs: 5000, ...next });
         }
         function knownValue(item) {
+            if (item.fromWatch) {
+                const entry = watchWrites.entry(item.name)?.entry;
+                return entry ? (entry.valueText ?? entry.value) : undefined;
+            }
             if (isWideInt(item.type)) return state.latestText[item.name] ?? confirmed[item.name];
             const sampled = state.latest[item.name];
             const value = sampled === null || sampled === undefined ? NaN : Number(sampled);
@@ -587,6 +616,7 @@
         // Write result feedback: the dot before the variable name lights up and fades (green on success, red on
         // failure); failures also show the reason in the write notice
         function onResult(m) {
+            m = { ...m, code: m.diagnostic?.code || m.code, details: m.diagnostic?.details || m.details };
             if (m.seq !== latestSeq[m.name]) return;
             delete latestSeq[m.name];
             const card = cells[m.name];
@@ -604,42 +634,98 @@
                 } else {
                     // Show what the target still holds, not the rejected value, so steps start from it.
                     cancelPending(m.name);
-                    const known = knownValue(card.item);
-                    if (known !== undefined) {
-                        card.setVal(known);
-                        save();
+                    if (!m.details?.resultUnknown && !m.details?.written) {
+                        const known = knownValue(card.item);
+                        if (known !== undefined) {
+                            card.setVal(known);
+                            save();
+                        }
                     }
                 }
             }
+            if (!m.ok && cells[m.name]?.item.fromWatch) {
+                watchWrites.block(m.name);
+                applyGate(cells[m.name]);
+            }
             if (m.ok) {
                 if (page.notice.level() === "error") feedback(null);
-            } else
+            } else {
+                let error = m.key || m.message ? m : { key: "sb.commandFailed" };
+                if (m.code === "WRITE_TARGET_CHANGED") {
+                    const notWritten = m.details?.written === false && !m.details?.resultUnknown;
+                    error = {
+                        ...m,
+                        key: notWritten ? "sb.writeDynamicChanged" : "sb.writeResultUnknown",
+                        params: {}
+                    };
+                } else if (m.details?.resultUnknown || m.details?.written) {
+                    error = { ...m, key: "sb.writeResultUnknown", params: {} };
+                }
                 feedback(
                     notice.hostNotice({
-                        error: m.key || m.message ? m : { key: "sb.commandFailed" },
+                        error,
                         title: { key: "sb.writeFailTitle", params: { name: page.displayName({ name: m.name }) } }
                     })
                 );
+            }
+        }
+        function syncWatchIdentity(card, candidate) {
+            const item = card.item;
+            if (!candidate || candidate.type !== item.type) return;
+            const moved = item.address !== candidate.address || item.size !== candidate.size;
+            const booleanChanged = !!item.isBoolean !== !!candidate.isBoolean;
+            item.address = candidate.address;
+            item.size = candidate.size;
+            item.isBoolean = candidate.isBoolean;
+            if (booleanChanged) {
+                card.row.querySelector(".value-type").textContent = item.isBoolean ? "bool" : item.type;
+                card.syncSlider?.();
+            }
+            if (!moved) return;
+            hideRiskTip();
+            const previous = card.row.querySelector(".write-risk");
+            const next = riskIcon(item);
+            if (previous) {
+                if (next) previous.replaceWith(next);
+                else previous.remove();
+            } else if (next) {
+                let line = card.row.querySelector(".write-name-line");
+                if (!line) {
+                    line = element("span", "write-name-line");
+                    const name = card.row.querySelector(".value-name");
+                    name.replaceWith(line);
+                    line.appendChild(name);
+                }
+                line.prepend(next);
+            }
         }
         // Sampled values move idle cards; a card being dragged, typed into or waiting for a result keeps its value.
         function sync() {
             state.writeList.forEach((item) => {
                 const card = cells[item.name];
                 if (!card) return;
+                if (item.fromWatch) {
+                    const candidate = watchWrites.entry(item.name)?.entry;
+                    syncWatchIdentity(card, candidate);
+                    applyGate(card);
+                }
+                if (gateKey(item)) return;
                 if (Date.now() - (lastAt[item.name] || 0) < 1000) return;
                 if (timers[item.name]) return;
                 if (card.input.classList.contains("pending")) return;
                 const ae = document.activeElement;
                 if (ae === card.input || ae === card.slider) return;
                 if (isWideInt(item.type)) {
-                    const text = state.latestText[item.name];
+                    const text = item.fromWatch
+                        ? watchWrites.entry(item.name)?.entry?.valueText
+                        : state.latestText[item.name];
                     if (text != null) {
                         card.setVal(text);
                         confirmed[item.name] = text;
                     }
                     return;
                 }
-                const sampled = state.latest[item.name];
+                const sampled = item.fromWatch ? watchWrites.entry(item.name)?.entry?.value : state.latest[item.name];
                 if (sampled === null || sampled === undefined) return;
                 let v = Number(sampled);
                 if (!Number.isFinite(v)) return;
@@ -654,7 +740,19 @@
             confirmed = Object.create(null);
             render();
         }
-        return { has, toggle, render, load, setAccess, onResult, sync };
+        return {
+            has,
+            toggle,
+            render,
+            load,
+            setAccess,
+            onResult,
+            sync,
+            menu: watchWrites.menu,
+            sampled: watchWrites.sampled,
+            invalidate: watchWrites.invalidate,
+            displayName: watchWrites.displayName
+        };
     }
     return { shiftSliderBounds, addWriteStep, create };
 });

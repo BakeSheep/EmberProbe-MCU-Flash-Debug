@@ -357,7 +357,7 @@ const TOOLS = [
         toolset: "core",
         title: "Write variables",
         description:
-            "Write scalar RAM variables (.data/.bss) and read them back. Requires the user's approval of the returned plan.",
+            "Write scalar RAM variables or typed dynamic member paths and read them back. Re-resolves pointers and container elements; rejects read-only targets. Requires the user's approval of the returned plan.",
         methods: ["variables.write"],
         confirm: true,
         destructive: true,

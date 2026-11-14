@@ -14,7 +14,7 @@
         remove: "M3.5 5h9M6.5 5V3.5h3V5M4.8 5l.6 7.5h5.2L11.2 5"
     };
     const stateOf = (entry) => (!entry.enabled ? "disabled" : entry.verified ? "enabled" : "failed");
-    function create({ state, box, api, t, setNotice }, displayName) {
+    function create({ state, box, api, t, setNotice, writeMenu }, displayName) {
         const doc = box.ownerDocument;
         const post = (message) => api?.postMessage(message);
         const notice = (title) => setNotice("live", "dataBreakpoint", { level: "error", title });
@@ -201,8 +201,35 @@
             const meta = element("div", "data-breakpoint-head-meta");
             head.appendChild(meta);
             menu.appendChild(head);
+            if (writeMenu) {
+                const action = writeMenu(s.target.name);
+                menu.dataset.writeState = JSON.stringify([action.selected, action.key]);
+                const control = button(
+                    menu,
+                    t(action.selected ? "sb.removeFromWrite" : "sb.addToWrite"),
+                    "",
+                    {},
+                    {
+                        disabled: !!action.key,
+                        glyph: action.selected ? "check" : "condition",
+                        className: "watch-write-action"
+                    }
+                );
+                control.title = action.key ? t(action.key) : "";
+                control.onclick = () => {
+                    action.run();
+                    close(true);
+                };
+                if (action.key)
+                    menu.appendChild(element("div", "data-breakpoint-note watch-write-note", t(action.key)));
+                if (s.available) separator(menu);
+            }
             if (!s.available) {
-                meta.textContent = t("sb.dataNoSession");
+                meta.textContent = writeMenu ? "" : t("sb.dataNoSession");
+                if (writeMenu)
+                    menu.appendChild(
+                        element("div", "data-breakpoint-note", t("sb.dataMenu") + " · " + t("sb.dataNoSession"))
+                    );
             } else if (!s.paused) {
                 meta.textContent = t("sb.dataMenu");
                 separator(menu);
@@ -269,7 +296,7 @@
             s.menu = doc.createElement("div");
             s.menu.className = "data-breakpoint-menu";
             s.menu.setAttribute("role", "menu");
-            s.menu.setAttribute("aria-label", t("sb.dataMenu"));
+            s.menu.setAttribute("aria-label", t(writeMenu ? "sb.variableMenu" : "sb.dataMenu"));
             s.menu.tabIndex = -1;
             doc.body.appendChild(s.menu);
             draw();
@@ -373,8 +400,14 @@
             refreshMarks();
         }
         new doc.defaultView.MutationObserver(rendered).observe(box, { childList: true, subtree: true });
+        function refreshWrite() {
+            const s = get();
+            if (!writeMenu || !s.target || !s.menu) return;
+            const action = writeMenu(s.target.name);
+            if (s.menu.dataset.writeState !== JSON.stringify([action.selected, action.key])) draw();
+        }
         const routes = { sidebarDataBreakpoints: receive, sidebarDataBreakpointError: receive };
-        return { decorate, refreshMarks, receive, close, routes };
+        return { decorate, refreshMarks, receive, close, routes, refreshWrite };
     }
     return { create };
 });

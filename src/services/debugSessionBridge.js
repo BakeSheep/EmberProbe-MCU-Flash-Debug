@@ -1,5 +1,6 @@
 "use strict";
 const { withWriteAccessStatus } = require("../writeAccess");
+const { validateWritePreconditions, verifyWritePreconditions } = require("../writePreconditions");
 const { isSupportedDebugSession } = require("./debugConfiguration");
 
 const MAX_READ_BYTES = 4096;
@@ -1112,7 +1113,9 @@ class DebugSessionBridge {
         return samples;
     }
 
-    async writeAndVerify(items) {
+    async writeAndVerify(items, _timeoutMs = 5000, preconditions = [], expectedStopEpoch = this.stopEpoch) {
+        validateWritePreconditions(preconditions, items);
+        const progress = { writtenItems: 0, resultUnknown: false };
         if (this.writing || this.peripheralBusy || this.controlInFlight || this.replBusy)
             throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
         const session = this.activeSession;
@@ -1122,15 +1125,42 @@ class DebugSessionBridge {
         // a snapshot read drains must be rejected, not interleaved with this read-modify-write.
         this.writing = true;
         try {
+            if (expectedStopEpoch !== this.stopEpoch)
+                throw Object.assign(new Error("Dynamic write plan belongs to an old stop generation"), {
+                    code: "WRITE_TARGET_CHANGED"
+                });
             this._invalidate();
             const waitDeadline = this.now() + 2000;
             while (this.polling && this.canWritePaused && this.now() < waitDeadline)
                 await new Promise((resolve) => this.schedule(resolve, 5));
             if (this.polling) throw new Error("A DAP memory read is still in progress; write was not started");
+            if (expectedStopEpoch !== this.stopEpoch)
+                throw Object.assign(new Error("Target resumed while the write waited for a DAP read"), {
+                    code: "WRITE_TARGET_CHANGED"
+                });
             if (!this.canWritePaused || session !== this.activeSession)
                 throw new Error("Target continued before the DAP write could start");
             this._invalidate();
-            return await this._writeAndVerifyPaused(items, session);
+            return await this._writeAndVerifyPaused(
+                items,
+                session,
+                preconditions,
+                progress,
+                this.now() + _timeoutMs,
+                expectedStopEpoch
+            );
+        } catch (error) {
+            if (preconditions.length) {
+                error.retryable = false;
+                error.details = {
+                    ...error.details,
+                    ...progress,
+                    totalItems: items.length,
+                    verified: false,
+                    written: progress.writtenItems > 0 ? true : progress.resultUnknown ? null : false
+                };
+            }
+            throw error;
         } finally {
             this.writing = false;
             if (this.refreshAfterWrite) {
@@ -1140,14 +1170,61 @@ class DebugSessionBridge {
         }
     }
 
-    async _writeAndVerifyPaused(items, session) {
+    async _writeAndVerifyPaused(
+        items,
+        session,
+        preconditions = [],
+        progress = { writtenItems: 0, resultUnknown: false },
+        deadline = Infinity,
+        expectedStopEpoch = this.stopEpoch
+    ) {
         const epoch = this.epoch;
+        let writtenItems = 0;
+        const assertCurrent = () => {
+            if (preconditions.length && this.now() > deadline)
+                throw Object.assign(new Error("Dynamic DAP write exceeded its time budget"), {
+                    code: "LIVE_WRITE_BUDGET_EXCEEDED"
+                });
+            if (
+                epoch !== this.epoch ||
+                expectedStopEpoch !== this.stopEpoch ||
+                session !== this.activeSession ||
+                !this.canWritePaused
+            )
+                throw Object.assign(
+                    new Error(
+                        preconditions.length
+                            ? "Target state changed during dynamic write"
+                            : "Target state changed during the DAP write"
+                    ),
+                    {
+                        code: "DEBUG_STATE_CHANGED",
+                        details: { written: writtenItems > 0, writtenItems, verified: false }
+                    }
+                );
+        };
+        const verify = async () => {
+            assertCurrent();
+            await verifyWritePreconditions(
+                preconditions,
+                async (address, size) => {
+                    assertCurrent();
+                    const bytes = await this._readBlock(session, address, size);
+                    assertCurrent();
+                    return bytes;
+                },
+                writtenItems
+            );
+            assertCurrent();
+        };
+        await verify();
         const plan = items.map((item) => ({ ...item, size: item.bytes.length }));
         const before = await this.read(plan, session);
         const writes = [];
         for (const item of items) {
             const previous = writes[writes.length - 1];
             if (
+                !preconditions.length &&
                 previous &&
                 Number(previous.address) % 4 === 0 &&
                 previous.bytes.length % 4 === 0 &&
@@ -1160,6 +1237,7 @@ class DebugSessionBridge {
             } else writes.push({ ...item });
         }
         const writeBlock = async (address, data, name) => {
+            progress.resultUnknown = true;
             const result = unwrapResponse(
                 await session.customRequest("writeMemory", {
                     memoryReference: `0x${address.toString(16)}`,
@@ -1170,39 +1248,55 @@ class DebugSessionBridge {
             );
             if (Number.isFinite(result.bytesWritten) && result.bytesWritten !== data.length)
                 throw new Error(`DAP partially wrote ${name}`);
-        };
-        const assertUnchanged = () => {
-            if (epoch !== this.epoch || session !== this.activeSession || !this.canWritePaused)
-                throw new Error("Target state changed during the DAP write");
+            progress.resultUnknown = false;
         };
         for (const item of writes) {
-            if (epoch !== this.epoch || !this.canWritePaused)
-                throw new Error("Target continued while a DAP write was in progress");
+            await verify();
+            assertCurrent();
             const address = Number(item.address);
             const alignedStart = Math.floor(address / 4) * 4;
             const alignedEnd = Math.ceil((address + item.bytes.length) / 4) * 4;
             const bytes = Uint8Array.from(item.bytes);
             if (address === alignedStart && bytes.length === alignedEnd - alignedStart) {
                 await writeBlock(alignedStart, bytes, item.name);
+                writtenItems++;
+                progress.writtenItems = writtenItems;
                 continue;
             }
             // Write only the variable's own bytes so DMA or peripheral updates to neighbouring
             // bytes are kept; fall back to an aligned read-modify-write when a narrow access
             // was dropped (some Cortex-M7/AHB-AP byte lanes).
             await writeBlock(address, bytes, item.name);
-            assertUnchanged();
+            progress.resultUnknown = true;
+            assertCurrent();
             const alignedBytes = await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
-            assertUnchanged();
+            assertCurrent();
             if (alignedBytes.length !== alignedEnd - alignedStart)
                 throw new Error(`DAP could not read back the bytes written to ${item.name}`);
+            progress.resultUnknown = false;
             const offset = address - alignedStart;
-            if (bytes.every((value, index) => alignedBytes[offset + index] === value)) continue;
+            if (bytes.every((value, index) => alignedBytes[offset + index] === value)) {
+                writtenItems++;
+                progress.writtenItems = writtenItems;
+                continue;
+            }
+            if (preconditions.length) {
+                // A wider write could replace a neighboring value changed by DMA or another core.
+                progress.resultUnknown = true;
+                await verify();
+                throw Object.assign(new Error("Dynamic narrow write did not read back; wider writes are unsafe"), {
+                    code: "WRITE_VERIFY_FAILED"
+                });
+            }
+            await verify();
             alignedBytes.set(bytes, offset);
             await writeBlock(alignedStart, alignedBytes, item.name);
+            writtenItems++;
+            progress.writtenItems = writtenItems;
         }
-        if (epoch !== this.epoch || !this.canWritePaused)
-            throw new Error("Target continued before DAP write verification");
+        assertCurrent();
         const after = await this.read(plan, session);
+        await verify();
         if (epoch === this.epoch && this.paused) {
             this.snapshotReady = true;
             this.snapshotPending = false;

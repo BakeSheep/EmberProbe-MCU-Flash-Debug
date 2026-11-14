@@ -617,8 +617,8 @@ function parseElfSections(buffer) {
 // _Min_Stack_Size`, while the `._user_heap_stack` section only covers `_Min_Heap_Size + _Min_Stack_Size`, so STL
 // container storage and objects created with new beyond that lie in no section. Returns { name, start, end } only when
 // `_end` is in (or right after) a writable allocated section, `_estack` is within 16 MiB after it, and the range
-// overlaps no other allocated section. Used only for pointer targets of runtime objects; it does not widen variable
-// address checks or writes.
+// overlaps no other allocated section. Used for typed pointer targets of runtime reads and writes; it does not widen
+// static variable address checks or permit arbitrary-address writes.
 function linkerHeapStackRange(buf, entries, sections) {
     const SHT_SYMTAB = 2;
     const SHF_WRITE = 1;

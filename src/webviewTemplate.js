@@ -37,6 +37,7 @@ const PAGE_PRELUDE = {
         "peripherals.js",
         "rtt.js",
         "rtos.js",
+        "watchWrites.js",
         "writeList.js",
         "agentControls.js",
         "dataBreakpoints.js"

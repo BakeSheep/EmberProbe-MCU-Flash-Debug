@@ -306,8 +306,29 @@ const DIAGNOSTICS = {
     ],
     WRITE_NOT_ALLOWED: [
         "write_safety",
-        "目标地址不在 ELF 的可写 RAM 段（.data/.bss）内，EmberProbe 拒绝写入。",
-        ["确认变量是 RAM 中的全局变量，而非 const/Flash 数据或外设寄存器。"],
+        "目标不可写入：可能不在可写 RAM（.data/.bss 或 linker heap-stack）内，或是 const、指针本体、容器内部字段、越界元素、只读键/集合或位域。",
+        [
+            "确认目标是可变的非 const 标量成员或容器可写元素（map 仅允许写 .second，set/字符串/指针本体只读）。",
+            "裸指针与动态成员需通过 -> 或 .value 显式解引用到可写 RAM 中的标量叶子。"
+        ],
+        false
+    ],
+    WRITE_TARGET_CHANGED: [
+        "write_safety",
+        "动态写入目标的指针/容器描述符、目标世代或连接状态在规划与执行之间发生变化，EmberProbe 已中止以防写错地址。",
+        [
+            "检查 details.written、details.writtenItems 与 details.resultUnknown 核对目标内存是否已部分改动。",
+            "请先重新读取变量当前值再决定是否重试，并重新请求写入计划，不要复用旧的 confirmationId。"
+        ],
+        false
+    ],
+    LIVE_WRITE_BUDGET_EXCEEDED: [
+        "write_safety",
+        "动态写入前后的描述符校验次数、字节数或事务时间超出单批安全预算。",
+        [
+            "减少单次写入的变量数量或缩短深层链表/多容器路径，拆分为多批小请求。",
+            "在调试暂停态或较低总线负载下重试，避免超时。"
+        ],
         false
     ],
     WRITE_TYPE_UNKNOWN: [

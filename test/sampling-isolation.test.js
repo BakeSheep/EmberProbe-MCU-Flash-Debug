@@ -233,6 +233,30 @@ function testRuntimeAccounting() {
         ]);
         assert.deepEqual(transaction.after[0].bytes, [7, 8, 9, 10]);
         assert.strictEqual(transaction.halted, false, "Worker result preserves the non-halting transaction indicator");
+        await scenario(
+            "Serialize dynamic write descriptors and target generations through the real Worker",
+            async () => {
+                const items = [{ name: "dynamic", address: 0x20000010, bytes: [4, 3, 2, 1] }];
+                const checks = [{ address: 0x20000000, bytes: [7, 8, 9, 10] }];
+                const expectedEpoch = session.targetEpoch;
+                assert.deepStrictEqual(
+                    (await session.writeAndVerify(items, 5000, checks, expectedEpoch)).after[0].bytes,
+                    items[0].bytes
+                );
+                await assert.rejects(
+                    session.writeAndVerify(items, 5000, [{ ...checks[0], bytes: [0, 0, 0, 0] }]),
+                    (error) => error.code === "WRITE_TARGET_CHANGED" && error.details.written === false
+                );
+                session.invalidateTarget();
+                await assert.rejects(session.writeAndVerify(items, 5000, checks, expectedEpoch), {
+                    code: "WRITE_TARGET_CHANGED"
+                });
+                assert.deepStrictEqual(
+                    (await session.readOnce([{ name: "dynamic", address: 0x20000010, size: 4 }]))[0].bytes,
+                    items[0].bytes
+                );
+            }
+        );
         session.setIntervalMs(40);
         session.setSamplingEnabled(true);
         await waitFor(() => ticks.length > stoppedAt, "sampling resumes at the new interval");

@@ -150,6 +150,63 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     };
     await assert.rejects(() => failSession.writer.writeBytes(0x20000000, [1]), /Memory write failed/);
 
+    await scenario("Do not retry failed dynamic narrow writes and recheck before acknowledged fallback", async () => {
+        const { MemoryWriter } = require("../src/memoryWrite");
+        let writes = 0,
+            reads = 0,
+            checks = 0;
+        const writer = new MemoryWriter({
+            mode: "sampling",
+            tcl: {
+                sendChecked: async () => {
+                    writes++;
+                    throw new Error("write timeout");
+                }
+            },
+            readBytes: async () => {
+                reads++;
+                return [0, 0, 0, 0];
+            }
+        });
+        await assert.rejects(
+            writer.writeBytes(0x20000000, [1], async () => {
+                checks++;
+            }),
+            /write timeout/
+        );
+        assert.deepStrictEqual({ writes, reads, checks }, { writes: 1, reads: 0, checks: 0 });
+        writer.tcl.sendChecked = async () => {
+            writes++;
+        };
+        await assert.rejects(
+            writer.writeBytes(0x20000000, [1], async () => {
+                checks++;
+                throw Object.assign(new Error("pointer changed"), { code: "WRITE_TARGET_CHANGED" });
+            }),
+            { code: "WRITE_TARGET_CHANGED" }
+        );
+        assert.deepStrictEqual({ writes, reads, checks }, { writes: 2, reads: 1, checks: 1 });
+    });
+
+    await scenario("Preserve static narrow-write fallback through the session transaction", async () => {
+        const session = new ManagedOpenOcdSession({}, {});
+        session.tcl.socket = { destroyed: false };
+        session._readItems = async () => ({ samples: [] });
+        session._readMemoryBytes = async () => [0, 2, 3, 4];
+        const commands = [];
+        session.tcl.sendChecked = async (command) => {
+            commands.push(command);
+            if (command.includes(" 8 ")) throw new Error("Narrow write unsupported");
+            return command.includes("curstate") ? "halted" : "";
+        };
+        await session.writeAndVerify([{ name: "staticByte", address: 0x20000000, bytes: [1] }]);
+        assert.deepStrictEqual(commands, [
+            "[target current] curstate",
+            "ocd_write_memory 0x20000000 8 {0x1}",
+            "ocd_write_memory 0x20000000 32 {0x4030201}"
+        ]);
+    });
+
     const alignedSession = new ManagedOpenOcdSession({}, {});
     const alignedSent = [];
     alignedSession._readMemoryBytes = async () => {

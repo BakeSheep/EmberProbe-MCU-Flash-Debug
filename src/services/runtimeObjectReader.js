@@ -86,6 +86,7 @@ class RuntimeObjectReader {
         this.readRaw = read;
         this.guard = guard;
         this.budget = budget;
+        this.now = options.clock?.now || Date.now;
         this.maxBytes = budget.maxBytes || RUNTIME_CYCLE_BYTES;
         this.maxReads = budget.maxReads || RUNTIME_CYCLE_READS;
         this.frozen = !!options.frozen;
@@ -153,7 +154,7 @@ class RuntimeObjectReader {
     async memory(address, size, fresh = false, descriptor = false) {
         if (this.frozen) descriptor = false;
         this.guard();
-        if (Date.now() > this.budget.deadline) throw deadlineFailure();
+        if (this.now() > this.budget.deadline) throw deadlineFailure();
         if (!this.inRange(address, size))
             throw failure("LIVE_ADDRESS_NOT_RAM", "Runtime object points outside verified ELF memory ranges");
         const cached =

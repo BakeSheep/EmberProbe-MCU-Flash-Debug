@@ -13,7 +13,7 @@ const FILE_LINE_CEILINGS = {
 // Webview modules are excluded: their UMD factory function is the whole file.
 const FUNCTION_LINE_CEILINGS = {
     "src/dwarf/parser.js": 769,
-    "src/dwarf/runtimeTypes.js": 368
+    "src/dwarf/runtimeTypes.js": 351
 };
 const sizeOptions = (max) => ({ max, skipBlankLines: true, skipComments: true });
 

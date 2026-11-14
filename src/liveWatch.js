@@ -15,9 +15,15 @@ const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = requir
 const { MultiRatePlan } = require("./services/multiRatePlan");
 const { targetCheckMonitor } = require("./chip/targetIdentity");
 const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog } = require("./openocdProcess");
-const { MemoryWriter, validateManagedWritePlan, peripheralTransaction } = require("./memoryWrite");
+const {
+    MemoryWriter,
+    validateManagedWritePlan,
+    peripheralTransaction,
+    variableWriteTransaction
+} = require("./memoryWrite");
 const { rttControl } = require("./rttControl");
 const { isNonHaltingWordWrite } = require("./writeAccess");
+const { validateWritePreconditions } = require("./writePreconditions");
 const {
     normalizeRamSectionRanges,
     parseMemoryElements,
@@ -1437,12 +1443,19 @@ class ManagedOpenOcdSession {
 
     // When every write is an aligned single word the run state is neither queried nor changed; other transactions halt,
     // read-modify-write, verify and resume.
-    async writeAndVerify(items, timeoutMs = 5000) {
+    async writeAndVerify(items, timeoutMs = 5000, preconditions = [], expectedTargetEpoch = undefined) {
         if (!Array.isArray(items) || !items.length) return { before: [], after: [], halted: false };
+        validateWritePreconditions(preconditions, items);
+        const requestEpoch = expectedTargetEpoch ?? this.targetEpoch;
+        if (requestEpoch !== this.targetEpoch)
+            throw Object.assign(new Error("Dynamic write plan belongs to an old target generation"), {
+                code: "WRITE_TARGET_CHANGED",
+                retryable: false,
+                details: { written: false, writtenItems: 0, resultUnknown: false }
+            });
         const nonHalting = items.every(isNonHaltingWordWrite);
         if (this.mode === "debug") validateManagedWritePlan(items);
         if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
-        const requestEpoch = this.targetEpoch;
         const deadline = this.clock.now() + timeoutMs;
         await this._acquireExclusive(deadline);
         try {
@@ -1457,29 +1470,13 @@ class ManagedOpenOcdSession {
                               deadline: Math.min(deadline, this.clock.now() + MAX_DEBUG_CYCLE_MS)
                           }
                         : null;
-                const readItems = items.map((item) => ({
-                    name: item.name,
-                    address: item.address,
-                    size: item.bytes.length
-                }));
-                let writtenItems = 0;
-                try {
-                    const before = (await this._readItems(readItems, this.clock.now(), guard)).samples;
-                    for (const item of items) {
-                        this._assertReadGuard(guard);
-                        await this.writer.writeBytes(item.address, item.bytes);
-                        writtenItems++;
-                    }
-                    this._assertReadGuard(guard);
-                    const after = (await this._readItems(readItems, this.clock.now(), guard)).samples;
-                    this._assertReadGuard(guard);
-                    return { before, after, halted: !nonHalting };
-                } catch (error) {
-                    // Callers must know whether a cancelled transaction already changed target memory.
-                    if (error?.code === "LIVE_READ_CANCELLED")
-                        error.details = { ...error.details, writtenItems, totalItems: items.length };
-                    throw error;
-                }
+                return variableWriteTransaction(this, items, {
+                    preconditions,
+                    requestEpoch,
+                    deadline,
+                    guard,
+                    nonHalting
+                });
             });
         } finally {
             this._releaseExclusive();

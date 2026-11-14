@@ -199,8 +199,8 @@ function createSamplingServices(host, context, vscode) {
             if (key !== CACHE_KEYS.sidebarWriteList) return normalized;
             const previous = new Map(items.map((item) => [item.name, item]));
             return normalized.map((item) => {
-                const { min, max, value } = previous.get(renamed.get(item.name) || item.name) || {};
-                return { ...item, min, max, value };
+                const { min, max, value, fromWatch } = previous.get(renamed.get(item.name) || item.name) || {};
+                return { ...item, min, max, value, ...(fromWatch ? { fromWatch: true } : {}) };
             });
         },
         symbols: () => host.readElfSymbols().symbols,

@@ -509,8 +509,8 @@ async function testDataBreakpointsWithRenderer() {
         pump(env, sidebar, view, at);
         await openMenu("g_motor_rpm");
         assert.ok(
-            doc.querySelector(".data-breakpoint-head-meta").textContent.includes(STRINGS.zh["sb.dataNoSession"]),
-            "outside a debug session the menu says why it is empty"
+            doc.querySelector('[role="menu"]').textContent.includes(STRINGS.zh["sb.dataNoSession"]),
+            "outside a debug session the menu explains data breakpoint availability"
         );
         doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape" }));
 

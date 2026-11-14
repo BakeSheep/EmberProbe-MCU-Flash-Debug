@@ -217,7 +217,7 @@ function decodeSample(plan, samples, compositePlan) {
 
 // Plans a write of exactly named scalar variables or members: encodes each value and refuses targets that are const,
 // pointers, overlapping or outside writable RAM. Shared by Agent and sidebar writes.
-function writePlan(values, readElf) {
+function writePlan(values, readElf, runtimeTargets = new Map()) {
     const requests = (Array.isArray(values) ? values : []).map((item) => ({
         name: String(item?.name || "").trim(),
         value: item?.value
@@ -254,7 +254,9 @@ function writePlan(values, readElf) {
         // instead of writing the first match.
         const symbol = resolveSymbol(baseName, req.name);
         let target;
-        if (symbol && symbol.isComposite) {
+        if (runtimeTargets.has(req.name)) {
+            target = runtimeTargets.get(req.name);
+        } else if (symbol && symbol.isComposite) {
             // A pointer/STL anywhere in the type graph adds a runtime layout; plain
             // fixed-offset user members of such objects stay writable.
             if (
@@ -370,7 +372,12 @@ function writePlan(values, readElf) {
                 details: { names: [overlap.name, target.name] }
             });
         ranges.push({ start: target.address, end, name: target.name });
-        if (!inWritable(target.address, Math.max(target.size, bytes.length))) {
+        const inRuntimeRam =
+            target.runtimeWrite &&
+            require("./runtimeWritePlan")
+                .runtimeWritableRanges(elfResult.memory)
+                .some((range) => target.address >= range.start && end <= range.end);
+        if (!inWritable(target.address, Math.max(target.size, bytes.length)) && !inRuntimeRam) {
             throw Object.assign(
                 new Error(`Target address is outside writable RAM sections (.data/.bss): ${req.name}`),
                 {
@@ -385,6 +392,7 @@ function writePlan(values, readElf) {
             address: target.address,
             type: target.type,
             size: target.size,
+            ...(target.runtimeWrite ? { runtimeWrite: true } : {}),
             bytes,
             value: elfSymbols.decodeValue(bytes, target.type),
             valueText: elfSymbols.decodeValueText(bytes, target.type)

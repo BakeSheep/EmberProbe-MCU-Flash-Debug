@@ -19,6 +19,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 调试 / Debug
 
+- 后端变量写入支持有类型的指针成员、链表节点和受支持容器的可变标量元素；按需解析当前地址，将描述快照绑定授权，并在 Tcl/暂停 DAP 写入事务中复核，检测变化并报告已写入状态。查看列表中的可写标量可通过右键菜单加入写入列表；采样失效后禁用写入。
+- Support typed pointer members, linked nodes and mutable scalar elements of supported containers in backend variable writes. Resolve current addresses on demand, bind descriptor snapshots to authorization and recheck them inside Tcl/paused DAP transactions, reporting changes and write progress. Add writable scalars from the watch-list context menu and disable writes when samples become stale.
+
 - 未绑定 SVD 的工作区在调试会话就绪后才扫描 CMSIS 包目录。复用已校验文件的元数据，减少后续自动发现的重复解析。
 - Defer CMSIS pack discovery for workspaces without a bound SVD until the debug session is configured. Reuse metadata from validated files across discovery runs.
 

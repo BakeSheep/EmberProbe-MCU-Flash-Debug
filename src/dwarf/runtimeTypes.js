@@ -13,6 +13,29 @@ const WRAPPERS = new Set([c.DW_TAG_typedef, c.DW_TAG_const_type, c.DW_TAG_volati
 const STL =
     /^(?:std::(?:__cxx11::)?)(basic_string|vector|array|pair|tuple|map|multimap|set|multiset|unordered_map|unordered_multimap|unordered_set|unordered_multiset|list|forward_list|deque|unique_ptr|shared_ptr|weak_ptr|optional|variant)</;
 
+function runtimeScalarType(node, die, ref, parsed, scalarCache, chargeBytes, pointerTarget) {
+    node.kind = "scalar";
+    if (die.tag === c.DW_TAG_ptr_to_member_type) {
+        node.byteSize ||= pointerTarget(die.typeRef) === "function" ? 8 : 4;
+        node.isMemberPointer = true;
+    }
+    node.isBoolean = die.encoding === c.DW_ATE_boolean;
+    node.watchType = encodingToWatchType(
+        die.tag === c.DW_TAG_ptr_to_member_type ? c.DW_ATE_unsigned : die.encoding,
+        node.byteSize
+    );
+    if (die.tag === c.DW_TAG_enumeration_type) {
+        const info = resolveTypeInfo(ref, parsed.dies, parsed.childrenMap, scalarCache);
+        node.byteSize = info.byteSize;
+        node.watchType = info.watchType;
+        node.enumEncodingInferred = !!info.enumEncodingInferred;
+        if (info.enumInfo) {
+            if (!chargeBytes(Buffer.byteLength(JSON.stringify(info.enumInfo)))) return;
+            node.enumInfo = info.enumInfo;
+        }
+    }
+}
+
 function createRuntimeLayoutResolver(parsed, symbols = []) {
     const scalarCache = new Map();
     const { byName, ambiguousNames } = createVariableTypeIndex(parsed);
@@ -159,25 +182,7 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                 } else if (
                     [c.DW_TAG_base_type, c.DW_TAG_enumeration_type, c.DW_TAG_ptr_to_member_type].includes(die.tag)
                 ) {
-                    node.kind = "scalar";
-                    if (die.tag === c.DW_TAG_ptr_to_member_type) {
-                        // ARM GCC omits DW_AT_byte_size: a member function pointer is two words.
-                        node.byteSize ||= pointerTarget(die.typeRef) === "function" ? 8 : 4;
-                        node.isMemberPointer = true;
-                    }
-                    node.watchType = encodingToWatchType(
-                        die.tag === c.DW_TAG_ptr_to_member_type ? c.DW_ATE_unsigned : die.encoding,
-                        node.byteSize
-                    );
-                    if (die.tag === c.DW_TAG_enumeration_type) {
-                        const info = resolveTypeInfo(ref, parsed.dies, parsed.childrenMap, scalarCache);
-                        node.byteSize = info.byteSize;
-                        node.watchType = info.watchType;
-                        if (info.enumInfo) {
-                            if (!chargeBytes(Buffer.byteLength(JSON.stringify(info.enumInfo)))) return id;
-                            node.enumInfo = info.enumInfo;
-                        }
-                    }
+                    runtimeScalarType(node, die, ref, parsed, scalarCache, chargeBytes, pointerTarget);
                 } else if (die.tag === c.DW_TAG_array_type) {
                     node.kind = "array";
                     node.target = visit(die.typeRef, depth + 1, true, budget);

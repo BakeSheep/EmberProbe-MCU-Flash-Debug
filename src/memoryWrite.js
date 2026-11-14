@@ -2,6 +2,7 @@
 // Target memory writes over the Tcl connection: the managed-debug write budget, natural-width writes of only the
 // variable's own bytes with read-back, the aligned 32-bit read-modify-write fallback, the write_memory command fallback,
 // and halting a running target around a transaction. The session keeps the exclusive arbiter and the read guards.
+const { verifyWritePreconditions } = require("./writePreconditions");
 const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
 const {
     MAX_DEBUG_READ_COMMANDS,
@@ -60,8 +61,8 @@ class MemoryWriter {
     // Aligned single words are written directly. Other variables first write only their own bytes at their natural
     // width, so neighbouring bytes just updated by DMA or peripherals during the halt are not overwritten with stale
     // values; if read-back shows the narrow write was dropped (byte lanes on some Cortex-M7/AHB-AP), fall back to an
-    // aligned 32-bit read-modify-write.
-    async writeBytes(addr, bytes) {
+    // aligned 32-bit read-modify-write for static targets. Guarded dynamic writes never widen their range.
+    async writeBytes(addr, bytes, verifyTarget = null) {
         if (this.mode === "debug") validateManagedWritePlan([{ address: addr, bytes }]);
         const address = addr >>> 0;
         const input = Array.from(bytes || [], (value) => value & 0xff);
@@ -77,6 +78,8 @@ class MemoryWriter {
             for (const chunk of naturalWriteChunks(address, input))
                 await this._writeElements(chunk.address, chunk.width, chunk.bytes);
         } catch (error) {
+            // A guarded dynamic write must not resend a failed/unknown narrow write.
+            if (verifyTarget) throw error;
             narrowError = error;
         }
         const words = await this.readBytes(alignedStart, alignedEnd - alignedStart);
@@ -86,6 +89,12 @@ class MemoryWriter {
         }
         const offset = address - alignedStart;
         if (!narrowError && input.every((value, index) => words[offset + index] === value)) return true;
+        if (verifyTarget) {
+            await verifyTarget();
+            throw Object.assign(new Error("Dynamic narrow write did not read back; wider writes are unsafe"), {
+                code: "WRITE_VERIFY_FAILED"
+            });
+        }
         const writeBytes = words.slice();
         writeBytes.splice(offset, input.length, ...input);
         await this._writeElements(alignedStart, 4, writeBytes);
@@ -144,6 +153,75 @@ class MemoryWriter {
         }
         if (primaryError) throw primaryError;
         return result;
+    }
+}
+
+// The session reserves the Tcl connection and handles target halting around this transaction.
+async function variableWriteTransaction(session, items, { preconditions, requestEpoch, deadline, guard, nonHalting }) {
+    const readItems = items.map((item) => ({
+        name: item.name,
+        address: item.address,
+        size: item.bytes.length
+    }));
+    let writtenItems = 0;
+    let resultUnknown = false;
+    try {
+        const current = () => {
+            session._assertReadGuard(guard);
+            if (requestEpoch !== session.targetEpoch)
+                throw Object.assign(new Error("Dynamic write plan belongs to an old target generation"), {
+                    code: "WRITE_TARGET_CHANGED"
+                });
+            if (preconditions.length && session.clock.now() > deadline)
+                throw Object.assign(new Error("Dynamic write transaction exceeded its time budget"), {
+                    code: "LIVE_WRITE_BUDGET_EXCEEDED"
+                });
+        };
+        const verify = async () => {
+            current();
+            await verifyWritePreconditions(
+                preconditions,
+                async (address, size) => {
+                    current();
+                    const bytes = await session._readMemoryBytes(address, size);
+                    current();
+                    return bytes;
+                },
+                writtenItems
+            );
+            current();
+        };
+        await verify();
+        const before = (await session._readItems(readItems, session.clock.now(), guard)).samples;
+        for (const item of items) {
+            await verify();
+            current();
+            resultUnknown = true;
+            await session.writer.writeBytes(item.address, item.bytes, preconditions.length ? verify : null);
+            resultUnknown = false;
+            writtenItems++;
+        }
+        current();
+        const after = (await session._readItems(readItems, session.clock.now(), guard)).samples;
+        await verify();
+        current();
+        return { before, after, halted: !nonHalting };
+    } catch (error) {
+        if (preconditions.length) {
+            error.retryable = false;
+            error.details = {
+                ...error.details,
+                written: writtenItems > 0 ? true : resultUnknown ? null : false,
+                writtenItems,
+                totalItems: items.length,
+                resultUnknown,
+                verified: false
+            };
+        }
+        // Callers must know whether a cancelled transaction already changed target memory.
+        if (error?.code === "LIVE_READ_CANCELLED")
+            error.details = { ...error.details, writtenItems, totalItems: items.length };
+        throw error;
     }
 }
 
@@ -294,4 +372,4 @@ async function peripheralTransaction(session, request, timeoutMs = 5000) {
     }
 }
 
-module.exports = { MemoryWriter, validateManagedWritePlan, peripheralTransaction };
+module.exports = { MemoryWriter, validateManagedWritePlan, peripheralTransaction, variableWriteTransaction };

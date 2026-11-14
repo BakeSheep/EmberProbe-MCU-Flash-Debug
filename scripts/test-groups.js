@@ -129,6 +129,7 @@ const TEST_GROUPS = Object.freeze({
         "runtime-pointer-fallback.test.js",
         "runtime-sample-stability.test.js",
         "runtime-scatter-prefetch.test.js",
+        "runtime-write-plan.test.js",
         "sampling-clock.test.js",
         "sampling-frequency.test.js",
         "sampling-rate-motion.test.js",
@@ -260,6 +261,7 @@ const TEST_GROUPS = Object.freeze({
         "pointer-display.test.js",
         "pointer-targets.test.js",
         "write-list-view.test.js",
+        "watch-writes.test.js",
         "write-risk-view.test.js",
         "write-card-display.test.js"
     ]),

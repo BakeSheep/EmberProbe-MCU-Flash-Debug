@@ -10,6 +10,63 @@ const { bindVariableSymbols, buildDisplayNames } = require("../src/dwarf/types")
 const { createRuntimeLayoutResolver } = require("../src/dwarf/runtimeTypes");
 const { parseElfSymbols, parseElfSections } = require("../src/elfSymbols");
 const { exerciseRuntimeLayouts } = require("./helpers/runtime-layouts");
+const {
+    runtimeWriteRequests,
+    resolveRuntimeWriteTargets,
+    validateRuntimeWritePlan
+} = require("../src/services/runtimeWritePlan");
+const { writePlan } = require("../src/services/agentPlans");
+const { verifyWritePreconditions } = require("../src/writePreconditions");
+
+async function inspectWriteTarget({ name, symbol, graph, read, sections }) {
+    const paths = {
+        values: "[1]",
+        fixed: "[1]",
+        unique: ".value",
+        shared: ".value",
+        weak: ".value",
+        optional: ".value",
+        variant: ".value",
+        pair: ".second",
+        tuple: "[1]",
+        deque: "[1]",
+        linked: "[0]",
+        forward: "[0]",
+        ordered: "[0].second",
+        multiMap: "[0].second",
+        hashed: "[0].second",
+        multiHash: "[0].second",
+        reference: ".value",
+        polymorphic: ".value.value"
+    };
+    const rejected = { bits: "[0]", set: "[0]", multiSet: "[0]", hashSet: "[0]", hashMultiSet: "[0]", text: "[0]" };
+    const suffix = paths[name] || rejected[name];
+    if (!suffix) return;
+    const typedSymbol = {
+        ...symbol,
+        runtimeLayout: graph,
+        isComposite: true,
+        compositeLayout: { kind: "class", members: [], runtimeLayout: graph }
+    };
+    const result = { symbols: [typedSymbol], memory: { sections } };
+    const values = [{ name: symbol.name + suffix, value: 123 }];
+    const resolveTarget = async () => {
+        const requests = runtimeWriteRequests(values, result);
+        const { targets, checks } = await resolveRuntimeWriteTargets(requests, result, read);
+        return validateRuntimeWritePlan({ ...writePlan(values, () => result, targets), runtimeChecks: checks });
+    };
+    if (rejected[name]) await assert.rejects(resolveTarget(), { code: "WRITE_NOT_ALLOWED" }, name);
+    else {
+        const plan = await resolveTarget();
+        assert.strictEqual(plan.items[0].value, 123, name);
+        assert(plan.items[0].runtimeWrite, name);
+        await verifyWritePreconditions(plan.runtimeChecks, read);
+    }
+    if (["ordered", "multiMap", "hashed", "multiHash"].includes(name)) {
+        values[0].name = symbol.name + "[0].first";
+        await assert.rejects(resolveTarget(), { code: "WRITE_NOT_ALLOWED" }, "map keys must stay read-only");
+    }
+}
 
 (async () => {
     for (const compressed of Object.values(fixtures)) {
@@ -22,7 +79,8 @@ const { exerciseRuntimeLayouts } = require("./helpers/runtime-layouts");
         await exerciseRuntimeLayouts(
             symbols,
             createRuntimeLayoutResolver(parsed, symbols),
-            parseElfSections(buffer).sections
+            parseElfSections(buffer).sections,
+            inspectWriteTarget
         );
     }
 

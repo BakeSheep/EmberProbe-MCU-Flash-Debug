@@ -181,7 +181,10 @@ async function writeVariable({ host, post }, message) {
     const name = String(message.name || "").trim();
     const seq = message.seq;
     try {
-        const result = await host._writes.queueUiWrite(name, message.value, { requestedAt: Date.now() });
+        const result = await host._writes.queueUiWrite(name, message.value, {
+            requestedAt: Date.now(),
+            ...(message.fromWatch === true ? { fromWatch: true } : {})
+        });
         if (!result) return;
         const r = result.results && result.results[0];
         post({

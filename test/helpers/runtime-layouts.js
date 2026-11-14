@@ -3,7 +3,7 @@
 const assert = require("assert");
 const { RuntimeObjectReader } = require("../../src/services/runtimeObjectReader");
 
-async function exerciseRuntimeLayouts(symbols, resolve, sections) {
+async function exerciseRuntimeLayouts(symbols, resolve, sections, inspectWriteTarget = null) {
     const base = 0x20000000;
     const memory = Buffer.alloc(65536);
     const flash = Buffer.alloc(65536);
@@ -201,6 +201,7 @@ async function exerciseRuntimeLayouts(symbols, resolve, sections) {
             tree.kind === "scalar" ? [tree.value] : (tree.members || tree.elements || []).flatMap(flatten);
         try {
             assert.deepStrictEqual(flatten(await new RuntimeObjectReader(item, read).sample()), expected, name);
+            await inspectWriteTarget?.({ name, symbol, graph, read, write, sections, expected });
         } catch (error) {
             error.message = name + ": " + error.message;
             throw error;

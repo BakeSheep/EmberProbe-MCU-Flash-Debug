@@ -50,6 +50,7 @@ function writePlanIdentity(plan) {
     return {
         elf: { path: String(elf.path || ""), sha256: String(elf.sha256 || "") },
         connection: writeConnectionIdentity(plan?.connection),
+        ...(plan?.runtimeChecks ? { runtimeChecks: plan.runtimeChecks, runtimeContext: plan.runtimeContext } : {}),
         items: (plan?.items || []).map((item) => ({
             name: item.name,
             address: Number(item.address) >>> 0,

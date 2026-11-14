@@ -118,7 +118,7 @@ const valueTree = EmberProbeValueTree.create({
     }
 });
 const dataBreakpoints = EmberProbeSidebarDataBreakpoints.create(
-    { state, box: liveBox, api, t, setNotice },
+    { state, box: liveBox, api, t, setNotice, writeMenu: (name) => writes.menu(name) },
     sbDisplayName
 );
 const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
@@ -130,6 +130,7 @@ const writes = EmberProbeWriteList.create({
     displayName: (item) => sbDisplayName(item),
     post: api && ((message) => api.postMessage(message)),
     changed: () => updateAvailableSelections(),
+    refreshMenu: () => dataBreakpoints.refreshWrite(),
     notice: {
         set: (notice) => setNotice("write", "write", notice),
         clear: () => clearNotice("write", "write"),
@@ -653,14 +654,7 @@ function saveSideWatch() {
     valueTree.syncRuntimeExpansions();
 }
 function sbDisplayName(item) {
-    return EmberProbeRuntime.variableDisplayName(item, {
-        get: (name) => {
-            const symbol = state.symbols.get(name);
-            if (symbol?.displayName && symbol.displayName !== symbol.name) return symbol;
-            const { watch, writeList } = state;
-            return watch.find((row) => row.name === name) || writeList.find((row) => row.name === name) || symbol;
-        }
-    });
+    return writes.displayName(item);
 }
 function sbRemove(name, isComp) {
     if (isComp) {
@@ -697,6 +691,7 @@ function sbToggle(entry) {
     saveSbUi();
 }
 function renderValues() {
+    writes.sync();
     valueTree.reset();
     liveBox.textContent = "";
     // Expanded pointees render inside their pointer rows while composites and rows are built.
@@ -1152,6 +1147,7 @@ function sbRenderComposite(item) {
     valueTree.updateComposite(item.name);
 }
 function sbOnComposite(samples) {
+    writes.sampled(samples);
     let refreshAvailable = false;
     const searching = !!document.getElementById("varSearch").value.trim();
     (samples || []).forEach((s) => {
@@ -1173,6 +1169,7 @@ function sbOnComposite(samples) {
     valueRefresh.schedule();
 }
 function updateValues(samples) {
+    writes.sampled(samples);
     (samples || []).forEach((s) => {
         state.latest[s.name] = s.value;
         state.latestText[s.name] =
@@ -1194,7 +1191,8 @@ function refreshDisplayedValues() {
     state.watch.forEach((it) => {
         if (isComposite(it)) valueTree.updateComposite(it.name);
     });
-    if (liveCanRead) writes.sync();
+    writes.sync();
+    dataBreakpoints.refreshWrite();
 }
 // While sampling, write cards follow the current value; cards the user is editing (focused, write in flight or
 // debouncing) are not overwritten
@@ -1528,6 +1526,7 @@ window.EmberProbeMessages.connect(window, {
             if (!incoming.some((next) => next.name === item.name)) valueTree.pointers.forget(item.name);
         state.watch = incoming;
         if (m.resetValues) {
+            writes.invalidate();
             valueTree.pointers.clear();
             state.watch.forEach((item) => sbForgetValues(item.name));
         }

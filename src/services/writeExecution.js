@@ -8,6 +8,8 @@ const { FirmwareRecord } = require("./firmwareRecord");
 const agentPlans = require("./agentPlans");
 const { assertWriteIdentity } = require("../../skills/_emberprobe/probe-connection");
 const { CACHE_KEYS } = require("../cacheKeys");
+const { SYSTEM_CLOCK } = require("../samplingClock");
+const { runtimeWriteRequests, resolveRuntimeWriteTargets, validateRuntimeWritePlan } = require("./runtimeWritePlan");
 
 const TARGET_CHANGED_WRITE_MESSAGES = {
     notWritten:
@@ -42,15 +44,17 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
 // checks, the plan-bound confirmation grants, and the shared write execution with read-back. host is the
 // MainViewProvider.
 class WriteExecution {
-    /** @param {any} host @param {{ vscode: any }} modules Taken from the provider module. */
-    constructor(host, { vscode }) {
+    /** @param {any} host @param {{ vscode: any, clock?: typeof SYSTEM_CLOCK }} modules Taken from the provider module. */
+    constructor(host, { vscode, clock = SYSTEM_CLOCK }) {
         this.host = host;
         this._vscode = vscode;
+        this.clock = clock;
         // Sidebar writes run one at a time; _uiLatest maps a variable to its newest queued ticket.
         /** @type {Promise<unknown>} */
         this._uiPromise = Promise.resolve();
         this._uiTicket = 0;
         this._uiLatest = new Map();
+        this._uiFailures = new Map();
     }
     // Queues a sidebar write behind the one in flight. A queued value that a newer request for the same variable
     // supersedes is skipped and resolves to null, so releasing a dragged slider does not replay the backlog.
@@ -62,9 +66,18 @@ class WriteExecution {
             .then(async () => {
                 if (this._uiLatest.get(name) !== ticket) return null;
                 try {
+                    const failure = this._uiFailures.get(name);
+                    if (failure && ticket <= failure.throughTicket) throw failure.error;
                     return await this.writeUiVariable(name, value, options);
+                } catch (error) {
+                    // Preserve the error for the newest already-queued value so its UI request can finish.
+                    this._uiFailures.set(name, { throughTicket: this._uiTicket, error });
+                    throw error;
                 } finally {
-                    if (this._uiLatest.get(name) === ticket) this._uiLatest.delete(name);
+                    if (this._uiLatest.get(name) === ticket) {
+                        this._uiLatest.delete(name);
+                        this._uiFailures.delete(name);
+                    }
                 }
             });
         this._uiPromise = run;
@@ -164,6 +177,102 @@ class WriteExecution {
             });
         }
     }
+    runtimeContext(session = null) {
+        const bridge = this.host._debugBridge;
+        const targetEpoch = Number.isSafeInteger(session?.targetEpoch) ? session.targetEpoch : undefined;
+        return bridge.activeSession || targetEpoch !== undefined
+            ? {
+                  sessionId: bridge.activeSession?.id || null,
+                  stopEpoch: bridge.activeSession ? bridge.stopEpoch : null,
+                  ...(targetEpoch !== undefined ? { targetEpoch } : {})
+              }
+            : null;
+    }
+    async preparePlan(values, selectedSession = null, onResolved = null) {
+        await this.host._elfView.prepareLayouts(values);
+        const elfResult = this.host.readElfSymbols();
+        const requests = runtimeWriteRequests(values, elfResult);
+        if (!requests.length) {
+            const plan = agentPlans.writePlan(values, () => this.host.readElfSymbols());
+            return onResolved ? onResolved(plan, null) : plan;
+        }
+        const dynamicNames = new Set(requests.map((req) => req.requestedName));
+        const staticValues = (Array.isArray(values) ? values : []).filter(
+            (item) => !dynamicNames.has(String(item?.name || "").trim())
+        );
+        if (staticValues.length) agentPlans.writePlan(staticValues, () => elfResult);
+        this.assertGroupedReadElf();
+        try {
+            const offline = await resolveRuntimeWriteTargets(
+                requests,
+                elfResult,
+                async () => {
+                    throw Object.assign(new Error("Runtime memory read required"), { code: "NEEDS_RUNTIME_READ" });
+                },
+                () => {},
+                this.clock
+            );
+            if (!offline.checks.length) {
+                const plan = agentPlans.writePlan(values, () => this.host.readElfSymbols(), offline.targets);
+                return onResolved ? onResolved(plan, null) : plan;
+            }
+        } catch (error) {
+            if (error?.code !== "NEEDS_RUNTIME_READ") throw error;
+        }
+        const resolve = async (session, source = null) => {
+            const connection = this.sessionConnection(session);
+            const runtimeContext = this.runtimeContext(session);
+            const guard = () => {
+                this.assertGroupedReadElf();
+                if (this.host.readElfSymbols().elf.sha256 !== elfResult.elf.sha256)
+                    throw Object.assign(new Error("ELF changed during dynamic write planning"), {
+                        code: "ELF_CHANGED"
+                    });
+                if (
+                    JSON.stringify(this.sessionConnection(session)) !== JSON.stringify(connection) ||
+                    JSON.stringify(this.runtimeContext(session)) !== JSON.stringify(runtimeContext)
+                )
+                    throw Object.assign(new Error("Session changed during dynamic write planning"), {
+                        code: "WRITE_TARGET_CHANGED"
+                    });
+            };
+            const read = async (address, size) => {
+                guard();
+                const items = [{ name: "dynamic-write-descriptor", address, size }];
+                const samples =
+                    session === this.host._debugBridge
+                        ? await session.readPausedItems(items)
+                        : await session.readOnce(items);
+                guard();
+                return samples[0]?.bytes;
+            };
+            const { targets, checks } = await resolveRuntimeWriteTargets(requests, elfResult, read, guard, this.clock);
+            const plan = validateRuntimeWritePlan(
+                Object.assign(
+                    agentPlans.writePlan(values, () => this.host.readElfSymbols(), targets),
+                    {
+                        connection,
+                        runtimeChecks: checks,
+                        runtimeContext
+                    }
+                )
+            );
+            return onResolved ? onResolved(plan, { session, source }) : plan;
+        };
+        if (selectedSession) return resolve(selectedSession);
+        if (this.host._debugBridge.agentStatus().state === "paused")
+            return resolve(this.host._debugBridge, "debug-dap");
+        if (this.host.debugLaunch.managedServer && this.host._debugBridge.agentStatus().state === "running") {
+            if (this.host.debugLaunch.managedServer.capabilities?.runtimeRead === false)
+                throw Object.assign(new Error("Pause the selected core before reading multicore memory"), {
+                    code: "DEBUG_RUNTIME_READ_UNSUPPORTED"
+                });
+            return resolve(this.host.debugLaunch.managedServer, "debug-running-openocd");
+        }
+        if (this.host._sampling.running && this.host._sampling.session)
+            return resolve(this.host._sampling.session, "active-sampling");
+        return this.host._agentOps.withProbe(({ session, source }) => resolve(session, source));
+    }
     // Parses a write request: only scalar symbols and single scalar leaf paths of composites are allowed, and the
     // target address must lie in a writable ELF section (SHF_ALLOC|SHF_WRITE, i.e. .data/.bss), so flash and peripheral
     // registers are never written by mistake.
@@ -177,6 +286,17 @@ class WriteExecution {
                 details: { expected: plan.connection, actual: connection }
             });
         const { elfResult, items } = plan;
+        if (plan.runtimeChecks) {
+            validateRuntimeWritePlan(plan);
+            if (
+                this.host.readElfSymbols().elf.sha256 !== elfResult.elf.sha256 ||
+                JSON.stringify(this.runtimeContext(session)) !== JSON.stringify(plan.runtimeContext)
+            )
+                throw Object.assign(new Error("Dynamic write plan belongs to an old ELF or target state"), {
+                    code: "WRITE_TARGET_CHANGED",
+                    details: { written: false, writtenItems: 0 }
+                });
+        }
         const runtimeWrite = session === this.host.debugLaunch.managedServer;
         const debugSession = runtimeWrite ? this.host._debugBridge.activeSession : null;
         const stopEpoch = runtimeWrite ? this.host._debugBridge.stopEpoch : null;
@@ -189,29 +309,48 @@ class WriteExecution {
                 });
             this.assertGroupedReadElf();
             this.host._sampling.runtimeRamPlan(
-                items.map((item) => ({ ...item, size: item.bytes.length })),
+                items.filter((item) => !item.runtimeWrite).map((item) => ({ ...item, size: item.bytes.length })),
                 true
             );
         }
         let transaction;
         try {
             transaction = await session.writeAndVerify(
-                items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes }))
+                items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes })),
+                5000,
+                plan.runtimeChecks || [],
+                session === this.host._debugBridge ? plan.runtimeContext?.stopEpoch : plan.runtimeContext?.targetEpoch
             );
         } catch (error) {
             if (error?.code !== "LIVE_READ_CANCELLED") throw error;
+            if (plan.runtimeChecks && error.details?.resultUnknown) {
+                error.code = "DEBUG_STATE_CHANGED";
+                error.retryable = false;
+                throw error;
+            }
             const writtenItems = Number(error.details?.writtenItems) || 0;
             throw targetChangedWriteError(writtenItems ? "unverified" : "notWritten", {
                 writtenItems,
                 totalItems: items.length
             });
         }
+        let dynamicChanged = false;
+        if (plan.runtimeChecks) {
+            try {
+                dynamicChanged =
+                    this.host.readElfSymbols().elf.sha256 !== elfResult.elf.sha256 ||
+                    JSON.stringify(this.runtimeContext(session)) !== JSON.stringify(plan.runtimeContext);
+            } catch {
+                dynamicChanged = true;
+            }
+        }
         const targetChanged =
-            runtimeWrite &&
-            (session !== this.host.debugLaunch.managedServer ||
-                debugSession !== this.host._debugBridge.activeSession ||
-                stopEpoch !== this.host._debugBridge.stopEpoch ||
-                this.host._debugBridge.agentStatus().state !== "running");
+            dynamicChanged ||
+            (runtimeWrite &&
+                (session !== this.host.debugLaunch.managedServer ||
+                    debugSession !== this.host._debugBridge.activeSession ||
+                    stopEpoch !== this.host._debugBridge.stopEpoch ||
+                    this.host._debugBridge.agentStatus().state !== "running"));
         const halted = transaction.halted === true;
         const before = new Map(transaction.before.map((s) => [s.name, s]));
         const after = new Map(transaction.after.map((s) => [s.name, s]));
@@ -282,39 +421,44 @@ class WriteExecution {
         // "false" or 0 must never be read as a request to remember write permission.
         if (params.remember !== undefined && typeof params.remember !== "boolean")
             throw Object.assign(new Error("remember must be a boolean"), { code: "INVALID_PARAMS" });
-        await this.host._elfView.prepareLayouts(params.values);
-        const plan = agentPlans.writePlan(params.values, () => this.host.readElfSymbols());
-        plan.connection = await this.prepareConnection();
-        const consistency = this.firmwareConsistency(plan.elfResult);
-        // A remembered write permission never applies while the ELF differs from the last
-        // EmberProbe-programmed image: the addresses may target different data on the device.
-        const authorization = this.host._writeAuthorization.authorize(plan, {
-            confirmationId: params.confirmationId,
-            remember: params.remember,
-            allowTrusted: consistency.firmwareConsistency.status !== "mismatch"
-        });
-        if (!authorization.authorized) return { ...authorization.response, ...consistency };
-        // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
-        // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
-        // the write path loses the DAP connection identity between confirmation and execution.
-        // Sampling may be off, so no snapshot exists yet and canWrite is false: prime one from
-        // the write plan itself instead of falling back to a second standalone OpenOCD identity.
-        if (this.host._debugBridge.agentStatus().state === "paused") {
-            if (!this.host._debugBridge.canWritePaused) await this.host._debugBridge.prepareWriteSnapshot(plan.items);
-            const result = await this.execute(this.host._debugBridge, "debug-dap", plan);
-            return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
-        }
-        if (this.host.debugLaunch.managedServer && this.host._debugBridge.agentStatus().state === "running") {
-            const result = await this.execute(this.host.debugLaunch.managedServer, "debug-running-openocd", plan);
-            return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
-        }
-        const result = await this.host._agentOps.withProbe(
-            ({ session, source }) => this.execute(session, source, plan),
-            {
-                allowPausedDebugRead: true
+        return this.preparePlan(params.values, null, async (plan, active) => {
+            plan.connection ||= await this.prepareConnection();
+            const consistency = this.firmwareConsistency(plan.elfResult);
+            // A remembered write permission never applies while the ELF differs from the last
+            // EmberProbe-programmed image: the addresses may target different data on the device.
+            const authorization = this.host._writeAuthorization.authorize(plan, {
+                confirmationId: params.confirmationId,
+                remember: params.remember,
+                allowTrusted: consistency.firmwareConsistency.status !== "mismatch"
+            });
+            if (!authorization.authorized) return { ...authorization.response, ...consistency };
+            // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
+            // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
+            // the write path loses the DAP connection identity between confirmation and execution.
+            // Sampling may be off, so no snapshot exists yet and canWrite is false: prime one from
+            // the write plan itself instead of falling back to a second standalone OpenOCD identity.
+            if (this.host._debugBridge.agentStatus().state === "paused") {
+                if (!this.host._debugBridge.canWritePaused)
+                    await this.host._debugBridge.prepareWriteSnapshot(plan.items);
+                const result = await this.execute(this.host._debugBridge, "debug-dap", plan);
+                return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
             }
-        );
-        return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
+            if (this.host.debugLaunch.managedServer && this.host._debugBridge.agentStatus().state === "running") {
+                const result = await this.execute(this.host.debugLaunch.managedServer, "debug-running-openocd", plan);
+                return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
+            }
+            if (active?.session) {
+                const result = await this.execute(active.session, active.source, plan);
+                return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
+            }
+            const result = await this.host._agentOps.withProbe(
+                ({ session, source }) => this.execute(session, source, plan),
+                {
+                    allowPausedDebugRead: true
+                }
+            );
+            return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
+        });
     }
     firmwareConsistency(elfResult) {
         const record = this.host._firmwareRecord || new FirmwareRecord(null);
@@ -371,11 +515,24 @@ class WriteExecution {
         this.host._uiFirmwareMismatchDeclined = { sha256: elf.sha256, at: Date.now() };
         throw declined();
     }
+    assertUiWatch(name, options) {
+        if (!options.fromWatch) return;
+        const watched = this.host._watchLists.read(CACHE_KEYS.sidebarWatchList);
+        if (
+            !watched.some(
+                (item) =>
+                    item.name === name ||
+                    (name.startsWith(item.name) && /^(?:[.[]|->)/.test(name.slice(item.name.length)))
+            )
+        )
+            throw Object.assign(new Error(this.host._t("sb.writeWatchRequired")), { i18nKey: "sb.writeWatchRequired" });
+    }
     async writeUiVariable(name, value, options = {}) {
         if (this.host._sampling.closing || this.host._sampling.exitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
+        this.assertUiWatch(name, options);
         await this._confirmUiFirmware(options.requestedAt ?? Date.now());
         const status = this.host._sampling.status();
         const dapSession = status.canWrite && this.host._debugBridge.canWrite ? this.host._debugBridge : null;
@@ -389,8 +546,13 @@ class WriteExecution {
             const key = writeUnavailableKey(status) || "sb.writeUnavailable";
             throw Object.assign(new Error(this.host._t(key)), { i18nKey: key });
         }
-        await this.host._elfView.prepareLayouts([{ name }]);
-        const plan = agentPlans.writePlan([{ name, value }], () => this.host.readElfSymbols());
+        const plan = await this.preparePlan([{ name, value }], session);
+        this.assertUiWatch(name, options);
+        const currentStatus = this.host._sampling.status();
+        if (!currentStatus.canWrite) {
+            const key = writeUnavailableKey(currentStatus) || "sb.writeUnavailable";
+            throw Object.assign(new Error(this.host._t(key)), { i18nKey: key });
+        }
         // The ELF may have been replaced while the mismatch prompt was open.
         if (
             this.firmwareConsistency(plan.elfResult).firmwareConsistency.status === "mismatch" &&
@@ -400,7 +562,7 @@ class WriteExecution {
                 code: "ELF_TARGET_MISMATCH",
                 i18nKey: "sb.writeFirmwareMismatchDeclined"
             });
-        if (!status.haltWrite && !plan.items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
+        if (!currentStatus.haltWrite && !plan.items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
         plan.connection = this.sessionConnection(session);
         // UI writes are already serialized and the bridge rejects concurrent DAP operations itself;
         // posting a "writing" status here would disable the write controls mid-drag.
