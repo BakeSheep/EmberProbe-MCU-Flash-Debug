@@ -77,6 +77,7 @@ class LiveWatchController {
         this._runtimeOverBudgetKey = "";
         this._runtimeRamCache = null;
         this._consumerTypesCache = null;
+        this.lastDisconnect = null;
     }
     // A new ELF has other RAM sections.
     invalidateRuntimeRam() {
@@ -791,6 +792,7 @@ class LiveWatchController {
         }
         status.pauseReason =
             stats?.pauseReason ?? (this.host._samplingCoordinator.backpressured ? "archive_backpressure" : null);
+        if (this.lastDisconnect) status.lastDisconnect = this.lastDisconnect;
         return withWriteAccessStatus(status);
     }
     // Stops the event-loop monitor; status() starts it again while sampling runs.
@@ -1030,6 +1032,7 @@ class LiveWatchController {
                     },
                     onDisconnect: (err) => {
                         if (this.session !== session) return;
+                        this.lastDisconnect = serializeError(err);
                         const stopped = this.stop({ discardPending: true });
                         const stoppedGeneration = this._startGeneration;
                         void Promise.resolve(stopped)

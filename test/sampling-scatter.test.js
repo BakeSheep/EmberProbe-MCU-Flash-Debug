@@ -8,6 +8,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const { buildElf32 } = require("./helpers/elf-fixture");
 const benchmark = require("../scripts/measure-sampling-scatter");
+const { scenario } = require("./helpers/scenario");
 
 const item = (name, address, size = 4) => ({ name, address, size });
 const many = (count, size = 4) =>
@@ -32,6 +33,63 @@ async function close({ fake, session }) {
 }
 
 (async () => {
+    await scenario("Explicit scatter diagnostic override never probes or enables acceleration", async () => {
+        const session = new ManagedOpenOcdSession({ scatterReads: false }, {});
+        session.tcl.probe = () => {
+            throw Error("Unexpected scatter probe");
+        };
+        await session._detectScatter();
+        assert.strictEqual(session.scatterReads, false);
+    });
+    await scenario("A confirmed probe communication failure never enters ordinary fallback", async () => {
+        const f = await fixture();
+        try {
+            let calls = 0;
+            f.session.tcl.sendChecked = async () => {
+                calls++;
+                throw Object.assign(new Error("CMSIS-DAP transfer count mismatch"), {
+                    code: "PROBE_COMMUNICATION_FAILED"
+                });
+            };
+            await assert.rejects(f.session._readItems(many(2), 0), { code: "PROBE_COMMUNICATION_FAILED" });
+            assert.strictEqual(calls, 1);
+            await assert.rejects(f.session._scatterRanges([{ address: 0x20000000, size: 4 }]), {
+                code: "PROBE_COMMUNICATION_FAILED"
+            });
+            assert.strictEqual(calls, 2);
+            assert.strictEqual(f.session.scatterReads, true);
+        } finally {
+            await close(f);
+        }
+    });
+    await scenario("A native scatter error reply prevents fallback before its disconnect log arrives", async () => {
+        const { session, fake } = await fixture();
+        const disconnects = [];
+        session.handlers.onDisconnect = (error) => disconnects.push(error.code);
+        try {
+            const execute = fake._execute.bind(fake);
+            fake._execute = (cmd) => {
+                if (!cmd.startsWith("emberprobe_read_scatter {")) return execute(cmd);
+                fake.commands.push(cmd);
+                return { ok: false, response: "scatter memory read failed (-4)" };
+            };
+            fake.commands.length = 0;
+            const items = many(2);
+            await assert.rejects(session._readItems(items, 0), { code: "OPENOCD_TCL_ERROR" });
+            await assert.rejects(session._scatterRanges([{ address: items[0].address, size: 4 }]), {
+                code: "OPENOCD_TCL_ERROR"
+            });
+            assert.strictEqual(fake.commands.length, 2, "only the two explicit scatter requests were sent");
+            assert.deepStrictEqual(disconnects, [], "the Tcl error alone does not identify a probe disconnect");
+            session._handleServerLog("Error: CMSIS-DAP command mismatch. Expected 0x5 received 0x0", {
+                line: () => false
+            });
+            assert.deepStrictEqual(disconnects, ["PROBE_COMMUNICATION_FAILED"]);
+            assert.strictEqual(session.stopped, true);
+        } finally {
+            await close({ session, fake });
+        }
+    });
     const args = [
         "--openocd",
         "fake",
@@ -182,17 +240,115 @@ async function close({ fake, session }) {
     } finally {
         await close(splitFailure);
     }
-    const widened = await fixture();
-    try {
-        const { session, fake } = widened;
-        session.setWatch([item("a", 0x20000001, 3), item("b", 0x20000024)], [{ start: 0x20000000, end: 0x20000100 }]);
-        const results = await session._readItems(session.watch, 0);
-        assert.strictEqual(results.ok, 2);
-        assert.strictEqual(session._memoryReadBytes, 40, "gap and widened bytes count toward throughput");
-        assert.match(scatterCommands(fake)[0], /\{0x20000000 32 10\}/);
-    } finally {
-        await close(widened);
-    }
+    await scenario("Scatter avoids gap transfers and recompiles the ordinary fallback plan", async () => {
+        const widened = await fixture();
+        try {
+            const { session, fake } = widened;
+            session.setWatch(
+                [item("a", 0x20000001, 3), item("b", 0x20000024)],
+                [{ start: 0x20000000, end: 0x20000100 }]
+            );
+            fake.seed(0x20000000, [9, 1, 2, 3]);
+            fake.seed(0x20000024, [4, 5, 6, 7]);
+            const scatterPlan = session._getReadBatches(session.watch);
+            const results = await session._readItems(session.watch, 0);
+            assert.strictEqual(results.ok, 2);
+            assert.strictEqual(session._memoryReadBytes, 8, "only RAM word widening adds bytes");
+            assert.match(scatterCommands(fake)[0], /\{0x20000000 32 1\} \{0x20000024 32 1\}/);
+            assert.deepStrictEqual(
+                results.samples.map((s) => s.bytes),
+                [
+                    [1, 2, 3],
+                    [4, 5, 6, 7]
+                ]
+            );
+            const execute = fake._execute.bind(fake);
+            fake._execute = (cmd) =>
+                cmd.startsWith("emberprobe_read_scatter {")
+                    ? { ok: false, response: "EMBERPROBE_SCATTER_UNSUPPORTED" }
+                    : execute(cmd);
+            assert.deepStrictEqual(await session._readItems(session.watch, 0), results);
+            assert.strictEqual(session.scatterReads, false);
+            assert.ok(fake.commands.includes("ocd_read_memory 0x20000000 32 10"));
+            assert.strictEqual(session._memoryReadBytes, 48, "the same cycle uses the ordinary plan");
+            const ordinaryPlan = session._getReadBatches(session.watch);
+            assert.notStrictEqual(ordinaryPlan, scatterPlan);
+            assert.strictEqual(ordinaryPlan[0][0].byteCount, 40);
+            fake._execute = execute;
+            session.scatterReads = true;
+            assert.strictEqual(
+                session._getReadBatches(session.watch),
+                scatterPlan,
+                "cache is keyed by read capability"
+            );
+            assert.deepStrictEqual(await session._readItems(session.watch, 0), results);
+        } finally {
+            await close(widened);
+        }
+    });
+    await scenario("The fallback plan accounts for runtime reads already made in a debug cycle", async () => {
+        const { session, fake } = await fixture("debug");
+        try {
+            const runtime = { ...item("runtime", 0x20000800), runtimeLayout: {} };
+            const fixed = [item("a", 0x20000000), item("b", 0x20000010)];
+            session.setWatch(fixed, [{ start: 0x20000000, end: 0x20000100 }]);
+            session._sampleRuntimeItem = async (_item, _guard, budget) => {
+                budget.bytes += 4088;
+                budget.commands += 30;
+                return {};
+            };
+            fake.scatterFailures = 1;
+            assert.strictEqual((await session._readItems([...fixed, runtime], 0)).ok, 3);
+            assert.strictEqual(session._memoryReadBytes, 8, "the fallback cannot spend bytes on the gap");
+            assert.ok(fake.commands.some((cmd) => cmd.startsWith("join [list")));
+
+            // Word widening can split an existing 1024 B range. Keep the last command slot for the fixed read.
+            const wide = item("wide", 0x20000001, 1024);
+            session.setWatch([wide], [{ start: 0x20000000, end: 0x20000800 }]);
+            const fallback = session._getReadBatches([wide], 4, false, 31).flat();
+            assert.deepStrictEqual(
+                fallback.map(({ start, byteCount }) => [start, byteCount]),
+                [[wide.address, 1024]]
+            );
+        } finally {
+            await close({ session, fake });
+        }
+    });
+    await scenario("Scatter retains word-sized gap coalescing within RAM and debug budgets", async () => {
+        const f = await fixture("debug");
+        try {
+            const { session } = f;
+            const items = [item("a", 0x20000000), item("b", 0x20000008), item("c", 0x20000018)];
+            session.setWatch(items, [{ start: 0x20000000, end: 0x20000100 }]);
+            assert.deepStrictEqual(
+                session
+                    ._getReadBatches(items)
+                    .flat()
+                    .map((g) => g.byteCount),
+                [12, 4]
+            );
+            assert.deepStrictEqual(
+                session
+                    ._getReadBatches(items.slice(0, 2), 4088)
+                    .flat()
+                    .map((g) => g.byteCount),
+                [4, 4]
+            );
+            session.setWatch(items, [
+                { start: 0x20000000, end: 0x20000004 },
+                { start: 0x20000008, end: 0x20000100 }
+            ]);
+            assert.deepStrictEqual(
+                session
+                    ._getReadBatches(items)
+                    .flat()
+                    .map((g) => g.byteCount),
+                [4, 4, 4]
+            );
+        } finally {
+            await close(f);
+        }
+    });
     for (const [items, segmentCounts] of [
         [many(65), [64, 1]],
         [many(5, 1024), [4, 1]],

@@ -6,6 +6,8 @@ const { parseMemoryElements } = require("../src/liveWatchReadPlan");
 const { LiveWatchService } = require("../src/services/liveWatchService");
 const elf = require("../src/elfSymbols");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
+const { FakeClock } = require("./helpers/fake-clock");
+const { scenario } = require("./helpers/scenario");
 
 function socketFixture() {
     const socket = new EventEmitter();
@@ -106,17 +108,55 @@ function socketFixture() {
     }
 
     // After sleep or an event-loop stall, data can be dispatched before the overdue timer callback.
-    let now = Date.now();
-    const overdue = new ManagedOpenOcdSession({ clock: { now: () => now } }, {});
+    const clock = new FakeClock();
+    const overdue = new ManagedOpenOcdSession({ clock: { ...clock, monotonicMs: clock.now } }, {});
     overdue.tcl.attach(socketFixture());
     const pending = overdue.tcl.send("read_memory 0x20000000 32 1");
     const queued = overdue.tcl.send("read_memory 0x20000020 32 1");
-    now += 2001;
+    clock.time += 2001;
     overdue.tcl.socket.emit("data", Buffer.from("EP_OK:0x12345678\x1aEP_OK:0x04030201\x1a"));
     await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
     await assert.rejects(queued, { code: "OPENOCD_RPC_TIMEOUT" });
     assert.strictEqual(overdue.stopped, true, "an overdue response invalidates the FIFO connection");
     assert.strictEqual(overdue.tcl.queue.length, 0);
+
+    await scenario("Timeout diagnostics preserve request progress without command payloads", async () => {
+        const clock = new FakeClock();
+        const failed = new ManagedOpenOcdSession({ clock: { ...clock, monotonicMs: clock.now } }, {});
+        failed.tcl.attach(socketFixture());
+        const first = failed.tcl.sendChecked("read_memory 0x20000000 32 1");
+        failed.tcl.socket.emit("data", Buffer.from("EP_OK:1\x1a"));
+        await first;
+        const pending = failed.tcl.sendChecked("emberprobe_read_scatter {0x20000000 32 1}");
+        const rejection = assert.rejects(pending, (error) => {
+            assert.strictEqual(error.code, "OPENOCD_RPC_TIMEOUT");
+            assert.strictEqual(error.details.operation, "memory-scatter");
+            assert.strictEqual(error.details.requestSequence, 2);
+            assert.strictEqual(error.details.timeoutMs, 2000);
+            assert.strictEqual(error.details.elapsedMs, 2000);
+            assert.strictEqual(error.details.lastResponseAgeMs, 2000);
+            assert.strictEqual(error.details.responseReceived, false);
+            assert.strictEqual(error.details.pendingResponseBytes, 4);
+            assert.strictEqual(error.details.queuedRequests, 1);
+            assert(!JSON.stringify(error.details).includes("0x20000000"));
+            return true;
+        });
+        failed.tcl.socket.emit("data", Buffer.from("EP_O"));
+        await clock.advance(2000);
+        await rejection;
+        assert.strictEqual(failed.tcl.connected, false);
+    });
+
+    await scenario("Wall clock changes cannot expire a healthy RPC", async () => {
+        const clock = new FakeClock();
+        const session = new ManagedOpenOcdSession({ clock: { ...clock, monotonicMs: clock.now, now: () => 1e12 } }, {});
+        session.tcl.attach(socketFixture());
+        const pending = session.tcl.send("expr 1");
+        await clock.advance(10);
+        session.tcl.socket.emit("data", Buffer.from("1\x1a"));
+        assert.strictEqual(await pending, "1");
+        session.tcl.close();
+    });
 
     const replaced = new ManagedOpenOcdSession({}, {});
     const oldSocket = socketFixture();

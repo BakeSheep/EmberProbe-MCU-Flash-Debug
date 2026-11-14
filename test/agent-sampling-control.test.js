@@ -7,10 +7,12 @@ const { loadProvider } = require("./helpers/load-provider");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { args } = require("../skills/mcu-variables/scripts/sampling");
+const { FakeClock } = require("./helpers/fake-clock");
 
 class Session {
-    constructor() {
+    constructor(_options, handlers) {
         this.stopped = false;
+        this.handlers = handlers;
     }
     setWatch(items) {
         this.items = items;
@@ -131,6 +133,73 @@ function fixture() {
         chart.at(-1).intentEnabled
     );
     await p._agentOps.controlSampling("stop");
+
+    await scenario("Disconnected sampling keeps its diagnostic after cleanup", async () => {
+        const { provider } = fixture();
+        await provider._agentOps.controlSampling("start");
+        const failed = provider._sampling.session;
+        failed.handlers.onDisconnect(
+            Object.assign(new Error("response timed out"), {
+                code: "OPENOCD_RPC_TIMEOUT",
+                details: { operation: "memory-scatter", timeoutMs: 2000 }
+            })
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        const status = await provider._agentOps.controlSampling("status");
+        assert.strictEqual(status.running, false);
+        assert.strictEqual(status.lastDisconnect.code, "OPENOCD_RPC_TIMEOUT");
+        assert.strictEqual(status.lastDisconnect.details.operation, "memory-scatter");
+        await provider._agentOps.controlSampling("stop");
+        assert.strictEqual(provider._sampling.status().lastDisconnect.details.timeoutMs, 2000);
+    });
+
+    await scenario("An overrun does not arm a zero-delay timer", async () => {
+        const { provider } = fixture();
+        const clock = new FakeClock();
+        provider._agentOps.clock = { ...clock, monotonicMs: clock.now };
+        await provider._agentOps._waitInterval(0);
+        assert.strictEqual(clock.tasks.size, 0);
+    });
+
+    await scenario("A failed sample records completed progress without replaying reads", async () => {
+        const { provider } = fixture();
+        let reads = 0;
+        provider.readElfSymbols = () => ({
+            elf: {},
+            symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
+        });
+        provider._elfView.prepareLayouts = async () => {};
+        provider._sampling.runtimeReadRanges = () => [];
+        provider._writes.firmwareConsistency = () => ({});
+        provider._agentOps._waitInterval = async () => {};
+        provider._agentOps.withProbe = (handler) =>
+            handler({
+                source: "temporary-probe",
+                temporary: false,
+                session: {
+                    readOnce: async () => {
+                        if (++reads === 3)
+                            throw Object.assign(new Error("timeout"), {
+                                code: "OPENOCD_RPC_TIMEOUT",
+                                details: { timeoutMs: 2000 }
+                            });
+                        return [{ name: "tick", bytes: [reads, 0, 0, 0], t: reads * 100 }];
+                    }
+                }
+            });
+        await assert.rejects(
+            provider._agentOps.sampleVariables({ variables: ["tick"], count: 10, intervalMs: 5 }),
+            (error) => {
+                assert.strictEqual(error.details.completedSamples, 2);
+                assert.strictEqual(error.details.lastSampleTimestamp, 200);
+                assert.strictEqual(error.details.requestedSamples, 10);
+                assert.strictEqual(error.details.timeoutMs, 2000);
+                return true;
+            }
+        );
+        assert.strictEqual(reads, 3);
+        assert.strictEqual(provider._agentOps._sampleRuns.size, 0);
+    });
 
     const busy = p._probeCoordinator.acquire("download");
     await assert.rejects(p._agentOps.controlSampling("start"), { i18nKey: "live.downloadRunning" });
@@ -341,11 +410,10 @@ function fixture() {
         const Provider = loadProvider({ debug: {}, workspace: {} });
         const host = Object.create(Provider.prototype);
         const waits = [];
-        const realNow = Date.now;
-        let now = 1000;
+        const clock = new FakeClock();
+        host._agentOps.clock = { ...clock, monotonicMs: clock.now };
         let readMs = 0;
-        Date.now = () => now;
-        try {
+        {
             Object.assign(host, {
                 readElfSymbols: () => ({
                     elf: {},
@@ -357,7 +425,7 @@ function fixture() {
                     handler({
                         session: {
                             readOnce: async () => {
-                                now += readMs;
+                                clock.time += readMs;
                                 readMs = readMs ? 80 : 13;
                                 return [];
                             }
@@ -367,7 +435,7 @@ function fixture() {
                     }),
                 _waitInterval: async (ms) => {
                     waits.push(ms);
-                    now += ms;
+                    clock.time += ms;
                 }
             });
             Object.assign(host._writes, { firmwareConsistency: () => ({}) });
@@ -375,8 +443,6 @@ function fixture() {
             Object.assign(host._sampling, { runtimeReadRanges: () => [] });
             await host._agentOps.sampleVariables({ variables: [{ name: "tick" }], count: 4, intervalMs: 50 });
             assert.deepStrictEqual(waits, [50, 37, 0], "a read longer than the interval does not wait");
-        } finally {
-            Date.now = realNow;
         }
     });
 

@@ -13,12 +13,13 @@ const {
 } = require("./openocdScripts");
 const { withTargetCheck } = require("./chip/targetIdentity");
 const { SYSTEM_CLOCK } = require("./samplingClock");
+const { isProbeCommunicationFailure } = require("../skills/_emberprobe/openocd-diagnostics");
 
-// Fatal log signatures of a probe unplugged while sampling (USB read/write failure, device lost), used to stop
-// sampling automatically
+// A failed probe transport ends sampling even when the device is still enumerated.
 function isFatalProbeLog(line) {
-    return /WriteFile|ReadFile|LIBUSB_ERROR_(?:NO_DEVICE|IO|PIPE)|error (?:writing|reading) data|target communication error/i.test(
-        String(line || "")
+    return (
+        isProbeCommunicationFailure(line) ||
+        /WriteFile|ReadFile|LIBUSB_ERROR_NO_DEVICE|target communication error/i.test(String(line || ""))
     );
 }
 

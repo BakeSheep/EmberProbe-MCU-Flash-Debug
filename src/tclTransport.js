@@ -33,6 +33,8 @@ class TclTransport {
         this._ready = null;
         this._responseDir = "";
         this._responseFile = "";
+        this._requestSequence = 0;
+        this._lastResponseAt = null;
     }
 
     get connected() {
@@ -118,31 +120,43 @@ class TclTransport {
     }
 
     // Sends one Tcl command serially and waits for the response (with a timeout).
-    send(cmd) {
-        if (this._ready) return this._ready.promise.then(() => this.send(cmd));
+    send(cmd, operation = "tcl") {
+        if (this._ready) return this._ready.promise.then(() => this.send(cmd, operation));
         return new Promise((resolve, reject) => {
             if (!this.connected) return reject(new Error("Socket is not connected"));
             const entry = {};
-            const deadline = this.clock.now() + this.rpcTimeoutMs;
+            const startedAt = this.clock.monotonicMs();
+            const timeoutMs = this.rpcTimeoutMs;
+            const requestSequence = ++this._requestSequence;
+            const timeoutError = (responseReceived) =>
+                Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
+                    code: "OPENOCD_RPC_TIMEOUT",
+                    retryable: false,
+                    details: {
+                        operation,
+                        requestSequence,
+                        timeoutMs,
+                        elapsedMs: this.clock.monotonicMs() - startedAt,
+                        responseReceived,
+                        pendingResponseBytes: this.pending.length,
+                        queuedRequests: this.queue.length,
+                        lastResponseAgeMs:
+                            this._lastResponseAt === null ? null : this.clock.monotonicMs() - this._lastResponseAt
+                    }
+                });
             const timer = this.clock.schedule(() => {
-                if (this.queue.includes(entry))
-                    this._fail(
-                        Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
-                            code: "OPENOCD_RPC_TIMEOUT"
-                        })
-                    );
-            }, this.rpcTimeoutMs);
+                if (this.queue.includes(entry)) this._fail(timeoutError(false));
+            }, timeoutMs);
             entry.resolve = (v) => {
                 this.clock.cancel(timer);
                 // A wake-up or busy event loop may dispatch data before the overdue timeout callback.
-                if (this.clock.now() >= deadline) {
-                    const error = Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
-                        code: "OPENOCD_RPC_TIMEOUT"
-                    });
+                if (this.clock.monotonicMs() - startedAt >= timeoutMs) {
+                    const error = timeoutError(true);
                     reject(error);
                     this._fail(error);
                     return;
                 }
+                this._lastResponseAt = this.clock.monotonicMs();
                 resolve(v);
             };
             entry.reject = (e) => {
@@ -164,7 +178,7 @@ class TclTransport {
         if (this.mode === "debug" && !this.noEchoResponses) return this._sendSilent(cmd);
         const result = this.noEchoResponses ? "return -code exit $_ep_out" : "set _ep_out";
         const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; if {$_ep_rc} {set _ep_out "EP_ERR:\${_ep_msg}"} else {set _ep_out "EP_OK:\${_ep_msg}"}; ${result}`;
-        const response = String((await this.send(wrapped)) || "").replace(/\x1a/g, "");
+        const response = String((await this.send(wrapped, this._operation(cmd))) || "").replace(/\x1a/g, "");
         if (response.startsWith("EP_OK:")) return response.slice(6);
         if (response.startsWith("EP_ERR:")) {
             throw Object.assign(new Error(response.slice(7).trim() || `OpenOCD command failed：${cmd}`), {
@@ -174,6 +188,15 @@ class TclTransport {
         throw Object.assign(new Error(`Unrecognized OpenOCD Tcl response：${response.slice(0, 200)}`), {
             code: "OPENOCD_TCL_PROTOCOL_ERROR"
         });
+    }
+
+    // Report only a command class, never expressions, paths, memory values or write payloads.
+    _operation(cmd) {
+        return /\bemberprobe_read_scatter\b/.test(cmd)
+            ? "memory-scatter"
+            : /\b(?:ocd_)?read_memory\b/.test(cmd)
+              ? "memory-read"
+              : "tcl";
     }
 
     // A capability query: it gets at most `timeoutMs`, and a failure discards the connection instead of reporting it.
@@ -214,7 +237,7 @@ class TclTransport {
     async _sendSilent(cmd) {
         const responseFile = await this._ensureResponseFile();
         const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; set _ep_file [open ${quoteTclWord(responseFile)} w]; puts -nonewline $_ep_file "\${_ep_rc}\\n"; puts -nonewline $_ep_file $_ep_msg; close $_ep_file; set _ep_msg ""`;
-        const rpcResponse = String((await this.send(wrapped)) || "").replace(/\x1a/g, "");
+        const rpcResponse = String((await this.send(wrapped, this._operation(cmd))) || "").replace(/\x1a/g, "");
         if (rpcResponse) {
             throw Object.assign(new Error(`Unexpected OpenOCD Tcl response：${rpcResponse.slice(0, 200)}`), {
                 code: "OPENOCD_TCL_PROTOCOL_ERROR"

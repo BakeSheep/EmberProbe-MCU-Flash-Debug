@@ -46,6 +46,5 @@ target script, firmware and SVD.
 
 2026-11-01: APM32F407 + J-Link/WinUSB passed all three read modes, running reads alongside sampling, and six
 explicitly approved same-value whole-register/field writes. This covers 32-bit transfers on that setup only.
-See the [board acceptance record](../records/validation/peripheral-board-2026-11-01.md) for versions, evidence and limits.
 2026-11-03: the same setup passed again after the sidebar and write-outcome fixes, including running reads while
-sampling stayed active; see the [re-check record](../records/validation/peripheral-board-2026-11-03.md).
+sampling stayed active.

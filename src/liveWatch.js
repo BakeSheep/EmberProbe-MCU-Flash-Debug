@@ -31,6 +31,7 @@ const {
 const MAX_DEBUG_CYCLE_MS = 1000;
 const MAX_SCATTER_SEGMENTS = 64;
 const MAX_SCATTER_BYTES = 4096;
+const MAX_SCATTER_READ_GAP_BYTES = 4;
 const MAX_READ_BATCH_CACHE_ENTRIES = 8;
 
 // Lets the OS pick a free ephemeral port. OpenOCD's Tcl port has no authentication, so a fixed port would let any local
@@ -706,8 +707,7 @@ class ManagedOpenOcdSession {
         // OpenOCD's own error output after a failed check repeats it; the close handler reports it once.
         if (targetCheck.mismatched) return;
         this.server.record(clean);
-        // Probe unplugged while sampling: fatal signals such as USB read/write failures stop sampling
-        // automatically instead of repeating errors
+        // End the session on a confirmed probe transport failure before issuing another read.
         if (isFatalProbeLog(clean)) {
             if (!this.stopped && !this.connectionFailed) {
                 this._abortConnection(
@@ -882,6 +882,16 @@ class ManagedOpenOcdSession {
             error instanceof Error ? error : new Error(String(error || "Connection disconnected"))
         );
         if (this.connectionFailed) return;
+        Object.assign(err, {
+            details: {
+                ...error?.details,
+                mode: this.mode,
+                scatterReads: this.scatterReads,
+                noEchoResponses: this.tcl.noEchoResponses,
+                readCommand: this.readCmd,
+                openocdTail: this.server.logTail.slice(-20).map((line) => line.slice(0, 512))
+            }
+        });
         this.connectionFailed = true;
         this.targetEpoch++;
         this.connectionError = err;
@@ -945,6 +955,8 @@ class ManagedOpenOcdSession {
     async _detectScatter() {
         this.scatterReads = false;
         this._scatterFailures = 0;
+        // Internal diagnostic override: compare ordinary reads without changing link speed or retrying a failed RPC.
+        if (this.options.scatterReads === false) return;
         try {
             this.scatterReads = (await this.tcl.probe("emberprobe_read_scatter version", 500)) === "1";
         } catch (error) {
@@ -1057,13 +1069,15 @@ class ManagedOpenOcdSession {
         return result;
     }
 
-    _getReadBatches(items, reservedBytes = 0) {
+    _getReadBatches(items, reservedBytes = 0, scatterReads = this.scatterReads, reservedCommands = 0) {
         // Multi-rate ticks allocate new arrays but retain the ordered watch-item identities.
         const cached = this._readBatchCache.find(
             (entry) =>
                 entry.ranges === this.ramSectionRanges &&
+                entry.scatterReads === scatterReads &&
                 entry.mode === this.mode &&
                 entry.reservedBytes === reservedBytes &&
+                entry.reservedCommands === reservedCommands &&
                 entry.items.length === items.length &&
                 entry.items.every((saved, index) => {
                     const item = items[index];
@@ -1076,12 +1090,23 @@ class ManagedOpenOcdSession {
                 })
         );
         if (cached) return cached.batches;
-        const batches = compileReadBatches(items, this.ramSectionRanges, this.mode === "debug", reservedBytes);
+        // Scatter queues separate ranges in one DAP run. Limit gap expansion to one RAM word;
+        // larger gaps add transfers without saving an RPC. Ordinary reads retain their broader heuristic.
+        const batches = compileReadBatches(
+            items,
+            this.ramSectionRanges,
+            this.mode === "debug",
+            reservedBytes,
+            scatterReads ? MAX_SCATTER_READ_GAP_BYTES : undefined,
+            reservedCommands
+        );
         if (this._readBatchCache.length >= MAX_READ_BATCH_CACHE_ENTRIES) this._readBatchCache.shift();
         this._readBatchCache.push({
             ranges: this.ramSectionRanges,
+            scatterReads,
             mode: this.mode,
             reservedBytes,
+            reservedCommands,
             items: items.map((item) => ({ item, name: item.name, address: item.address, size: item.size })),
             batches
         });
@@ -1129,11 +1154,31 @@ class ManagedOpenOcdSession {
         return (
             error.code?.startsWith("LIVE_") ||
             this.connectionFailed ||
-            ["OPENOCD_RPC_TIMEOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "ENOTCONN", "ETIMEDOUT"].includes(
-                error.code
-            ) ||
+            [
+                "PROBE_COMMUNICATION_FAILED",
+                "OPENOCD_RPC_TIMEOUT",
+                "ECONNRESET",
+                "ECONNABORTED",
+                "EPIPE",
+                "ENOTCONN",
+                "ETIMEDOUT"
+            ].includes(error.code) ||
             /^(?:Socket is not connected|Tcl connection closed)/.test(error.message)
         );
+    }
+
+    _handleScatterFailure(error, guard) {
+        // The native DAP failure reply can reach Tcl before the corresponding stderr line. End
+        // this read without another transfer. A definite transport log separately ends the session.
+        if (
+            this._isConnectionError(error) ||
+            (error.code === "OPENOCD_TCL_ERROR" && /^scatter memory read failed \(-?\d+\)$/.test(error.message.trim()))
+        ) {
+            throw error;
+        }
+        this._assertReadGuard(guard);
+        if (error.message.startsWith("EMBERPROBE_SCATTER_UNSUPPORTED") || ++this._scatterFailures >= 3)
+            this.scatterReads = false;
     }
 
     // Ordered `{ address, size }` ranges in scatter requests, or null when scatter is off or refused
@@ -1150,10 +1195,7 @@ class ManagedOpenOcdSession {
             this._scatterFailures = 0;
             return units.map((unit) => Buffer.from(results.get(unit)));
         } catch (error) {
-            if (this._isConnectionError(error)) throw error;
-            this._assertReadGuard(guard);
-            if (error.message.startsWith("EMBERPROBE_SCATTER_UNSUPPORTED") || ++this._scatterFailures >= 3)
-                this.scatterReads = false;
+            this._handleScatterFailure(error, guard);
             return null;
         }
     }
@@ -1207,26 +1249,23 @@ class ManagedOpenOcdSession {
         let ok = 0;
         const fixedItems = items.filter((entry) => !entry.runtimeLayout);
         const runtimeItems = items.filter((entry) => entry.runtimeLayout);
-        const batches = this._getReadBatches(
-            fixedItems,
-            runtimeItems.reduce((sum, item) => sum + item.size, 0)
-        );
+        const plannedScatter = this.scatterReads;
+        const reservedBytes = runtimeItems.reduce((sum, item) => sum + item.size, 0);
+        let batches = this._getReadBatches(fixedItems, reservedBytes, plannedScatter);
         // Debug mode bounds the whole cycle, so fixed reads are reserved first. Standalone fixed reads
         // have no per-cycle budget and must not consume the runtime objects' own one.
         const shared = this.mode === "debug";
+        const fixedUnits = shared && runtimeItems.length ? batches.flat() : [];
+        const fixedBytes = fixedUnits.length
+            ? Math.max(
+                  fixedUnits.reduce((total, unit) => total + unit.byteCount, 0),
+                  fixedItems.reduce((total, entry) => total + entry.size, 0)
+              )
+            : 0;
         const runtimeBudget = runtimeItems.length
             ? {
-                  bytes: shared
-                      ? Math.max(
-                            // Throughput and shared runtime budgets count gap bytes actually transferred.
-                            batches.reduce(
-                                (sum, batch) => batch.reduce((total, unit) => total + unit.byteCount, sum),
-                                0
-                            ),
-                            fixedItems.reduce((total, entry) => total + entry.size, 0)
-                        )
-                      : 0,
-                  commands: shared ? batches.reduce((total, batch) => total + batch.length, 0) : 0,
+                  bytes: fixedBytes,
+                  commands: fixedUnits.length,
                   deadline: guard?.deadline || this.clock.now() + MAX_DEBUG_CYCLE_MS
               }
             : null;
@@ -1261,12 +1300,18 @@ class ManagedOpenOcdSession {
                 scatterBytes = await this._readScatterBytes(batches, guard);
                 this._scatterFailures = 0;
             } catch (error) {
-                if (this._isConnectionError(error)) throw error;
-                this._assertReadGuard(guard);
+                this._handleScatterFailure(error, guard);
                 scatterFailed = true;
-                if (error.message.startsWith("EMBERPROBE_SCATTER_UNSUPPORTED") || ++this._scatterFailures >= 3)
-                    this.scatterReads = false;
             }
+        }
+        if (plannedScatter && !scatterBytes) {
+            const usedRuntime = shared ? runtimeBudget : null;
+            batches = this._getReadBatches(
+                fixedItems,
+                usedRuntime ? Math.max(reservedBytes, usedRuntime.bytes - fixedBytes) : reservedBytes,
+                false,
+                usedRuntime ? usedRuntime.commands - fixedUnits.length : 0
+            );
         }
         for (const batch of batches) {
             this._assertReadGuard(guard);

@@ -23,7 +23,7 @@ git push origin v0.8.1
 gh run watch
 ```
 
-`release:prepare` 同步五个版本文件；`--dry-run` 不修改文件。发布不再清理 `docs/`，方案、审计和验收记录长期保存在 `docs/records/`。
+`release:prepare` 同步五个版本文件；`--dry-run` 不修改文件。发布流程保留 `docs/`。把可复用的审计与验收证据按主题汇总到 Git 忽略的本地 `docs/records/`，记录日期、环境、结果和验证边界。同主题复测追加到现有记录，原始日志留在 `test-results/`。已完成且被设计文档覆盖的执行计划可以清理。
 
 确认验证与质量检查通过后，提交五个版本文件；创建标签前检查暂存区。两个 push 都须成功，再用 `gh run watch` 等待对应 Release 工作流完成。
 

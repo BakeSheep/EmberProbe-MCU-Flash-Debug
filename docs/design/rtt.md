@@ -1,6 +1,6 @@
 # RTT 设计
 
-用户行为见 [RTT 日志](../guide/flash-debug.md#rtt-日志)。选型过程见 [2026-11-03 审计](../records/audits/2026-11-03-rtt-audit.md)。
+用户行为见 [RTT 日志](../guide/flash-debug.md#rtt-日志)。
 
 EmberProbe 用 OpenOCD 内建的 `rtt` 命令读取 SEGGER RTT，J-Link 和 CMSIS-DAP 走同一条路径。不支持 SWO/ITM、半主机和 defmt 解码。
 
@@ -34,7 +34,7 @@ EmberProbe 用 OpenOCD 内建的 `rtt` 命令读取 SEGGER RTT，J-Link 和 CMSI
 
 每次手动启动冻结通道选择和轮询配置，自动重试、让出后恢复和宿主跟随复用同一快照。默认轮询 10 ms，显式配置 0 选择原有 100 ms；每次完整附着发送 `setup → stop → start → polling_interval → channels`。内置 OpenOCD 在 start 前修改间隔会先注册计时器，随后 start 再注册，故顺序不可交换。stop 也使复用的 started 会话重新采用当前 setup。通道初始化重试只查询列表。
 
-OpenOCD 一次轮询每个通道最多读 1024 B，所以吞吐上限由轮询间隔和单次轮询耗时决定。J-Link V9 上一次轮询约 6 到 8 ms，主要耗在 USB 往返上，提高时钟帮助不大；曾试过在一次轮询内继续读取的补丁，5 ms 预算下没有提升，已移除，见[实测记录](../records/validation/rtt-board-2026-11-06.md)。
+OpenOCD 一次轮询每个通道最多读 1024 B，所以吞吐上限由轮询间隔和单次轮询耗时决定。J-Link V9 上一次轮询约 6 到 8 ms，主要耗在 USB 往返上，提高时钟帮助不大；曾试过在一次轮询内继续读取的补丁，5 ms 预算下没有提升，已移除。
 
 ## 描述符、占用与模式
 

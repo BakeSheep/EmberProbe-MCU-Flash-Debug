@@ -5,6 +5,7 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { EventEmitter } = require("events");
+const { FakeClock } = require("./helpers/fake-clock");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
@@ -140,8 +141,11 @@ async function networkAndIdentity() {
         ["local", 2000],
         [undefined, 2000]
     ]) {
-        let now = Date.now();
-        const session = new ManagedOpenOcdSession({ backendKind: kind, clock: { now: () => now } }, {});
+        const clock = new FakeClock();
+        const session = new ManagedOpenOcdSession(
+            { backendKind: kind, clock: { ...clock, monotonicMs: clock.now } },
+            {}
+        );
         assert.strictEqual(session.tcl.rpcTimeoutMs, timeout);
         const socket = new EventEmitter();
         socket.setNoDelay = () => {};
@@ -151,13 +155,13 @@ async function networkAndIdentity() {
         socket.write = () => {};
         session.tcl.attach(socket);
         const pending = session.tcl.send("test");
-        now += 2500;
+        clock.time += 2500;
         socket.emit("data", Buffer.from("ok\x1a"));
         if (kind === "tcp") assert.strictEqual(await pending, "ok");
         else await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
         if (kind === "tcp") {
             const overdue = session.tcl.send("test");
-            now += 5001;
+            clock.time += 5001;
             socket.emit("data", Buffer.from("late\x1a"));
             await assert.rejects(overdue, { code: "OPENOCD_RPC_TIMEOUT" });
         }

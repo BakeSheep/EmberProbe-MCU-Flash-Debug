@@ -5,6 +5,24 @@ const { scenario } = require("./helpers/scenario");
 const assert = require("assert");
 const { parseLine, quoteTclWord, diagnoseOpenOcdFailure, isSafeCfg } = require("../src/openocdRunner");
 
+scenario("CMSIS-DAP USB timeouts and FIFO mismatches retain their transport diagnosis", () => {
+    for (const message of [
+        "Debug: 3790 16782 cmsis_dap_usb_bulk.c:523 cmsis_dap_usb_read(): USB timeout @ 0\nDebug: 3791 16782 cmsis_dap.c:922 cmsis_dap_swd_read_process(): error reading adapter response",
+        "Debug: command write USB timeout @ 0",
+        "Debug: USB write timeout @ 0, late detect",
+        "Error: error reading USB data",
+        "Error: error writing USB data, late detect",
+        "Error: error submitting USB read: Input/Output Error",
+        "Error: error handling USB events: Interrupted system call",
+        "Error: CMSIS-DAP command mismatch. Expected 0x5 received 0x0",
+        "Error: CMSIS-DAP transfer count mismatch: expected 22, got 0"
+    ]) {
+        const diagnostic = diagnoseOpenOcdFailure([message, "Error: init failed"], { probe: "cmsis-dap.cfg" });
+        assert.strictEqual(diagnostic.code, "PROBE_COMMUNICATION_FAILED");
+        assert.strictEqual(diagnostic.retryable, false);
+    }
+});
+
 assert.strictEqual(isSafeCfg("geehy/apm32f4x.cfg"), true);
 assert.strictEqual(isSafeCfg("../apm32f4x.cfg"), false);
 

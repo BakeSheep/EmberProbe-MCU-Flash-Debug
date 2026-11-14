@@ -69,7 +69,7 @@ J-Link 不走这个后端，因此 J-Link 读取成功与此故障可以同时�
 `94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6`。
 合入后的压缩包哈希及原始可执行文件哈希记录在 `resources/openocd-targets-manifest.json`。
 
-原生崩溃报告为 `OPENOCD_NATIVE_CRASH`，不自动重试；单次读取诊断保留可执行路径、退出码、退出信号和有界原始日志。复现与验证范围见 [Linux CMSIS-DAP 诊断记录](../records/diagnostics/2026-10-08-linux-cmsis-dap.md)。
+原生崩溃报告为 `OPENOCD_NATIVE_CRASH`，不自动重试；单次读取诊断保留可执行路径、退出码、退出信号和有界原始日志。
 
 ## TCP 接口
 
@@ -111,9 +111,6 @@ OpenOCD 的 `error writing data`、HID 读写失败、CMSIS-DAP 命令失败和 
 采样及调试停止确认进程退出后释放；退出未确认则保留服务器和租约以便再次清理。
 这不是跨 VS Code 窗口或跨应用的 USB 锁，进程退出也不能证明探针固件或 USB 端点恢复。
 扩展宿主被强制终止时，不能承诺运行完正常的异步清理流程。
-
-Windows CMSIS-DAP 报告、源码检查与待验证恢复步骤见
-[2026-11-10 诊断记录](../records/diagnostics/2026-11-10-windows-cmsis-dap.md)。
 
 ## 验证边界
 

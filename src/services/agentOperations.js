@@ -5,6 +5,7 @@ const { assertAgentSettable } = require("./configurationStore");
 const agentPlans = require("./agentPlans");
 const { selectPausedDebugReadSession } = require("./liveWatchService");
 const { CACHE_KEYS } = require("../cacheKeys");
+const { SYSTEM_CLOCK } = require("../samplingClock");
 const { listSymbols } = require("./agentSymbolList");
 
 // What the Agent Bridge routes do on the probe: reads and multi-sample runs on their own short probe session (or the
@@ -14,13 +15,14 @@ const { listSymbols } = require("./agentSymbolList");
 class AgentOperations {
     /**
      * @param {any} host
-     * @param {{ vscode: any, ManagedOpenOcdSession: any }} modules Taken from the provider module, so tests can replace
+     * @param {{ vscode: any, ManagedOpenOcdSession: any, clock?: typeof SYSTEM_CLOCK }} modules Taken from the provider module, so tests can replace
      *     them through loadProvider.
      */
-    constructor(host, { vscode, ManagedOpenOcdSession }) {
+    constructor(host, { vscode, ManagedOpenOcdSession, clock = SYSTEM_CLOCK }) {
         this.host = host;
         this._vscode = vscode;
         this._ManagedOpenOcdSession = ManagedOpenOcdSession;
+        this.clock = clock;
         this.readSession = null;
         this.readCancelled = false;
         this._sampleRuns = new Set();
@@ -332,15 +334,16 @@ class AgentOperations {
     // shared timer let one wait clear another's, leaving that sample loop pending forever.
     // `run` is the sample loop's entry in _agentSampleRuns; cancelling the run ends its wait early.
     _waitInterval(intervalMs, run = null) {
+        if (intervalMs <= 0) return Promise.resolve();
         return new Promise((resolve) => {
             let timer = null;
             const finish = () => {
-                clearTimeout(timer);
+                this.clock.cancel(timer);
                 if (run?.wake === finish) run.wake = null;
                 resolve(undefined);
             };
             if (run) run.wake = finish;
-            timer = setTimeout(finish, intervalMs);
+            timer = this.clock.schedule(finish, intervalMs);
         });
     }
     _wakeReadDelays() {
@@ -396,7 +399,7 @@ class AgentOperations {
                             throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
                                 code: "AGENT_READ_CANCELLED"
                             });
-                        const sampleStart = Date.now();
+                        const sampleStart = this.clock.monotonicMs();
                         result.push(
                             agentPlans.decodeSample(
                                 plan,
@@ -409,10 +412,20 @@ class AgentOperations {
                         // The interval runs from sample start to sample start, so read time does not stretch it.
                         if (index + 1 < count)
                             await this._waitInterval(
-                                Math.max(0, effectiveIntervalMs - (Date.now() - sampleStart)),
+                                Math.max(0, effectiveIntervalMs - (this.clock.monotonicMs() - sampleStart)),
                                 run
                             );
                     }
+                } catch (error) {
+                    error.details = {
+                        ...error.details,
+                        completedSamples: result.length,
+                        requestedSamples: count,
+                        intervalMs,
+                        source,
+                        lastSampleTimestamp: result.at(-1)?.timestamp ?? null
+                    };
+                    throw error;
                 } finally {
                     this._sampleRuns.delete(run);
                 }

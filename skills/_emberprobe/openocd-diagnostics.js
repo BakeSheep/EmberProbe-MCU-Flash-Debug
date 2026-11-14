@@ -17,13 +17,23 @@ function parseTargetVoltage(line) {
     return match ? Number(match[1]) : null;
 }
 
+function isProbeCommunicationFailure(text) {
+    // A bare "USB timeout @" is also the expected 10 ms startup drain. Require the failed-response
+    // marker, a USB transport error or an explicit FIFO mismatch before treating it as broken.
+    const output = String(text || "");
+    return (
+        /error (?:writing|reading) (?:usb )?data\b|hid_(?:write|read)(?:_timeout)?(?:\/|(?:\(\))?\s*(?::|failed|error))|libusb_error_(?:io|pipe)/i.test(
+            output
+        ) ||
+        /\berror (?:submitting usb (?:read|write)|handling usb events|reading adapter response)\b|\b(?:command write usb|usb write) timeout @\s*\d+|cmsis[-_]dap (?:command|transfer count) mismatch\b|cmsis[-_]dap command\b[^\n]*\bfailed\b/i.test(
+            output
+        )
+    );
+}
+
 function diagnoseProbeCommunication(text, make) {
     // HID writes send probe commands, including CMD_INFO before target access; they are not Flash writes.
-    if (
-        /error (?:writing|reading) data\b|hid_(?:write|read)(?:_timeout)?(?:\/|(?:\(\))?\s*(?::|failed|error))|cmsis[-_]dap command\b[^\n]*\bfailed\b|libusb_error_(?:io|pipe)/.test(
-            text
-        )
-    ) {
+    if (isProbeCommunicationFailure(text)) {
         return make(
             "PROBE_COMMUNICATION_FAILED",
             "probe_connection",
@@ -366,4 +376,10 @@ function hintForErrors(lines, details = {}) {
     return result.suggestedActions.join(" ");
 }
 
-module.exports = { diagnoseOpenOcdFailure, hintForErrors, parseTargetVoltage, connectionDetails };
+module.exports = {
+    diagnoseOpenOcdFailure,
+    hintForErrors,
+    parseTargetVoltage,
+    connectionDetails,
+    isProbeCommunicationFailure
+};

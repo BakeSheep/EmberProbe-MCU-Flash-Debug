@@ -6,6 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 采样 / Sampling
+
+- scatter 读取将 RAM 间隙合并范围从 32 字节收紧到 4 字节，减少分散变量的无效扩读；普通读取保留原策略，scatter 能力变化时重新选择缓存计划。
+- Limit RAM gap coalescing to 4 bytes for scatter reads to avoid unnecessary transfers for scattered variables. Keep the ordinary-read policy and select the matching cached plan when scatter capability changes.
+
+- Agent 有限采样在读取已超过目标间隔时不再额外等待零毫秒定时器；间隔与 Tcl RPC 超时改用单调时钟。超时诊断保留请求类别、耗时、响应进度与有界 OpenOCD 日志；有限采样失败保留已完成点数，持续采样停止后可通过 `sampling.status.lastDisconnect` 查询最近断开原因。保留超时后丢弃连接、不自动重试的行为。
+- Remove the extra zero-delay timer when an Agent sample read already exceeds its interval, and use monotonic clocks for intervals and Tcl RPC deadlines. Preserve request timing, response progress, bounded OpenOCD logs and completed sample counts in failure diagnostics; expose the last persistent-sampling disconnect through `sampling.status.lastDisconnect`. Keep discarding timed-out connections without automatic retries.
+
+- OpenOCD 的 scatter 读取失败回复会结束本轮读取；即使诊断日志晚于 Tcl 回复，也不会在本轮发起普通读取。收到明确的 CMSIS-DAP 通信错误日志时结束会话并报告 `PROBE_COMMUNICATION_FAILED`。探针初始化时正常的 USB 清空超时不会触发断连。
+- End the current read when OpenOCD reports a scatter memory read failure, even if the diagnostic log arrives after the Tcl reply. An explicit CMSIS-DAP communication failure log closes the session with `PROBE_COMMUNICATION_FAILED`. Expected USB drain timeouts during initialization do not trigger a disconnect.
+
 ### 调试 / Debug
 
 - 未绑定 SVD 的工作区在调试会话就绪后才扫描 CMSIS 包目录。复用已校验文件的元数据，减少后续自动发现的重复解析。

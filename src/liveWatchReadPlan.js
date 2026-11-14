@@ -136,7 +136,14 @@ function partitionManagedReadPlan(items, maxBytes = MAX_DEBUG_READ_BYTES, maxCom
     };
 }
 
-function compileReadBatches(items, ramSectionRanges = [], debug = false, reservedBytes = 0) {
+function compileReadBatches(
+    items,
+    ramSectionRanges = [],
+    debug = false,
+    reservedBytes = 0,
+    maxGapBytes = MAX_READ_GAP_BYTES,
+    reservedCommands = 0
+) {
     if (!Array.isArray(items) || !items.length) return [];
     const sorted = items.slice().sort((a, b) => (a.address >>> 0) - (b.address >>> 0));
     const groups = [];
@@ -150,7 +157,10 @@ function compileReadBatches(items, ramSectionRanges = [], debug = false, reserve
         }
     }
     let totalBytes = groups.reduce((total, group) => total + group.end - group.start, reservedBytes);
-    let commands = groups.reduce((total, group) => total + Math.ceil((group.end - group.start) / MAX_BATCH_BYTES), 0);
+    let commands = groups.reduce(
+        (total, group) => total + Math.ceil((group.end - group.start) / MAX_BATCH_BYTES),
+        reservedCommands
+    );
     const mergeNeighbours = () => {
         for (let index = 1; index < groups.length;) {
             const previous = groups[index - 1];
@@ -163,7 +173,7 @@ function compileReadBatches(items, ramSectionRanges = [], debug = false, reserve
                 Math.ceil((group.end - group.start) / MAX_BATCH_BYTES) +
                 Math.ceil((end - previous.start) / MAX_BATCH_BYTES);
             if (
-                gap <= MAX_READ_GAP_BYTES &&
+                gap <= maxGapBytes &&
                 ramSectionRanges.some((range) => previous.start >= range.start && end <= range.end) &&
                 (!debug || (totalBytes + gap <= MAX_DEBUG_READ_BYTES && nextCommands <= MAX_DEBUG_READ_COMMANDS))
             ) {

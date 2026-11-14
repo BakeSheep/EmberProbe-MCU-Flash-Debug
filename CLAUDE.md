@@ -47,6 +47,6 @@ Plain CommonJS JavaScript (no TypeScript build; types are checked via JSDoc/`tsc
 
 **Tests**: run production modules with replaced requires through `test/helpers/load-module.js` (`loadProvider` builds on it; `createProvider()` runs the real constructor). Time is driven with `test/helpers/fake-clock.js` through injected clocks (the session's `options.clock`, `render-webview`'s `clock`, which also replaces the page's `Date.now`); real waits use `waitFor` from `test/helpers/wait.js`. Upgrade compatibility layers are registered in `scripts/compat-layers.js`.
 
-**Other**: `native/` (Windows driver helper, vendored libwdi), `resources/` (bundled tools), `docs/records/` (past audits, plans and board validation, useful for rationale), `docs/development/releasing.md` (release flow: `npm run release:prepare`, bilingual CHANGELOG, tag-triggered CI publish).
+**Other**: `native/` (Windows driver helper, vendored libwdi), `resources/` (bundled tools), `docs/records/` (Git-ignored local audits and board validation), `docs/development/releasing.md` (release flow: `npm run release:prepare`, bilingual CHANGELOG, tag-triggered CI publish).
 
 Supporting docs to read when relevant: `docs/design/`, notably `cubemx-pipeline.md`, `probe-selection.md`, `chart-history.md`.

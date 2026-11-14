@@ -3,6 +3,36 @@ const assert = require("assert");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { isFatalProbeLog } = require("../src/openocdProcess");
 const i18n = require("../src/i18n");
+const { scenario } = require("./helpers/scenario");
+
+scenario("A native CMSIS-DAP transport failure aborts once instead of retrying reads", () => {
+    for (const line of [
+        "Debug: error reading adapter response",
+        "CMSIS-DAP command mismatch. Expected 0x5 received 0x0"
+    ]) {
+        const events = [];
+        const session = new ManagedOpenOcdSession({}, { onDisconnect: (error) => events.push(error) });
+        let rejection;
+        session.tcl.queue.push({
+            reject: (error) => {
+                rejection = error;
+            }
+        });
+        session._handleServerLog(line, { line: () => false });
+        session._handleServerLog(line, { line: () => false });
+        assert.strictEqual(events.length, 1);
+        assert.strictEqual(rejection.code, "PROBE_COMMUNICATION_FAILED");
+        assert.strictEqual(session.stopped, true);
+        assert.strictEqual(session.tcl.queue.length, 0);
+    }
+    assert.strictEqual(isFatalProbeLog("Debug: SWD ack not OK @ 0 WAIT"), false);
+    assert.strictEqual(isFatalProbeLog("Debug: USB timeout @ 0"), false, "startup drain uses a short timeout normally");
+    assert.strictEqual(
+        isFatalProbeLog("Debug: SWD ack not OK @ 0 JUNK"),
+        false,
+        "startup negotiation may probe dormant mode"
+    );
+});
 // A lost connection stops sampling once and rejects the whole FIFO, so late responses cannot leak into the next
 // request.
 let disconnects = 0;
