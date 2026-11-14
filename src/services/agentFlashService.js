@@ -4,7 +4,7 @@ const fs = require("fs/promises");
 const { inspectElf } = require("../../skills/_emberprobe/elf-file");
 const os = require("os");
 const path = require("path");
-const { resolveExecutablePath } = require("../../skills/_emberprobe/openocd-launch");
+const { matchesOpenOcdExecutable, resolveExecutablePath } = require("../../skills/_emberprobe/openocd-launch");
 const { quoteTclWord } = require("../openocdRunner");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { runOpenOcdOnce } = require("./openocdExec");
@@ -19,6 +19,7 @@ const {
 class AgentFlashService {
     constructor(options) {
         this.getConfig = options.getConfig;
+        this.resolveExecutable = options.resolveExecutable || resolveExecutablePath;
         this.coordinator = options.coordinator;
         this.authorization = options.authorization;
         this.isDebugActive = options.isDebugActive;
@@ -33,12 +34,25 @@ class AgentFlashService {
         this.notifyRtt = options.notifyRtt || null;
     }
 
-    request(params) {
+    async resolveOpenOcd(configured = this.getConfig().openocdPath) {
+        const executable = await this.resolveExecutable(configured);
+        if (this.getConfig().openocdPath !== configured)
+            throw Object.assign(new Error("The configured OpenOCD changed while resolving its executable"), {
+                code: "OPENOCD_EXECUTABLE_MISMATCH"
+            });
+        return resolveExecutablePath(executable);
+    }
+
+    async request(params) {
         const configured = this.getConfig();
-        const executable = resolveExecutablePath(configured.openocdPath);
-        if (!executable) throw new Error("Configure OpenOCD before flashing");
+        const executable = await this.resolveOpenOcd(configured.openocdPath);
+        if (!executable)
+            throw Object.assign(new Error("Configure OpenOCD before flashing: the executable could not be prepared"), {
+                code: "OPENOCD_NOT_FOUND"
+            });
         for (const key of ["openocd", "executable"]) {
-            if (params[key] !== undefined && resolveExecutablePath(params[key]) !== executable)
+            // Installed older skills may send the configured default name as a placeholder.
+            if (params[key] !== undefined && !matchesOpenOcdExecutable(params[key], configured.openocdPath, executable))
                 throw Object.assign(new Error("Agent OpenOCD must match the configured executable"), {
                     code: "OPENOCD_EXECUTABLE_MISMATCH"
                 });
@@ -60,12 +74,12 @@ class AgentFlashService {
         if (rttYielded) await rttYielded;
         const lease = this.coordinator.acquire("agentRead");
         try {
-            const request = this.request(params);
+            const request = await this.request(params);
             const elf = await inspectElf(params.elf);
             this.assertDigest(elf.sha256, params.elfSha256);
-            this.request(request);
+            await this.request(request);
             const connection = await this.prepare(request);
-            this.request(request);
+            await this.request(request);
             return this.authorization.authorize(
                 { ...this.identity(request, connection), elf, operation: params.operation || "flash.execute" },
                 params.confirmationId
@@ -104,7 +118,7 @@ class AgentFlashService {
     }
 
     async execute(params = {}, verify = false) {
-        const request = this.request(params);
+        const request = await this.request(params);
         if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
         // RTT releases its probe hold for the flash and re-attaches once a session is available again; a flash that
         // another operation blocks anyway must not interrupt it.
@@ -125,12 +139,14 @@ class AgentFlashService {
             const inspected = await inspectElf(params.elf, { snapshot });
             const { path: elf, sha256 } = inspected;
             this.assertDigest(sha256, params.elfSha256);
-            this.request(request);
+            await this.request(request);
             const launch = this.resolveLaunch(request.executable, request.probe, request.target, request.transport);
             const compatible = await this.check(launch.executable);
             if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
             const connection = await this.prepare(request, { resolveLaunch: () => launch });
-            if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
+            await this.request(request);
+            if (lease.released || this.isDebugActive())
+                throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
             const plan = {
                 ...this.identity(request, connection),
                 elf: inspected,
@@ -167,9 +183,6 @@ class AgentFlashService {
                       "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }",
                       buildFlashProgramCommand(word, flashSpeedKhz(connection))
                   ];
-            if (lease.released || this.isDebugActive())
-                throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
-            this.request(request);
             let verifyResult;
             const programming = { unchanged: false, flashClockKhz: 0, speedFallback: false };
             const trackFlashClock = flashClockTracker();

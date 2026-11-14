@@ -75,6 +75,13 @@ const { AgentService } = require("../src/services/agentService");
         await bridge.call(method);
         if (method !== "config.set") await routes[method](null);
     }
+    calls.length = 0;
+    const resolvedConfig = await bridge.call("config.get", { resolveOpenOcd: true });
+    assert.deepStrictEqual(
+        calls.map(({ method }) => method),
+        ["_configurationSnapshot", "_agentFlashService.resolveOpenOcd"]
+    );
+    assert.deepStrictEqual(resolvedConfig.resolvedOpenOcdPath, { method: "_agentFlashService.resolveOpenOcd" });
     assert.deepStrictEqual(await bridge.call("probe.list"), { devices: ["probe"] });
     // The probe the workspace would use is marked; a failed lookup still returns the listing.
     const inventory = { available: true, devices: [{ id: String.raw`USB\A` }, { id: String.raw`USB\B` }] };

@@ -8,7 +8,13 @@ const fs = require("fs");
 const { canonicalFileSync } = require("./file-identity");
 const { createLineDecoder } = require("./tool-output");
 const { detectProbe, probeFromText } = require("./probe-detection");
-const { isSafeCfgPath, resolveExecutablePath, resolveOpenOcdLaunch, normalizeTransport } = require("./openocd-launch");
+const {
+    isSafeCfgPath,
+    matchesOpenOcdExecutable,
+    resolveExecutablePath,
+    resolveOpenOcdLaunch,
+    normalizeTransport
+} = require("./openocd-launch");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
@@ -50,7 +56,7 @@ function parseArgs(argv) {
 // arguments or detection.
 async function getEmberProbeConfig(workspace, bridgeCall = call) {
     try {
-        return { config: await bridgeCall(workspace, "config.get", {}), diagnostic: null };
+        return { config: await bridgeCall(workspace, "config.get", { resolveOpenOcd: true }), diagnostic: null };
     } catch (error) {
         return { config: null, diagnostic: diagnosticForError(error, { operation: "config.get" }) };
     }
@@ -369,16 +375,35 @@ async function preflight(options, deps = {}) {
         sources.probe = "config";
     }
     let openocd;
-    if (options.openocd) {
+    if (Object.hasOwn(config || {}, "resolvedOpenOcdPath")) {
+        openocd = resolveExecutablePath(config.resolvedOpenOcdPath);
+        sources.openocd = "config";
+        let error;
+        if (!openocd) {
+            error = Object.assign(new Error("The configured OpenOCD could not be prepared"), {
+                code: "OPENOCD_NOT_FOUND"
+            });
+        } else if (options.openocd && !matchesOpenOcdExecutable(options.openocd, config.openocdPath, openocd)) {
+            error = Object.assign(new Error("Agent OpenOCD must match the configured executable"), {
+                code: "OPENOCD_EXECUTABLE_MISMATCH"
+            });
+            openocd = "";
+        }
+        if (error) {
+            diagnostics.push(diagnosticForError(error, { operation: "openocd.launch" }));
+            notes.push(error.message);
+        }
+    } else if (options.openocd) {
         openocd = String(options.openocd);
         sources.openocd = "explicit";
     } else if (config && config.openocdPath) {
         openocd = String(config.openocdPath);
         sources.openocd = "config";
-    } else {
+    } else if (!diagnostic) {
         openocd = "openocd";
         sources.openocd = "default";
     }
+    if (!openocd && diagnostic) notes.push(diagnostic.error.message);
     // Configuration values are workspace-relative by convention; canonicalize the
     // selected ELF before hashing/authorizing so the same bytes are flashed that the
     // user saw in preflight, regardless of the skill process' current directory.
@@ -401,8 +426,8 @@ async function preflight(options, deps = {}) {
         sources.probe = probe ? "auto" : "none";
         notes.push(...detected.notes);
     }
-    const openocdCheck = await probeOpenOcdCompatibility(openocd);
-    if (!openocdCheck.compatible) {
+    const openocdCheck = openocd ? await probeOpenOcdCompatibility(openocd) : { compatible: false, version: "" };
+    if (openocd && !openocdCheck.compatible) {
         const detected = openocdCheck.version ? ` ${openocdCheck.version}` : " with an unknown version";
         const action =
             process.platform === "win32"
@@ -428,7 +453,7 @@ async function preflight(options, deps = {}) {
         }
     }
     let scriptsReady = false;
-    if (target && probe) {
+    if (openocd && target && probe) {
         try {
             resolveOpenOcdLaunch(openocd, probe, target, transport);
             const connection = await prepareProbeConnection(

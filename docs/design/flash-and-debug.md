@@ -44,3 +44,5 @@ Windows 上 GDB 冷启动可能需要数秒。隔离的 VS Code 扩展宿主连�
 ## 内置 OpenOCD 运行时
 
 Windows 与 Linux x64 上默认 `openocdPath` 使用内置运行时，只解压一次到扩展全局存储中以压缩包 SHA-256 命名的目录，因此扩展更新后只有内置压缩包变化时才会重新解压。其 `openocd --version` 校验在每个扩展宿主中只执行一次，可执行文件大小与修改时间不变时直接复用，之后的烧录、调试与实时查看不再额外启动 OpenOCD 进程。
+
+Agent 烧录与校验和侧栏共用扩展宿主的运行时选择。Skill 与 MCP 的烧录预检通过 `config.get` 请求解析后的路径；授权计划和实际执行绑定该路径。显式配置的外部版本仍优先。内置版本从随包 scripts 目录加载配置，并在 OpenOCD 子进程中清除继承的 `OPENOCD_SCRIPTS`。

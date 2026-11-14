@@ -112,8 +112,20 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
             fs.mkdirSync(path.join(scripts, kind), { recursive: true });
             fs.writeFileSync(path.join(scripts, kind, name), "");
         }
-        delete process.env.OPENOCD_SCRIPTS;
+        const overrideScripts = path.join(root, "override-scripts");
+        fs.cpSync(scripts, overrideScripts, { recursive: true });
+        process.env.OPENOCD_SCRIPTS = overrideScripts;
+        assert.strictEqual(
+            launch.resolveOpenOcdLaunch(binary, "jlink.cfg", "stm32f4x.cfg").scriptsRoot,
+            fs.realpathSync(overrideScripts)
+        );
+        assert.strictEqual(launch.openOcdEnvironment(binary), undefined);
+        fs.mkdirSync(path.join(root, "distro-info"));
+        fs.writeFileSync(path.join(root, "distro-info", "emberprobe-targets.json"), "{}");
         const resolved = launch.resolveOpenOcdLaunch(binary, "jlink.cfg", "stm32f4x.cfg");
+        assert.strictEqual(resolved.scriptsRoot, fs.realpathSync(scripts));
+        assert.strictEqual(launch.openOcdEnvironment(binary).OPENOCD_SCRIPTS, undefined);
+        assert.strictEqual(process.env.OPENOCD_SCRIPTS, overrideScripts, "do not change the host environment");
         for (const transport of ["auto", "swd", "jtag", "hla_swd", "hla_jtag"]) {
             const args = launch.buildOpenOcdConfigArgs(resolved, transport);
             assert.strictEqual(args.includes(`transport select ${transport}`), transport !== "auto");

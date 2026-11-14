@@ -377,6 +377,7 @@ function createWorkspaceServices(host, context, vscode, fullAccess) {
 function createAgentServices(host, context, vscode, { probeCoordinator, flashAuthorization }) {
     const agentFlashService = new AgentFlashService({
         getConfig: () => host._configurationStore.snapshot(),
+        resolveExecutable: (executable) => host._resolveOpenOcdPath(executable),
         coordinator: probeCoordinator,
         authorization: flashAuthorization,
         prepare: (options, settings) => host._probeConnectionService.prepare(options, settings),

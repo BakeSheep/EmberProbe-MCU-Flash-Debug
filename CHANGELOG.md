@@ -24,6 +24,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 探针诊断 / Probe diagnostics
 
+- Agent 烧录和校验的预检、授权与执行共用扩展的 OpenOCD 路径解析。Windows/Linux x64 默认使用内置版本及配套脚本，保留显式外部配置。
+- Use the extension's OpenOCD resolution for Agent flash preflight, authorization, programming and verification. Windows/Linux x64 default to the bundled executable and scripts. Explicit external paths still take precedence.
+
 - 探针被采样、RTT、调试等操作占用时禁用 J-Link 驱动下拉。若切换请求被拒绝，侧栏会结束加载；驱动切换期间占用探针，独立 RTT 确认 OpenOCD 退出后才释放探针。
 - Disable the J-Link driver selector while sampling, RTT, debugging or another operation owns the probe. A rejected switch clears the loading state. Driver switching reserves the probe, and standalone RTT releases it only after confirming OpenOCD exit.
 

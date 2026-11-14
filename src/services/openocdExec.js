@@ -1,10 +1,9 @@
 "use strict";
-const { buildOpenOcdConfigArgs } = require("../openocdScripts");
+const { buildOpenOcdConfigArgs, openOcdEnvironment, resolveOpenOcdLaunch } = require("../openocdScripts");
 
 const { diagnoseOpenOcdFailure, connectionDetails } = require("../../skills/_emberprobe/openocd-diagnostics");
 const { spawn } = require("child_process");
 const { createLineDecoder } = require("../../skills/_emberprobe/tool-output");
-const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { withTargetCheck, targetCheckMonitor } = require("../chip/targetIdentity");
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -60,6 +59,7 @@ function runOpenOcdOnce(options) {
         try {
             child = spawnImpl(launch.executable, args, {
                 cwd: launch.cwd,
+                env: openOcdEnvironment(launch.executable),
                 windowsHide: true,
                 shell: false
             });

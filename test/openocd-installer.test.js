@@ -11,6 +11,13 @@ const targetManifest = require("../resources/openocd-targets-manifest.json");
 const installer = require("../src/openocdInstaller");
 const { discoverTargetConfigs } = require("../src/openocdScripts");
 const { probeDefaultOpenOcd, shouldUseBundledDefault } = require("../src/openocdChecker");
+const { AgentFlashService } = require("../src/services/agentFlashService");
+const { OpenOcdStatusService } = require("../src/services/openocdStatusService");
+const { createAgentRoutes } = require("../src/services/agentRoutes");
+const { resolveExecutablePath, resolveOpenOcdLaunch } = require("../src/openocdScripts");
+const { runOpenOcdOnce } = require("../src/services/openocdExec");
+const { preflight } = require("../skills/_emberprobe/flash-common");
+const { minimalElf } = require("./helpers/elf-fixture");
 const {
     platformKey,
     getBundledArchive,
@@ -94,6 +101,82 @@ const {
             "the default runtime installs inside the extension's global storage"
         );
         assert.notStrictEqual(bundled.path, "/usr/bin/openocd");
+        await scenario("Agent Flash shares bundled default resolution even with system OpenOCD on PATH", async () => {
+            const systemBin = path.join(tmpBase, "system", "bin");
+            const systemOpenOcd = path.join(systemBin, OPENOCD_BIN);
+            fs.mkdirSync(systemBin, { recursive: true });
+            fs.writeFileSync(systemOpenOcd, "", { mode: 0o755 });
+            const systemScripts = path.join(systemBin, "..", "scripts");
+            fs.mkdirSync(path.join(systemScripts, "target"), { recursive: true });
+            fs.writeFileSync(path.join(systemScripts, "outside-bundle.cfg"), "");
+            const previousPath = process.env.PATH;
+            const previousScripts = process.env.OPENOCD_SCRIPTS;
+            process.env.PATH = [systemBin, previousPath].filter(Boolean).join(path.delimiter);
+            process.env.OPENOCD_SCRIPTS = systemScripts;
+            try {
+                const elf = path.join(tmpBase, "firmware.elf");
+                fs.writeFileSync(elf, minimalElf());
+                let openocdPath = "openocd";
+                const getConfig = () => ({ elf, openocdPath, debugger: "cmsis-dap.cfg", mcu: "stm32c5x.cfg" });
+                const resolver = new OpenOcdStatusService({
+                    checker: require("../src/openocdChecker"),
+                    context: mockContext,
+                    onStatus() {}
+                });
+                const flash = new AgentFlashService({
+                    getConfig,
+                    resolveExecutable: (value) => resolver.resolve(value)
+                });
+                const routes = createAgentRoutes({ _configurationSnapshot: getConfig, _agentFlashService: flash });
+                assert.strictEqual(resolveExecutablePath("openocd"), fs.realpathSync(systemOpenOcd));
+                const config = await routes["config.get"]({ resolveOpenOcd: true });
+                assert.strictEqual(config.openocdPath, "openocd");
+                assert.strictEqual(config.resolvedOpenOcdPath, fs.realpathSync(bundled.path));
+                const request = await flash.request({ openocd: config.resolvedOpenOcdPath });
+                assert.strictEqual(request.executable, config.resolvedOpenOcdPath);
+                assert.strictEqual((await flash.request({ openocd: "openocd" })).executable, request.executable);
+                assert.match(
+                    resolveOpenOcdLaunch(request.executable, request.probe, request.target).targetPath,
+                    /[\\/]target[\\/]stm32c5x\.cfg$/
+                );
+                const plan = await preflight(
+                    { workspace: tmpBase },
+                    {
+                        call: (_workspace, method, params) => {
+                            if (method === "config.get") return routes[method](params);
+                            assert.strictEqual(method, "probe.list");
+                            return {
+                                available: true,
+                                devices: [{ family: "cmsis-dap", serial: "fixture", id: "fixture" }],
+                                notes: []
+                            };
+                        }
+                    }
+                );
+                assert.strictEqual(plan.ready, true, JSON.stringify(plan.diagnostics));
+                assert.strictEqual(plan.openocd, request.executable);
+                const checkedScripts = await runOpenOcdOnce({
+                    ...request,
+                    buildCommands: () => [
+                        "noinit",
+                        "if {[catch {find outside-bundle.cfg}]} {echo EP_BUNDLED_SCRIPTS}",
+                        "shutdown"
+                    ]
+                });
+                assert.strictEqual(checkedScripts.exitCode, 0);
+                assert.ok(checkedScripts.openocdTail.includes("EP_BUNDLED_SCRIPTS"));
+                await assert.rejects(flash.request({ openocd: systemOpenOcd }), {
+                    code: "OPENOCD_EXECUTABLE_MISMATCH"
+                });
+                openocdPath = "";
+                assert.strictEqual((await flash.request({})).executable, request.executable);
+            } finally {
+                if (previousPath === undefined) delete process.env.PATH;
+                else process.env.PATH = previousPath;
+                if (previousScripts === undefined) delete process.env.OPENOCD_SCRIPTS;
+                else process.env.OPENOCD_SCRIPTS = previousScripts;
+            }
+        });
         const installedAt = fs.statSync(bundled.path).mtimeMs;
         const reusedProgress = [];
         const reused = await probeDefaultOpenOcd("openocd", mockContext, (event) => reusedProgress.push(event));

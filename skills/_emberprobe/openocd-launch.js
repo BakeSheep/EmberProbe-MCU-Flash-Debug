@@ -219,12 +219,20 @@ function resolveExecutablePath(executable) {
     return configured;
 }
 
+function matchesOpenOcdExecutable(requested, configured, resolved) {
+    const setting = String(configured || "").trim();
+    return (
+        (String(requested || "").trim() === "openocd" && (!setting || setting === "openocd")) ||
+        resolveExecutablePath(requested) === resolved
+    );
+}
+
 function scriptsRootCandidates(executable) {
     const binary = resolveExecutablePath(executable);
     if (!binary || (!binary.includes("/") && !binary.includes("\\"))) return [];
     const prefix = path.dirname(path.dirname(binary));
     const candidates = [
-        process.env.OPENOCD_SCRIPTS,
+        isBundledOpenOcd(binary) ? undefined : process.env.OPENOCD_SCRIPTS,
         path.join(prefix, "scripts"),
         // xPack archives keep bin/ and openocd/scripts/ as siblings.
         path.join(prefix, "openocd", "scripts"),
@@ -232,6 +240,20 @@ function scriptsRootCandidates(executable) {
         path.join(prefix, "share", "openocd", "scripts")
     ].filter(Boolean);
     return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
+}
+
+function isBundledOpenOcd(binary) {
+    const prefix = path.dirname(path.dirname(binary));
+    // The packager adds this inventory to both EmberProbe platform archives.
+    return fs.existsSync(path.join(prefix, "distro-info", "emberprobe-targets.json"));
+}
+
+function openOcdEnvironment(binary) {
+    if (!isBundledOpenOcd(binary)) return undefined;
+    const env = { ...process.env };
+    // Windows environment variable lookup is case-insensitive.
+    for (const key of Object.keys(env)) if (key.toUpperCase() === "OPENOCD_SCRIPTS") delete env[key];
+    return env;
 }
 
 function resolveConfigFile(scriptsRoot, kind, config) {
@@ -344,6 +366,8 @@ module.exports = {
     isSafeCfgPath,
     resolveExecutablePath,
     scriptsRootCandidates,
+    openOcdEnvironment,
+    matchesOpenOcdExecutable,
     findScriptsRoot,
     resolveConfigFile,
     resolveOpenOcdLaunch,

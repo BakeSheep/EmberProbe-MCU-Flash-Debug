@@ -1,8 +1,7 @@
 "use strict";
-const { buildOpenOcdConfigArgs } = require("./openocdScripts");
 const { spawn } = require("child_process");
 const { createLineDecoder } = require("../skills/_emberprobe/tool-output");
-const { isSafeCfgPath, resolveOpenOcdLaunch } = require("./openocdScripts");
+const { buildOpenOcdConfigArgs, isSafeCfgPath, openOcdEnvironment, resolveOpenOcdLaunch } = require("./openocdScripts");
 const {
     buildFlashProgramCommand,
     flashClockTracker,
@@ -244,7 +243,12 @@ function runOpenOcd(vscode, options, onProgress) {
         onProgress({ stage: "start", level: "info", key: "run.starting", message: "正在启动 OpenOCD" });
         let child;
         try {
-            child = spawn(launch.executable, args, { cwd: launch.cwd, windowsHide: true, shell: false });
+            child = spawn(launch.executable, args, {
+                cwd: launch.cwd,
+                env: openOcdEnvironment(launch.executable),
+                windowsHide: true,
+                shell: false
+            });
             sharedChild = child;
         } catch (error) {
             print(`✗ 启动 OpenOCD 失败：${error.message}`, "\x1b[31m");

@@ -19,7 +19,15 @@ function createAgentRoutes(host, probes = listProbes) {
             group: host._sidebarDataBreakpoints
         }));
     return {
-        "config.get": () => host._configurationSnapshot(),
+        "config.get": async (params) => {
+            const snapshot = await host._configurationSnapshot();
+            if (params?.resolveOpenOcd === true)
+                return {
+                    ...snapshot,
+                    resolvedOpenOcdPath: await host._agentFlashService.resolveOpenOcd(snapshot.openocdPath)
+                };
+            return snapshot;
+        },
         "probe.list": async (params = {}) => {
             const query = normalizeInventoryQuery(params);
             const [inventory, selectedId] = await Promise.all([

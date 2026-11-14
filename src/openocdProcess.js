@@ -9,6 +9,7 @@ const {
     buildOpenOcdConfigArgs,
     buildOpenOcdRtosArgs,
     buildOpenOcdTargetArgs,
+    openOcdEnvironment,
     resolveOpenOcdLaunch
 } = require("./openocdScripts");
 const { withTargetCheck } = require("./chip/targetIdentity");
@@ -116,7 +117,12 @@ class OpenOcdProcess {
     start(launch, { port, executable, onLine, onError, onClose }) {
         this._readyPattern = new RegExp(`Listening on port\\s+${port}\\s+for tcl connections`, "i");
         try {
-            this.child = spawn(launch.executable, launch.args, { cwd: launch.cwd, windowsHide: true, shell: false });
+            this.child = spawn(launch.executable, launch.args, {
+                cwd: launch.cwd,
+                env: openOcdEnvironment(launch.executable),
+                windowsHide: true,
+                shell: false
+            });
         } catch (error) {
             throw notFoundError(error, executable);
         }

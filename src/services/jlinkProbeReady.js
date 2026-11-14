@@ -3,6 +3,7 @@
 const { execFile } = require("child_process");
 const {
     resolveExecutablePath,
+    openOcdEnvironment,
     findScriptsRoot,
     resolveConfigFile
 } = require("../../skills/_emberprobe/openocd-launch");
@@ -14,7 +15,14 @@ function run(executable, args, cwd) {
         execFile(
             executable,
             args,
-            { cwd, windowsHide: true, timeout: 2500, maxBuffer: 64 * 1024, encoding: "buffer" },
+            {
+                cwd,
+                env: openOcdEnvironment(executable),
+                windowsHide: true,
+                timeout: 2500,
+                maxBuffer: 64 * 1024,
+                encoding: "buffer"
+            },
             (error, stdout, stderr) =>
                 error
                     ? reject(

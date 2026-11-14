@@ -43,7 +43,7 @@ async function testProbeBinding(root, elf) {
         elf,
         debugger: "cmsis-dap.cfg",
         mcu: "geehy/apm32f4x.cfg",
-        openocdPath: "fixture-openocd",
+        openocdPath: "openocd",
         probeSerial: ""
     };
     // The user picked probe A in the sidebar; the legacy record mirrors it for installed skills.
@@ -67,6 +67,12 @@ async function testProbeBinding(root, elf) {
             snapshot: () => ({ ...config })
         },
         _svdManager: { peekBound: async () => null },
+        _agentFlashService: {
+            resolveOpenOcd: async (setting) => {
+                assert.strictEqual(setting, "openocd");
+                return resolvedOpenOcdPath;
+            }
+        },
         _context: {
             workspaceState: {
                 get: (key) => {
@@ -76,9 +82,10 @@ async function testProbeBinding(root, elf) {
             }
         }
     });
+    let resolvedOpenOcdPath = path.join(root, "resolved-openocd");
     const routes = createAgentRoutes(host);
     const bridgeCall = async (_workspace, method, params) => {
-        if (method === "config.get") return routes[method]();
+        if (method === "config.get") return routes[method](params);
         if (method === "probe.list") return inventory;
         requests.push({ method, params: JSON.parse(JSON.stringify(params)) });
         const connection = resolveProbeConnection(
@@ -94,7 +101,7 @@ async function testProbeBinding(root, elf) {
         assert(["flash.execute", "flash.verify"].includes(method));
         return { code: 0, verified: true, probeSerial: connection.probeSerial };
     };
-    const launch = { executable: config.openocdPath };
+    const launch = { executable: resolvedOpenOcdPath };
     const common = loadFlashModule("skills/_emberprobe/flash-common.js", {
         "./agent-client": { ...require("../skills/_emberprobe/agent-client"), call: bridgeCall },
         "./openocd-launch": {
@@ -111,7 +118,8 @@ async function testProbeBinding(root, elf) {
                 })
         },
         child_process: {
-            spawn: () => {
+            spawn: (binary) => {
+                assert.strictEqual(binary, resolvedOpenOcdPath);
                 const child = new EventEmitter();
                 child.stdout = new PassThrough();
                 child.stderr = new PassThrough();
@@ -145,6 +153,16 @@ async function testProbeBinding(root, elf) {
     };
 
     const bound = await common.preflight({ workspace: root });
+    assert.strictEqual(bound.openocd, resolvedOpenOcdPath);
+    const configuredPath = resolvedOpenOcdPath;
+    resolvedOpenOcdPath = "";
+    const unresolved = await common.preflight({ workspace: root });
+    assert.strictEqual(unresolved.ready, false);
+    assert(unresolved.diagnostics.some(({ error }) => error.code === "OPENOCD_NOT_FOUND"));
+    resolvedOpenOcdPath = configuredPath;
+    const mismatch = await common.preflight({ workspace: root, openocd: path.join(root, "other-openocd") });
+    assert.strictEqual(mismatch.ready, false);
+    assert(mismatch.diagnostics.some(({ error }) => error.code === "OPENOCD_EXECUTABLE_MISMATCH"));
     assert.strictEqual(bound.ready, true, "the remembered probe resolves an inventory with A and B online");
     assert.strictEqual(bound.probeSerial, "probe-A");
     assert.strictEqual(bound.sources.probeSerial, "inventory");
