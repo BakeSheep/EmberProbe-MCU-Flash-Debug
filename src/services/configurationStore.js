@@ -30,7 +30,13 @@ const NUMBER_RANGES = Object.freeze({
 // Configuration keys the Agent Bridge may not change: openocdPath could point probe calls at any executable (token ->
 // local execution), so the user must change it in VS Code settings or the sidebar. UI paths do not use store.update and
 // are unaffected by this assertion.
-const AGENT_FORBIDDEN_KEYS = Object.freeze(["openocdPath", "cubemxPath", "cubemx2Path"]);
+const AGENT_FORBIDDEN_KEYS = Object.freeze([
+    "openocdPath",
+    "cubemxPath",
+    "cubemx2Path",
+    "probeRsNativePath",
+    "probeRsTargetDescription"
+]);
 
 function assertAgentSettable(values) {
     for (const key of Object.keys(values || {})) {
@@ -66,6 +72,10 @@ class ConfigurationStore {
             probeSerial: "",
             adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
             samplingAdapterSpeedKhz: cfg.get("samplingAdapterSpeedKhz", 0),
+            samplingBackend: cfg.get("samplingBackend", "openocd"),
+            probeRsChip: cfg.get("probeRsChip", ""),
+            probeRsTargetDescription: cfg.get("probeRsTargetDescription", ""),
+            probeRsNativePath: cfg.get("probeRsNativePath", ""),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
             cubemx2Path: cfg.get("cubemx2Path", ""),

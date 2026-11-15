@@ -61,7 +61,8 @@ function activate(context) {
             if (event.affectsConfiguration("emberprobe.chartBackgroundIcon.enabled")) provider.chartBackground().broadcast();
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.debugLaunch.externalSettingsChanged().catch(console.error);
             const connectionChanged = ["openocdPath", "transport", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
-            const samplingSpeedChanged = event.affectsConfiguration("emberprobe.samplingAdapterSpeedKhz");
+            const samplingSpeedChanged = ["samplingAdapterSpeedKhz", "samplingBackend", "probeRsChip", "probeRsTargetDescription", "probeRsNativePath"]
+                .some(key => event.affectsConfiguration("emberprobe." + key));
             if (connectionChanged || samplingSpeedChanged) provider.connectionConfigurationChanged(samplingSpeedChanged, !connectionChanged);
             if (event.affectsConfiguration("emberprobe.sampleFrequencyHz")) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.samplingArchiveMaxMiB")) provider.samplingArchiveConfigurationChanged();

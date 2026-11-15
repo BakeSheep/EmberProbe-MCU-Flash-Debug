@@ -63,7 +63,10 @@ class PeripheralAccessService {
             this.generation++;
         }
         const paused = debug.state === "paused";
-        const supported = paused || (standalone && !!sampling) || (debug.state === "running" && this.supportsRunning());
+        const supported =
+            paused ||
+            (standalone && !!sampling && sampling.capabilities?.peripherals !== false) ||
+            (debug.state === "running" && this.supportsRunning());
         const busy =
             this.debugBridge.replBusy ||
             this.debugBridge.transitionKind ||

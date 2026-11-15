@@ -1,0 +1,25 @@
+# Read-only description derived from ST STM32C5 DFP 2.1.0 metadata. No Flash algorithm.
+name: EmberProbe STM32C593
+manufacturer:
+  id: 0x20
+  cc: 0
+generated_from_pack: false
+variants:
+  - name: STM32C593RGT6
+    cores:
+      - name: main
+        type: armv8m
+        core_access_options: !Arm
+          ap: !v1 1
+    memory_map:
+      - !Nvm
+        name: FLASH
+        range: { start: 0x08000000, end: 0x08100000 }
+        cores: [main]
+        access: { write: false, boot: true }
+      - !Ram
+        name: SRAM
+        range: { start: 0x20000000, end: 0x20040000 }
+        cores: [main]
+    flash_algorithms: []
+flash_algorithms: []

@@ -18,6 +18,30 @@ const 成员、指针本体、map 键、set 元素、位域及类型不明确的
 
 ### 采样频率
 
+独立采样默认使用 OpenOCD。在侧栏 **MCU 配置 → 采样后端** 中选择 `probe-rs`，
+再点 **probe-rs MCU 型号**，搜索并选择准确的型号（例如 `STM32C593RGT6`）。列表来自已安装的
+probe-rs 原生程序，包含随附和自定义 YAML 中的单核 Cortex-M 型号；可按型号或系列搜索。
+切换芯片或后端前先停止当前探针会话。ELF 和侧栏点选的 USB 探针共用，
+**OpenOCD MCU 目标** 保留供烧录、调试和 OpenOCD 采样使用，选择 probe-rs 型号不会覆盖它。
+也可使用 VS Code 设置 `emberprobe.samplingBackend`、`emberprobe.probeRsChip`。
+未选型号或连接失败时，采样开关会停止并显示原因。只有采样意图开启不代表已经有可读连接。
+原生后端不需要通过 DAP 读取变量；波形中的“不限速”按探针实际吞吐运行，侧栏仍只按 20 Hz 更新。
+
+probe-rs 原生采样当前只读固定地址 RAM，支持全局标量及静态布局的数组、结构体。指针运行时寻址、
+STL 容器、变量写入、外设和 RTT 请切回 OpenOCD；原生会话期间这些操作不会另开连接。
+烧录和调试继续使用 OpenOCD，启动这些操作前会按原流程释放采样连接。
+首次连接会只读比对 ELF 的 Flash 内容，不会自动烧录、复位或恢复已暂停的目标。
+当前支持单核 ARM ELF32 小端固件，必须包含可写 RAM section 和能与目标 Flash 对应的加载段；
+不支持只在 RAM 中运行的固件。采样与探针传输协议沿用插件设置，自动协议默认 SWD。
+
+内置目标没有对应型号时，可用 `emberprobe.probeRsTargetDescription` 指定目标 YAML；
+随附 STM32C593RGT6 只读描述。也可用
+`emberprobe.probeRsNativePath` 指向已经构建的 `emberprobe-probe-rs`，不能填写普通 `probe-rs` CLI。
+OpenOCD 仍用于连接预检和其他功能，因此它的环境也需要就绪。
+原生后端在采样时钟和适配器时钟都保持默认值 `0` 时使用 1 MHz；要与 4 MHz 的测试比较，
+将 `emberprobe.samplingAdapterSpeedKhz` 设为 `4000`，重连后再比较同一变量和“不限速”模式。
+不要将侧栏固定的 20 Hz 刷新率与图表采集速率比较。
+
 | 查看位置 | 目标频率 | 是否保存历史 |
 | --- | --- | --- |
 | 波形窗口中的变量，包括隐藏的曲线 | 0.1–200 Hz，默认 30 Hz，或不限速 | 是 |

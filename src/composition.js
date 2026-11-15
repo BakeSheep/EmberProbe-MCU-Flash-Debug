@@ -59,6 +59,8 @@ const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/sa
 const { ChartHistoryService } = require("./services/chartHistoryService");
 const { RttController } = require("./services/rttController");
 const { RttTerminalService } = require("./services/rttTerminalService");
+const { NativeSamplingService } = require("./services/nativeSamplingService");
+const { SamplingConfiguration } = require("./services/samplingConfiguration");
 
 function createRttController(host, vscode, ManagedOpenOcdSession) {
     return new RttController(host, {
@@ -507,6 +509,12 @@ function createServices(host, context, { vscode }) {
     return {
         ...probe,
         ...sampling,
+        samplingConfiguration: new SamplingConfiguration({ host, vscode }),
+        nativeSamplingService: new NativeSamplingService({
+            extensionPath: context.extensionPath,
+            snapshot: () => host._configurationStore.snapshot(),
+            selection: () => host._probeConnectionService.getSuccessfulConnection()
+        }),
         ...createWorkspaceServices(host, context, vscode, fullAccess),
         ...createAgentServices(host, context, vscode, { probeCoordinator: probe.probeCoordinator, flashAuthorization }),
         runtimeSampleHold: new RuntimeSampleHold(),

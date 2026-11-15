@@ -1,5 +1,6 @@
 "use strict";
 const { randomUUID } = require("crypto");
+const { nativeSamplingIdentity } = require("./nativeSamplingService");
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
 const { detectProbe } = require("../../skills/_emberprobe/probe-detection");
 const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
@@ -285,6 +286,9 @@ class ProbeConnectionService {
         const previous = session.options?.settingsIdentity;
         const configured = this.getConfig();
         return (
+            (session.options?.nativeIdentity &&
+                JSON.stringify(session.options.nativeIdentity) !==
+                    JSON.stringify(nativeSamplingIdentity(configured))) ||
             (!!previous && JSON.stringify(previous) !== JSON.stringify(connectionIdentity(configured))) ||
             (session.options?.samplingAdapterSpeedKhz !== undefined &&
                 session.options.samplingAdapterSpeedKhz !== normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz))

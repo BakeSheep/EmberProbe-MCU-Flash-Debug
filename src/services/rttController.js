@@ -218,6 +218,8 @@ class RttController {
             const selection = this._selectHost();
             if (selection?.blocked === "multicore")
                 throw rttError("RTT_MULTICORE_UNSUPPORTED", "RTT control is unavailable for multicore debug sessions");
+            if (selection?.blocked === "native-sampling")
+                throw rttError("BACKEND_UNSUPPORTED", "RTT requires the OpenOCD sampling backend");
             if (selection?.blocked) throw probeBusy("The debug server is starting; start RTT once it is ready");
             // A start that cannot get a session leaves a pending controller as it was: its intent to restore the
             // owned session and its settle timer survive, so the wait still ends in a resume.
@@ -383,6 +385,8 @@ class RttController {
             if (!managed.ready) return { blocked: "debug-starting" };
             return { session: managed, source: "debug-server" };
         }
+        if (this.host._sampling?.running && this.host._sampling.session?.capabilities?.rtt === false)
+            return { blocked: "native-sampling" };
         if (this.host._sampling?.running && this.host._sampling.session)
             return { session: this.host._sampling.session, source: "live-watch" };
         return null;

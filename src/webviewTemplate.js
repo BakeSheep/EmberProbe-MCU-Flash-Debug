@@ -31,6 +31,7 @@ const SHARED_PRELUDE = [
 ];
 const PAGE_PRELUDE = {
     sidebar: [
+        "configuration.js",
         "chipView.js",
         "memoryView.js",
         "openocdCard.js",

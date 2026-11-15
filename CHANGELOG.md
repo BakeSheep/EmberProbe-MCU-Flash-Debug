@@ -8,6 +8,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 采样 / Sampling
 
+- 修复 probe-rs 原生后端无法匹配带前导零 USB 序列号的 J-Link；保持 USB ID 和唯一探针检查，其他探针仍使用精确序列号。
+- Match J-Link decimal serials across USB zero padding in native probe-rs sampling, retaining USB ID and uniqueness checks and exact serial matching for other probes.
+
+- 修复连接或 probe-rs 型号配置失败后采样开关仍显示已开启的问题；保留启动错误诊断，原生采样状态报告实际链路时钟。
+- Turn off sampling intent after a failed start, retain startup diagnostics and report the native helper's acknowledged link speed.
+
+- MCU 配置区新增采样后端与 probe-rs MCU 型号选择，直接搜索原生程序支持的单核 Cortex-M 型号，保留共用 ELF、探针及独立的 OpenOCD 目标。
+- Add sampling backend and probe-rs MCU pickers to MCU configuration. Search single-core Cortex-M models from the native helper while sharing the ELF and probe and retaining the separate OpenOCD target.
+
+- 新增可选的 probe-rs 原生只读采样后端：Rust 库持续读取固定地址 RAM，以二进制批量交给采样 Worker；支持图表无限速与侧栏独立节拍，不经过 DAP。要求明确选择探针、芯片及匹配 ELF；OpenOCD 仍为默认后端，继续提供调试、烧录、RTT、外设及变量写入。
+- Add an optional native probe-rs read-only sampling backend. A Rust library loop reads fixed-address RAM and batches binary samples into the sampling Worker, with unlimited graph sampling and a separate sidebar cadence, without DAP. Require an explicitly selected probe, chip and matching ELF. OpenOCD remains the default and provides debugging, flashing, RTT, peripherals and variable writes.
+
 - scatter 读取将 RAM 间隙合并范围从 32 字节收紧到 4 字节，减少分散变量的无效扩读；普通读取保留原策略，scatter 能力变化时重新选择缓存计划。
 - Limit RAM gap coalescing to 4 bytes for scatter reads to avoid unnecessary transfers for scattered variables. Keep the ordinary-read policy and select the matching cached plan when scatter capability changes.
 

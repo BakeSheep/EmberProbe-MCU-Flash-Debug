@@ -108,6 +108,18 @@ async function fixture(state) {
 }
 
 (async () => {
+    await scenario("native read-only sessions cannot expose peripheral access", async () => {
+        const f = await fixture("none");
+        try {
+            f.setSampling({ capabilities: { peripherals: false } });
+            assert.equal(f.access.status().canRead, false);
+            assert.equal(f.access.status().canWrite, false);
+            assert.equal(f.access.status().reason, "PERIPHERAL_ACCESS_UNSUPPORTED");
+            assert.equal(f.probes(), 0);
+        } finally {
+            await f.close();
+        }
+    });
     await scenario("Require active sampling for peripheral reads and writes without debugging", async () => {
         const f = await fixture("none");
         try {

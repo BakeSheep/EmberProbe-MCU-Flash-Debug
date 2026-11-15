@@ -59,7 +59,10 @@ async function run() {
     const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
         Object.entries(group.properties)
     );
-    assert.strictEqual(settings.length, 36);
+    assert.strictEqual(settings.length, 40);
+    assert.strictEqual(config.get("samplingBackend"), "openocd");
+    assert.strictEqual(config.get("probeRsChip"), "");
+    assert.strictEqual(config.get("probeRsNativePath"), "");
     for (const [key, setting] of settings)
         assert.deepStrictEqual(
             vscode.workspace.getConfiguration().inspect(key)?.defaultValue,
@@ -84,25 +87,30 @@ async function run() {
     console.log("✓ contributes bounded live-watch defaults");
 
     const { Worker } = require("worker_threads");
-    const worker = new Worker(path.join(extension.extensionPath, "dist", "samplingWorker.js"), { workerData: {} });
-    try {
-        const result = await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error("Packaged sampling worker did not respond")), 5000);
-            worker.once("error", (error) => {
-                clearTimeout(timer);
-                reject(error);
-            });
-            worker.once("message", (message) => {
-                clearTimeout(timer);
-                resolve(message);
-            });
-            worker.postMessage({ id: 1, method: "waitForIdle", args: [100] });
+    for (const backend of ["openocd", "probe-rs"]) {
+        const worker = new Worker(path.join(extension.extensionPath, "dist", "samplingWorker.js"), {
+            workerData: { samplingBackend: backend }
         });
-        assert.equal(result.id, 1);
-        assert.equal(result.result, true);
-        console.log("✓ packaged sampling worker starts independently without hardware");
-    } finally {
-        await worker.terminate();
+        try {
+            const result = await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error("Packaged sampling worker did not respond")), 5000);
+                worker.once("error", (error) => {
+                    clearTimeout(timer);
+                    reject(error);
+                });
+                worker.once("message", (message) => {
+                    clearTimeout(timer);
+                    resolve(message);
+                });
+                worker.postMessage({ id: 1, method: "waitForIdle", args: [100] });
+            });
+            assert.equal(result.id, 1);
+            assert.equal(result.result, true);
+            if (backend === "probe-rs") assert.equal(result.state.capabilities.write, false);
+            console.log(`✓ packaged ${backend} sampling worker starts independently without hardware`);
+        } finally {
+            await worker.terminate();
+        }
     }
 
     const svdWorker = new Worker(path.join(extension.extensionPath, "dist", "svdWorker.js"), {
@@ -156,6 +164,15 @@ async function run() {
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
     await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
     const provider = extension.exports.debugTestProvider;
+    await scenario("Failed sampling startup switches off intent and retains its diagnostic", async () => {
+        await assert.rejects(provider._sampling.start(), { i18nKey: "live.needConfig" });
+        const status = provider._sampling.status();
+        assert.equal(status.intentEnabled, false);
+        assert.equal(status.running, false);
+        assert.equal(status.canRead, false);
+        assert.equal(status.lastStartError.i18nKey, "live.needConfig");
+        assert.equal(provider._probeCoordinator.anyActive(), false);
+    });
     await scenario("Discover and persist a CubeMX2 project through the real workspace search", async () => {
         const project = path.join(workspace, "emberprobe-e2e.ioc2");
         const previous = provider._context.workspaceState.get("mcu.iocPath");
@@ -205,6 +222,10 @@ async function run() {
     // The connected-probe row lists whatever the read-only USB inventory finds, including nothing.
     const sidebarHtml = provider.getModernWebviewContent();
     assert.ok(sidebarHtml.includes('id="connectedProbeList"'));
+    for (const command of ["mcu-vscode.selectSamplingBackend", "mcu-vscode.selectProbeRsChip"]) {
+        assert.ok(sidebarHtml.includes(`data-command="${command}"`));
+        assert.equal(typeof provider.commandHandlers[command], "function");
+    }
     // The bundled extension serves src/webview as is: every prelude module is evaluated once.
     const preludeModules = [...sidebarHtml.matchAll(/root\.(Ember\w+) = /g)].map((match) => match[1]);
     assert.ok(preludeModules.length >= 5);

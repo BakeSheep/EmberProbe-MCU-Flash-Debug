@@ -361,6 +361,34 @@
             "description": "波形窗口目标采样频率（Hz），默认 30，范围 0.1–200。侧栏目标固定为 20 Hz；实际速率受探针吞吐能力限制。 / Target waveform sampling frequency (Hz), default 30, range 0.1–200. The sidebar targets a fixed 20 Hz; actual rates depend on probe throughput.",
             "order": 1
           },
+          "emberprobe.samplingBackend": {
+            "type": "string",
+            "enum": [
+              "openocd",
+              "probe-rs"
+            ],
+            "default": "openocd",
+            "description": "独立采样后端。probe-rs 使用原生 Rust 库，只读固定地址 RAM；烧录和调试仍使用 OpenOCD。修改后重连采样。 / Standalone sampling backend. probe-rs uses a native Rust library for read-only fixed-address RAM. Flash/debug remain on OpenOCD. Changes reconnect sampling.",
+            "order": 0
+          },
+          "emberprobe.probeRsChip": {
+            "type": "string",
+            "default": "",
+            "description": "原生采样的准确 probe-rs 芯片名称，例如 STM32C593RGT6；须先在侧栏点选 USB 探针。 / Exact probe-rs chip name for native sampling, e.g. STM32C593RGT6. Pick the USB probe in the sidebar first.",
+            "order": 20
+          },
+          "emberprobe.probeRsTargetDescription": {
+            "type": "string",
+            "default": "",
+            "description": "可选 probe-rs 目标 YAML 路径。空值使用内置目标；STM32C593RGT6 使用随附只读描述。 / Optional probe-rs target YAML path. Empty uses built-in targets, or the bundled read-only STM32C593RGT6 description.",
+            "order": 21
+          },
+          "emberprobe.probeRsNativePath": {
+            "type": "string",
+            "default": "",
+            "description": "可选原生 emberprobe-probe-rs 可执行文件路径。空值使用随附程序；这不是 probe-rs CLI。仅用户可配置。 / Optional native emberprobe-probe-rs executable. Empty uses the bundled helper. This is not the probe-rs CLI; user configuration only.",
+            "order": 22
+          },
           "emberprobe.samplingAdapterSpeedKhz": {
             "type": "integer",
             "minimum": 0,
@@ -1262,6 +1290,11 @@
     "dist/elfWorker.js",
     "src/webview/**/*",
     "resources/**/*.tar.gz",
+    "resources/probe-rs/**/*",
+    "resources/probe-rs-targets/*.yaml",
+    "native/probe-rs/Cargo.toml",
+    "native/probe-rs/Cargo.lock",
+    "native/probe-rs/src/*.rs",
     "resources/driver-helper/win32-x64/*",
     "media/**/*",
     "skills/**/*",
@@ -1304,6 +1337,8 @@
     "test:hil:mcp": "node test/hil/run-mcp-baseline.js",
     "release:prepare": "node scripts/release.js",
     "bundle": "node esbuild.js",
+    "build:probe-rs": "node scripts/build-probe-rs.js",
+    "test:probe-rs": "cargo test --locked --manifest-path native/probe-rs/Cargo.toml",
     "vscode:prepublish": "npm run bundle",
     "package": "npx --yes @vscode/vsce@3.9.1 package --allow-unused-files-pattern --out dist/emberprobe.vsix",
     "mockup": "node mockup/build.js",

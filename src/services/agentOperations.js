@@ -577,6 +577,11 @@ class AgentOperations {
                 assertActive();
                 const port = await this.host._resolveTclPort(cfg);
                 assertActive();
+                const native =
+                    cfg.get("samplingBackend", "openocd") === "probe-rs"
+                        ? await this.host._nativeSamplingService.prepare({ ...connection, probe: debuggerCfg, cwd })
+                        : {};
+                assertActive();
                 session = new this._ManagedOpenOcdSession(
                     {
                         executable,
@@ -585,6 +590,7 @@ class AgentOperations {
                         probe: debuggerCfg,
                         target: mcuCore,
                         ...connection,
+                        ...native,
                         cwd,
                         port,
                         intervalMs: 10000

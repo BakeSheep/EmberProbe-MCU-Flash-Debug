@@ -15,6 +15,20 @@ assert.strictEqual(ci.jobs.check.name, "Node ${{ matrix.os }}");
 assert.strictEqual(ci.jobs.check.steps.filter((s) => s.run === "npm run check").length, 1);
 assert.ok(!ci.jobs.check.steps.some((s) => s.run === "npm run quality"));
 assert.ok(ci.jobs.quality.steps.some((s) => s.run === "npm run quality"));
+assert.deepStrictEqual(ci.jobs["native-probe-rs"].strategy.matrix.os, [
+    "windows-latest",
+    "ubuntu-latest",
+    "macos-latest"
+]);
+assert.ok(
+    ci.jobs["native-probe-rs"].steps.some(
+        (s) => s.run === "cargo test --locked --manifest-path native/probe-rs/Cargo.toml"
+    )
+);
+assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-probe-rs.js --release"));
+assert.ok(
+    release.jobs.build.steps.some((s) => s.run === "node scripts/verify-probe-rs.js dist/emberprobe.vsix --release")
+);
 assert.ok(ci.jobs["driver-helper"].steps.some((s) => s.run === "./scripts/build-driver-helper.ps1"));
 for (const job of Object.values(ci.jobs)) {
     assert.ok(job["timeout-minutes"] <= 20);

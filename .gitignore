@@ -1,4 +1,6 @@
 node_modules/
+native/probe-rs/target/
+resources/probe-rs/
 dist/
 *.vsix
 *.log

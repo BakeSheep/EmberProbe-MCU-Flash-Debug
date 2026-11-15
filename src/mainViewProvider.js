@@ -197,6 +197,8 @@ class MainViewProvider {
         this._configurationStore = services.configurationStore;
         this._probeDriverService = services.probeDriverService;
         this._probeConnectionService = services.probeConnectionService;
+        this._nativeSamplingService = services.nativeSamplingService;
+        this._samplingConfiguration = services.samplingConfiguration;
         this._cubemxFirmware = services.cubemxFirmware;
         this._cubemxConfiguration = services.cubemxConfiguration;
         this._cubemxService = services.cubemxService;
@@ -395,6 +397,8 @@ class MainViewProvider {
             return true;
         };
         // Select MCU target
+        this.commandHandlers["mcu-vscode.selectSamplingBackend"] = () => this._samplingConfiguration.selectBackend();
+        this.commandHandlers["mcu-vscode.selectProbeRsChip"] = () => this._samplingConfiguration.selectChip();
         this.commandHandlers["mcu-vscode.selectMcuCore"] = async () => {
             this._assertConnectionEditable({ mcu: true });
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
@@ -1439,7 +1443,9 @@ class MainViewProvider {
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
-                mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
+                mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || "",
+                samplingBackend: vscode.workspace.getConfiguration("emberprobe").get("samplingBackend", "openocd"),
+                probeRsChip: vscode.workspace.getConfiguration("emberprobe").get("probeRsChip", "")
             },
             this._lang
         );

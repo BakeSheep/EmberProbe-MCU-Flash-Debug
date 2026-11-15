@@ -1,5 +1,12 @@
 # Third-Party Notices
 
+The optional native sampling helper directly links probe-rs 0.32.0 (MIT OR Apache-2.0), including its USB and Rust
+runtime dependencies. Each platform package under resources/probe-rs/ retains a generated THIRD_PARTY_NOTICES.txt
+with dependency versions, license declarations and the license/notice files from the locked Cargo packages.
+The Cargo lockfile and the helper's complete source are included under native/probe-rs/. The STM32C593RGT6
+read-only target description records device metadata from STMicroelectronics STM32C5 DFP 2.1.0 and contains no
+Flash programming algorithm.
+
 The bundled extension includes the following npm runtime packages:
 
 - `tar` 7.5.20, `chownr` 3.0.0, `minipass` 7.1.3, and `yallist` 5.0.0 — [Blue Oak Model License 1.0.0](https://blueoakcouncil.org/license/1.0.0)

@@ -78,6 +78,7 @@ class LiveWatchController {
         this._runtimeRamCache = null;
         this._consumerTypesCache = null;
         this.lastDisconnect = null;
+        this.lastStartError = null;
     }
     // A new ELF has other RAM sections.
     invalidateRuntimeRam() {
@@ -764,6 +765,8 @@ class LiveWatchController {
             }
         }
         const stats = typeof session?.stats === "function" ? session.stats() : null;
+        if (session?.capabilities?.write === false) Object.assign(status, { canWrite: false, haltWrite: false });
+        if (session?.options?.samplingBackend === "probe-rs") status.source = "probe-rs";
         status.intervalMs = this.intervalMs;
         status.frequencyHz = this.frequencyHz;
         status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this.intervalMs;
@@ -772,6 +775,7 @@ class LiveWatchController {
         status.consumers = stats?.consumers;
         status.sidebarTargetHz = 20;
         status.p95DurationMs = stats?.p95DurationMs ?? 0;
+        if (Number.isFinite(stats?.linkSpeedKhz)) status.linkSpeedKhz = stats.linkSpeedKhz;
         status.missedDeadlines = stats?.missedDeadlines ?? 0;
         status.unlimited = stats?.unlimited ?? this.unlimitedEnabled();
         status.unlimitedActive = stats?.unlimitedActive === true;
@@ -793,6 +797,7 @@ class LiveWatchController {
         status.pauseReason =
             stats?.pauseReason ?? (this.host._samplingCoordinator.backpressured ? "archive_backpressure" : null);
         if (this.lastDisconnect) status.lastDisconnect = this.lastDisconnect;
+        if (this.lastStartError) status.lastStartError = this.lastStartError;
         return withWriteAccessStatus(status);
     }
     // Stops the event-loop monitor; status() starts it again while sampling runs.
@@ -840,11 +845,24 @@ class LiveWatchController {
         if (this.stopPromise || this._startPromise)
             return Promise.reject(Object.assign(new Error(this.host._t("live.starting")), { code: "PROBE_BUSY" }));
         this.host._historyFeed.resetWarnings();
+        this.lastStartError = null;
         const generation = (this._startGeneration = (this._startGeneration || 0) + 1);
-        this._startPromise = this._start(items, intervalMs, consumer, interactive, generation).finally(() => {
-            this._startPromise = null;
-            this.host._postProbeOperationStatus();
-        });
+        this._startPromise = this._start(items, intervalMs, consumer, interactive, generation)
+            .catch((error) => {
+                if (generation === this._startGeneration) {
+                    this.intent = false;
+                    this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, false);
+                    for (const session of [this.session, this.host.debugLaunch.managedServer])
+                        if (session && !session.stopped) session.setSamplingEnabled?.(false);
+                    this.lastStartError = serializeError(error);
+                    this.host._postConsumerStatuses(toUiError(error), true);
+                }
+                throw error;
+            })
+            .finally(() => {
+                this._startPromise = null;
+                this.host._postProbeOperationStatus();
+            });
         this.host._postProbeOperationStatus();
         return this._startPromise;
     }
@@ -991,6 +1009,11 @@ class LiveWatchController {
             const port = await this.host._resolveTclPort(cfg);
             if (startingLease.released || generation !== this._startGeneration) return;
             this.exitUnconfirmed = false;
+            const native =
+                cfg.get("samplingBackend", "openocd") === "probe-rs"
+                    ? await this.host._nativeSamplingService.prepare({ ...connection, probe: debuggerCfg, cwd })
+                    : {};
+            if (startingLease.released || generation !== this._startGeneration) return;
             session = new this._ManagedOpenOcdSession(
                 {
                     executable,
@@ -999,6 +1022,7 @@ class LiveWatchController {
                     probe: debuggerCfg,
                     target: mcuCore,
                     ...connection,
+                    ...native,
                     cwd,
                     port,
                     intervalMs: validation.clampInteger(intervalMs ?? this.intervalMs, this.intervalMs, 5, 10000)
@@ -1071,18 +1095,9 @@ class LiveWatchController {
                 if (closed !== false) {
                     this.session = null;
                     if (this.running) this._lease?.release();
-                }
+                } else this.exitUnconfirmed = true;
             }
             this.consumers.clear();
-            this.host._postConsumerStatuses(
-                {
-                    key: error.i18nKey,
-                    params: error.i18nParams,
-                    message: error.message,
-                    diagnostic: serializeError(error)
-                },
-                true
-            );
             throw error;
         } finally {
             if (!session || this.session !== session) startingLease.release();

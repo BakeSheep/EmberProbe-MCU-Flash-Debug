@@ -7,6 +7,36 @@ const { getModernWebviewContent } = require("../src/modernView");
 
 const configured = { elf: "app.elf", debugger: "interface/stlink.cfg", mcu: "stm32f4x.cfg" };
 
+scenario("MCU configuration exposes both target formats and a native backend choice", () => {
+    const view = render(
+        getModernWebviewContent({ ...configured, samplingBackend: "probe-rs", probeRsChip: "STM32C593RGT6" }, "zh")
+    );
+    try {
+        view.assertHealthy();
+        const row = (command) =>
+            view.document.querySelector(`#mcuConfigSection [data-command="mcu-vscode.${command}"]`);
+        assert.equal(row("selectSamplingBackend").querySelector("small").textContent, "probe-rs");
+        assert.equal(row("selectProbeRsChip").querySelector("small").textContent, "STM32C593RGT6");
+        assert.equal(row("selectMcuCore").querySelector("small").textContent, "stm32f4x.cfg");
+        assert.equal(view.document.getElementById("mcuConfigSummary").textContent, "STM32C593RGT6 · ST-Link");
+        row("selectProbeRsChip").click();
+        assert.ok(view.messages.some((message) => message.cmd === "mcu-vscode.selectProbeRsChip"));
+        row("selectSamplingBackend").click();
+        assert.ok(view.messages.some((message) => message.cmd === "mcu-vscode.selectSamplingBackend"));
+        view.send({ type: "setLang", lang: "en" });
+        assert.ok(row("selectProbeRsChip").textContent.includes("probe-rs MCU model"));
+    } finally {
+        view.close();
+    }
+    const missing = render(getModernWebviewContent({ ...configured, samplingBackend: "probe-rs" }, "en"));
+    try {
+        missing.assertHealthy();
+        assert.equal(missing.document.getElementById("mcuConfigSummary").textContent, "");
+    } finally {
+        missing.close();
+    }
+});
+
 scenario("Keep CubeMX executable paths in machine-wide User settings rather than the sidebar", () => {
     const properties = Object.assign(
         {},

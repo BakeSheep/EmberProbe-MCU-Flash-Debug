@@ -2,6 +2,7 @@
 const { parentPort, workerData, isMainThread } = require("worker_threads");
 const { performance } = require("perf_hooks");
 const { ManagedOpenOcdSession } = require("./liveWatch");
+const { ProbeRsSamplingSession } = require("./probeRsSession");
 const { serializeError } = require("./services/errorEnvelope");
 const { MAX_COMPOSITE_DEPTH, MAX_COMPOSITE_NODES, MAX_COMPOSITE_BYTES } = require("./dwarf/layoutLimits");
 
@@ -63,7 +64,10 @@ const sampleBytes = (sample) =>
 function run(
     port,
     options,
-    makeSession = (config, handlers) => new ManagedOpenOcdSession(config, handlers),
+    makeSession = (config, handlers) =>
+        config.samplingBackend === "probe-rs"
+            ? new ProbeRsSamplingSession(config, handlers)
+            : new ManagedOpenOcdSession(config, handlers),
     now = () => performance.now()
 ) {
     let generation = 0,
@@ -91,6 +95,7 @@ function run(
         pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
         childPid: session.server?.child?.pid,
+        capabilities: /** @type {any} */ (session).capabilities,
         stats: stats()
     });
     const event = (name, args) =>

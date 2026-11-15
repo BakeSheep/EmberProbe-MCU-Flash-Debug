@@ -137,6 +137,13 @@ function makeController(host, options = {}) {
 }
 
 (async () => {
+    await scenario("native sampling blocks RTT before creating a competing connection", async () => {
+        const host = fakeHost();
+        host._sampling = { running: true, session: { capabilities: { rtt: false } } };
+        const { controller } = makeController(host);
+        await assert.rejects(controller.start(), { code: "BACKEND_UNSUPPORTED" });
+        assert.equal(host._probeCoordinator.anyActive(), false);
+    });
     await scenario(
         "Agent mode overrides reject before probe access and frozen settings cannot add later writes",
         async () => {

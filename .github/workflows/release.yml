@@ -70,11 +70,27 @@ jobs:
       - name: Verify native helper hashes
         run: node scripts/verify-driver-helper.js
 
+      - name: Download native sampling backends
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-probe-rs-*
+          merge-multiple: true
+          path: resources/probe-rs
+
+      - name: Verify native sampling backend identities and notices
+        run: node scripts/verify-probe-rs.js --release
+
+      - name: Restore native executable permissions after artifact download
+        run: chmod +x resources/probe-rs/linux-*/emberprobe-probe-rs resources/probe-rs/darwin-*/emberprobe-probe-rs
+
       - name: Package VSIX
         run: npm run package
 
       - name: Verify OpenOCD runtimes and corresponding sources
         run: node scripts/verify-openocd-vsix.js dist/emberprobe.vsix
+
+      - name: Verify packaged native sampling programs and notices
+        run: node scripts/verify-probe-rs.js dist/emberprobe.vsix --release
 
       - name: Verify VSIX includes native helper bytes
         run: node scripts/verify-driver-helper.js dist/emberprobe.vsix

@@ -16,6 +16,7 @@ const { diagnoseOpenOcdFailure, parseLine } = require("../src/openocdRunner");
 const { toUiError } = require("../src/services/errorEnvelope");
 const { ChipInfoService } = require("../src/services/chipInfoService");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
+const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 
 function deferred() {
     let resolve;
@@ -237,7 +238,8 @@ async function incompleteActions() {
             const coordinator = new ProbeCoordinator();
             Object.assign(f.provider, {
                 _probeCoordinator: coordinator,
-                _debugBridge: { hasAnySession: false, hasSession: false },
+                _samplingCoordinator: new SamplingCoordinator(),
+                _debugBridge: { hasAnySession: false, hasSession: false, setIntent() {} },
                 _probeConnectionService: {
                     resolveProbe: async () => {
                         if (ambiguous)
@@ -277,6 +279,7 @@ async function incompleteActions() {
                 assert.deepStrictEqual(f.notices, [], `${action} reports in the visible sidebar, not a notification`);
                 const expected = ambiguous ? /No unique probe/ : /debugger.*MCU/;
                 if (action === "liveToggle") {
+                    assert.equal(f.provider._sampling.intent, false, "failed starts turn off sampling intent");
                     assert.strictEqual(sidebar.document.getElementById("liveToggle").disabled, false);
                     assert.doesNotMatch(sidebar.document.getElementById("liveLabel").textContent, expected);
                     assert.match(sidebar.document.querySelector("#noticeLive .notice").textContent, expected);

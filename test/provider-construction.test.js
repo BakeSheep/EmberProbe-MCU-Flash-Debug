@@ -5,8 +5,103 @@ const assert = require("assert");
 const { scenario } = require("./helpers/scenario");
 const { createProvider } = require("./helpers/load-provider");
 const { createServices } = require("../src/composition");
+const { CACHE_KEYS } = require("../src/cacheKeys");
 
 (async () => {
+    await scenario("native standalone sampling uses common preflight and preserves its lease", async () => {
+        const { provider, vscode, context, dispose } = createProvider();
+        const sampling = provider._sampling;
+        let nativeFailure = false;
+        let exitConfirmed = true;
+        try {
+            vscode.workspace.getConfiguration = () => ({
+                get: (key, fallback) => (key === "samplingBackend" ? "probe-rs" : fallback)
+            });
+            await context.workspaceState.update(CACHE_KEYS.debugger, "cmsis-dap.cfg");
+            await context.workspaceState.update(CACHE_KEYS.mcuCore, "stm32c5x.cfg");
+            provider._resolveOpenOcdPath = async () => "preflight-openocd";
+            provider._resolveTclPort = async () => 6666;
+            const connection = { deviceId: "selected-usb" };
+            provider._probeConnectionService.prepare = async () => connection;
+            let prepared = 0;
+            provider._nativeSamplingService.prepare = async (input) => {
+                assert.equal(input.deviceId, connection.deviceId);
+                assert.equal(provider._probeCoordinator.anyActive(), true);
+                prepared++;
+                return { samplingBackend: "probe-rs", nativeExecutable: "native-fixture" };
+            };
+            sampling.activeReadPlan = () => [{ name: "counter", address: 0x20000000, size: 4 }];
+            sampling.applySamplingPlan = () => {};
+            sampling._ManagedOpenOcdSession = class {
+                constructor(options) {
+                    this.options = options;
+                    this.capabilities = { write: false, peripherals: false, rtt: false };
+                }
+                async start() {
+                    if (nativeFailure) throw new Error("native startup failed");
+                }
+                stats() {
+                    return { linkSpeedKhz: 1000 };
+                }
+                setIntervalMs() {}
+                setSamplingEnabled(enabled) {
+                    this.samplingEnabled = enabled;
+                }
+                async stop() {
+                    return exitConfirmed;
+                }
+            };
+            await sampling.start();
+            assert.equal(prepared, 1);
+            assert.equal(sampling.session.options.nativeExecutable, "native-fixture");
+            assert.equal(sampling.status().source, "probe-rs");
+            assert.equal(sampling.status().canRead, true);
+            assert.equal(sampling.status().canWrite, false);
+            assert.equal(sampling.status().haltWrite, false);
+            assert.equal(sampling.status().linkSpeedKhz, 1000);
+            const applyPlan = sampling.applySamplingPlan;
+            sampling.applySamplingPlan = () => {
+                throw new Error("invalid updated plan");
+            };
+            await assert.rejects(sampling.start(), /invalid updated plan/);
+            assert.equal(
+                sampling.session.samplingEnabled,
+                false,
+                "a failed update cannot keep acquiring behind an off switch"
+            );
+            assert.equal(sampling.status().canRead, false);
+            sampling.applySamplingPlan = applyPlan;
+            await sampling.stop();
+            assert.equal(provider._probeCoordinator.anyActive(), false);
+            provider._nativeSamplingService.prepare = async () => {
+                throw new Error("native preflight failed");
+            };
+            await assert.rejects(sampling.start(), /native preflight failed/);
+            assert.equal(provider._probeCoordinator.anyActive(), false);
+            assert.equal(sampling.session, null);
+            assert.equal(sampling.status().running, false, "a failed start must turn the shared sampling switch off");
+            assert.equal(sampling.status().intentEnabled, false);
+            assert.match(sampling.status().lastStartError.message, /native preflight failed/);
+            provider._nativeSamplingService.prepare = async () => ({ samplingBackend: "probe-rs" });
+            nativeFailure = true;
+            exitConfirmed = false;
+            await assert.rejects(sampling.start(), /native startup failed/);
+            assert.equal(sampling.status().running, false);
+            assert.equal(sampling.status().canRead, false);
+            assert.equal(sampling.status().mode, "exit-unconfirmed");
+            assert.equal(provider._probeCoordinator.anyActive(), true, "unconfirmed helper exit retains the lease");
+            exitConfirmed = true;
+            await sampling.stop();
+            assert.equal(provider._probeCoordinator.anyActive(), false);
+            nativeFailure = false;
+            await sampling.start();
+            assert.equal(sampling.status().lastStartError, undefined, "a new start clears the previous startup error");
+            await sampling.stop();
+        } finally {
+            exitConfirmed = true;
+            await dispose();
+        }
+    });
     await scenario("Reuse sampling for peripherals and never create a temporary peripheral connection", async () => {
         const { provider, dispose } = createProvider();
         let lease;

@@ -31,7 +31,8 @@ assert.deepStrictEqual(runtime.liveState({ running: true, canRead: true, canWrit
 });
 for (const message of [
     { source: "dap", snapshotReady: true },
-    { source: "openocd", canRead: true }
+    { source: "openocd", canRead: true },
+    { source: "probe-rs", canRead: true, canWrite: false }
 ])
     assert.strictEqual(runtime.liveState({}, message).fresh, true);
 assert.strictEqual(runtime.liveState({}, { intentEnabled: false, running: true, canWrite: false }).running, false);

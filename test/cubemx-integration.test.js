@@ -50,7 +50,10 @@ const exec = promisify(execFile);
     }
     let scans = 0;
     const Provider = loadProvider(
-        { window: { showInformationMessage() {}, showWarningMessage() {} } },
+        {
+            window: { showInformationMessage() {}, showWarningMessage() {} },
+            workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) }
+        },
         {
             "./autoDetect": { detectWorkspace: async () => ({}) }
         }

@@ -1,0 +1,17 @@
+[package]
+name = "emberprobe-probe-rs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+probe-rs = { version = "=0.32.0", default-features = false, features = ["builtin-targets", "cmsisdap_v1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

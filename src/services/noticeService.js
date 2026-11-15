@@ -11,6 +11,8 @@ const COMMAND_AREAS = Object.freeze({
     "mcu-vscode.selectElf": "config",
     "mcu-vscode.selectDebugger": "config",
     "mcu-vscode.selectMcuCore": "config",
+    "mcu-vscode.selectSamplingBackend": "config",
+    "mcu-vscode.selectProbeRsChip": "config",
     "mcu-vscode.selectIoc": "config",
     "mcu-vscode.installCubeMxFirmware": "config",
     "mcu-vscode.downloadOfficialSvd": "config",

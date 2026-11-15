@@ -20,6 +20,10 @@ class SamplingSession {
         this._workerTargetInvalidations = 0;
         this.nextId = 0;
         this.pending = new Map();
+        this.capabilities =
+            options.samplingBackend === "probe-rs"
+                ? { read: true, write: false, peripherals: false, rtt: false }
+                : undefined;
         this.worker = new Worker(workerPath, {
             workerData: { ...options, isolated: false }
         });
@@ -33,6 +37,7 @@ class SamplingSession {
                         message.state.targetInvalidations
                     );
                 if (message.state.childPid) this.childPid = message.state.childPid;
+                if (message.state.capabilities) this.capabilities = message.state.capabilities;
                 this.stopped = message.state.stopped;
                 this.pollingFailed = message.state.pollingFailed === true;
                 if (message.state.stats) this._latestStats = message.state.stats;

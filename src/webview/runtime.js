@@ -1538,7 +1538,7 @@
             fresh:
                 message.source === "dap"
                     ? message.snapshotReady === true
-                    : message.source === "openocd" && message.canRead === true
+                    : ["openocd", "probe-rs"].includes(message.source) && message.canRead === true
         };
     }
     return {

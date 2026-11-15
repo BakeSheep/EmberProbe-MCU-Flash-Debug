@@ -4,6 +4,16 @@
 
 ## 权限与安全
 
+probe-rs 原生采样程序独立构建，不需要 Node 原生插件。安装 Rust 1.100.0（Linux 另需
+`pkg-config`、`libudev-dev`）后运行 `npm run build:probe-rs`，再运行
+`node scripts/verify-probe-rs.js`。源码和锁文件位于 `native/probe-rs/`，输出位于被忽略的
+`resources/probe-rs/<platform>-<arch>/`，包括程序、协议版本/SHA-256 清单和依赖许可证正文。
+开发环境也可将 `emberprobe.probeRsNativePath` 指向已构建的程序。
+CI 在 Windows x64、Linux x64 和 macOS runner 原生架构上构建及测试；Release 汇集这些产物，
+用 `node scripts/verify-probe-rs.js --release` 检查平台矩阵和哈希，恢复下载后的 Unix 执行权限，
+打包后再用 `node scripts/verify-probe-rs.js dist/emberprobe.vsix --release` 核对包内实际字节及权限。其他平台需自行构建，
+软件检查不代表该平台的探针驱动或实板已经验证。
+
 Windows J-Link 驱动功能在本版随未签名的 helper 与 libwdi DLL 发布。Release 工作流在一次性 Windows runner 上构建它们，生成 SHA-256 清单，并验证构建产物与 VSIX 内字节一致；helper 在提权后还会核对配套 DLL 的 SHA-256。哈希校验不能提供发布者身份认证，Windows 可能显示“未知发布者”或根据本机策略阻止运行。发布 job 只在发布阶段申请 `contents: write`，并使用 GitHub 自动提供的短期 `GITHUB_TOKEN` 创建 Release。建议保护 `v*` 标签，防止未审查的提交触发发布。
 
 ## 发布稳定版本

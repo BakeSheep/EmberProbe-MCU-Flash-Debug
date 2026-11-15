@@ -24,7 +24,7 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
     );
     assert.deepStrictEqual(
         groups.map((group) => Object.keys(group.properties).length),
-        [7, 6, 5, 15, 3]
+        [7, 6, 9, 15, 3]
     );
     for (const key of ["openocdPath", "gdbPath", "objdumpPath", "cubemxPath", "cubemx2Path"])
         assert.ok(groups[0].properties[`emberprobe.${key}`], `${key} belongs with tools and paths`);
@@ -32,7 +32,7 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
         assert.ok(groups[1].properties[`emberprobe.${key}`], `${key} belongs with connection and debugging`);
     const entries = groups.flatMap((group) => Object.entries(group.properties));
     const keys = entries.map(([key]) => key);
-    assert.strictEqual(keys.length, 36);
+    assert.strictEqual(keys.length, 40);
     assert.strictEqual(new Set(keys).size, keys.length);
     for (const key of [
         "probeSerial",
@@ -49,6 +49,16 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
         assert.match(description, /[\u4e00-\u9fff]/, `${key} needs a Chinese description`);
         assert.match(description, / \/ [A-Za-z]/, `${key} needs an English description`);
     }
+});
+
+scenario("Native sampling remains opt-in and executable paths remain user configured", () => {
+    const sampling = require("../package.json").contributes.configuration.find(
+        (group) => group.id === "emberprobe.sampling"
+    ).properties;
+    assert.strictEqual(sampling["emberprobe.samplingBackend"].default, "openocd");
+    assert.deepStrictEqual(sampling["emberprobe.samplingBackend"].enum, ["openocd", "probe-rs"]);
+    for (const key of ["probeRsNativePath", "probeRsTargetDescription"])
+        assert.throws(() => assertAgentSettable({ [key]: "untrusted" }), { code: "CONFIG_KEY_FORBIDDEN" });
 });
 
 (async () => {

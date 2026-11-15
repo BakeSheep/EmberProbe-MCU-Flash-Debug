@@ -211,6 +211,7 @@ const openocdCard = window.EmberProbeOpenocdCard?.create({ api, uiState, setNoti
 const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
 const agentControls = EmberProbeAgentControls.create({ document, api, state, uiState, setNotice, clearNotice, t });
 const mcuConfigSection = document.getElementById("mcuConfigSection");
+const configuration = window.EmberProbeSidebarConfiguration.create({ document, t });
 for (const id of [
     "mcuConfigSection",
     "agentConfigSection",
@@ -347,7 +348,7 @@ function renderConnectedProbes(m) {
     if (!connectedProbeList) return;
     // Park the page's driver controls before the cards holding them are replaced.
     probeDriverHome?.append(...[jlinkDriverChoice, jlinkDriverState, jlinkDriverBusy].filter(Boolean));
-    if (m.debugger !== undefined) showDebuggerConfig(m.debugger);
+    if (m.debugger !== undefined) configuration.showDebugger(m.debugger);
     const devices = m.devices || [];
     const selected = devices.find((device) => device.selected);
     // A custom interface script selects its own device; the list only shows it.
@@ -495,62 +496,7 @@ function renderConnectedProbes(m) {
     if (busyAnchor && jlinkDriverBusy) busyAnchor.after(jlinkDriverBusy);
     setProbeDriverBusy(probeDriverBusy);
 }
-function configurationIncomplete() {
-    if (!mcuConfigSection) return false;
-    return ["mcu-vscode.selectElf", "mcu-vscode.selectDebugger", "mcu-vscode.selectMcuCore"].some((command) => {
-        const row = mcuConfigSection.querySelector(`[data-command="${command}"]`);
-        const value = row?.querySelector("small");
-        return !value || value.dataset.i18n === "common.notSelected" || !value.textContent.trim();
-    });
-}
-// The folded configuration card names the chip family and probe once ELF, debugger and target are all chosen.
-function configName(row) {
-    const value = mcuConfigSection?.querySelector(`${row} .row-copy > small`);
-    if (!value || value.dataset.i18n === "common.notSelected") return "";
-    return value.textContent
-        .trim()
-        .split(/[\\/]/)
-        .pop()
-        .replace(/\.cfg$/i, "");
-}
-const PROBE_NAMES = [
-    [/^jlink/i, "J-Link"],
-    [/^stlink/i, "ST-Link"],
-    [/^cmsis-dap/i, "CMSIS-DAP"]
-];
-function renderConfigSummary() {
-    const summary = document.getElementById("mcuConfigSummary");
-    if (!summary) return;
-    let shown = "";
-    if (!configurationIncomplete()) {
-        // OpenOCD names targets in lower case ("stm32f4x"); the family reads as STM32F4x.
-        const chip = configName('[data-command="mcu-vscode.selectMcuCore"]');
-        const probe = configName(".debugger-config-row");
-        const family = chip === chip.toLowerCase() ? chip.toUpperCase().replace(/X$/, "x") : chip;
-        shown = `${family} · ${PROBE_NAMES.find(([pattern]) => pattern.test(probe))?.[1] || probe}`;
-    }
-    summary.textContent = shown;
-    summary.title = shown;
-}
-function revealIncompleteConfiguration(e) {
-    if (e?.currentTarget?.hasAttribute?.("data-config-free")) return;
-    if (!configurationIncomplete() || !mcuConfigSection || mcuConfigSection.open) return;
-    mcuConfigSection.open = true;
-    uiState.sections ||= {};
-    uiState.sections.mcuConfigSection = true;
-    api?.setState?.(uiState);
-}
-// An operation that cannot choose a probe opens the list where the user picks one.
-// The configuration row's interface script, changed in place by choosing a probe of another family.
-function showDebuggerConfig(name) {
-    const value = document.querySelector(".debugger-config-row .row-copy > small");
-    if (!value) return;
-    value.textContent = name || t("common.notSelected");
-    value.title = name;
-    if (name) value.removeAttribute("data-i18n");
-    else value.setAttribute("data-i18n", "common.notSelected");
-    renderConfigSummary();
-}
+const revealIncompleteConfiguration = (event) => configuration.revealIncomplete(event, uiState, api);
 function revealConnectedProbes() {
     if (!probeConfig) return;
     if (mcuConfigSection && !mcuConfigSection.open) {
@@ -1394,7 +1340,7 @@ if (svdDownload)
         } else if (lastSvd.state !== "cancelling")
             api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.downloadOfficialSvd" });
     };
-renderConfigSummary();
+configuration.renderSummary();
 document.querySelectorAll("[data-command]").forEach(
     (b) =>
         (b.onclick = (e) => {
@@ -1510,7 +1456,7 @@ window.EmberProbeMessages.connect(window, {
         revealConnectedProbes();
     },
     debuggerConfig: function (m) {
-        showDebuggerConfig(m.debugger || "");
+        configuration.showDebugger(m.debugger || "");
     },
     probeDriverSwitch: function (m) {
         if (!m.busy) driverSwitchDeviceId = "";
