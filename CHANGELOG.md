@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### CubeMX
+
+- CubeMX2 的侧栏固件包检查覆盖工程声明的 pack、所需版本与已安装版本，适用于 C5 及后续系列；缺包时可打开 CubeMX2 管理并重新检查。传统 CubeMX 同样明确显示版本不匹配，补装工程要求的版本。
+- Show CubeMX2 project pack requirements and installed versions in the sidebar across C5 and future families, with actions to open CubeMX2 and refresh. Legacy CubeMX also distinguishes version mismatches and requests the project's required version.
+
 ### 采样 / Sampling
 
 - scatter 读取将 RAM 间隙合并范围从 32 字节收紧到 4 字节，减少分散变量的无效扩读；普通读取保留原策略，scatter 能力变化时重新选择缓存计划。

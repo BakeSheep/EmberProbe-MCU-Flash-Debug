@@ -6,6 +6,9 @@ const { spawn } = require("child_process");
 const { XMLParser } = require("fast-xml-parser");
 const { installation, workspaceIoc, supportedPlatform, cubeMxCommand } = require("./cubemxEnvironment");
 const { parseProperties } = require("./javaProperties");
+const firmware2 = require("./cubemx2Firmware");
+const cubeMx2 = require("./cubemx2Environment");
+const { cubeEnvironment } = require("./cubemx2Cli");
 const parser = new XMLParser({ ignoreAttributes: false, processEntities: false });
 const families = "H7RS WB0 WBA WL3 F0 F1 F2 F3 F4 F7 G0 G4 H5 H7 L0 L1 L4 L5 U0 U3 U5 C0 N6 WB WL".split(" ");
 function targetFamily(target) {
@@ -82,14 +85,33 @@ async function inspectFirmware(config, options = {}) {
         requiredVersion = firmware[2];
     }
     const versions = await packageVersions(settings.repository, family);
+    const installed = requiredVersion ? versions.includes(requiredVersion) : versions.length > 0;
     return {
+        generator: "cubemx",
         family,
         requiredVersion,
         versions,
         repository: settings.repository,
-        installed: requiredVersion ? versions.includes(requiredVersion) : versions.length > 0,
+        installed,
+        state: installed ? "installed" : versions.length ? "version-mismatch" : "missing",
         available: requiredVersion ? [requiredVersion] : await availableVersions(settings.directory, family)
     };
+}
+
+async function launchPackManager(tool, options = {}) {
+    const child = (options.spawn || spawn)(tool.executable, [], {
+        cwd: path.dirname(tool.executable),
+        env: cubeEnvironment({ env: {} }),
+        shell: false,
+        windowsHide: true,
+        stdio: "ignore"
+    });
+    child.once("close", () => options.closed?.());
+    await new Promise((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+    });
+    child.unref();
 }
 
 // This is an interactive installer, separate from the Bridge's quiet generation runner.
@@ -149,15 +171,25 @@ class CubeMxFirmware {
         this.inspect = options.inspect || inspectFirmware;
         this.launch = options.launch || launchInstaller;
         this.installation = options.installation || installation;
+        this.inspect2 = options.inspect2 || firmware2.inspectFirmware;
+        this.installation2 = options.installation2 || cubeMx2.installation;
+        this.launch2 = options.launch2 || launchPackManager;
     }
     config() {
+        const cfg = this.vscode.workspace.getConfiguration("emberprobe");
+        const target = this.context.workspaceState.get("mcu.mcuCore", "");
+        const iocPath = this.context.workspaceState.get("mcu.iocPath", "");
+        const cubemxPath = cfg.get("cubemxPath", "");
+        const cubemx2Path = cfg.get("cubemx2Path", "");
         return {
-            target: this.context.workspaceState.get("mcu.mcuCore", ""),
-            cubemxPath: this.vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
-            // Never pass a CubeMX2 file to the legacy firmware parser.
-            iocPath: /\.ioc2$/i.test(this.context.workspaceState.get("mcu.iocPath", ""))
-                ? ""
-                : this.context.workspaceState.get("mcu.iocPath", "")
+            target,
+            cubemxPath,
+            cubemx2Path,
+            iocPath,
+            generator:
+                /\.ioc2$/i.test(iocPath) || (!iocPath && cubemx2Path && (!cubemxPath || !targetFamily(target)))
+                    ? "cubemx2"
+                    : "cubemx"
         };
     }
     async refresh() {
@@ -165,8 +197,9 @@ class CubeMxFirmware {
         let result = null;
         let error = "";
         try {
-            if (!/\.ioc2$/i.test(this.context.workspaceState.get("mcu.iocPath", "")))
-                result = await this.inspect(this.config(), { resolveIoc: (file) => workspaceIoc(this.vscode, file) });
+            const config = this.config();
+            const inspect = config.generator === "cubemx2" ? this.inspect2 : this.inspect;
+            result = await inspect(config, { resolveIoc: (file) => workspaceIoc(this.vscode, file) });
         } catch (reason) {
             error = String(reason.message);
         }
@@ -186,6 +219,13 @@ class CubeMxFirmware {
                 if (this.error)
                     await this.notify({ level: "warning", key: "cubemx.firmwareUnknown", message: this.error });
                 return result?.installed ? true : false;
+            }
+            if (result.generator === "cubemx2") {
+                const tool = await this.installation2(this.config().cubemx2Path);
+                if (original !== JSON.stringify(this.config())) return null;
+                await this.launch2(tool, { closed: () => this.changed() });
+                await this.notify({ level: "info", key: "cubemx2.firmwareOpened", dismissible: true });
+                return true;
             }
             let version = result.requiredVersion;
             if (!version && result.available.length) {
@@ -222,5 +262,6 @@ module.exports = {
     availableVersions,
     inspectFirmware,
     launchInstaller,
+    launchPackManager,
     CubeMxFirmware
 };

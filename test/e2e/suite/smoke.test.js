@@ -159,6 +159,7 @@ async function run() {
     await scenario("Discover and persist a CubeMX2 project through the real workspace search", async () => {
         const project = path.join(workspace, "emberprobe-e2e.ioc2");
         const previous = provider._context.workspaceState.get("mcu.iocPath");
+        const inspect2 = provider._cubemxFirmware.inspect2;
         fs.copyFileSync(path.resolve(__dirname, "../../fixtures/cubemx2/c593.ioc2"), project);
         try {
             await provider._context.workspaceState.update("mcu.iocPath", "");
@@ -166,14 +167,35 @@ async function run() {
             assert.strictEqual(selected, await fs.promises.realpath(project));
             assert.strictEqual(provider._context.workspaceState.get("mcu.iocPath"), selected);
             assert(provider.getModernWebviewContent().includes("emberprobe-e2e.ioc2"));
+            provider._cubemxFirmware.inspect2 = async (config) => {
+                assert.strictEqual(config.iocPath, selected);
+                return {
+                    generator: "cubemx2",
+                    family: "C5",
+                    installed: false,
+                    state: "missing",
+                    repository: workspace,
+                    packs: [
+                        {
+                            vendor: "STMicroelectronics",
+                            name: "stm32c5xx_dfp",
+                            requiredVersion: "2.1.0",
+                            versions: [],
+                            state: "missing"
+                        }
+                    ]
+                };
+            };
             await provider._cubemxFirmware.refresh();
-            assert.strictEqual(provider._cubemxFirmware.result, null);
+            assert.strictEqual(provider._cubemxFirmware.result.generator, "cubemx2");
+            assert(provider.getModernWebviewContent().includes("stm32c5xx_dfp"));
         } finally {
+            provider._cubemxFirmware.inspect2 = inspect2;
             await provider._context.workspaceState.update("mcu.iocPath", previous);
             fs.unlinkSync(project);
         }
     });
-    console.log("✓ discovers CubeMX2 projects and skips legacy firmware checks");
+    console.log("✓ discovers CubeMX2 projects and displays pack requirements");
     const oldAgentAccess = extension.exports.debugTestProvider._context.workspaceState.get("emberprobe.agentAccess");
     try {
         assert.strictEqual(provider._agentPermissions.status().fullAccess, false);

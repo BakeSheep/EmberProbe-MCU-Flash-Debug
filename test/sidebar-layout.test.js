@@ -7,6 +7,141 @@ const { getModernWebviewContent } = require("../src/modernView");
 
 const configured = { elf: "app.elf", debugger: "interface/stlink.cfg", mcu: "stm32f4x.cfg" };
 
+scenario("Align CubeMX firmware requirements and installed versions with the appropriate action", () => {
+    for (const [state, versions, installed, action, english] of [
+        ["version-mismatch", ["1.11.0"], false, "升级", "Upgrade"],
+        ["version-mismatch", ["1.13.0"], false, "安装", "Install"],
+        ["version-mismatch", ["1.10.0", "1.9.0"], false, "升级", "Upgrade"],
+        ["version-mismatch", ["1.11.0", "1.13.0"], false, "安装", "Install"],
+        ["missing", [], false, "安装", "Install"],
+        ["unknown", [], false, "安装", "Install"],
+        ["installed", ["1.12.1", "1.13.0"], true, null, null]
+    ]) {
+        const page = render(
+            getModernWebviewContent(
+                {
+                    ...configured,
+                    cubemxStatus: "CubeMX 已就绪",
+                    cubemxFirmware: {
+                        family: "H7",
+                        requiredVersion: "1.12.1",
+                        versions,
+                        repository: 'C:/firmware/<packages>"',
+                        state,
+                        installed
+                    }
+                },
+                "zh"
+            )
+        );
+        try {
+            const row = page.document.querySelector(".cubemx-config-row");
+            const card = row.querySelector(".cubemx-firmware");
+            assert.strictEqual(row.parentElement, page.document.querySelector("#otherConfig > .tree"));
+            assert.strictEqual(row.previousElementSibling.dataset.command, "mcu-vscode.selectIoc");
+            assert.strictEqual(card.querySelector(".cubemx-firmware-label").textContent, "CubeMX / 固件包");
+            assert.ok(!row.textContent.includes("已就绪"));
+            assert.strictEqual(card.querySelector(".cubemx-package-name").textContent, "STM32Cube H7");
+            assert.ok(card.querySelector(".cubemx-package-versions").textContent.includes("需求 1.12.1"));
+            assert.strictEqual(card.querySelector(".cubemx-current-version").textContent, versions.join(", ") || "—");
+            assert.strictEqual(card.querySelector(".cubemx-package-list").title, 'C:/firmware/<packages>"');
+            const install = card.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]');
+            assert.strictEqual(install?.textContent || null, action);
+            if (install) {
+                install.click();
+                assert.strictEqual(page.messages.at(-1).cmd, "mcu-vscode.installCubeMxFirmware");
+            }
+            const refresh = card.querySelector(".cubemx-refresh");
+            refresh.click();
+            assert.strictEqual(page.messages.at(-1).cmd, "mcu-vscode.refreshCubeMxFirmware");
+            page.send({ type: "setLang", lang: "en" });
+            assert.strictEqual(refresh.title, "Recheck firmware");
+            assert.strictEqual(
+                page.document.getElementById(refresh.getAttribute("aria-labelledby")).textContent,
+                "Recheck firmware"
+            );
+            if (install) assert.strictEqual(install.textContent, english);
+            assert.ok(card.querySelector(".cubemx-package-versions").textContent.includes("Need 1.12.1"));
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    }
+});
+
+scenario("Keep tool failures visible without repeating successful CubeMX detection", () => {
+    for (const [status, error, expected] of [
+        ["CubeMX 已就绪", "", ""],
+        ["CubeMX is ready", "", ""],
+        ["已找到 CubeMX2 安装", "", ""],
+        ["未找到 CubeMX", "", "未找到 CubeMX"],
+        ["CubeMX 已就绪", '<invalid path>"', "固件包待确认"]
+    ]) {
+        const page = render(getModernWebviewContent({ cubemxStatus: status, cubemxFirmwareError: error }, "zh"));
+        try {
+            const message = page.document.querySelector(".cubemx-status");
+            assert.strictEqual(message.textContent, expected);
+            if (error) assert.strictEqual(message.title, error);
+            assert.strictEqual(page.document.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]'), null);
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    }
+});
+
+scenario(
+    "Choose install, upgrade or manage for CubeMX2 packs without treating newer exact versions as upgrades",
+    () => {
+        for (const [requiredVersion, versions, state, action] of [
+            [">=2.1.0", ["2.0.0"], "version-mismatch", "升级"],
+            ["^2.1.0", ["2.0.0"], "version-mismatch", "升级"],
+            ["~2.1.0", ["2.0.0"], "version-mismatch", "升级"],
+            ["2.1.0", ["2.2.0"], "version-mismatch", "安装"],
+            ["2.1.0", [], "missing", "安装"],
+            ["${VERSION}", ["2.0.0"], "unknown", "管理"],
+            ["2.1.0", ["2.0.0-beta.1"], "version-mismatch", "安装"]
+        ]) {
+            const page = render(
+                getModernWebviewContent(
+                    {
+                        cubemxStatus: "已找到 CubeMX2 安装",
+                        cubemxFirmware: {
+                            generator: "cubemx2",
+                            family: "C5",
+                            installed: false,
+                            state,
+                            packs: [
+                                {
+                                    vendor: "STMicroelectronics",
+                                    name: "stm32c5xx_dfp",
+                                    requiredVersion,
+                                    versions,
+                                    state
+                                }
+                            ]
+                        }
+                    },
+                    "zh"
+                )
+            );
+            try {
+                const card = page.document.querySelector(".cubemx-firmware");
+                assert.strictEqual(card.querySelector(".cubemx-firmware-label").textContent, "CubeMX2 / 固件包");
+                assert.strictEqual(
+                    card.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]').textContent,
+                    action
+                );
+                assert.ok(card.textContent.includes(requiredVersion));
+                assert.ok(!card.textContent.includes("已找到"));
+                page.assertHealthy();
+            } finally {
+                page.close();
+            }
+        }
+    }
+);
+
 scenario("Keep CubeMX executable paths in machine-wide User settings rather than the sidebar", () => {
     const properties = Object.assign(
         {},

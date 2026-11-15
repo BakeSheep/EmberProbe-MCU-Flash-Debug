@@ -12,7 +12,7 @@ write back with a backup, record a manifest and offer `--check`.
 The sidebar project picker and auto-configuration discover both `.ioc` and `.ioc2`. Background
 auto-configuration preserves a valid existing selection and selects only a unique candidate, without prompting;
 explicit auto-configuration asks when several projects exist. The selected file determines the displayed tool
-status. Legacy firmware inspection and installation are skipped for `.ioc2` projects.
+status. The shared firmware card dispatches to the legacy repository checker or the CubeMX2 pack checker.
 Shared target detection treats both formats as authoritative project metadata. CubeMX2's `mcuUID` supplies
 the exact device, and the project directory scopes ELF ranking, consistently in the extension and bundled skills.
 
@@ -29,6 +29,39 @@ not execute `cube mx start`, launch CubeMX2 or install bundles. Missing tools an
 common installation directories, versioned directories and PATH, plus Windows desktop/Start menu shortcuts and
 uninstall registry locations. Registry/manifest JSON reads are bounded to 2 MiB. Linux accepts
 an executable `stm32cubemx2` or `stm32cubemx2-<version>` launcher; macOS detection is currently unavailable.
+
+## Installed firmware and version mismatches
+
+The legacy checker reads the selected `.ioc` firmware version and validates `package.xml`, CMSIS and HAL
+directories in the configured updater repository. Only the required version satisfies the project.
+The native installer requests that version with `ask`, leaving account and license handling to CubeMX.
+
+CubeMX2 inspection reads the solution, project and layer pack declarations embedded in the selected `.ioc2`.
+Pack names come from project metadata, without a C5 allow-list. It checks vendor/name and the newest release
+in each installed PDSC against its directory version. Exact, unversioned, stable `>=`, `^` and `~`
+requirements are supported. Local paths, context filters and other expressions report unknown.
+Reading metadata establishes the installed package identity; code generation still validates pack contents
+and transitive dependencies. Without a project, the target family supplies DFP and HAL package names.
+The selected project takes precedence when a family supports both CubeMX generations.
+
+The pack root comes from `CMSIS_PACK_ROOT`, the platform's `stm32cube/CubeUserConfig.json`
+`cmsis_pack_root`, or the platform data directory's `stm32cube/packs`, in that order.
+Inspection reads local metadata only. The CubeMX2 action opens the configured launcher without project or
+installation arguments, and a refresh action checks completed user installations.
+
+Version handling was audited in November 2026. A single CubeMX/firmware configuration row shows each
+package's required and installed versions side by side, without repeating successful tool detection. Missing
+packages offer Install; installed stable versions below a supported requirement offer Upgrade. A newer exact
+version mismatch still offers Install for the required version. Unknown CubeMX2 requirements offer Manage.
+All three actions retain the interactive installer/pack manager path. Repository and diagnostic details use tooltips.
+A newer installed version cannot satisfy an exact older requirement. Legacy generation checks `MxCube.Version`,
+preserves `ProjectManager.FirmwarePackage` through candidate validation, and blocks package or migration errors
+even if the CLI also prints success. CubeMX2 selects the application bundle matching `mx2Version` and generation
+uses local packs. Migration and package-version changes are performed in the corresponding CubeMX application.
+The firmware card is informational; the generator remains authoritative for a complete generation check.
+
+Version selection follows the [CMSIS project pack format](https://open-cmsis-pack.github.io/cmsis-toolbox/YML-Input-Format/).
+Cube repository configuration follows the [ST Cube CLI reference](https://dev.st.com/stm32cube-docs/stm32cubecli/latest/en/docs/markup/STM32CubeCLI_Command_Reference.html).
 
 ## Generation safety
 
@@ -163,5 +196,5 @@ an `.ioc` project), `CUBEMX2_OPERATION_INVALID`, `CUBEMX2_COMMAND_FAILED`, `CUBE
 (install the pack in the CubeMX2 UI), `CUBEMX2_BACKEND_FAILED`, `CUBEMX2_TIMEOUT`,
 `CUBEMX2_OUTPUT_TOO_LARGE`, `CUBEMX2_BUILD_TARGET_MISSING` and `CUBEMX2_OUTPUT_INVALID`.
 
-Not covered yet: sidebar UI for CubeMX2 configuration and pack status, creating projects, Linux
+Not covered yet: creating projects, Linux
 (the backend lifecycle was verified on Windows only), and building or flashing the generated project.

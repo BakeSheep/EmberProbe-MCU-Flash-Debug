@@ -12,6 +12,7 @@ const {
     availableVersions,
     inspectFirmware,
     launchInstaller,
+    launchPackManager,
     CubeMxFirmware
 } = require("../src/services/cubemxFirmware");
 const { render } = require("./helpers/render-webview");
@@ -69,6 +70,8 @@ const { getModernWebviewContent } = require("../src/modernView");
         );
         let result = await inspectFirmware(config, options);
         assert.strictEqual(result.installed, false, "other version does not satisfy ioc");
+        assert.strictEqual(result.state, "version-mismatch");
+        assert.deepStrictEqual(result.versions, ["1.13.0"]);
         assert.deepStrictEqual(result.available, ["1.12.0"]);
         await fs.appendFile(config.iocPath, "ProjectManager.DefaultFWLocation=false\n");
         await assert.rejects(inspectFirmware(config, options), /custom firmware/);
@@ -119,6 +122,7 @@ const { getModernWebviewContent } = require("../src/modernView");
         let launches = 0;
         let changed = 0;
         let nextChoice = "1.13.0";
+        let expectedInstallVersion = "1.13.0";
         result = { family: "H7", installed: false, requiredVersion: "", available: ["1.13.0"] };
         const service = new CubeMxFirmware({
             context: { workspaceState: { get: (key) => (key === "mcu.mcuCore" ? config.target : config.iocPath) } },
@@ -139,7 +143,7 @@ const { getModernWebviewContent } = require("../src/modernView");
             installation: async () => tool,
             launch: async (_tool, family, version) => {
                 assert.strictEqual(family, "H7");
-                assert.strictEqual(version, "1.13.0");
+                assert.strictEqual(version, expectedInstallVersion);
                 launches++;
             },
             t: (key) => key,
@@ -160,28 +164,83 @@ const { getModernWebviewContent } = require("../src/modernView");
         result.installed = true;
         await service.install();
         assert.strictEqual(launches, 3);
+        await scenario("Install the required older firmware alongside a newer installed version", async () => {
+            result = {
+                family: "H7",
+                generator: "cubemx",
+                installed: false,
+                state: "version-mismatch",
+                requiredVersion: "1.12.0",
+                versions: ["1.13.0"],
+                available: ["1.12.0"]
+            };
+            expectedInstallVersion = "1.12.0";
+            await service.install();
+            assert.strictEqual(launches, 4);
+            assert.strictEqual(result.requiredVersion, "1.12.0");
+        });
         service.inspect = async () => {
             throw new Error("invalid config");
         };
         await service.install();
         assert.strictEqual(service.error, "invalid config");
         assert(changed > 0);
-        await scenario("Skip legacy firmware inspection and installation for a CubeMX2 project", async () => {
-            const previous = config.iocPath;
-            config.iocPath = "board.IOC2";
-            let inspections = 0;
-            service.inspect = async () => {
-                inspections++;
-                return result;
-            };
-            await service.refresh();
-            assert.strictEqual(inspections, 0);
-            assert.strictEqual(service.result, null);
-            assert.strictEqual(service.error, "");
-            const before = launches;
-            assert.strictEqual(await service.install(), false);
-            assert.strictEqual(launches, before);
-            config.iocPath = previous;
+        await scenario(
+            "Inspect CubeMX2 requirements and open its pack manager through the shared firmware action",
+            async () => {
+                const previous = config.iocPath;
+                config.iocPath = "board.IOC2";
+                let inspections = 0;
+                let inspections2 = 0;
+                let launches2 = 0;
+                service.inspect = async () => {
+                    inspections++;
+                    return result;
+                };
+                service.inspect2 = async (settings) => {
+                    inspections2++;
+                    assert.strictEqual(settings.iocPath, "board.IOC2");
+                    return { generator: "cubemx2", family: "C5", installed: false, state: "missing", packs: [] };
+                };
+                service.installation2 = async () => tool;
+                service.launch2 = async () => launches2++;
+                await service.refresh();
+                assert.strictEqual(inspections, 0);
+                assert.strictEqual(inspections2, 1);
+                assert.strictEqual(service.result.generator, "cubemx2");
+                assert.strictEqual(service.error, "");
+                const before = launches;
+                assert.strictEqual(await service.install(), true);
+                assert.strictEqual(launches, before);
+                assert.strictEqual(launches2, 1);
+                config.iocPath = "";
+                config.target = "stm32g5x.cfg";
+                assert.strictEqual(service.config().generator, "cubemx2");
+                config.target = "stm32h7x.cfg";
+                assert.strictEqual(
+                    service.config().generator,
+                    "cubemx",
+                    "a legacy family with both tools uses its selected project to choose CubeMX2"
+                );
+                config.iocPath = previous;
+            }
+        );
+        await scenario("Open CubeMX2 interactively without pack installation or project changes", async () => {
+            let opened = false;
+            await launchPackManager(tool, {
+                spawn: (executable, args, opts) => {
+                    assert.strictEqual(executable, tool.executable);
+                    assert.deepStrictEqual(args, []);
+                    assert.strictEqual(opts.shell, false);
+                    assert.strictEqual(opts.env.ELECTRON_RUN_AS_NODE, undefined);
+                    const child = new EventEmitter();
+                    child.unref = () => {};
+                    process.nextTick(() => child.emit("spawn"));
+                    opened = true;
+                    return child;
+                }
+            });
+            assert.strictEqual(opened, true);
         });
 
         for (const lang of ["zh", "en"]) {
@@ -198,6 +257,45 @@ const { getModernWebviewContent } = require("../src/modernView");
                 view.window.close();
             }
         }
+        await scenario("Display pack requirements and installed versions inline in both languages", () => {
+            for (const lang of ["zh", "en"]) {
+                const view = render(
+                    getModernWebviewContent(
+                        {
+                            cubemxFirmware: {
+                                generator: "cubemx2",
+                                family: "C5",
+                                installed: false,
+                                state: "version-mismatch",
+                                repository: root,
+                                packs: [
+                                    {
+                                        vendor: "STMicroelectronics",
+                                        name: "stm32c5xx_dfp",
+                                        requiredVersion: "2.1.0",
+                                        versions: ["2.2.0"],
+                                        state: "version-mismatch"
+                                    }
+                                ]
+                            }
+                        },
+                        lang
+                    )
+                );
+                try {
+                    view.assertHealthy();
+                    const card = view.document.querySelector(".cubemx-firmware");
+                    const details = card.querySelector(".cubemx-package").textContent;
+                    assert.ok(details.includes("2.1.0") && details.includes("2.2.0"));
+                    assert.ok(details.includes("stm32c5xx_dfp"));
+                    assert.ok(card.textContent.includes("2.2.0"));
+                    view.document.querySelector('[data-command="mcu-vscode.refreshCubeMxFirmware"]').click();
+                    assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.refreshCubeMxFirmware");
+                } finally {
+                    view.window.close();
+                }
+            }
+        });
         console.log("CubeMX firmware tests passed");
     } finally {
         await fs.rm(root, { recursive: true, force: true });

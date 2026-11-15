@@ -324,6 +324,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.autoDetect"] = async () => this.runAutoDetect(true);
         this.commandHandlers["mcu-vscode.selectIoc"] = () => this._cubemxConfiguration.selectIoc();
         this.commandHandlers["mcu-vscode.installCubeMxFirmware"] = () => this._cubemxFirmware.install();
+        this.commandHandlers["mcu-vscode.refreshCubeMxFirmware"] = () => this.updateView();
         this.commandHandlers["mcu-vscode.manageAgentSkills"] = async () => this.manageAgentSkills();
         this.commandHandlers["mcu-vscode.enableAgentAccess"] = async () => this.setAgentAccess("enabled");
         this.commandHandlers["mcu-vscode.disableAgentAccess"] = async () => this.setAgentAccess("disabled");
@@ -1433,9 +1434,11 @@ class MainViewProvider {
                 versionLabel: versionLabel(this._context.extension?.packageJSON?.version),
                 elf: elf ? path.basename(elf) : "",
                 iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",
-                cubemxStatus: /\.ioc2$/i.test(this._context.workspaceState.get(CACHE_KEYS.iocPath) || "")
-                    ? this._cubemxConfiguration.status2
-                    : this._cubemxConfiguration.status,
+                cubemxStatus:
+                    /\.ioc2$/i.test(this._context.workspaceState.get(CACHE_KEYS.iocPath) || "") ||
+                    this._cubemxFirmware?.config().generator === "cubemx2"
+                        ? this._cubemxConfiguration.status2
+                        : this._cubemxConfiguration.status,
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
