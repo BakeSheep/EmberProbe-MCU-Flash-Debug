@@ -662,7 +662,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
         const runtimeLayout = {
             root: 0,
             types: [
-                { kind: "pointer", typeName: "Peer *", target: 1, pointerTarget: "Peer", byteSize: 4 },
+                { kind: "pointer", typeName: "Peer *", target: 1, pointerTarget: "data", byteSize: 4 },
                 {
                     kind: "class",
                     typeName: "Peer",

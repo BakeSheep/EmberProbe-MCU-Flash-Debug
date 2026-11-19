@@ -3,11 +3,12 @@
     const commonJs = typeof module === "object" && module.exports;
     const runtime = factory(
         commonJs ? require("./elfDiagnostics") : root.EmberProbeElfDiagnostics,
-        commonJs ? require("./notice") : root.EmberProbeNotice
+        commonJs ? require("./notice") : root.EmberProbeNotice,
+        commonJs ? require("./runtimeWatchPath") : root.EmberProbeRuntimeWatchPath
     );
     if (commonJs) module.exports = runtime;
     else root.EmberProbeRuntime = runtime;
-})(typeof globalThis === "object" ? globalThis : this, function (elfDiagnostics, notice) {
+})(typeof globalThis === "object" ? globalThis : this, function (elfDiagnostics, notice, createRuntimeWatchEntry) {
     const MAX_COMPOSITE_DEPTH = 32;
     const MAX_TYPE_ALIASES = 256;
     const MAX_LAYOUT_PATH_DEPTH = 256;
@@ -670,8 +671,8 @@
         walk(layout, name, 0, name);
         return out;
     }
-    function displayRuntimeSelection(symbol, tree, showRaw = false) {
-        const selection = runtimeSelection(symbol, tree);
+    function displayRuntimeSelection(symbol, tree, showRaw = false, allowDynamicLeaf = false) {
+        const selection = runtimeSelection(symbol, tree, allowDynamicLeaf);
         if (!selection) return null;
         const metadata = new Map();
         const promotedEntries = new Map();
@@ -986,147 +987,12 @@
             params?.[name] != null ? String(params[name]) : ""
         );
     }
-    function runtimeWatchEntry(name, symbol, segments = []) {
-        const graph = symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout;
-        if (!graph) return null;
-        const unwrap = (id) => {
-            for (let depth = 0; depth < MAX_TYPE_ALIASES; depth++) {
-                const type = graph.types[id];
-                if (!type) return null;
-                if (type.kind !== "alias") return type;
-                id = type.target;
-            }
-            return null;
-        };
-        const rootType = unwrap(graph.root);
-        if (!rootType) return null;
-        // Aggregates containing STL use semantic reads too. Their unrelated raw pointers
-        // stay as address values; only paths through STL may chase target storage.
-        const hasPointerTypes = (graph.types || []).some(
-            (entry) => entry?.kind === "pointer" || entry?.kind === "reference"
-        );
-        const hasContainers = runtimeContainsContainer(graph, graph.root);
-        const field = (type, name) => runtimeFieldType(graph, type, name);
-        const inherits = (type, base, seen = new Set()) => {
-            if (!type || seen.has(type)) return false;
-            if (type === base) return true;
-            seen.add(type);
-            return (type.fields || []).some((entry) => entry.isBase && inherits(unwrap(entry.type), base, seen));
-        };
-        const member = (type, name) => {
-            const known = field(type, name);
-            if (known) return known;
-            if (!type?.fields?.some((entry) => entry.name.startsWith("_vptr"))) return null;
-            const candidates = (graph.dynamicTypes || [])
-                .map((entry) => unwrap(entry.type))
-                .filter((entry) => inherits(entry, type))
-                .map((entry) => field(entry, name))
-                .filter(Boolean);
-            return candidates.length &&
-                candidates.every(
-                    (entry) =>
-                        entry.kind === candidates[0].kind &&
-                        entry.typeName === candidates[0].typeName &&
-                        entry.watchType === candidates[0].watchType &&
-                        entry.byteSize === candidates[0].byteSize
-                )
-                ? candidates[0]
-                : null;
-        };
-        let type = rootType;
-        let enteredContainer = !!rootType.stl;
-        // Raw pointers outside STL are followed only where the path explicitly dereferences
-        // them (`.value` or `->`), one user-requested level at a time, and never into
-        // void, function or declaration-only targets.
-        let followed = false;
-        for (const segment of segments) {
-            if (!type) return null;
-            if (["pointer", "reference"].includes(type.kind) && !enteredContainer) {
-                const explicit =
-                    segment.kind === "dereference" || (segment.kind === "member" && segment.name === "value");
-                if (!explicit || (type.pointerTarget && type.pointerTarget !== "data")) return null;
-                followed = true;
-                type = unwrap(type.target);
-                continue;
-            }
-            if (type.kind === "reference") type = unwrap(type.target);
-            if (type?.kind === "pointer") {
-                type = unwrap(type.target);
-                if (segment.kind === "dereference" || (segment.kind === "member" && segment.name === "value")) continue;
-            } else if (segment.kind === "dereference") return null;
-            if (type?.stl) {
-                enteredContainer = true;
-                if (segment.kind === "index" || (segment.kind === "member" && segment.name === "value")) {
-                    if (segment.kind === "index" && (!Number.isSafeInteger(segment.index) || segment.index < 0))
-                        return null;
-                    const named = ["unique_ptr", "shared_ptr", "weak_ptr", "optional", "variant"].includes(type.stl);
-                    if ((segment.kind === "index" && named) || (segment.kind === "member" && !named)) return null;
-                    if (/map$/.test(type.stl)) {
-                        const pairs = graph.types.filter(
-                            (entry) =>
-                                entry.stl === "pair" &&
-                                entry.args?.length === 2 &&
-                                entry.args.every(
-                                    (id, index) => unwrap(id)?.typeName === unwrap(type.args[index])?.typeName
-                                )
-                        );
-                        type =
-                            pairs.length &&
-                            pairs.every(
-                                (entry) => entry.typeName === pairs[0].typeName && entry.byteSize === pairs[0].byteSize
-                            )
-                                ? pairs[0]
-                                : null;
-                    } else if (type.stl === "tuple") type = unwrap(type.args?.[segment.index]);
-                    else if (type.stl === "variant") {
-                        const alternatives = type.args.map(unwrap);
-                        type = alternatives.every((entry) => entry?.watchType === alternatives[0]?.watchType)
-                            ? alternatives[0]
-                            : null;
-                    } else type = unwrap(type.args?.[0]);
-                } else if (type.stl === "pair" && ["first", "second"].includes(segment.name))
-                    type = unwrap(type.args[segment.name === "first" ? 0 : 1]);
-                else return null;
-            } else if (segment.kind === "index" && type?.kind === "array") {
-                if (!Number.isSafeInteger(segment.index) || segment.index < 0 || segment.index >= type.count)
-                    return null;
-                type = unwrap(type.target);
-            } else if (segment.kind === "member") type = member(type, segment.name);
-            else return null;
-        }
-        if (!followed && hasPointerTypes && !hasContainers) return null;
-        if (!followed && segments.some((segment) => segment?.kind === "dereference")) return null;
-        if (type?.stl) enteredContainer = true;
-        const rawPointer = !enteredContainer && ["pointer", "reference"].includes(type?.kind);
-        if (type?.kind === "reference" && !rawPointer) type = unwrap(type.target);
-        if (!type || type.unobservable || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType))
-            return null;
-        const named = variableDisplayName({ name }, [symbol]);
-        const displayName = followed && /\.value$/.test(named) ? "*" + named.slice(0, -".value".length) : named;
-        return {
-            name,
-            address: symbol.address,
-            size: symbol.size,
-            type: rawPointer ? "u32" : type.watchType || "",
-            ...(segments.length && type.typeName ? { typeName: type.typeName } : {}),
-            ...(rawPointer && type.kind === "pointer"
-                ? { isPointer: true, pointerTarget: type.pointerTarget || "data" }
-                : {}),
-            isComposite: !rawPointer && type.kind !== "scalar",
-            compositeLayout: symbol.compositeLayout || null,
-            ...(symbol.layoutExpansions
-                ? {
-                      layoutExpansions: symbol.layoutExpansions,
-                      layoutExpansionGeneration: symbol.layoutExpansionGeneration
-                  }
-                : {}),
-            runtimeLayout: graph,
-            runtimeSegments: segments,
-            ...(followed || (hasContainers && !enteredContainer) ? { runtimeStaticPointers: true } : {}),
-            ...(followed ? { derefPath: true } : {}),
-            ...(displayName !== name ? { displayName } : {})
-        };
-    }
+    const runtimeWatchEntry = createRuntimeWatchEntry({
+        MAX_TYPE_ALIASES,
+        runtimeContainsContainer,
+        runtimeFieldType,
+        variableDisplayName
+    });
     // Member segments of a watch path (`a.b[2]->c`), after its base symbol name.
     function memberPathSegments(name) {
         const text = String(name || "");
@@ -1368,13 +1234,13 @@
         const tree = build(id, symbol.name, 0);
         return tree.kind === "unavailable" ? null : tree;
     }
-    function runtimeSelection(symbol, tree) {
+    function runtimeSelection(symbol, tree, allowDynamicLeaf = false) {
         const graph = runtimeGraph(symbol);
         if (!runtimeContainsContainer(graph, graph?.root)) return null;
         const entries = [];
         const add = (segments) => {
             const suffix = segments.map((s) => (s.kind === "index" ? `[${s.index}]` : `.${s.name}`)).join("");
-            const entry = runtimeWatchEntry(symbol.name + suffix, symbol, segments);
+            const entry = runtimeWatchEntry(symbol.name + suffix, symbol, segments, allowDynamicLeaf);
             if (entry && suffix && !entries.some((item) => item.path === entry.name))
                 entries.push({ ...entry, path: entry.name, label: suffix, typeName: entry.type });
         };

@@ -26,6 +26,7 @@ const {
     debugReadPlanKey,
     filterRuntimeRamPlan,
     runtimePointerRanges,
+    runtimeWritableRanges,
     writableRamSectionRanges
 } = require("./liveWatchService");
 const { CACHE_KEYS } = require("../cacheKeys");
@@ -179,7 +180,11 @@ class LiveWatchController {
         // which would lose UI fields such as min/max
         try {
             const writeItems = this.host._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [];
-            lists.push(validation.normalizeWatchList(writeItems, this.host.readElfSymbols().symbols));
+            lists.push(
+                validation.normalizeWatchList(writeItems, this.host.readElfSymbols().symbols, {
+                    allowDynamicLeaf: true
+                })
+            );
         } catch (e) {
             /* Ignore the write list when the ELF is unavailable */
         }
@@ -203,16 +208,23 @@ class LiveWatchController {
     runtimeReadRanges(plan, result) {
         if (!plan.some((item) => item.runtimeLayout)) return plan;
         const cache = this._runtimeRamSections(result ?? this.host.readElfSymbols());
-        const ranges = runtimePointerRanges(cache.sections, cache.regions);
-        return plan.map((item) => (item.runtimeLayout ? { ...item, runtimeRanges: ranges } : item));
+        return plan.map((item) =>
+            item.runtimeLayout
+                ? { ...item, runtimeRanges: cache.readRanges, runtimeWriteRanges: cache.writeRanges }
+                : item
+        );
     }
     _runtimeRamSections(elfResult) {
         if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
             const memory = elfResult.memory || {};
+            const sections = Array.isArray(memory.sections) ? memory.sections : [];
+            const regions = Array.isArray(memory.runtimeRegions) ? memory.runtimeRegions : [];
             this._runtimeRamCache = {
                 sha256: elfResult.elf.sha256,
-                sections: Array.isArray(memory.sections) ? memory.sections : [],
-                regions: Array.isArray(memory.runtimeRegions) ? memory.runtimeRegions : []
+                sections,
+                regions,
+                readRanges: runtimePointerRanges(sections, regions),
+                writeRanges: runtimeWritableRanges(memory)
             };
         }
         return this._runtimeRamCache;
@@ -244,18 +256,20 @@ class LiveWatchController {
     }
     // Each consumer's watch type per variable, so the same raw bytes are decoded and pushed per type.
     consumerTypes() {
-        const build = (list) => {
+        const build = (list, includeAddress = false) => {
             const m = new Map();
             for (const item of list) {
                 if (item?.name)
                     m.set(
                         item.name,
-                        Number.isInteger(item.bitSize) || item.enumInfo || item.isPointer ? item : item.type
+                        includeAddress || Number.isInteger(item.bitSize) || item.enumInfo || item.isPointer
+                            ? item
+                            : item.type
                     );
             }
             return m;
         };
-        const sidebar = build(this.sidebarSampledList());
+        const sidebar = build(this.sidebarSampledList(), true);
         // Write list variables are decoded with their own watch type and pushed to the sidebar; for the same name the
         // watch list type wins
         for (const item of this.host._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
@@ -536,6 +550,7 @@ class LiveWatchController {
             this.host._webviewView.webview.postMessage({
                 type: "liveStatus",
                 ...status,
+                writeContext: this.host._writes?.sidebarWriteContext?.()?.id ?? null,
                 frequencyHz: 20,
                 actualHz: status.consumers?.sidebarHz ?? status.actualHz
             });
@@ -553,7 +568,8 @@ class LiveWatchController {
             return;
         }
         this.host._pendingSidebarScalars = (this.host._pendingSidebarScalars || []).concat(scalarSamples);
-        this.host._pendingSidebarComposites = latestByName(this.host._pendingSidebarComposites, compositeSamples);
+        // A short relocation still invalidates a queued value even when the final frame restores the address.
+        this.host._pendingSidebarComposites = (this.host._pendingSidebarComposites || []).concat(compositeSamples);
         if (!this.host._sidebarBatchTimer) {
             this.host._sidebarBatchTimer = setTimeout(() => {
                 this.host._sidebarBatchTimer = null;
@@ -687,7 +703,8 @@ class LiveWatchController {
             t,
             types.sidebar,
             this.compositeMap(CACHE_KEYS.sidebarWatchList),
-            this.host._latestSidebarSamples
+            this.host._latestSidebarSamples,
+            this.host._writes?.sidebarWriteContext?.()?.id ?? null
         );
         if (sidebar.scalarSamples.length || sidebar.compositeSamples.length) {
             this._postSidebarBatch(sidebar.scalarSamples, sidebar.compositeSamples, t);

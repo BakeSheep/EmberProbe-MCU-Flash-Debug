@@ -102,7 +102,10 @@ const valueTree = EmberProbeValueTree.create({
     sampleOpenTreesOnly: true,
     rerender: () => renderValues(),
     rerenderPicker: () => renderAvailable(),
-    post: (message) => api?.postMessage(message),
+    post: (message) => {
+        if (message.type === "saveRuntimeExpansions") writes.setExpansions(message.expansions);
+        api?.postMessage(message);
+    },
     copy: (text) => api?.postMessage({ type: "copyText", text }),
     layoutExpansion: () => layoutExpansionUi,
     requestPointerLayout: (name) => {
@@ -672,6 +675,7 @@ function sbRemove(name, isComp) {
     sbForgetValues(name);
 }
 function sbForgetValues(name) {
+    writes.forget(name);
     valueTree.pointers.forget(name);
     delete state.latest[name];
     delete state.latestText[name];
@@ -747,7 +751,7 @@ function sbRenderScalarRow(item) {
     const ty = document.createElement("span");
     ty.className = "value-type";
     const info = valueTree.displayInfo(item);
-    ty.textContent = (info.isPointer ? info.typeName : item.type) || "u32";
+    ty.textContent = (info.isPointer ? info.typeName : item.type) || (item.runtimeLeaf ? t("lw.unknownType") : "u32");
     ty.title = ty.textContent;
     const nameWrap = document.createElement("span");
     nameWrap.className = "value-name-wrap";
@@ -843,6 +847,7 @@ function sbCompositeEntry(sym) {
 }
 // The watch and write entry of one member row.
 function sbLeafEntry(lf) {
+    const { runtimeLayout, runtimeSegments, runtimeLeaf, runtimeStaticPointers, compositeLayout, isComposite } = lf;
     return {
         name: lf.path,
         displayName: sbDisplayName({ name: lf.displayPath || lf.path, displayName: lf.displayName }),
@@ -857,14 +862,8 @@ function sbLeafEntry(lf) {
         ...(lf.isReference ? { isReference: true } : {}),
         ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
         ...(lf.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
-        ...(lf.runtimeLayout
-            ? {
-                  runtimeLayout: lf.runtimeLayout,
-                  runtimeSegments: lf.runtimeSegments,
-                  ...(lf.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
-                  compositeLayout: lf.compositeLayout,
-                  isComposite: lf.isComposite
-              }
+        ...(runtimeLayout
+            ? { runtimeLayout, runtimeSegments, runtimeLeaf, runtimeStaticPointers, compositeLayout, isComposite }
             : {})
     };
 }
@@ -951,7 +950,7 @@ function sbScalarRow(sym, already) {
     cell.appendChild(
         mkWriteBtn(
             entry,
-            !availableTypesReady || noLayout || !sym.hasDwarfWriteType,
+            !availableTypesReady || noLayout || !sym.hasDwarfWriteType || !writes.canAddStatic(sym),
             noLayout ? sym.unsupportedReason || t("sb.compositeUnsupported") : t("sb.writeUnsupported")
         )
     );
@@ -1018,15 +1017,7 @@ function mkAvBtn(cls, glyph, on, disabled, titleTxt, handler) {
     return b;
 }
 function mkWriteBtn(entry, disabled, reason) {
-    disabled ||=
-        !!entry.runtimeLayout ||
-        !!entry.staticRuntimeStorage ||
-        !!entry.isConst ||
-        !!entry.isReference ||
-        !!entry.isMemberPointer ||
-        !!entry.isPointer ||
-        !!entry.enumEncodingInferred ||
-        Number.isInteger(entry.bitSize);
+    disabled ||= !writes.canAddStatic(entry);
     const on = !disabled && writes.has(entry.name);
     const button = mkAvBtn(
         "av-write",
@@ -1209,6 +1200,7 @@ function liveStatus(m) {
     writes.setAccess({
         canWrite: liveCanWrite,
         haltWrite: next.haltWrite,
+        writeContext: m.writeContext,
         halted: m.source === "dap" && String(m.mode || "").startsWith("debug-paused"),
         unavailableKey: EmberProbeRuntime.writeUnavailableKey({ ...m, running: liveRunning, canWrite: liveCanWrite })
     });
@@ -1523,7 +1515,7 @@ window.EmberProbeMessages.connect(window, {
     sidebarWatchList: function (m) {
         const incoming = (m.items || []).slice();
         for (const item of state.watch)
-            if (!incoming.some((next) => next.name === item.name)) valueTree.pointers.forget(item.name);
+            if (!incoming.some((next) => next.name === item.name)) sbForgetValues(item.name);
         state.watch = incoming;
         if (m.resetValues) {
             writes.invalidate();
@@ -1543,6 +1535,7 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariables: function (m) {
         variableWarnings = m.warnings || [];
+        state.writeRanges = m.writeRanges ?? null;
         state.available = (m.symbols || []).slice();
         availableTypesReady = true;
         state.symbols = new Map(state.available.map((symbol) => [symbol.name, symbol]));
@@ -1555,8 +1548,10 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariablesReset: function (m) {
         variableWarnings = m.warnings || [];
+        if (m.version !== state.version || m.generation !== state.generation) writes.invalidate();
         state.version = m.version || "";
         state.generation = m.generation ?? null;
+        state.writeRanges = m.writeRanges ?? null;
         if (valueTree.pointers.expire()) saveSbUi();
         layoutExpansionUi.reset();
         for (const item of state.watch) {
@@ -1646,6 +1641,7 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     debugSessionChanged: function () {
+        writes.invalidate();
         state.latest = Object.create(null);
         state.latestText = Object.create(null);
         state.latestPointer = Object.create(null);

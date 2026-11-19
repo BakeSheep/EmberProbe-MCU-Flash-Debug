@@ -127,7 +127,9 @@ function normalizeWatchList(items, symbols, options = {}) {
             result.push({ ...expanded, ...(displayName !== expanded.name ? { displayName } : {}) });
             continue;
         }
-        const runtime = runtimeSymbol && runtimeWatchEntry(item.name, runtimeSymbol, path?.segments || []);
+        const runtime =
+            runtimeSymbol &&
+            runtimeWatchEntry(item.name, runtimeSymbol, path?.segments || [], options.allowDynamicLeaf);
         if (runtime) {
             seen.add(item.name);
             result.push({

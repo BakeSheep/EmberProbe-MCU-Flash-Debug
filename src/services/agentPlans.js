@@ -290,6 +290,7 @@ function writePlan(values, readElf, runtimeTargets = new Map()) {
                 name: leaves[0].path,
                 address: leaves[0].address >>> 0,
                 type: leaves[0].type,
+                typeName: leaves[0].typeName,
                 size: leaves[0].size,
                 isBoolean: !!leaves[0].isBoolean,
                 isConst: !!leaves[0].isConst,
@@ -332,6 +333,7 @@ function writePlan(values, readElf, runtimeTargets = new Map()) {
                 name: plan.name,
                 address: plan.address,
                 type: plan.type,
+                typeName: resolvedSymbol.typeName,
                 size: plan.size,
                 isBoolean: !!resolvedSymbol.isBoolean,
                 isConst: !!resolvedSymbol.isConst
@@ -374,7 +376,7 @@ function writePlan(values, readElf, runtimeTargets = new Map()) {
         ranges.push({ start: target.address, end, name: target.name });
         const inRuntimeRam =
             target.runtimeWrite &&
-            require("./runtimeWritePlan")
+            require("./liveWatchService")
                 .runtimeWritableRanges(elfResult.memory)
                 .some((range) => target.address >= range.start && end <= range.end);
         if (!inWritable(target.address, Math.max(target.size, bytes.length)) && !inRuntimeRam) {
@@ -392,6 +394,8 @@ function writePlan(values, readElf, runtimeTargets = new Map()) {
             address: target.address,
             type: target.type,
             size: target.size,
+            ...(target.typeName ? { typeName: target.typeName } : {}),
+            ...(target.isBoolean ? { isBoolean: true } : {}),
             ...(target.runtimeWrite ? { runtimeWrite: true } : {}),
             bytes,
             value: elfSymbols.decodeValue(bytes, target.type),

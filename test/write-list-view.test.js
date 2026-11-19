@@ -3,7 +3,9 @@
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
-const { loadProvider } = require("./helpers/load-provider");
+const { loadProvider, createProvider } = require("./helpers/load-provider");
+const { scenario } = require("./helpers/scenario");
+const { CACHE_KEYS } = require("../src/cacheKeys");
 
 const symbols = Array.from({ length: 80 }, (_, index) => ({
     name: `app::group${index}::counter`,
@@ -161,7 +163,78 @@ try {
 }
 
 (async () => {
+    await scenario("Only add ELF scalars that have static writable storage", async () => {
+        const picker = render(getModernWebviewContent({}, "en"));
+        try {
+            const scalar = { name: "mutable", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true };
+            const types = [
+                { kind: "scalar", byteSize: 4, watchType: "u32", typeName: "unsigned int" },
+                { kind: "class", stl: "vector", args: [0], byteSize: 12, typeName: "std::vector<unsigned int>" }
+            ];
+            picker.send({
+                type: "availableVariables",
+                writeRanges: [{ start: 0x20000000, end: 0x20000100 }],
+                symbols: [
+                    scalar,
+                    { ...scalar, name: "constant", address: scalar.address + 4, isConst: true },
+                    { ...scalar, name: "flash", address: 0x08000000 },
+                    { ...scalar, name: "ref", address: scalar.address + 8, isReference: true },
+                    {
+                        ...scalar,
+                        name: "values",
+                        address: scalar.address + 12,
+                        size: 12,
+                        isComposite: true,
+                        runtimeLayout: { root: 1, types }
+                    }
+                ]
+            });
+            const box = picker.document.getElementById("availableVars");
+            const find = (name) =>
+                [...box.querySelectorAll(".av-write")].find((button) => button.dataset.selectionName === name);
+            assert.strictEqual(find("mutable").disabled, false);
+            for (const name of ["constant", "flash", "ref"]) assert(find(name).disabled, name);
+            box.querySelector(".av-arrow").click();
+            assert(!find("values") || find("values").disabled);
+            assert(
+                ![...box.querySelectorAll(".av-write")].some(
+                    (button) => button.dataset.selectionName.startsWith("values") && !button.disabled
+                )
+            );
+            find("mutable").click();
+            assert.deepStrictEqual(
+                picker.messages
+                    .findLast((message) => message.type === "saveSidebarWrite")
+                    .items.map((item) => item.name),
+                ["mutable"]
+            );
+            picker.assertHealthy();
+        } finally {
+            picker.close();
+        }
+    });
     const provider = Object.create(loadProvider().prototype);
+    await scenario("Preserve the original binding during workspace write-list normalization", async () => {
+        const fixture = createProvider();
+        try {
+            const symbol = {
+                name: "selected",
+                address: 0x20000004,
+                size: 4,
+                watchType: "u32",
+                hasDwarfWriteType: true
+            };
+            const binding = { address: 0x20000000, type: "u32", size: 4, isBoolean: false, typeName: "unsigned int" };
+            const normalize = (item) =>
+                fixture.provider._watchLists.normalize([item], [symbol], CACHE_KEYS.sidebarWriteList);
+            const legacy = { name: symbol.name, type: "u32", value: 2, fromWatch: true };
+            assert.deepStrictEqual(fixture.provider._watchIdentities(normalize(legacy)), [legacy]);
+            const pinned = { ...legacy, writeBinding: binding };
+            assert.deepStrictEqual(fixture.provider._watchIdentities(normalize(pinned)), [pinned]);
+        } finally {
+            await fixture.dispose();
+        }
+    });
     for (const destination of ["write", "sidebarWrite", "invalid"])
         await assert.rejects(provider._agentOps.addWatch({ variables: ["counter"], destination }), {
             code: "INVALID_DESTINATION"

@@ -17,6 +17,7 @@ const elfSymbols = require("./elfSymbols");
 const chipInfo = require("./chipInfo");
 const validation = require("./validation");
 const { variableDisplayName } = require("./webview/runtime");
+const { watchWriteBinding } = require("./webview/sidebar/watchWrites");
 const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
 const { runDownload } = require("./services/flashCommand");
@@ -826,16 +827,20 @@ class MainViewProvider {
         return entry;
     }
     _watchIdentities(items) {
-        return items.map((item) => ({
-            name: item.name,
-            type: item.type,
-            ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {}),
-            ...(item.layoutExpanded ? { layoutExpanded: true } : {}),
-            ...(item.fromWatch ? { fromWatch: true } : {}),
-            ...(item.min !== undefined ? { min: item.min } : {}),
-            ...(item.max !== undefined ? { max: item.max } : {}),
-            ...(item.value !== undefined ? { value: item.value } : {})
-        }));
+        return items.map((item) => {
+            const binding = item.fromWatch && watchWriteBinding(item.writeBinding);
+            return {
+                name: item.name,
+                type: item.type,
+                ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {}),
+                ...(item.layoutExpanded ? { layoutExpanded: true } : {}),
+                ...(item.fromWatch ? { fromWatch: true } : {}),
+                ...(binding ? { writeBinding: binding } : {}),
+                ...(item.min !== undefined ? { min: item.min } : {}),
+                ...(item.max !== undefined ? { max: item.max } : {}),
+                ...(item.value !== undefined ? { value: item.value } : {})
+            };
+        });
     }
     async _saveWatchList(key, items, { syncSidebar = true } = {}) {
         // Persist identities only. Layouts, handles and expansions are derived from
@@ -922,7 +927,11 @@ class MainViewProvider {
                 message: message.message.message || String(message.message)
             };
         for (const entry of this._livePanels.values()) entry.post(message);
-        this._webviewView?.webview.postMessage(message);
+        this._webviewView?.webview.postMessage(
+            message.type === "liveStatus"
+                ? { ...message, writeContext: this._writes?.sidebarWriteContext?.()?.id ?? null }
+                : message
+        );
     }
     _postConsumerStatuses(payload, error = false) {
         const p = typeof payload === "string" ? { message: payload } : payload || {};
@@ -939,6 +948,7 @@ class MainViewProvider {
         for (const entry of this._livePanels.values()) entry.post(message);
         this._webviewView?.webview.postMessage({
             ...message,
+            writeContext: this._writes?.sidebarWriteContext?.()?.id ?? null,
             frequencyHz: 20,
             actualHz: message.consumers?.sidebarHz ?? message.actualHz
         });
@@ -1056,15 +1066,15 @@ class MainViewProvider {
         }
         post({
             type: "liveStatus",
-            ...this._sampling.status()
+            ...this._sampling.status(),
+            writeContext: this._writes?.sidebarWriteContext?.()?.id ?? null
         });
         if (this._latestSidebarSamples.size) {
-            const now = Date.now();
             const scalarSamples = [];
             const compositeSamples = [];
             for (const s of this._latestSidebarSamples.values()) {
-                if (s.tree) compositeSamples.push({ ...s, t: now });
-                else scalarSamples.push({ ...s, t: now });
+                if (s.tree) compositeSamples.push(s);
+                else scalarSamples.push(s);
             }
             if (scalarSamples.length) post({ type: "liveSample", samples: scalarSamples });
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });

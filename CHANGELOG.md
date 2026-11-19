@@ -24,11 +24,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 调试 / Debug
 
-- 后端变量写入支持有类型的指针成员、链表节点和受支持容器的可变标量元素；按需解析当前地址，将描述快照绑定授权，并在 Tcl/暂停 DAP 写入事务中复核，检测变化并报告已写入状态。查看列表中的可写标量可通过右键菜单加入写入列表；采样失效后禁用写入。
-- Support typed pointer members, linked nodes and mutable scalar elements of supported containers in backend variable writes. Resolve current addresses on demand, bind descriptor snapshots to authorization and recheck them inside Tcl/paused DAP transactions, reporting changes and write progress. Add writable scalars from the watch-list context menu and disable writes when samples become stale.
+- 后端变量写入支持有类型的指针成员、链表节点和受支持容器的可变标量元素；按需解析地址并复核目标，写后回读。查看列表中的写入卡片绑定添加时的地址和类型，变化或采样失效后禁用写入并取消待提交值。ELF 全部变量列表只允许添加静态可写成员。
+- Support typed pointer members, linked nodes and mutable scalar elements of supported containers. Resolve and recheck the target before writing, then verify by reading back. Write cards added from the watch list retain the sampled address and type and cancel pending values when the binding changes or the sample goes stale. The ELF variable list only adds static writable members.
 
-- 未绑定 SVD 的工作区在调试会话就绪后才扫描 CMSIS 包目录。复用已校验文件的元数据，减少后续自动发现的重复解析。
-- Defer CMSIS pack discovery for workspaces without a bound SVD until the debug session is configured. Reuse metadata from validated files across discovery runs.
+- 侧栏使用运行时样本判定成员是否可写，恢复混合类型 `std::variant` 等独立动态查看项。写入提示区分未写入、已写入但未验证、验证后会话变化。
+- Use runtime samples to determine whether sidebar members are writable and restore standalone dynamic watch items such as mixed-type `std::variant` leaves. Report whether a write was skipped, completed without verification, or verified before a session change.
+
+- 自动发现 SVD 后，首次调试即可在外部 Peripheral Viewer 中使用该文件。自动发现复用已校验文件的元数据，减少重复解析。
+- Supply automatically discovered SVD files to external Peripheral Viewers on the first debug session. Reuse metadata from validated files across discovery runs.
 
 ### 探针诊断 / Probe diagnostics
 

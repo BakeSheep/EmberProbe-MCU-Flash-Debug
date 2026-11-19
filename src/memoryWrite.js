@@ -3,7 +3,7 @@
 // variable's own bytes with read-back, the aligned 32-bit read-modify-write fallback, the write_memory command fallback,
 // and halting a running target around a transaction. The session keeps the exclusive arbiter and the read guards.
 const { verifyWritePreconditions } = require("./writePreconditions");
-const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
+const { isNonHaltingWordWrite, runtimeWriteDisabledError, assertSidebarWriteCurrent } = require("./writeAccess");
 const {
     MAX_DEBUG_READ_COMMANDS,
     bytesToElements,
@@ -157,7 +157,12 @@ class MemoryWriter {
 }
 
 // The session reserves the Tcl connection and handles target halting around this transaction.
-async function variableWriteTransaction(session, items, { preconditions, requestEpoch, deadline, guard, nonHalting }) {
+async function variableWriteTransaction(
+    session,
+    items,
+    { preconditions, requestEpoch, deadline, guard, nonHalting, sidebarGuard }
+) {
+    const guardedWrite = preconditions.length > 0 || items.some((item) => item.runtimeWrite);
     const readItems = items.map((item) => ({
         name: item.name,
         address: item.address,
@@ -172,7 +177,7 @@ async function variableWriteTransaction(session, items, { preconditions, request
                 throw Object.assign(new Error("Dynamic write plan belongs to an old target generation"), {
                     code: "WRITE_TARGET_CHANGED"
                 });
-            if (preconditions.length && session.clock.now() > deadline)
+            if (guardedWrite && session.clock.now() > deadline)
                 throw Object.assign(new Error("Dynamic write transaction exceeded its time budget"), {
                     code: "LIVE_WRITE_BUDGET_EXCEEDED"
                 });
@@ -196,8 +201,13 @@ async function variableWriteTransaction(session, items, { preconditions, request
         for (const item of items) {
             await verify();
             current();
+            assertSidebarWriteCurrent(sidebarGuard);
             resultUnknown = true;
-            await session.writer.writeBytes(item.address, item.bytes, preconditions.length ? verify : null);
+            await session.writer.writeBytes(
+                item.address,
+                item.bytes,
+                preconditions.length || item.runtimeWrite ? verify : null
+            );
             resultUnknown = false;
             writtenItems++;
         }
@@ -207,7 +217,7 @@ async function variableWriteTransaction(session, items, { preconditions, request
         current();
         return { before, after, halted: !nonHalting };
     } catch (error) {
-        if (preconditions.length) {
+        if (guardedWrite) {
             error.retryable = false;
             error.details = {
                 ...error.details,

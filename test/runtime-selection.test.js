@@ -13,6 +13,7 @@ const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { loadProvider } = require("./helpers/load-provider");
 const { readPlan, writePlan } = require("../src/services/agentPlans");
+const { scenario } = require("./helpers/scenario");
 
 function openVariables(view, sidebar, symbols, version = "selection") {
     const prefix = sidebar ? "availableVariables" : "variablesList";
@@ -64,6 +65,71 @@ function openVariables(view, sidebar, symbols, version = "selection") {
         }
         const unique = symbols.find((symbol) => symbol.displayName === "unique");
         const vector = symbols.find((symbol) => symbol.displayName === "values");
+        await scenario(
+            "Save a mixed variant leaf from the sidebar picker and restore its standalone card",
+            async () => {
+                const variant = symbols.find((symbol) => symbol.displayName === "variant");
+                const path = variant.name + ".value";
+                const picker = render(getModernWebviewContent({}, "en"));
+                const restoredView = render(getModernWebviewContent({}, "en"));
+                try {
+                    openVariables(picker, true, [variant]);
+                    picker.document.querySelector("#availableVars .av-arrow").click();
+                    assert(picker.document.querySelector(".available-row.leaf .av-write").disabled);
+                    picker.document.querySelector(".available-row.leaf .av-watch").click();
+                    const saved = picker.messages.findLast((message) => message.type === "saveSidebarWatch").items;
+                    assert.deepStrictEqual(
+                        saved.map((item) => item.name),
+                        [path]
+                    );
+                    const normalized = normalizeWatchList([{ name: path }], [variant], { allowDynamicLeaf: true });
+                    assert(normalized[0].runtimeLeaf);
+                    assert.strictEqual(normalized[0].type, "", "the saved leaf does not guess an active encoding");
+                    openVariables(restoredView, true, [variant]);
+                    restoredView.send({ type: "sidebarWatchList", items: normalized });
+                    restoredView.send({
+                        type: "liveStatus",
+                        running: true,
+                        canRead: true,
+                        canWrite: true,
+                        writeContext: 1
+                    });
+                    restoredView.send({
+                        type: "liveSample",
+                        samples: [
+                            {
+                                name: path,
+                                address: 0x20001000,
+                                type: "f32",
+                                typeName: "float",
+                                value: 2.5,
+                                writeContext: 1,
+                                writeRestriction: ""
+                            }
+                        ]
+                    });
+                    await Promise.resolve();
+                    const row = restoredView.document.querySelector("#liveValues .value-row");
+                    assert(row, "the restored leaf is visible without its parent");
+                    row.dispatchEvent(
+                        new restoredView.window.KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true })
+                    );
+                    const write = restoredView.document.querySelector(".watch-write-action");
+                    assert.strictEqual(write.disabled, false);
+                    write.click();
+                    assert.strictEqual(
+                        restoredView.messages.findLast((message) => message.type === "saveSidebarWrite").items[0]
+                            .writeBinding.type,
+                        "f32"
+                    );
+                    picker.assertHealthy();
+                    restoredView.assertHealthy();
+                } finally {
+                    picker.close();
+                    restoredView.close();
+                }
+            }
+        );
         assert.deepStrictEqual(
             runtime.runtimeSelection(unique).entries.map((entry) => entry.label),
             [".value"]

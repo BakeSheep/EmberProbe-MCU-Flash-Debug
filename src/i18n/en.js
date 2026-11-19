@@ -481,6 +481,7 @@ module.exports = Object.freeze({
     "rtt.err.unknownChannel": "None of the selected RTT up channels are configured in the firmware",
     "svd.statusFailed": "Setup failed",
     "sb.writeFailTitle": "Writing {name} failed",
+    "sb.writeVerifiedTitle": "Write verified for {name}",
     "sb.connecting": "Connecting",
     "sb.agentConfig": "Agent Configuration",
     "agent.fullAccess": "Allow all Agent operations",
@@ -609,12 +610,13 @@ module.exports = Object.freeze({
     "sb.writeEmpty": "Right-click a watched variable and choose Add to write list, or click ✎ beside an ELF variable",
     "sb.variableMenu": "Variable actions",
     "sb.writeSampleRequired": "Wait for a valid sample before adding to the write list",
+    "sb.writeBindingMissing": "Remove this card and add it again from a fresh watch sample to bind its address",
+    "sb.writeBindingChanged": "The sampled address or type changed. Wait for the card's original target to return",
     "sb.writeWatchRequired": "Add to the watch list again and wait for a valid sample",
     "sb.writeScalarOnly": "Select a single scalar member",
     "sb.writeReadOnly": "This member is read-only",
     "sb.writePointerStorage": "Select a dereferenced scalar member; pointer storage is read-only",
     "sb.writeTypeUnknown": "The write type could not be determined",
-    "sb.writeDynamicChanged": "The target changed before writing. Wait for a fresh sample before retrying",
     "sb.writeResultUnknown": "The write result is unconfirmed. Read the current value before deciding whether to retry",
     "sb.addToWrite": "Add to write list",
     "sb.removeFromWrite": "Remove from write list",
@@ -633,11 +635,11 @@ module.exports = Object.freeze({
     "sb.writeNeedHalt":
         "While a debug session is running only aligned 32-bit variables can be written; this write briefly halts the CPU, so pause the debugger first",
     "sb.writeTargetChanged.notWritten":
-        "The debug target changed state (pause, step or breakpoint) before the write; nothing was written. Retry once it is running again",
+        "The target or session changed before the write. Nothing was written. Wait for a fresh sample before retrying.",
     "sb.writeTargetChanged.unverified":
-        "The debug target changed state (pause, step or breakpoint) during the write; {written}/{total} value(s) were written but not verified. Check the current value before retrying",
+        "The target or session changed during the write. Wrote {written}/{total} values and could not finish read-back verification. Check the current value before deciding whether to retry.",
     "sb.writeTargetChanged.verified":
-        "The value was written and read back, but the debug target changed state (pause, step or breakpoint) right after; the result may be stale",
+        "The write passed read-back verification. The target state or session changed afterward. Check a fresh sample from the current session.",
     "sb.writeReadBackFailed": "The value was written, but reading it back failed, so the result is unconfirmed: {msg}",
     "sb.writeVerifyFailedRunning":
         "The value read back differs from the written value; the running firmware may have modified it right after the write",

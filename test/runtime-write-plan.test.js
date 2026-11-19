@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const { scenario } = require("./helpers/scenario");
+const { waitFor } = require("./helpers/wait");
 const { FakeClock } = require("./helpers/fake-clock");
 const {
     runtimeWriteRequests,
@@ -18,7 +19,10 @@ const { decodeValue } = require("../src/elfSymbols");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
 const { WriteExecution } = require("../src/services/writeExecution");
-const { WriteAuthorization, fingerprintWritePlan } = require("../src/writeAuthorization");
+const { WRITE_GUARD } = require("../src/writeAccess");
+const { normalizeWatchList } = require("../src/validation");
+const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");
+const { WriteAuthorization, fingerprintWritePlan, writeConnectionIdentity } = require("../src/writeAuthorization");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
 
 function fixture(rootType = 1) {
@@ -156,7 +160,7 @@ function fixture(rootType = 1) {
                 if (++calls === 1) f.word(f.base, f.base + 1200);
                 return bytes;
             }),
-            { code: "WRITE_TARGET_CHANGED" }
+            (error) => error.code === "WRITE_TARGET_CHANGED" && error.details.written === false
         );
         f.word(f.base, f.base + 1024);
         await assert.rejects(
@@ -353,16 +357,53 @@ function fixture(rootType = 1) {
                 return { data: (await f.read(address, args.count)).toString("base64") };
             }
         };
-        const bridge = new DebugSessionBridge({ now: f.clock.now, schedule: f.clock.schedule, cancel: f.clock.cancel });
+        const published = [];
+        const watch = {
+            ...f.symbol,
+            name: "motor->gain",
+            runtimeSegments: [{ kind: "dereference" }, { kind: "member", name: "gain" }],
+            runtimeRanges: [{ start: f.base, end: f.base + 4200 }]
+        };
+        const bridge = new DebugSessionBridge({
+            now: f.clock.now,
+            schedule: f.clock.schedule,
+            cancel: f.clock.cancel,
+            onSamples: (samples) => published.push(...samples),
+            getReadPlan: () => [watch]
+        });
         bridge.sessions.set(session.id, session);
         bridge.paused = true;
+        bridge.intentEnabled = true;
         bridge.snapshotReady = true;
         bridge.capabilities = { read: true, write: true };
-        bridge.read = async (items) => sessionRead(items);
         const sessionRead = async (items) =>
-            Promise.all(items.map(async (item) => ({ name: item.name, bytes: await f.read(item.address, item.size) })));
+            Promise.all(
+                items.map(async (item) =>
+                    item.runtimeLayout
+                        ? { name: item.name, runtimeTree: await new RuntimeObjectReader(item, f.read).sample() }
+                        : { name: item.name, bytes: await f.read(item.address, item.size) }
+                )
+            );
+        bridge.read = sessionRead;
         await bridge.writeAndVerify(plan.items, 5000, plan.runtimeChecks);
         assert.strictEqual(writes, 1);
+        assert.deepStrictEqual(published, [], "raw write read-back is not a runtime sample");
+        assert.equal(bridge.canWrite, true, "the follow-up sample does not block further paused writes");
+        await f.clock.advance(0);
+        await waitFor(() => published.length > 0, "resolved paused sample after dynamic write");
+        assert.equal(published.length, 1);
+        assert.equal(published[0].runtimeTree.address, plan.items[0].address);
+        assert.equal(published[0].runtimeTree.value, 75);
+        const guard = new Int32Array(new SharedArrayBuffer(4));
+        bridge.read = async (items) => {
+            Atomics.store(guard, 0, WRITE_GUARD.cancelled);
+            return sessionRead(items);
+        };
+        await assert.rejects(
+            bridge.writeAndVerify(plan.items, 5000, plan.runtimeChecks, bridge.stopEpoch, guard),
+            (error) => error.code === "SIDEBAR_WRITE_CANCELLED" && error.details.written === false
+        );
+        bridge.read = sessionRead;
         f.word(f.base, f.base + 1200);
         await assert.rejects(bridge.writeAndVerify(plan.items, 5000, plan.runtimeChecks), {
             code: "WRITE_TARGET_CHANGED"
@@ -502,11 +543,12 @@ function fixture(rootType = 1) {
         const derivedClass =
             f.types.push({
                 kind: "class",
-                byteSize: 12,
+                byteSize: 16,
                 typeName: "Derived",
                 fields: [
                     { name: "@base0", offset: 0, type: baseClass, isBase: true },
-                    { name: "value", offset: 8, type: 0 }
+                    { name: "value", offset: 8, type: 0 },
+                    { name: "base", offset: 12, type: 3 }
                 ]
             }) - 1;
         const basePtr = f.types.push({ kind: "pointer", byteSize: 4, target: baseClass, pointerTarget: "data" }) - 1;
@@ -547,6 +589,29 @@ function fixture(rootType = 1) {
             dynamicTypes: [{ address: vtableAddr, size: 16, type: derivedClass }]
         };
         f.symbol.compositeLayout.runtimeLayout = f.symbol.runtimeLayout;
+
+        setGraph(basePtr);
+        const [restored] = normalizeWatchList([{ name: "motor.value.base" }], [f.symbol], { allowDynamicLeaf: true });
+        assert.strictEqual(restored.runtimeLeaf, true);
+        const read = (item) =>
+            new RuntimeObjectReader(
+                {
+                    ...item,
+                    runtimeRanges: [{ start: f.base, end: f.base + 4128 }]
+                },
+                f.read
+            ).sample();
+        const scalar = await read(restored);
+        const tree = await read({
+            ...restored,
+            runtimeSegments: restored.runtimeSegments.slice(0, 1),
+            runtimeLeaf: false
+        });
+        const derivedMember = tree.members.find((member) => member.name === "base");
+        assert.strictEqual(scalar.type, "u8");
+        assert.strictEqual(scalar.writeRestriction, "");
+        assert.strictEqual(derivedMember.address, scalar.address);
+        assert.strictEqual((await f.plan(restored.name, 1)).items[0].address, scalar.address);
 
         setGraph(mutableUnique);
         assert.strictEqual((await f.plan("motor.value.value")).items[0].address, f.base + 1408);
@@ -596,6 +661,7 @@ function fixture(rootType = 1) {
             const connection = connectionIdentity(config);
             let probeCalls = 0;
             let writes = 0;
+            let lastWrite;
             const session = {
                 options: { ...connection, settingsIdentity: connection },
                 readOnce: async (items) =>
@@ -604,6 +670,7 @@ function fixture(rootType = 1) {
                     ),
                 writeAndVerify: async (items, _timeout, checks) => {
                     await verifyWritePreconditions(checks, f.read);
+                    lastWrite = { items, checks };
                     writes++;
                     const before = await session.readOnce(items.map((item) => ({ ...item, size: item.bytes.length })));
                     for (const item of items) f.memory.set(item.bytes, item.address - f.base);
@@ -649,6 +716,10 @@ function fixture(rootType = 1) {
             assert.strictEqual(singlePass.results[0].verified, true);
             assert.strictEqual(probeCalls, 1, "planning and trusted execution share one temporary probe session");
             assert.strictEqual(writes, 1);
+            const fixedWrite = await execution.writeAgentVariables({ values: [{ name: "fixed[1]", value: 42 }] });
+            assert.strictEqual(fixedWrite.results[0].verified, true);
+            assert.deepStrictEqual(lastWrite.checks, []);
+            assert.strictEqual(lastWrite.items[0].runtimeWrite, true);
 
             host.debugLaunch.managedServer = { capabilities: { runtimeRead: false } };
             host._debugBridge = { agentStatus: () => ({ state: "running" }) };
@@ -739,6 +810,16 @@ function fixture(rootType = 1) {
             commands.filter((command) => command.includes("write_memory")),
             ["ocd_write_memory 0x" + address.toString(16) + " 8 {0x1}"]
         );
+        commands.length = 0;
+        await assert.rejects(
+            session.writeAndVerify(plan.items),
+            (error) => error.code === "WRITE_VERIFY_FAILED" && error.details.resultUnknown === true && !error.retryable
+        );
+        assert.deepStrictEqual(
+            commands.filter((command) => command.includes("write_memory")),
+            ["ocd_write_memory 0x" + address.toString(16) + " 8 {0x1}"],
+            "a dynamic write without descriptor checks still uses only the leaf width"
+        );
         assert.strictEqual(f.memory[address + 1 - f.base], 21);
         assert.strictEqual(await session.waitForIdle(), true);
     });
@@ -803,6 +884,11 @@ function fixture(rootType = 1) {
         );
         assert.strictEqual(writes, 2, "Dynamic narrow writes must never issue a wider write");
         assert.strictEqual(f.memory[adjacent - f.base], 21);
+        await assert.rejects(
+            bridge.writeAndVerify(plan.items),
+            (error) => error.code === "WRITE_VERIFY_FAILED" && error.details.resultUnknown === true && !error.retryable
+        );
+        assert.strictEqual(writes, 3, "a dynamic write without descriptor checks still issues one DAP write");
         dropNarrow = false;
         await bridge.writeAndVerify(plan.items, 5000, plan.runtimeChecks);
         assert.strictEqual(f.memory[1032], 1);
@@ -834,6 +920,87 @@ function fixture(rootType = 1) {
         assert.strictEqual(ocdWrites, 0);
     });
 
+    await scenario(
+        "Re-resolve sidebar targets and verify aligned dynamic writes without halting managed debug",
+        async () => {
+            const f = fixture();
+            const session = new ManagedOpenOcdSession({ mode: "debug", clock: f.clock }, {});
+            session.tcl.socket = { destroyed: false };
+            const commands = [];
+            session.tcl.sendChecked = async (command) => {
+                commands.push(command);
+                assert.match(command, /^ocd_write_memory 0x20000400 32 /);
+                f.word(f.base + 1024, Number(command.match(/\{(0x[\da-f]+)\}/i)[1]));
+                return "";
+            };
+            session._readMemoryBytes = f.read;
+            session._readItems = async (items) => ({
+                samples: await Promise.all(
+                    items.map(async (item) => ({
+                        name: item.name,
+                        bytes: await f.read(item.address, item.size)
+                    }))
+                )
+            });
+            session.readOnce = async (items) => (await session._readItems(items)).samples;
+            const bridge = {
+                activeSession: { id: "debug-a" },
+                stopEpoch: 1,
+                agentStatus: () => ({ state: "running" })
+            };
+            const host = {
+                _t: (key) => key,
+                _elfView: { prepareLayouts: async () => {} },
+                _elfService: { generation: 1 },
+                readElfSymbols: () => f.result,
+                _debugBridge: bridge,
+                debugLaunch: { managedServer: session },
+                _watchLists: { read: () => [{ name: "motor" }] },
+                _sampling: {
+                    status: () => ({ canWrite: true, haltWrite: false, mode: "debug-running-sampling" }),
+                    runtimeRamPlan: (items) => items
+                }
+            };
+            const execution = new WriteExecution(host, { vscode: {} });
+            execution.sessionConnection = () => writeConnectionIdentity({ probe: "cmsis-dap", target: "stm32f4x" });
+            execution._confirmUiFirmware = async () => {};
+            const name = "motor->gain";
+            const binding = { address: f.base + 1024, type: "f32", size: 4, isBoolean: false, typeName: "float" };
+            const options = { fromWatch: true, binding, writeContext: execution.sidebarWriteContext().id };
+            const rejected = (opts) =>
+                assert.rejects(
+                    execution.queueUiWrite(name, 12.5, opts),
+                    (error) => error.code === "WRITE_TARGET_CHANGED" && error.details.written === false
+                );
+            await assert.rejects(execution.queueUiWrite(name, 12.5), { code: "WRITE_NOT_ALLOWED" });
+            f.word(f.base, f.base + 1200);
+            await rejected(options);
+            f.word(f.base, f.base + 1024);
+            await rejected({ ...options, binding: { ...binding, typeName: "DifferentFloat" } });
+            bridge.stopEpoch++;
+            await rejected(options);
+            assert.deepStrictEqual(commands, []);
+
+            const current = { ...options, writeContext: execution.sidebarWriteContext().id };
+            const requestOwner = {};
+            const write = session.writeAndVerify.bind(session);
+            session.writeAndVerify = (...args) => {
+                execution.cancelUiWrite(name, 2, requestOwner);
+                return write(...args);
+            };
+            assert.strictEqual(
+                await execution.queueUiWrite(name, 12.5, { ...current, owner: requestOwner, seq: 2 }),
+                null
+            );
+            assert.deepStrictEqual(commands, []);
+            session.writeAndVerify = write;
+            const completed = await execution.queueUiWrite(name, 12.5, { ...current, owner: requestOwner, seq: 3 });
+            assert.strictEqual(completed.results[0].readBack, 12.5);
+            assert.strictEqual(completed.results[0].verified, true);
+            assert.strictEqual(commands.length, 1);
+        }
+    );
+
     await scenario("Recheck watch membership and sampling after asynchronous sidebar planning", async () => {
         const f = fixture();
         const plan = await f.plan("motor->gain");
@@ -853,6 +1020,8 @@ function fixture(rootType = 1) {
         };
         const execution = new WriteExecution(host, { vscode: {} });
         execution._confirmUiFirmware = async () => {};
+        const context = execution.sidebarWriteContext();
+        const options = { fromWatch: true, binding: { ...plan.items[0], isBoolean: false }, writeContext: context.id };
         execution.sessionConnection = () => ({});
         execution.execute = async () => {
             writes++;
@@ -862,7 +1031,7 @@ function fixture(rootType = 1) {
             enabled = false;
             return plan;
         };
-        await assert.rejects(execution.writeUiVariable("motor->gain", 1, { fromWatch: true }), {
+        await assert.rejects(execution.writeUiVariable("motor->gain", 1, options), {
             i18nKey: "sb.writeNeedSampling"
         });
         enabled = true;
@@ -870,13 +1039,13 @@ function fixture(rootType = 1) {
             watched = [];
             return plan;
         };
-        await assert.rejects(execution.writeUiVariable("motor->gain", 1, { fromWatch: true }), {
+        await assert.rejects(execution.writeUiVariable("motor->gain", 1, options), {
             i18nKey: "sb.writeWatchRequired"
         });
         assert.strictEqual(writes, 0);
         watched = [{ name: "motor" }];
         execution.preparePlan = async () => plan;
-        await execution.writeUiVariable("motor->gain", 1, { fromWatch: true });
+        await execution.writeUiVariable("motor->gain", 1, options);
         assert.strictEqual(writes, 1);
     });
 

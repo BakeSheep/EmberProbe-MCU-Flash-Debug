@@ -9,6 +9,7 @@ const { MAX_COMPOSITE_BYTES } = require("../src/dwarf/layoutLimits");
 const { wait, waitFor } = require("./helpers/wait");
 const { scenario } = require("./helpers/scenario");
 const { loadModule } = require("./helpers/load-module");
+const { WRITE_GUARD } = require("../src/writeAccess");
 
 async function testTargetEpochDelivery() {
     const outbound = [];
@@ -242,6 +243,12 @@ function testRuntimeAccounting() {
                 assert.deepStrictEqual(
                     (await session.writeAndVerify(items, 5000, checks, expectedEpoch)).after[0].bytes,
                     items[0].bytes
+                );
+                const guard = new Int32Array(new SharedArrayBuffer(4));
+                Atomics.store(guard, 0, WRITE_GUARD.cancelled);
+                await assert.rejects(
+                    session.writeAndVerify([{ ...items[0], bytes: [0, 0, 0, 0] }], 5000, checks, expectedEpoch, guard),
+                    { code: "SIDEBAR_WRITE_CANCELLED" }
                 );
                 await assert.rejects(
                     session.writeAndVerify(items, 5000, [{ ...checks[0], bytes: [0, 0, 0, 0] }]),

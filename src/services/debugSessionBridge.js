@@ -1,5 +1,5 @@
 "use strict";
-const { withWriteAccessStatus } = require("../writeAccess");
+const { withWriteAccessStatus, assertSidebarWriteCurrent } = require("../writeAccess");
 const { validateWritePreconditions, verifyWritePreconditions } = require("../writePreconditions");
 const { isSupportedDebugSession } = require("./debugConfiguration");
 
@@ -701,8 +701,7 @@ class DebugSessionBridge {
     }
 
     _schedule(delay) {
-        if (!this.canRead || !this.snapshotPending || this.snapshotReady || this.polling || this.writing || this.timer)
-            return;
+        if (!this.canRead || !this.snapshotPending || this.polling || this.writing || this.timer) return;
         this.timer = this.schedule(
             () => {
                 this.timer = null;
@@ -713,12 +712,12 @@ class DebugSessionBridge {
     }
 
     async _poll() {
-        if (!this.canRead || !this.snapshotPending || this.snapshotReady || this.polling) return;
+        if (!this.canRead || !this.snapshotPending || this.polling) return;
         const session = this.activeSession;
         const epoch = this.epoch;
         this.polling = true;
         try {
-            if (epoch !== this.epoch || !this.canRead || !this.snapshotPending || this.snapshotReady) return;
+            if (epoch !== this.epoch || !this.canRead || !this.snapshotPending) return;
             const plan = this.getReadPlan() || [];
             if (!plan.length) {
                 this.snapshotPending = false;
@@ -748,8 +747,7 @@ class DebugSessionBridge {
         } finally {
             this.polling = false;
             const retryDelay = SNAPSHOT_RETRY_DELAYS_MS[this.consecutiveErrors - 1];
-            if (this.snapshotPending && !this.snapshotReady)
-                this._schedule(retryDelay === undefined ? SNAPSHOT_INITIAL_DELAY_MS : retryDelay);
+            if (this.snapshotPending) this._schedule(retryDelay === undefined ? SNAPSHOT_INITIAL_DELAY_MS : retryDelay);
         }
     }
 
@@ -1108,13 +1106,22 @@ class DebugSessionBridge {
             });
         this.snapshotReady = true;
         this.snapshotPending = false;
-        this.onSamples(samples, this.now());
+        const dynamic = new Set(items.filter((item) => item.runtimeWrite).map((item) => item.name));
+        const fixed = samples.filter((sample) => !dynamic.has(sample.name));
+        if (fixed.length) this.onSamples(fixed, this.now());
         this.onStatus(this.status());
         return samples;
     }
 
-    async writeAndVerify(items, _timeoutMs = 5000, preconditions = [], expectedStopEpoch = this.stopEpoch) {
+    async writeAndVerify(
+        items,
+        _timeoutMs = 5000,
+        preconditions = [],
+        expectedStopEpoch = this.stopEpoch,
+        sidebarGuard
+    ) {
         validateWritePreconditions(preconditions, items);
+        const guardedWrite = preconditions.length > 0 || items.some((item) => item.runtimeWrite);
         const progress = { writtenItems: 0, resultUnknown: false };
         if (this.writing || this.peripheralBusy || this.controlInFlight || this.replBusy)
             throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
@@ -1147,10 +1154,12 @@ class DebugSessionBridge {
                 preconditions,
                 progress,
                 this.now() + _timeoutMs,
-                expectedStopEpoch
+                expectedStopEpoch,
+                guardedWrite,
+                sidebarGuard
             );
         } catch (error) {
-            if (preconditions.length) {
+            if (guardedWrite) {
                 error.retryable = false;
                 error.details = {
                     ...error.details,
@@ -1166,22 +1175,24 @@ class DebugSessionBridge {
             if (this.refreshAfterWrite) {
                 this.refreshAfterWrite = false;
                 this.refreshSnapshot();
-            }
+            } else this._schedule(0);
         }
     }
 
     async _writeAndVerifyPaused(
         items,
         session,
-        preconditions = [],
-        progress = { writtenItems: 0, resultUnknown: false },
-        deadline = Infinity,
-        expectedStopEpoch = this.stopEpoch
+        preconditions,
+        progress,
+        deadline,
+        expectedStopEpoch,
+        guardedWrite,
+        sidebarGuard
     ) {
         const epoch = this.epoch;
         let writtenItems = 0;
         const assertCurrent = () => {
-            if (preconditions.length && this.now() > deadline)
+            if (guardedWrite && this.now() > deadline)
                 throw Object.assign(new Error("Dynamic DAP write exceeded its time budget"), {
                     code: "LIVE_WRITE_BUDGET_EXCEEDED"
                 });
@@ -1193,7 +1204,7 @@ class DebugSessionBridge {
             )
                 throw Object.assign(
                     new Error(
-                        preconditions.length
+                        guardedWrite
                             ? "Target state changed during dynamic write"
                             : "Target state changed during the DAP write"
                     ),
@@ -1224,7 +1235,7 @@ class DebugSessionBridge {
         for (const item of items) {
             const previous = writes[writes.length - 1];
             if (
-                !preconditions.length &&
+                !guardedWrite &&
                 previous &&
                 Number(previous.address) % 4 === 0 &&
                 previous.bytes.length % 4 === 0 &&
@@ -1237,6 +1248,7 @@ class DebugSessionBridge {
             } else writes.push({ ...item });
         }
         const writeBlock = async (address, data, name) => {
+            assertSidebarWriteCurrent(sidebarGuard);
             progress.resultUnknown = true;
             const result = unwrapResponse(
                 await session.customRequest("writeMemory", {
@@ -1280,7 +1292,7 @@ class DebugSessionBridge {
                 progress.writtenItems = writtenItems;
                 continue;
             }
-            if (preconditions.length) {
+            if (preconditions.length || item.runtimeWrite) {
                 // A wider write could replace a neighboring value changed by DMA or another core.
                 progress.resultUnknown = true;
                 await verify();
@@ -1298,9 +1310,13 @@ class DebugSessionBridge {
         const after = await this.read(plan, session);
         await verify();
         if (epoch === this.epoch && this.paused) {
+            const dynamic = new Set(items.filter((item) => item.runtimeWrite).map((item) => item.name));
+            const fixed = after.filter((sample) => !dynamic.has(sample.name));
+            // A transaction's raw bytes are only read-back evidence. Resample dynamic paths to
+            // publish their resolved addresses and types instead of decoding them as fixed storage.
             this.snapshotReady = true;
-            this.snapshotPending = false;
-            this.onSamples(after, this.now());
+            this.snapshotPending = this.intentEnabled && dynamic.size > 0;
+            if (fixed.length) this.onSamples(fixed, this.now());
             this.onStatus(this.status());
         }
         return { before, after, halted: true };

@@ -3,103 +3,31 @@
     if (typeof module === "object" && module.exports) module.exports = factory(require("../runtime"));
     else root.EmberProbeWatchWrites = factory(root.EmberProbeRuntime);
 })(globalThis, function (runtime) {
-    function qualifiedType(graph, id) {
-        let isConst = false;
-        for (let depth = 0; depth < runtime.MAX_TYPE_ALIASES; depth++) {
-            const type = graph.types[id];
-            if (!type) return null;
-            isConst ||= !!type.isConst;
-            if (type.kind !== "alias") return { ...type, isConst };
-            id = type.target;
-        }
-        return null;
+    function watchWriteBinding(target) {
+        const { address, type, size, isBoolean, typeName } = target || {};
+        if (
+            !runtime.SUPPORTED_TYPES.includes(type) ||
+            size !== runtime.typeByteLength(type) ||
+            !Number.isSafeInteger(address) ||
+            address <= 0 ||
+            address + size > 0x100000000
+        )
+            return null;
+        return {
+            address,
+            type,
+            size,
+            isBoolean: isBoolean === true,
+            ...(typeof typeName === "string" && typeName && typeName !== type ? { typeName } : {})
+        };
     }
-    function fieldType(graph, type, name, depth = 0) {
-        if (!type || depth > runtime.MAX_COMPOSITE_DEPTH) return null;
-        if (type.kind === "union") return { denied: true };
-        const matches = [];
-        const direct = (type.fields || []).filter((field) => field.name === name);
-        for (const field of direct.length ? direct : type.fields || []) {
-            const child = qualifiedType(graph, field.type);
-            let result;
-            if (field.name === name) result = child;
-            else if (field.isBase || field.name === "?") result = fieldType(graph, child, name, depth + 1);
-            if (result)
-                matches.push({
-                    ...result,
-                    isConst: type.isConst || result.isConst,
-                    denied: result.denied || !!field.memberRole || Number.isInteger(field.bitSize)
-                });
-        }
-        return matches.length === 1 ? matches[0] : null;
-    }
-    // Menu eligibility uses type metadata and an existing sample. The host resolves and validates every write again.
-    function dynamicAccess(graph, segments, sampled, ancestry = new Set()) {
-        let type = qualifiedType(graph, graph.root),
-            readOnly = false,
-            denied = false;
-        for (const segment of segments) {
-            if (!type) return { key: "sb.writeTypeUnknown" };
-            denied ||= type.denied;
-            if (segment.kind === "index" && (!Number.isSafeInteger(segment.index) || segment.index < 0))
-                return { key: "sb.writeUnsupported" };
-            if (type.kind === "reference") {
-                type = qualifiedType(graph, type.target);
-                if (segment.name === "value" && ["scalar", "array"].includes(type?.kind)) continue;
-            }
-            if (!type) return { key: "sb.writeTypeUnknown" };
-            if (type.kind === "pointer") {
-                if (segment.kind !== "dereference" && segment.name !== "value")
-                    return { key: "sb.writePointerStorage" };
-                type = qualifiedType(graph, type.target);
-                readOnly = !!type?.isConst;
-                continue;
-            }
-            readOnly ||= type.isConst;
-            denied ||= type.denied;
-            if (type.kind === "union") return { key: "sb.writeUnsupported" };
-            if (type.stl) {
-                if (type.stl === "basic_string") return { key: "sb.writeReadOnly" };
-                readOnly ||= /^(?:unordered_)?(?:multi)?set$/.test(type.stl);
-                if (type.stl === "pair") {
-                    if (!["first", "second"].includes(segment.name)) return { key: "sb.writeUnsupported" };
-                    readOnly ||= type.mapEntry && segment.name === "first";
-                    type = qualifiedType(graph, type.args[segment.name === "first" ? 0 : 1]);
-                } else if (/map$/.test(type.stl)) {
-                    if (segment.kind !== "index") return { key: "sb.writeUnsupported" };
-                    type = { kind: "class", stl: "pair", args: type.args, mapEntry: true };
-                } else if (type.stl === "tuple") type = qualifiedType(graph, type.args?.[segment.index]);
-                else if (type.stl === "variant") {
-                    const candidates = type.args
-                        .map((id) => qualifiedType(graph, id))
-                        .filter(
-                            (entry) => entry && (entry.typeName === sampled?.typeName || ancestry.has(entry.typeName))
-                        );
-                    type = candidates.length === 1 ? candidates[0] : null;
-                } else type = qualifiedType(graph, type.args?.[0]);
-            } else if (type.kind === "array" && segment.kind === "index")
-                type = segment.index < type.count ? qualifiedType(graph, type.target) : null;
-            else if (segment.kind === "member") {
-                const direct = fieldType(graph, type, segment.name);
-                if (direct) type = direct;
-                else {
-                    const candidates = (graph.dynamicTypes || []).map((entry) => qualifiedType(graph, entry.type));
-                    const matches = candidates.filter(
-                        (entry) => entry && ancestry.has(entry.typeName) && fieldType(graph, entry, segment.name)
-                    );
-                    type = matches.length === 1 ? fieldType(graph, matches[0], segment.name) : null;
-                }
-            } else return { key: "sb.writeUnsupported" };
-        }
-        if (!type) return { key: "sb.writeTypeUnknown" };
-        if (["pointer", "reference"].includes(type.kind)) return { key: "sb.writePointerStorage" };
-        if (readOnly || type.isConst) return { key: "sb.writeReadOnly" };
-        if (denied || type.denied || type.isMemberPointer) return { key: "sb.writeUnsupported" };
-        if (type.kind !== "scalar") return { key: "sb.writeScalarOnly" };
-        if (!runtime.SUPPORTED_TYPES.includes(type.watchType) || type.enumEncodingInferred)
-            return { key: "sb.writeTypeUnknown" };
-        return { type: type.watchType, isBoolean: !!type.isBoolean };
-    }
+    const WRITE_RESTRICTIONS = {
+        pointer: "sb.writePointerStorage",
+        readOnly: "sb.writeReadOnly",
+        unsupported: "sb.writeUnsupported",
+        scalar: "sb.writeScalarOnly",
+        type: "sb.writeTypeUnknown"
+    };
     function sampleNodes(tree, path, found, depth = 0, valid = true) {
         if (!tree || depth > runtime.MAX_LAYOUT_PATH_DEPTH || found.size >= 2000) return;
         valid &&= !tree.unavailable && !tree.unobservable && !tree.stale && !tree.unavailableCode;
@@ -110,55 +38,98 @@
             sampleNodes(element, path + "[" + element.index + "]", found, depth + 1, valid);
     }
     function create({ state, canRead, has, toggle }) {
-        state.writeWatch = { fresh: new Set(), blocked: new Set(), identity: "" };
+        state.writeWatch = {
+            samples: new Map(),
+            blocked: new Set(),
+            expansions: {},
+            context: null,
+            order: 0
+        };
         const get = () => state.writeWatch;
-        function ensureIdentity() {
-            const identity = JSON.stringify([
-                state.version,
-                state.generation,
-                state.dataBreakpoints?.sessionId,
-                state.dataBreakpoints?.epoch
-            ]);
-            if (identity !== get().identity) {
-                get().identity = identity;
-                get().fresh.clear();
-            }
+        const below = (name, parent) =>
+            name === parent || (name.startsWith(parent) && /^(?:[.[]|->)/.test(name.slice(parent.length)));
+        function setContext(context) {
+            const watch = get();
+            if (watch.context === context) return false;
+            watch.context = context;
+            watch.blocked.clear();
+            for (const [name, record] of watch.samples)
+                if (record.sample.writeContext !== context) watch.samples.delete(name);
+            return true;
+        }
+        function setExpansions(expansions) {
+            const watch = get();
+            const changed = (name) => JSON.stringify(expansions[name]) !== JSON.stringify(watch.expansions[name]);
+            for (const [name, { sample }] of watch.samples)
+                if (changed(sample.sampleOwner || name)) watch.samples.delete(name);
+            watch.expansions = expansions;
+        }
+        function forget(name) {
+            for (const sampledName of get().samples.keys())
+                if (below(sampledName, name)) get().samples.delete(sampledName);
         }
         function owner(name) {
             return (
                 state.watch.find((item) => item.name === name) ||
                 [...state.watch]
                     .sort((left, right) => right.name.length - left.name.length)
-                    .find((item) => name.startsWith(item.name) && /^[.[]/.test(name.slice(item.name.length)))
+                    .find((item) => below(name, item.name))
             );
         }
+        function latest(name) {
+            const record = get().samples.get(name);
+            return record && record.sample.writeContext === get().context ? record : null;
+        }
+        function newer(left, right) {
+            if (!right) return !!left;
+            if (!left) return false;
+            const t = left.sample.t;
+            const previous = right.sample.t;
+            return Number.isFinite(t) && Number.isFinite(previous) && t !== previous
+                ? t > previous
+                : left.order > right.order;
+        }
         function entry(name) {
-            ensureIdentity();
             const watch = owner(name);
             if (!watch) return { key: "sb.writeWatchRequired" };
             if (!canRead()) return { key: "sb.writeNeedSampling" };
-            if (!get().fresh.has(watch.name) || get().blocked.has(name)) return { key: "sb.writeSampleRequired" };
+            if (get().blocked.has(name)) return { key: "sb.writeSampleRequired" };
             const symbol = state.symbols.get(runtime.variableBaseName(name)) || watch;
-            const graph = runtime.runtimeGraph(symbol) || runtime.runtimeGraph(watch);
-            let node,
-                valid = true;
-            const ancestry = new Set();
-            const sample = state.latest[watch.name];
-            if (sample && typeof sample === "object") {
-                const nodes = new Map();
-                sampleNodes(sample, watch.name, nodes);
-                for (const [path, entry] of nodes)
-                    if (path === name || (name.startsWith(path) && /^[.[]/.test(name.slice(path.length))))
-                        ancestry.add(entry.node.typeName);
-                ({ node, valid } = nodes.get(name) || { valid: false });
-            } else if (name === watch.name)
-                node = { value: sample, valueText: state.latestText[name], address: watch.address };
+            const parent = latest(watch.name);
+            const exact = name === watch.name ? null : latest(name);
+            // A leaf may be sampled independently while its owner is folded. Only use it if
+            // the decoder supplied a real leaf address and type, or reported that it is stale.
+            const separate =
+                exact &&
+                (exact.sample.diagnostic ||
+                    exact.sample.stale ||
+                    exact.sample.value == null ||
+                    (Number.isSafeInteger(exact.sample.address) && exact.sample.type));
+            const record = separate && newer(exact, parent) ? exact : parent;
+            if (!record) return { key: "sb.writeSampleRequired" };
+            let node = record.sample;
+            let valid = !node.diagnostic && !node.stale;
+            if (parent?.sample.tree) {
+                if (!parent.nodes) {
+                    parent.nodes = new Map();
+                    sampleNodes(parent.sample.tree, watch.name, parent.nodes);
+                }
+                if (record === parent) {
+                    const leaf = parent.nodes.get(name);
+                    node = leaf?.node;
+                    valid &&= !!leaf?.valid;
+                }
+            } else if (record === parent && name !== watch.name) valid = false;
             if (valid && node && !Object.prototype.hasOwnProperty.call(node, "value"))
                 return { key: "sb.writeScalarOnly" };
             if (!valid || node?.value === null || node?.value === undefined) return { key: "sb.writeSampleRequired" };
+            if (node.isPointer) return { key: "sb.writePointerStorage" };
             let access;
-            if (graph) access = dynamicAccess(graph, runtime.memberPathSegments(name)?.segments || [], node, ancestry);
-            else {
+            if (typeof node.writeRestriction === "string") {
+                if (node.writeRestriction)
+                    return { key: WRITE_RESTRICTIONS[node.writeRestriction] || "sb.writeUnsupported" };
+                access = { type: node.type, isBoolean: !!node.isBoolean, typeName: node.typeName };
+            } else {
                 const leaf =
                     name === symbol.name
                         ? symbol
@@ -181,39 +152,53 @@
                     (name === symbol.name && symbol.hasDwarfWriteType !== true)
                 )
                     return { key: "sb.writeTypeUnknown" };
-                access = { type, isBoolean: !!leaf.isBoolean };
+                access = { type, isBoolean: !!leaf.isBoolean, typeName: leaf.typeName };
                 node = { ...node, address: leaf.address ?? node.address };
             }
-            if (access.key) return access;
             if (node.type && node.type !== access.type) return { key: "sb.writeTypeUnknown" };
-            if (node.isPointer) return { key: "sb.writePointerStorage" };
+            const binding = watchWriteBinding({
+                ...access,
+                address: node.address,
+                size: runtime.typeByteLength(access.type)
+            });
+            if (!binding) return { key: "sb.writeSampleRequired" };
             return {
                 entry: {
                     name,
-                    ...access,
-                    address: node.address,
-                    size: runtime.typeByteLength(access.type),
+                    ...binding,
                     value: node.value,
                     valueText: node.valueText,
+                    writeBinding: binding,
+                    writeContext: record.sample.writeContext,
                     fromWatch: true
                 }
             };
         }
-        function sampled(samples) {
-            ensureIdentity();
+        /** @param {any[]} samples @param {(name: string) => void} [received] */
+        function sampled(samples, received = () => {}) {
+            const watch = get();
             for (const sample of samples || []) {
-                if (sample.diagnostic || (!sample.tree && sample.value == null)) get().fresh.delete(sample.name);
-                else get().fresh.add(sample.name);
-                for (const name of get().blocked)
-                    if (
-                        name === sample.name ||
-                        (name.startsWith(sample.name) && /^[.[]/.test(name.slice(sample.name.length)))
-                    )
-                        get().blocked.delete(name);
+                if (!Number.isSafeInteger(sample.writeContext) || sample.writeContext < (watch.context || 1)) continue;
+                if (watch.expansions[sample.sampleOwner || sample.name]?.length === 0) continue;
+                const previous = watch.samples.get(sample.name);
+                const record = { sample, order: ++watch.order, nodes: null };
+                if (
+                    previous &&
+                    (previous.sample.writeContext > sample.writeContext ||
+                        (sample.writeContext === previous.sample.writeContext &&
+                            ((Number.isFinite(sample.t) && sample.t === previous.sample.t) ||
+                                !newer(record, previous))))
+                )
+                    continue;
+                watch.samples.set(sample.name, record);
+                if (sample.writeContext !== watch.context) continue;
+                for (const name of watch.blocked) if (below(name, sample.name)) watch.blocked.delete(name);
+                received(sample.name);
             }
         }
         function invalidate() {
-            get().fresh.clear();
+            get().samples.clear();
+            get().blocked.clear();
         }
         function block(name) {
             get().blocked.add(name);
@@ -244,7 +229,7 @@
                 }
             });
         }
-        return { entry, menu, sampled, invalidate, block, displayName };
+        return { entry, menu, sampled, invalidate, setContext, setExpansions, forget, block, displayName };
     }
-    return { create, dynamicAccess };
+    return { create, watchWriteBinding };
 });

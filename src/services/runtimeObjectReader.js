@@ -115,10 +115,12 @@ class RuntimeObjectReader {
         return !this.expanded || this.expanded.has(path);
     }
     type(id) {
+        let isConst = false;
         for (let depth = 0; depth < MAX_TYPE_ALIASES; depth++) {
             const type = this.graph.types[id];
             if (!type) throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime type is unavailable");
-            if (type.kind !== "alias") return { ...type, id };
+            isConst ||= !!type.isConst;
+            if (type.kind !== "alias") return { ...type, id, isConst };
             id = type.target;
         }
         throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime type aliases form a cycle");
@@ -284,7 +286,17 @@ class RuntimeObjectReader {
                 ? object.address
                 : null;
         if (address === null) throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime member location is unavailable");
-        return { address, type: field.type, field };
+        return {
+            address,
+            type: field.type,
+            field,
+            writeConst: !!object.writeConst || type.isConst,
+            writeForbidden:
+                !!object.writeForbidden ||
+                type.kind === "union" ||
+                !!field.memberRole ||
+                Number.isInteger(field.bitSize)
+        };
     }
     async path(object, path, internal = false) {
         for (const name of path.split(".")) object = await this.field(object, name, 0, internal);
@@ -353,7 +365,7 @@ class RuntimeObjectReader {
         if (!["pointer", "reference"].includes(type.kind)) return object;
         const address = await this.pointer(object);
         if (!address) throw failure("LIVE_NULL_POINTER", "Runtime pointer is null");
-        object = { address, type: type.target };
+        object = { address, type: type.target, writeForbidden: object.writeForbidden };
         return dynamic ? this.dynamic(object) : object;
     }
     async dynamic(object) {
@@ -368,7 +380,12 @@ class RuntimeObjectReader {
         if (entries.length !== 1)
             throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime dynamic type has no verified vtable identity");
         const offset = await this.word(pointer - 8, true, true);
-        return { address: object.address + offset, type: entries[0].type };
+        return {
+            ...object,
+            address: object.address + offset,
+            type: entries[0].type,
+            writeConst: !!object.writeConst || type.isConst
+        };
     }
     async storage(object) {
         const type = this.type(object.type);
@@ -639,16 +656,86 @@ class RuntimeObjectReader {
         }
         throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime STL layout is not available: " + kind);
     }
-    async select(object, segments) {
-        for (let index = 0; index < segments.length; index++) {
-            const segment = segments[index];
-            const type = this.type(object.type);
-            if (["pointer", "reference"].includes(type.kind)) {
+    arrayElement(object, type, index) {
+        return {
+            ...object,
+            address: object.address + index * this.size(type.target),
+            type: type.target,
+            writeConst: !!object.writeConst || type.isConst
+        };
+    }
+    async containerElement(object, type, storage, index) {
+        const element = await storage.at(index);
+        return {
+            ...element,
+            writeConst:
+                !!object.writeConst ||
+                type.isConst ||
+                !!element.writeConst ||
+                /^(?:unordered_)?(?:multi)?set$/.test(type.stl) ||
+                type.stl === "basic_string",
+            // The ABI reader may traverse private fields to get to a public element.
+            writeForbidden: !!object.writeForbidden || Number.isInteger(element.field?.bitSize)
+        };
+    }
+    writeRestriction(object, type) {
+        if (["pointer", "reference"].includes(type.kind)) return "pointer";
+        if (object.writeConst || type.isConst) return "readOnly";
+        if (object.writeForbidden || type.isMemberPointer) return "unsupported";
+        if (type.kind !== "scalar") return "scalar";
+        if (
+            !elf.SUPPORTED_TYPES.includes(type.watchType) ||
+            type.enumEncodingInferred ||
+            this.size(object.type) !== elf.typeByteLength(type.watchType)
+        )
+            return "type";
+        if (
+            this.item.runtimeWriteRanges &&
+            !this.item.runtimeWriteRanges.some(
+                ({ start, end }) => object.address >= start && object.address + this.size(object.type) <= end
+            )
+        )
+            return "readOnly";
+        return "";
+    }
+    async select(object, segments, writing = false) {
+        const invalid = (message) => failure(writing ? "WRITE_NOT_ALLOWED" : "LIVE_MEMBER_MISSING", message);
+        for (const segment of segments) {
+            if (writing && object.writeForbidden)
+                throw invalid("Writing internal members or bitfields is not supported");
+            let type = this.type(object.type);
+            let reference = false;
+            let referenceDepth = 0;
+            while (type.kind === "reference") {
+                if (++referenceDepth > MAX_COMPOSITE_DEPTH) throw invalid("Runtime reference depth exceeded");
+                if (type.pointerTarget && type.pointerTarget !== "data") throw invalid("Opaque reference target");
                 object = await this.dereference(object);
-                if (type.kind === "pointer" && (segment.kind === "dereference" || segment.name === "value")) continue;
-            } else if (segment.kind === "dereference")
-                throw failure("LIVE_MEMBER_MISSING", "Runtime path dereferences a non-pointer");
-            const current = this.type(object.type);
+                type = this.type(object.type);
+                reference = true;
+            }
+            if (type.kind === "pointer") {
+                const explicit = segment.kind === "dereference" || segment.name === "value";
+                if (!explicit && writing) throw invalid("Pointer writes require an explicit dereference path");
+                if (type.pointerTarget && type.pointerTarget !== "data") throw invalid("Opaque pointer target");
+                object = await this.dereference(object);
+                if (explicit) continue;
+                object.writeForbidden = true;
+                type = this.type(object.type);
+            }
+            if (reference && segment.kind === "dereference") continue;
+            if (reference && segment.name === "value" && !type.stl) {
+                if (type.kind === "scalar" || type.kind === "array") continue;
+                if (type.kind === "class") {
+                    try {
+                        object = await this.field(object, "value");
+                    } catch (error) {
+                        if (error.code !== "LIVE_MEMBER_MISSING") throw error;
+                    }
+                    continue;
+                }
+            }
+            if (segment.kind === "dereference") throw invalid("Runtime path dereferences a non-pointer");
+            if (writing && type.kind === "union") throw invalid("Union active member identity is unavailable");
             const storage = await this.storage(object);
             if (storage) {
                 const position =
@@ -658,12 +745,18 @@ class RuntimeObjectReader {
                           ? 0
                           : storage.labels?.indexOf(segment.name);
                 if (!Number.isSafeInteger(position) || position < 0 || position >= storage.count)
-                    throw failure("LIVE_MEMBER_MISSING", "Runtime container index is out of range");
-                object = await storage.at(position);
+                    throw invalid("Runtime container index is out of range");
+                object = await this.containerElement(object, type, storage, position);
             } else if (segment.kind === "member") object = await this.field(object, segment.name);
-            else if (segment.kind === "index" && current.kind === "array" && segment.index < current.count)
-                object = { address: object.address + segment.index * this.size(current.target), type: current.target };
-            else throw failure("LIVE_MEMBER_MISSING", "Runtime path is not a single typed member");
+            else if (
+                segment.kind === "index" &&
+                type.kind === "array" &&
+                Number.isSafeInteger(segment.index) &&
+                segment.index >= 0 &&
+                segment.index < type.count
+            )
+                object = this.arrayElement(object, type, segment.index);
+            else throw invalid("Runtime path is not a single typed member");
         }
         return object;
     }
@@ -748,7 +841,8 @@ class RuntimeObjectReader {
                     if (value.kind === "unavailable") return leaf(value.unobservable || "opaque-pointee");
                     // An unreadable target keeps the pointer row with its address and reason.
                     if (value.unavailableCode) return leaf(value.unavailable, value.unavailableCode);
-                    if (type.kind === "reference") return value;
+                    if (type.kind === "reference")
+                        return value.kind === "scalar" ? { ...value, writeRestriction: "pointer" } : value;
                     return {
                         kind: "class",
                         ...identity,
@@ -786,7 +880,7 @@ class RuntimeObjectReader {
                     const name = storage.labels?.[index] || "value";
                     const child = storage.named || storage.labels ? memberPath(path, name) : elementPath(path, index);
                     const value = await this.tree(
-                        await storage.at(index),
+                        await this.containerElement(object, type, storage, index),
                         depth + 1,
                         next,
                         true,
@@ -824,7 +918,7 @@ class RuntimeObjectReader {
                 const elements = [];
                 for (let index = 0; index < count; index++) {
                     const element = await this.tree(
-                        { address: object.address + index * this.size(type.target), type: type.target },
+                        this.arrayElement(object, type, index),
                         depth + 1,
                         next,
                         followPointers,
@@ -916,6 +1010,8 @@ class RuntimeObjectReader {
                 type: type.watchType,
                 typeName: type.typeName,
                 address: object.address,
+                writeRestriction: this.writeRestriction(object, type),
+                ...(type.isBoolean ? { isBoolean: true } : {}),
                 ...decoded,
                 ...(type.enumInfo ? { enumText: elf.enumValueText(decoded, type.enumInfo) } : {})
             };
@@ -1033,7 +1129,8 @@ class RuntimeObjectReader {
             address: object.address,
             value: type.watchType === "i8" ? bytes.readInt8(0) : bytes[0],
             valueText: '"' + text + '"' + (end < 0 ? "\u2026" : ""),
-            stringPreview: true
+            stringPreview: true,
+            writeRestriction: this.writeRestriction(object, type)
         };
     }
     root(object) {
@@ -1131,6 +1228,8 @@ class RuntimeObjectReader {
             await this.dynamic({ address: this.item.address, type: this.graph.root }),
             this.item.runtimeSegments || []
         );
+        if (this.item.runtimeLeaf && this.type(object.type).kind !== "scalar")
+            throw failure("LIVE_MEMBER_MISSING", "Active runtime member is not a scalar");
         const tree = (this.item.derefPath && (await this.stringPreview(object))) || (await this.root(object));
         // With nothing read at all, the object fails as one budget error rather than a card of empty rows.
         const children = tree.members || tree.elements;

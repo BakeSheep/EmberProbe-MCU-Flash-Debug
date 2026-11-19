@@ -113,7 +113,8 @@ async function shapesAndOpaqueTargets() {
                         typeName: "int",
                         address: base + 128,
                         value: 42,
-                        valueText: null
+                        valueText: null,
+                        writeRestriction: ""
                     }
                 ]
             });

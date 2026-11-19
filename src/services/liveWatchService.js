@@ -59,6 +59,20 @@ function annotatePointerTree(node, symbolizer, spec = node) {
     return decoded;
 }
 
+function sidebarScalarMetadata(node, writeContext) {
+    if (writeContext === undefined) return {};
+    return {
+        writeContext,
+        address: node.address,
+        type: node.type,
+        typeName: node.typeName,
+        ...(typeof node.writeRestriction === "string"
+            ? { writeRestriction: node.writeRestriction, isBoolean: !!node.isBoolean }
+            : {}),
+        ...(node.stale || node.unavailable || node.unavailableCode || node.unobservable ? { stale: true } : {})
+    };
+}
+
 // Nearest runtime composite in `names` whose sampled tree contains `name`.
 function runtimeTreeOwner(name, names) {
     let owner = null;
@@ -158,12 +172,14 @@ function buildActiveReadPlan(watchLists, elfSymbols, runtimeExpansions = []) {
     const derived = new Set();
     const lists = (watchLists || []).map((list) => list || []);
     for (const list of lists)
-        for (const item of list) if (item?.runtimeLayout && !item.isComposite) derived.add(item.name);
+        for (const item of list)
+            if (item?.runtimeLayout && !item.isComposite && !item.runtimeLeaf) derived.add(item.name);
     for (const name of derived)
         for (const list of lists) {
-            if (!list.some((item) => item?.name === name)) continue;
+            const leaf = list.find((item) => item?.name === name);
+            if (!leaf) continue;
             const parents = list.filter((item) => item?.runtimeLayout && item.isComposite).map((item) => item.name);
-            if (!runtimeTreeOwner(name, parents)) derived.delete(name);
+            if (leaf.runtimeLeaf || !runtimeTreeOwner(name, parents)) derived.delete(name);
         }
     lists.forEach((list, index) => {
         const expansions = runtimeExpansions[index];
@@ -269,9 +285,30 @@ function runtimePointerRanges(sections, regions = []) {
     ].filter((range) => valid(range.start, range.end) && range.end <= 0x100000000);
 }
 
+function runtimeWritableRanges(memory) {
+    const sections = memory?.sections || [];
+    const regions = (memory?.runtimeRegions || []).filter(
+        (region) =>
+            Number.isSafeInteger(region.start) &&
+            Number.isSafeInteger(region.end) &&
+            region.start > 0 &&
+            region.end > region.start &&
+            region.end <= 0x100000000 &&
+            !sections.some(
+                (section) =>
+                    section.flags & 2 &&
+                    !(section.flags & 1) &&
+                    section.addr < region.end &&
+                    region.start < section.addr + section.size
+            )
+    );
+    return [...writableRamSectionRanges(sections), ...regions];
+}
+
 function filterRuntimeRamPlan(items, sections, regions = []) {
     const ranges = writableRamSectionRanges(sections);
     const runtimeRanges = runtimePointerRanges(sections, regions);
+    const runtimeWriteRanges = runtimeWritableRanges({ sections, runtimeRegions: regions });
     const allowed = [];
     const denied = [];
     for (const item of Array.isArray(items) ? items : []) {
@@ -286,7 +323,7 @@ function filterRuntimeRamPlan(items, sections, regions = []) {
             Number.isSafeInteger(end) &&
             end <= 0x100000000 &&
             ranges.some((range) => address >= range.start && end <= range.end);
-        (valid ? allowed : denied).push(item.runtimeLayout ? { ...item, runtimeRanges } : item);
+        (valid ? allowed : denied).push(item.runtimeLayout ? { ...item, runtimeRanges, runtimeWriteRanges } : item);
     }
     return { allowed, denied, ranges };
 }
@@ -381,7 +418,7 @@ class LiveWatchService {
         return result.concat(this.decodeConsumerSamples(selected, time, types, null).scalarSamples);
     }
 
-    decodeConsumerSamples(samples, time, typeMap, compositeMap, latestSamples) {
+    decodeConsumerSamples(samples, time, typeMap, compositeMap, latestSamples, writeContext = undefined) {
         if (this.pointerSymbolsDirty) {
             this.pointerSymbolizer?.updateElf(this.elfResult, this.pointerMetadataChanged);
             this.pointerSymbolsDirty = false;
@@ -390,6 +427,7 @@ class LiveWatchService {
         const scalarSamples = [];
         const compositeSamples = [];
         const latest = latestSamples || new Map();
+        const scope = writeContext === undefined ? {} : { writeContext };
         for (const sample of samples || []) {
             if (!typeMap?.has(sample.name) && !compositeMap?.has(sample.name)) continue;
             const sampleTime = Number.isFinite(sample.t) ? sample.t : time;
@@ -410,6 +448,7 @@ class LiveWatchService {
                               ...(sample.diagnostic.message ? { unavailableDetail: sample.diagnostic.message } : {})
                           },
                           diagnostic: sample.diagnostic,
+                          ...scope,
                           t: sampleTime
                       }
                     : {
@@ -417,9 +456,10 @@ class LiveWatchService {
                           value: null,
                           valueText: "<unavailable: " + sample.diagnostic.message + ">",
                           diagnostic: sample.diagnostic,
+                          ...scope,
                           t: sampleTime
                       };
-                (decoded.tree ? compositeSamples : scalarSamples).push(decoded);
+                ("tree" in decoded ? compositeSamples : scalarSamples).push(decoded);
                 latest.set(sample.name, decoded);
                 continue;
             }
@@ -432,7 +472,7 @@ class LiveWatchService {
                 const tree = annotatePointerTree(sample.runtimeTree, this.pointerSymbolizer, typeSpec);
                 if (tree.kind === "scalar") {
                     // A held scalar keeps the value it showed and adds no chart point.
-                    if (tree.stale) continue;
+                    if (tree.stale && writeContext === undefined) continue;
                     const decoded = {
                         name: sample.name,
                         value: tree.value,
@@ -441,12 +481,13 @@ class LiveWatchService {
                         ...(tree.pointerText ? { pointerText: tree.pointerText, pointerInfo: tree.pointerInfo } : {}),
                         ...(tree.pointerString ? { pointerString: tree.pointerString } : {}),
                         ...(tree.enumText ? { enumText: tree.enumText } : {}),
+                        ...sidebarScalarMetadata(tree, writeContext),
                         t: sampleTime
                     };
                     scalarSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 } else {
-                    const decoded = { name: sample.name, tree, t: sampleTime };
+                    const decoded = { name: sample.name, tree, t: sampleTime, ...scope };
                     compositeSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 }
@@ -460,10 +501,11 @@ class LiveWatchService {
                               ...composite
                           })
                         : null;
-                if (tree) {
+                if (tree || writeContext !== undefined) {
                     const decoded = {
                         name: sample.name,
-                        tree: annotatePointerTree(tree, this.pointerSymbolizer),
+                        tree: tree ? annotatePointerTree(tree, this.pointerSymbolizer) : { kind: "class", stale: true },
+                        ...scope,
                         t: sampleTime
                     };
                     compositeSamples.push(decoded);
@@ -490,19 +532,28 @@ class LiveWatchService {
                     : sample.bytes
                       ? this.elfSymbols.decodeValueText(sample.bytes, type)
                       : null,
+                ...sidebarScalarMetadata(
+                    { address: sample.address ?? typeSpec.address, type, typeName: typeSpec.typeName },
+                    writeContext
+                ),
                 t: sampleTime
             };
-            if (typeSpec.enumInfo) decoded.enumText = this.elfSymbols.enumValueText(decoded, typeSpec.enumInfo);
-            const displayed = annotatePointer(decoded, typeSpec, this.pointerSymbolizer);
+            const displayed = annotatePointer(
+                typeSpec.enumInfo
+                    ? { ...decoded, enumText: this.elfSymbols.enumValueText(decoded, typeSpec.enumInfo) }
+                    : decoded,
+                typeSpec,
+                this.pointerSymbolizer
+            );
             scalarSamples.push(displayed);
             latest.set(sample.name, displayed);
         }
-        this._deriveRuntimeMembers(samples, time, typeMap, scalarSamples, latest);
+        this._deriveRuntimeMembers(samples, time, typeMap, scalarSamples, latest, writeContext);
         return { scalarSamples, compositeSamples };
     }
 
     // Scalars inside a sampled runtime object reuse that object's tree for this cycle.
-    _deriveRuntimeMembers(samples, time, typeMap, scalarSamples, latest) {
+    _deriveRuntimeMembers(samples, time, typeMap, scalarSamples, latest, writeContext) {
         if (!typeMap?.size) return;
         const owners = new Map();
         for (const sample of samples || [])
@@ -517,8 +568,16 @@ class LiveWatchService {
             const owner = owners.get(ownerName);
             const sampleTime = Number.isFinite(owner.t) ? owner.t : time;
             const route = runtimeMemberRoute(name, ownerName);
+            const scope = writeContext === undefined ? {} : { writeContext, sampleOwner: ownerName };
             // A held value is not new data: the member keeps what it showed and records no point.
-            if (owner.runtimeTree && runtimeRouteStale(owner.runtimeTree, route)) continue;
+            if (owner.runtimeTree && runtimeRouteStale(owner.runtimeTree, route)) {
+                if (writeContext !== undefined) {
+                    const held = { name, ...latest.get(name), ...scope, t: sampleTime, stale: true };
+                    scalarSamples.push(held);
+                    latest.set(name, held);
+                }
+                continue;
+            }
             const node = owner.runtimeTree && runtimeTreeLeaf(owner.runtimeTree, route);
             const value = node ? (node.pointerValue ?? node.value) : undefined;
             let decoded;
@@ -532,6 +591,7 @@ class LiveWatchService {
                     value: null,
                     valueText: "<unavailable: " + diagnostic.message + ">",
                     diagnostic,
+                    ...scope,
                     t: sampleTime
                 };
             } else {
@@ -548,6 +608,8 @@ class LiveWatchService {
                     ...(leaf.pointerText ? { pointerText: leaf.pointerText, pointerInfo: leaf.pointerInfo } : {}),
                     ...(leaf.pointerString ? { pointerString: leaf.pointerString } : {}),
                     ...(leaf.enumText ? { enumText: leaf.enumText } : {}),
+                    ...sidebarScalarMetadata(leaf, writeContext),
+                    ...scope,
                     t: sampleTime
                 };
             }
@@ -569,5 +631,6 @@ module.exports = {
     selectPausedDebugReadSession,
     filterRuntimeRamPlan,
     runtimePointerRanges,
-    writableRamSectionRanges
+    writableRamSectionRanges,
+    runtimeWritableRanges
 };

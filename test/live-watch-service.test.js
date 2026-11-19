@@ -242,6 +242,35 @@ const { createFixture } = require("./helpers/service-fixture");
             []
         );
     });
+    await scenario("Deliver leaf identity and held-sample invalidation to sidebar writes", async () => {
+        const service = new LiveWatchService(require("../src/elfSymbols"));
+        const address = 0x20000100;
+        const leaf = { kind: "scalar", name: "field", address, type: "u32", typeName: "unsigned int", value: 5 };
+        const types = new Map([
+            ["p.value.field", "u32"],
+            ["fixed", { address: address + 4, type: "u32" }]
+        ]);
+        const tv = new Map();
+        const decode = (samples, t, writeContext) =>
+            service.decodeConsumerSamples(samples, t, types, new Map(), tv, writeContext).scalarSamples;
+        const owner = (node) => ({ name: "p.value", runtimeTree: { kind: "class", members: [node] } });
+        const fresh = decode([owner(leaf), { name: "fixed", bytes: [7, 0, 0, 0] }], 1, 9);
+        assert.deepStrictEqual(
+            fresh.map((sample) => [sample.name, sample.address, sample.type, sample.writeContext]),
+            [
+                ["fixed", address + 4, "u32", 9],
+                ["p.value.field", address, "u32", 9]
+            ]
+        );
+        assert.strictEqual(fresh[1].sampleOwner, "p.value");
+        const held = { ...leaf, stale: true };
+        assert.deepStrictEqual(decode([owner(held)], 2), [], "held samples still leave chart history untouched");
+        assert.strictEqual(decode([owner(held)], 2, 9)[0].stale, true);
+        const direct = decode([{ name: "p.value.field", runtimeTree: { ...leaf, address: address + 16 } }], 3, 9)[0];
+        assert.strictEqual(direct.address, address + 16);
+        assert.strictEqual(direct.typeName, leaf.typeName);
+        assert.strictEqual(direct.sampleOwner, undefined);
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

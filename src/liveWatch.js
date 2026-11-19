@@ -22,7 +22,7 @@ const {
     variableWriteTransaction
 } = require("./memoryWrite");
 const { rttControl } = require("./rttControl");
-const { isNonHaltingWordWrite } = require("./writeAccess");
+const { isNonHaltingWordWrite, assertSidebarWriteCurrent } = require("./writeAccess");
 const { validateWritePreconditions } = require("./writePreconditions");
 const {
     normalizeRamSectionRanges,
@@ -1443,7 +1443,7 @@ class ManagedOpenOcdSession {
 
     // When every write is an aligned single word the run state is neither queried nor changed; other transactions halt,
     // read-modify-write, verify and resume.
-    async writeAndVerify(items, timeoutMs = 5000, preconditions = [], expectedTargetEpoch = undefined) {
+    async writeAndVerify(items, timeoutMs = 5000, preconditions = [], expectedTargetEpoch, sidebarGuard) {
         if (!Array.isArray(items) || !items.length) return { before: [], after: [], halted: false };
         validateWritePreconditions(preconditions, items);
         const requestEpoch = expectedTargetEpoch ?? this.targetEpoch;
@@ -1459,6 +1459,7 @@ class ManagedOpenOcdSession {
         const deadline = this.clock.now() + timeoutMs;
         await this._acquireExclusive(deadline);
         try {
+            assertSidebarWriteCurrent(sidebarGuard);
             // Ownership is reserved synchronously by the arbiter before connection checks.
             if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
             return await this.writer.withHalt(nonHalting, async () => {
@@ -1475,7 +1476,8 @@ class ManagedOpenOcdSession {
                     requestEpoch,
                     deadline,
                     guard,
-                    nonHalting
+                    nonHalting,
+                    sidebarGuard
                 });
             });
         } finally {

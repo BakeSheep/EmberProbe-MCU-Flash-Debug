@@ -142,7 +142,7 @@ const SVD = Buffer.from(
 
     assert.strictEqual(manager.workspaceForElf(), folder);
     assert.strictEqual(manager.identityFor(folder).device, "STM32F407VGT6");
-    await scenario("unbound debugging bypasses discovery and an explicit clear wins over a pending scan", async () => {
+    await scenario("parallel discovery shares one scan and an explicit clear wins", async () => {
         const findCompatible = manager.library.findCompatible.bind(manager.library);
         let scanCount = 0;
         let releaseScan;
@@ -153,14 +153,13 @@ const SVD = Buffer.from(
             return findCompatible(...args);
         };
         try {
-            assert.strictEqual(await manager.boundForDebug(folder), "");
-            assert.strictEqual(scanCount, 0);
-            manager.discoverAfterDebug(folder);
+            assert.strictEqual(await manager.peekBound(folder), null);
+            const debugPath = manager.pathForDebug(folder);
             await waitFor(() => scanCount === 1);
             const pending = manager.resolveForFolder(folder);
-            assert.strictEqual(await manager.boundForDebug(folder), "");
             await manager.library.bind(folder.uri, "");
             releaseScan();
+            assert.strictEqual(await debugPath, "");
             assert.strictEqual(await pending, null);
             await waitFor(() => manager.discoveries.size === 0);
             assert.strictEqual(scanCount, 1);
@@ -190,9 +189,10 @@ const SVD = Buffer.from(
             manager.library.validator.validate = validate;
         }
     });
-    const auto = await manager.resolveForFolder(folder);
-    assert(auto?.path.includes("svd-library"));
-    assert.strictEqual(await manager.boundForDebug(folder), auto.path);
+    const firstDebugPath = await manager.pathForDebug(folder);
+    assert(firstDebugPath.includes("svd-library"));
+    const auto = await manager.peekBound(folder);
+    assert.strictEqual(firstDebugPath, auto?.path);
     assert.strictEqual(await manager.currentPath(folder), auto.path);
     assert.strictEqual((await manager.selectExisting(folder)).hash, auto.hash);
 

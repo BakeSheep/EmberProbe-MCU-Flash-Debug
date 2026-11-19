@@ -4,6 +4,7 @@ const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
+const { scenario } = require("./helpers/scenario");
 
 // The "debug without reset" entry must reuse the managed OpenOCD path but issue a DAP attach,
 // so the adapter only halts the core (no reset, no download) and the current state survives.
@@ -32,14 +33,19 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     });
     const host = Object.create(Host.prototype);
     let serverStops = 0;
+    let svdLookups = 0;
+    const discoveredSvd = "discovered.svd";
     Object.assign(host, {
         _context: { workspaceState: { get: (key) => values.get(key), update: async () => {} } },
         _t: (key) => key,
         _commandContext: () => ({ folder }),
         _postProbeOperationStatus() {},
         _svdManager: {
-            boundForDebug: async () => "",
-            currentPath: () => assert.fail("starting debug must not run SVD discovery")
+            pathForDebug: async (selectedFolder) => {
+                assert.strictEqual(selectedFolder, folder);
+                svdLookups++;
+                return discoveredSvd;
+            }
         },
         _resolveOpenOcdPath: async () => "openocd",
         _probeCoordinator: new ProbeCoordinator()
@@ -74,12 +80,24 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     assert.strictEqual(started[0].gdbTarget, "127.0.0.1:3333");
     assert.strictEqual(started[0].type, "emberprobe");
     assert.strictEqual(serverStops, 2, "a failed start must still release the managed server");
+    await scenario("Pass the discovered SVD to the first attach and launch", () => {
+        assert.strictEqual(svdLookups, 2);
+        for (const config of started) {
+            assert.strictEqual(config.svdFile, discoveredSvd);
+            assert.strictEqual(config.svdPath, discoveredSvd);
+        }
+    });
 
     // An explicit launch.json request is never overridden by the sidebar shortcut.
-    const resolved = await host.commandHandlers["mcu-vscode.debug"](undefined, { request: "launch" }, true, {
-        attach: true
-    });
+    const resolved = await host.commandHandlers["mcu-vscode.debug"](
+        undefined,
+        { request: "launch", svdFile: "explicit.svd" },
+        true,
+        { attach: true }
+    );
     assert.strictEqual(resolved.request, "launch");
+    assert.strictEqual(resolved.svdPath, "explicit.svd");
+    assert.strictEqual(svdLookups, 2, "an explicit SVD needs no discovery");
     assert.strictEqual(resolved.__emberprobeStartupTrace, undefined, "only performanceTrace forwards startup phases");
 
     // performanceTrace forwards the extension-side phases before the adapter starts, as durations only.

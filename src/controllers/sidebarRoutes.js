@@ -177,13 +177,16 @@ async function probeAction({ host, post }, message) {
 
 // Writes are serialized by the write controller; a failure only posts writeResult, never a global error, and a value
 // superseded while queued posts nothing.
-async function writeVariable({ host, post }, message) {
+async function writeVariable(page, message) {
+    const { host, post } = page;
     const name = String(message.name || "").trim();
     const seq = message.seq;
     try {
         const result = await host._writes.queueUiWrite(name, message.value, {
             requestedAt: Date.now(),
-            ...(message.fromWatch === true ? { fromWatch: true } : {})
+            ...(message.fromWatch === true
+                ? { fromWatch: true, binding: message.binding, writeContext: message.writeContext, seq, owner: page }
+                : {})
         });
         if (!result) return;
         const r = result.results && result.results[0];
@@ -225,6 +228,8 @@ const SIDEBAR_ROUTES = {
     ...Object.fromEntries(Object.keys(PERIPHERAL_REQUESTS).map((type) => [type, peripheralRequest])),
     ...Object.fromEntries(Object.keys(PROBE_ACTIONS).map((type) => [type, probeAction])),
     writeVariable,
+    cancelSidebarWrite: (page, message) =>
+        page.host._writes.cancelUiWrite(String(message.name || "").trim(), message.seq, page),
     noticeDismiss: ({ host }, message) => host._notices.dismiss(message.area, message.id),
     memoryRefresh: ({ host }) => host._getMemoryAnalysisController().refresh(),
     memorySelectSource: async ({ host, post }) => {

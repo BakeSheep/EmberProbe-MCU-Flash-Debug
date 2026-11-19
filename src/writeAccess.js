@@ -18,4 +18,24 @@ function withWriteAccessStatus(status) {
     return { ...status, canWrite, haltWrite: canWrite && status.mode !== "debug-running-sampling" };
 }
 
-module.exports = { isNonHaltingWordWrite, runtimeWriteDisabledError, withWriteAccessStatus };
+const WRITE_GUARD = Object.freeze({ cancelled: 1, targetChanged: 2 });
+
+/** @param {Int32Array | null | undefined} guard */
+function assertSidebarWriteCurrent(guard) {
+    const state = guard ? Atomics.load(guard, 0) : 0;
+    if (!state) return;
+    const cancelled = state === WRITE_GUARD.cancelled;
+    throw Object.assign(new Error(cancelled ? "Sidebar write cancelled" : "Sidebar write target changed"), {
+        code: cancelled ? "SIDEBAR_WRITE_CANCELLED" : "WRITE_TARGET_CHANGED",
+        retryable: false,
+        details: { written: false, writtenItems: 0 }
+    });
+}
+
+module.exports = {
+    isNonHaltingWordWrite,
+    runtimeWriteDisabledError,
+    withWriteAccessStatus,
+    WRITE_GUARD,
+    assertSidebarWriteCurrent
+};

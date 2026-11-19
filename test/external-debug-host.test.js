@@ -8,6 +8,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { DebugLifecycle } = require("../src/services/debugLifecycle");
 const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
 const { fingerprintWritePlan } = require("../src/writeAuthorization");
+const { scenario } = require("./helpers/scenario");
 
 (async () => {
     const config = { "experimental.externalGdb.enabled": true, "experimental.externalGdb.target": "localhost:3333" };
@@ -49,7 +50,13 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     host._debugBridge = new DebugSessionBridge();
     host.debugLaunch.lifecycle = new DebugLifecycle();
     host.debugLaunch.terminatedSessionIds = new Set();
-    host._svdManager = { boundForDebug: async () => "" };
+    const svdLookups = [];
+    host._svdManager = {
+        pathForDebug: async (selectedFolder) => {
+            svdLookups.push(selectedFolder);
+            return "discovered.svd";
+        }
+    };
     host._samplingCoordinator = { setDebugIntent: (bridge, intent) => bridge.setIntent(intent) };
     host._postConsumerStatuses = () => {};
     host._t = (key) => key;
@@ -100,6 +107,11 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     assert.strictEqual(prepared.gdbTarget, "localhost:3333", "connection settings are frozen at startup");
     assert.strictEqual(prepared.servertype, "external");
     assert.strictEqual(prepared.rtos, "");
+    await scenario("Pass the discovered SVD to the first external attach", () => {
+        assert.strictEqual(svdLookups.at(-1), other);
+        assert.strictEqual(prepared.svdFile, "discovered.svd");
+        assert.strictEqual(prepared.svdPath, "discovered.svd");
+    });
     assert.strictEqual(host.debugLaunch.managedServer, null);
     assert.strictEqual(host._probeCoordinator.firstActive(), "externalDebug");
     await assert.rejects(host.debugLaunch.prepareExternal(folder, launch));

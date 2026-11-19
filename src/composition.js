@@ -10,6 +10,7 @@ const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
+const { watchWriteBinding } = require("./webview/sidebar/watchWrites");
 const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization } = require("./writeAuthorization");
 const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization");
@@ -190,6 +191,7 @@ function createSamplingServices(host, context, vscode) {
             const renamed = new Map();
             const changes = host._elfView.watchNameChanges;
             const normalized = validation.normalizeWatchList(items, symbols, {
+                allowDynamicLeaf: key === CACHE_KEYS.sidebarWatchList || key === CACHE_KEYS.sidebarWriteList,
                 onRename: (from, to) => {
                     renamed.set(to, from);
                     changes?.renamed.set(from, to);
@@ -197,10 +199,31 @@ function createSamplingServices(host, context, vscode) {
                 onAmbiguous: (name, candidates) => changes?.ambiguous.set(name, candidates)
             });
             if (key !== CACHE_KEYS.sidebarWriteList) return normalized;
-            const previous = new Map(items.map((item) => [item.name, item]));
-            return normalized.map((item) => {
-                const { min, max, value, fromWatch } = previous.get(renamed.get(item.name) || item.name) || {};
-                return { ...item, min, max, value, ...(fromWatch ? { fromWatch: true } : {}) };
+            const resolved = new Map(normalized.map((item) => [item.name, item]));
+            const currentNames = new Map([...renamed].map(([to, from]) => [from, to]));
+            const bases = new Set(symbols.map((symbol) => symbol.name));
+            const seen = new Set();
+            return items.flatMap((previous) => {
+                const { min, max, value, fromWatch } = previous || {};
+                const name = currentNames.get(previous?.name) || previous?.name;
+                if (seen.has(name)) return [];
+                const item = resolved.get(name);
+                const binding = fromWatch === true && watchWriteBinding(previous.writeBinding);
+                // A bound card can outlive an ambiguous runtime type, such as an inactive
+                // variant alternative. Keep its identity and let fresh samples gate it.
+                if (!item && !(binding && bases.has(elfSymbols.parseMemberPath(name)?.base))) return [];
+                seen.add(name);
+                return [
+                    {
+                        ...item,
+                        name,
+                        min,
+                        max,
+                        value,
+                        ...(fromWatch === true ? { fromWatch: true } : {}),
+                        ...(binding ? { type: binding.type, writeBinding: binding } : {})
+                    }
+                ];
             });
         },
         symbols: () => host.readElfSymbols().symbols,

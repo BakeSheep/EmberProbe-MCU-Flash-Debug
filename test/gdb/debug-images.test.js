@@ -27,6 +27,7 @@ const { RspMemory } = require("./rsp-memory");
     const mi = new MiClient();
     const adapter = new EmberDebugSession({ mi });
     const diagnostics = [];
+    let passed = false;
     adapter.setRunAsServer(true);
     adapter.sendEvent = (event) => {
         if (event.event === "output") diagnostics.push(event.body.output);
@@ -221,11 +222,13 @@ const { RspMemory } = require("./rsp-memory");
         console.log(
             "ARM GDB: ELF/HEX/BIN relocation, duplicate image expressions, assignment identity and primary RTOS typed layouts passed against memory-only RSP"
         );
+        passed = true;
     } catch (error) {
         fs.writeFileSync(
-            path.join(outputRoot, "debug-images-native.log"),
+            path.join(root, "debug-images-native.log"),
             diagnostics.join("") + "\n" + memory.packets.join("\n") + "\n" + error.stack
         );
+        console.error("ARM image fixtures and failure log:", root);
         throw error;
     } finally {
         const closed =
@@ -236,7 +239,7 @@ const { RspMemory } = require("./rsp-memory");
         await closed;
         await memory.stop();
         assert(root.startsWith(outputRoot + path.sep));
-        fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        if (passed) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
 })().catch((error) => {
     console.error(error);

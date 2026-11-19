@@ -4,6 +4,7 @@ const validation = require("../validation");
 const { variableScope } = require("../webview/runtime");
 const { displayWarnings } = require("../webview/elfDiagnostics");
 const { CACHE_KEYS } = require("../cacheKeys");
+const { writableRamSectionRanges } = require("./liveWatchService");
 
 // How a loaded or changed ELF reaches the views: symbol and type progress for the sidebar and the chart panels,
 // layouts of watched composites, watch lists rebound to the new symbols, and layout expansion requests. host is the
@@ -90,6 +91,9 @@ class ElfViewController {
             type: `${listType}Reset`,
             version,
             generation: this.host._elfService.generation,
+            ...(listType === "availableVariables"
+                ? { writeRanges: writableRamSectionRanges(result.memory?.sections) }
+                : {}),
             warnings: displayWarnings(result)
         });
         for (let i = 0; i < result.symbols.length; i += 1000)
@@ -116,6 +120,7 @@ class ElfViewController {
                 type: "availableVariablesReset",
                 version,
                 generation: this.host._elfService.generation,
+                writeRanges: writableRamSectionRanges(result.memory?.sections),
                 warnings: displayWarnings(result)
             });
             for (const post of graphPosts)

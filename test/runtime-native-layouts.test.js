@@ -17,8 +17,15 @@ const {
 } = require("../src/services/runtimeWritePlan");
 const { writePlan } = require("../src/services/agentPlans");
 const { verifyWritePreconditions } = require("../src/writePreconditions");
+const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");
+const {
+    runtimePointerRanges,
+    runtimeWritableRanges,
+    buildActiveReadPlan
+} = require("../src/services/liveWatchService");
+const { normalizeWatchList } = require("../src/validation");
 
-async function inspectWriteTarget({ name, symbol, graph, read, sections }) {
+async function inspectWriteTarget({ name, symbol, graph, read, write, sections }) {
     const paths = {
         values: "[1]",
         fixed: "[1]",
@@ -55,15 +62,56 @@ async function inspectWriteTarget({ name, symbol, graph, read, sections }) {
         const { targets, checks } = await resolveRuntimeWriteTargets(requests, result, read);
         return validateRuntimeWritePlan({ ...writePlan(values, () => result, targets), runtimeChecks: checks });
     };
-    if (rejected[name]) await assert.rejects(resolveTarget(), { code: "WRITE_NOT_ALLOWED" }, name);
-    else {
+    const ranges = {
+        runtimeRanges: runtimePointerRanges(sections),
+        runtimeWriteRanges: runtimeWritableRanges(result.memory)
+    };
+    const sample = (item) => new RuntimeObjectReader({ ...item, ...ranges }, read).sample();
+    const [request] = runtimeWriteRequests(values, result);
+    const leaf = await sample(request.item);
+    if (rejected[name]) {
+        assert.strictEqual(leaf.writeRestriction, name === "bits" ? "unsupported" : "readOnly", name);
+        await assert.rejects(resolveTarget(), { code: "WRITE_NOT_ALLOWED" }, name);
+    } else {
         const plan = await resolveTarget();
+        assert.strictEqual(leaf.writeRestriction, "", name);
+        assert.strictEqual(leaf.address, plan.items[0].address, name);
+        assert.strictEqual(leaf.type, plan.items[0].type, name);
         assert.strictEqual(plan.items[0].value, 123, name);
         assert(plan.items[0].runtimeWrite, name);
         await verifyWritePreconditions(plan.runtimeChecks, read);
     }
+    if (name === "variant" || name === "reference") {
+        const saved = { name: request.item.name, type: "u8", address: 1, value: 10 };
+        const [restored] = normalizeWatchList([saved], [typedSymbol], { allowDynamicLeaf: true });
+        const [readItem] = buildActiveReadPlan([[restored]], {
+            typeByteLength: () => assert.fail("must use runtime plan")
+        });
+        assert.strictEqual(readItem.address, symbol.address);
+        assert.strictEqual((await sample(readItem)).value, leaf.value);
+        if (name === "variant") {
+            assert(restored.runtimeLeaf);
+            const together = buildActiveReadPlan([[{ ...typedSymbol }, restored]], {}, [{ [typedSymbol.name]: [""] }]);
+            assert(
+                together.some((item) => item.name === saved.name),
+                "variant leaf keeps its own runtime read"
+            );
+            const reader = new RuntimeObjectReader({ ...readItem, ...ranges }, read);
+            const root = { address: symbol.address, type: graph.root };
+            const { args } = reader.type(root.type);
+            const index = await reader.field(root, "_M_index");
+            const width = reader.size(index.type);
+            const alternate = args.findIndex((id) => reader.type(id).watchType !== leaf.type);
+            assert(alternate >= 0, "fixture must have mixed scalar encodings");
+            write(index.address, alternate, width);
+            assert.strictEqual((await sample(readItem)).type, reader.type(args[alternate]).watchType);
+            write(index.address, 2 ** (width * 8) - 1, width);
+            await assert.rejects(sample(readItem), { code: "LIVE_MEMBER_MISSING" });
+        }
+    }
     if (["ordered", "multiMap", "hashed", "multiHash"].includes(name)) {
         values[0].name = symbol.name + "[0].first";
+        assert.strictEqual((await sample(runtimeWriteRequests(values, result)[0].item)).writeRestriction, "readOnly");
         await assert.rejects(resolveTarget(), { code: "WRITE_NOT_ALLOWED" }, "map keys must stay read-only");
     }
 }
@@ -87,7 +135,6 @@ async function inspectWriteTarget({ name, symbol, graph, read, sections }) {
     await scenario("Bound runtime graphs and atomically roll back incomplete vtable catalogs", async () => {
         const c = require("../src/dwarf/constants");
         const { parseDwarf } = require("../src/dwarf");
-        const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");
         const { base, composite, fixed, fixture, member, pointer, variable } = require("./helpers/dwarf-tree");
         function runtimeFixture(count = 4200) {
             const children = [],

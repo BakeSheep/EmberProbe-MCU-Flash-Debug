@@ -23,6 +23,7 @@ const SHARED_PRELUDE = [
     "pageZoom.js",
     "notice.js",
     "elfDiagnostics.js",
+    "runtimeWatchPath.js",
     "runtime.js",
     "valueTree.js",
     "symbolPicker.js",

@@ -24,6 +24,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function (runtime, valueTree, cardReorder, notice, pageZoom) {
     const watchWriteModule =
         typeof module === "object" && module.exports ? require("./watchWrites") : globalThis.EmberProbeWatchWrites;
+    const { watchWriteBinding } = watchWriteModule;
     const { fmtNum } = valueTree;
     const WRITE_INTERVAL_MS = 100;
     // While the debugger is paused the CPU never sees intermediate drag values, yet every write makes the debugger
@@ -128,7 +129,7 @@
     // Aligned 32-bit variables can be written while the CPU runs; 8/16-bit, unaligned and 64-bit writes briefly halt
     // for a read-modify-write
     function writeRisk(item) {
-        return runtime.writeHaltRisk(item.address, typeWidth(item));
+        return runtime.writeHaltRisk(item.fromWatch ? item.writeBinding?.address : item.address, typeWidth(item));
     }
 
     // page: { box, count, state, t, displayName(item), post(message) or null without a host, changed() after the
@@ -139,6 +140,7 @@
             timers = Object.create(null),
             lastAt = Object.create(null),
             latestSeq = Object.create(null),
+            retiredSeq = Object.create(null),
             // Last value known to be on the target per write card; a failed write rolls back to it.
             confirmed = Object.create(null),
             seq = 0,
@@ -156,17 +158,24 @@
                 }
             });
         function save() {
-            page.post?.({ type: "saveSidebarWrite", items: state.writeList });
+            page.post?.({
+                type: "saveSidebarWrite",
+                items: state.writeList.map((item) =>
+                    item.fromWatch && item.name in confirmed ? { ...item, value: confirmed[item.name] } : item
+                )
+            });
         }
         function has(name) {
             return state.writeList.some((w) => w.name === name);
         }
-        function gateKey(item) {
+        function gateKey(item, candidate = item.fromWatch ? watchWrites.entry(item.name) : null) {
             if (!access.canWrite) return access.unavailableKey;
             if (item.fromWatch) {
-                const candidate = watchWrites.entry(item.name);
+                const binding = watchWriteBinding(item.writeBinding);
+                if (!binding) return "sb.writeBindingMissing";
                 if (!candidate?.entry) return candidate?.key || "sb.writeSampleRequired";
-                if (candidate.entry.type !== item.type) return "sb.writeTypeUnknown";
+                if (JSON.stringify(binding) !== JSON.stringify(candidate.entry.writeBinding))
+                    return "sb.writeBindingChanged";
             }
             return !access.haltWrite && writeRisk(item) ? "sb.writeNeedHalt" : "";
         }
@@ -199,6 +208,7 @@
             icon?.removeAttribute("aria-describedby");
         }
         function riskIcon(item) {
+            if (item.fromWatch && !item.writeBinding) return null;
             const risk = writeRisk(item);
             if (!risk) return null;
             const icon = document.createElement("span");
@@ -208,7 +218,8 @@
             icon.innerHTML = runtime.warningIconSvg("write-risk-icon");
             icon.dataset.tip = t("sb.writeRisk." + risk, {
                 bits: typeWidth(item) * 8,
-                addr: "0x" + ((Number(item.address) || 0) >>> 0).toString(16).toUpperCase()
+                addr:
+                    "0x" + ((Number(item.writeBinding?.address ?? item.address) || 0) >>> 0).toString(16).toUpperCase()
             });
             icon.setAttribute("aria-label", icon.dataset.tip);
             icon.addEventListener("mouseenter", () => showRiskTip(icon));
@@ -217,17 +228,27 @@
             icon.addEventListener("blur", () => hideRiskTip(icon));
             return icon;
         }
-        function cancelPending(name) {
+        function cancelPending(name, notify = false) {
             if (timers[name]) {
                 clearTimeout(timers[name]);
                 delete timers[name];
             }
             delete lastAt[name];
+            if (notify && latestSeq[name] !== undefined) {
+                retiredSeq[name] = latestSeq[name];
+                page.post?.({ type: "cancelSidebarWrite", name, seq: latestSeq[name] });
+            }
             delete latestSeq[name];
+            const card = cells[name];
+            if (card) {
+                card.sliderEdited = false;
+                card.input.classList.remove("pending");
+            }
         }
         function remove(name) {
-            cancelPending(name);
+            cancelPending(name, !!cells[name]?.item.fromWatch);
             delete confirmed[name];
+            delete retiredSeq[name];
             state.writeList = state.writeList.filter((w) => w.name !== name);
             render();
             page.changed();
@@ -235,6 +256,7 @@
         }
         function toggle(entry) {
             if (has(entry.name)) return remove(entry.name);
+            if (entry.fromWatch ? !watchWriteBinding(entry.writeBinding) : !canAddStatic(entry)) return;
             const type = entry.type || "u32",
                 bounds = defBounds(type),
                 base = {
@@ -242,7 +264,7 @@
                     displayName: page.displayName(entry),
                     address: entry.address,
                     size: entry.size,
-                    ...(entry.fromWatch ? { fromWatch: true } : {})
+                    ...(entry.fromWatch ? { fromWatch: true, writeBinding: entry.writeBinding } : {})
                 };
             if (entry.isBoolean) {
                 state.writeList.push({
@@ -270,13 +292,37 @@
             page.changed();
             save();
         }
+        function canAddStatic(entry) {
+            if (
+                !runtime.SUPPORTED_TYPES.includes(entry.watchType || entry.type) ||
+                entry.runtimeLayout ||
+                entry.staticRuntimeStorage ||
+                entry.isComposite ||
+                entry.isConst ||
+                entry.isReference ||
+                entry.isMemberPointer ||
+                entry.isPointer ||
+                entry.enumEncodingInferred ||
+                Number.isInteger(entry.bitSize) ||
+                !Number.isSafeInteger(entry.address) ||
+                entry.address <= 0
+            )
+                return false;
+            const end = entry.address + Math.max(typeWidth(entry), Number(entry.size) || 0);
+            return (
+                !state.writeRanges ||
+                state.writeRanges.some(({ start, end: limit }) => entry.address >= start && end <= limit)
+            );
+        }
         function post(item) {
             if (!page.post || !has(item.name)) return;
-            const gate = gateKey(item);
+            const candidate = item.fromWatch ? watchWrites.entry(item.name) : null;
+            const gate = gateKey(item, candidate);
             if (gate) {
                 feedback({ key: gate });
                 return;
             }
+            delete retiredSeq[item.name];
             latestSeq[item.name] = ++seq;
             cells[item.name]?.input.classList.add("pending");
             page.post({
@@ -284,7 +330,9 @@
                 name: item.name,
                 value: item.value,
                 seq,
-                ...(item.fromWatch ? { fromWatch: true } : {})
+                ...(item.fromWatch
+                    ? { fromWatch: true, binding: item.writeBinding, writeContext: candidate.entry.writeContext }
+                    : {})
             });
         }
         function send(item, immediate) {
@@ -420,6 +468,7 @@
                 row,
                 input,
                 slider,
+                sliderEdited: false,
                 dot,
                 controls: [minus, plus, input, slider],
                 setVal: (v) => {
@@ -436,12 +485,14 @@
             if (wide) bindWide(item, card, [minus, plus], bottom);
             else bindNumber(item, card, minL, maxL);
             applyGate(card);
+            if (latestSeq[item.name] !== undefined) input.classList.add("pending");
             return row;
         }
         function bindWide(item, { input }, steps, bottom) {
             steps.forEach((step) => (step.hidden = true));
             bottom.remove();
             const commit = () => {
+                if (gateKey(item)) return;
                 const value = normalizeWideInteger(input.value, item.type);
                 if (value === null) {
                     input.value = String(item.value ?? "0");
@@ -484,6 +535,7 @@
                       ? Number(v)
                       : clampToType(Number(v), item.type);
             const setValue = (v, immediate) => {
+                if (gateKey(item)) return;
                 v = typed(v);
                 if (!Number.isFinite(v)) v = 0;
                 if (Object.is(v, -0)) v = 0;
@@ -494,6 +546,7 @@
                 send(item, immediate);
             };
             const commitInput = () => {
+                if (gateKey(item)) return;
                 const text = input.value.trim();
                 if (text === fmtNum(item.value)) return;
                 const raw = Number(text);
@@ -545,12 +598,18 @@
             minus.onclick = () => setValue(stepped(-1), true);
             plus.onclick = () => setValue(stepped(1), true);
             slider.addEventListener("input", () => {
+                if (gateKey(item)) return;
+                card.sliderEdited = true;
                 const v = typed(slider.value);
                 item.value = v;
                 input.value = fmtNum(v);
                 send(item, false);
             });
-            slider.addEventListener("change", () => setValue(Number(slider.value), true));
+            slider.addEventListener("change", () => {
+                if (item.fromWatch && !card.sliderEdited) return;
+                card.sliderEdited = false;
+                setValue(Number(slider.value), true);
+            });
             if (!item.isBoolean) {
                 bindBound(minL, item, "min", syncSlider);
                 bindBound(maxL, item, "max", syncSlider);
@@ -573,28 +632,44 @@
             });
             reorder?.refresh();
         }
-        function applyGate(card) {
-            const gate = gateKey(card.item),
+        function applyGate(card, candidate = card.item.fromWatch ? watchWrites.entry(card.item.name) : null) {
+            const { item } = card;
+            const gate = gateKey(item, candidate),
                 title = gate ? t(gate) : "";
+            const previous = card.gate;
+            card.gate = gate;
             card.row.classList.toggle("gated", !!gate);
-            if (gate && timers[card.item.name]) {
-                clearTimeout(timers[card.item.name]);
-                delete timers[card.item.name];
+            if (gate && item.fromWatch && previous !== gate) {
+                cancelPending(item.name, true);
+                if (item.name in confirmed) card.setVal(confirmed[item.name]);
+            } else if (gate && timers[item.name]) {
+                clearTimeout(timers[item.name]);
+                delete timers[item.name];
             }
             card.controls.forEach((control) => {
                 control.disabled = !!gate;
                 control.title = title;
             });
+            if (!gate && item.fromWatch && previous) updateFromSample(card, candidate.entry);
+            return gate;
         }
         // Live status: { canWrite, haltWrite, halted (debugger paused), unavailableKey }.
         function setAccess(next) {
+            const contextChanged = watchWrites.setContext(next.canWrite ? (next.writeContext ?? null) : null);
             const changed =
                 next.canWrite !== access.canWrite ||
                 next.haltWrite !== access.haltWrite ||
                 next.unavailableKey !== access.unavailableKey;
             if (!next.canWrite) watchWrites.invalidate();
             access = next;
-            if (changed) Object.values(cells).forEach(applyGate);
+            for (const card of Object.values(cells)) {
+                if (contextChanged && card.item.fromWatch) {
+                    cancelPending(card.item.name, true);
+                    if (card.item.name in confirmed) card.setVal(confirmed[card.item.name]);
+                    card.gate = "sb.writeSampleRequired";
+                }
+                if (changed || contextChanged) applyGate(card);
+            }
             page.refreshMenu?.();
         }
         // Input checks fade on their own; a failed write stays until dismissed or the next write succeeds.
@@ -605,7 +680,7 @@
         function knownValue(item) {
             if (item.fromWatch) {
                 const entry = watchWrites.entry(item.name)?.entry;
-                return entry ? (entry.valueText ?? entry.value) : undefined;
+                return entry ? (isWideInt(item.type) ? entry.valueText : entry.value) : undefined;
             }
             if (isWideInt(item.type)) return state.latestText[item.name] ?? confirmed[item.name];
             const sampled = state.latest[item.name];
@@ -613,11 +688,48 @@
             if (Number.isFinite(value)) return isFloat(item.type) ? value : Math.round(value);
             return confirmed[item.name];
         }
-        // Write result feedback: the dot before the variable name lights up and fades (green on success, red on
-        // failure); failures also show the reason in the write notice
+        function reportFailure(m) {
+            let error = m.key || m.message ? m : { key: "sb.commandFailed" };
+            const progress = m.details;
+            const moved = m.code === "WRITE_TARGET_CHANGED" || m.code === "DEBUG_STATE_CHANGED";
+            const verified = moved && progress?.verified === true && !progress.resultUnknown;
+            if (progress?.resultUnknown || (moved && typeof progress?.written !== "boolean")) {
+                error = { ...m, key: "sb.writeResultUnknown", params: {} };
+            } else if (moved) {
+                const state = progress.verified ? "verified" : progress.written ? "unverified" : "notWritten";
+                const keys = {
+                    verified: "sb.writeTargetChanged.verified",
+                    unverified: "sb.writeTargetChanged.unverified",
+                    notWritten: "sb.writeTargetChanged.notWritten"
+                };
+                error = {
+                    ...m,
+                    key: keys[state],
+                    params: { written: progress.writtenItems ?? 1, total: progress.totalItems ?? 1 }
+                };
+            }
+            feedback(
+                notice.hostNotice({
+                    error,
+                    ...(verified ? { level: "warning", timeoutMs: 0 } : {}),
+                    title: {
+                        key: verified ? "sb.writeVerifiedTitle" : "sb.writeFailTitle",
+                        params: { name: page.displayName({ name: m.name }) }
+                    }
+                })
+            );
+        }
+        // A retired request can still report its write progress, without updating the current card.
         function onResult(m) {
             m = { ...m, code: m.diagnostic?.code || m.code, details: m.diagnostic?.details || m.details };
-            if (m.seq !== latestSeq[m.name]) return;
+            if (latestSeq[m.name] === undefined || m.seq !== latestSeq[m.name]) {
+                if (retiredSeq[m.name] !== undefined && retiredSeq[m.name] === m.seq) {
+                    delete retiredSeq[m.name];
+                    if (!m.ok && (typeof m.details?.written === "boolean" || m.details?.resultUnknown))
+                        reportFailure(m);
+                }
+                return;
+            }
             delete latestSeq[m.name];
             const card = cells[m.name];
             if (card) {
@@ -629,18 +741,21 @@
                     state.latest[m.name] = m.value;
                     state.latestText[m.name] = m.valueText ?? null;
                     state.latestEnum[m.name] = m.enumText ?? null;
-                    card.setVal(m.valueText ?? m.value);
-                    confirmed[m.name] = m.valueText ?? m.value;
+                    const value = isWideInt(card.item.type) ? (m.valueText ?? m.value) : m.value;
+                    card.setVal(value);
+                    confirmed[m.name] = value;
+                    if (card.item.fromWatch) save();
                 } else {
                     // Show what the target still holds, not the rejected value, so steps start from it.
                     cancelPending(m.name);
-                    if (!m.details?.resultUnknown && !m.details?.written) {
+                    if (!m.details?.resultUnknown && !m.details?.written && !m.details?.results?.length) {
                         const known = knownValue(card.item);
                         if (known !== undefined) {
                             card.setVal(known);
+                            confirmed[m.name] = known;
                             save();
                         }
-                    }
+                    } else if (card.item.fromWatch) delete confirmed[m.name];
                 }
             }
             if (!m.ok && cells[m.name]?.item.fromWatch) {
@@ -649,83 +764,58 @@
             }
             if (m.ok) {
                 if (page.notice.level() === "error") feedback(null);
-            } else {
-                let error = m.key || m.message ? m : { key: "sb.commandFailed" };
-                if (m.code === "WRITE_TARGET_CHANGED") {
-                    const notWritten = m.details?.written === false && !m.details?.resultUnknown;
-                    error = {
-                        ...m,
-                        key: notWritten ? "sb.writeDynamicChanged" : "sb.writeResultUnknown",
-                        params: {}
-                    };
-                } else if (m.details?.resultUnknown || m.details?.written) {
-                    error = { ...m, key: "sb.writeResultUnknown", params: {} };
-                }
-                feedback(
-                    notice.hostNotice({
-                        error,
-                        title: { key: "sb.writeFailTitle", params: { name: page.displayName({ name: m.name }) } }
-                    })
-                );
-            }
+            } else reportFailure(m);
         }
-        function syncWatchIdentity(card, candidate) {
-            const item = card.item;
-            if (!candidate || candidate.type !== item.type) return;
-            const moved = item.address !== candidate.address || item.size !== candidate.size;
-            const booleanChanged = !!item.isBoolean !== !!candidate.isBoolean;
-            item.address = candidate.address;
-            item.size = candidate.size;
-            item.isBoolean = candidate.isBoolean;
-            if (booleanChanged) {
-                card.row.querySelector(".value-type").textContent = item.isBoolean ? "bool" : item.type;
-                card.syncSlider?.();
-            }
-            if (!moved) return;
-            hideRiskTip();
-            const previous = card.row.querySelector(".write-risk");
-            const next = riskIcon(item);
-            if (previous) {
-                if (next) previous.replaceWith(next);
-                else previous.remove();
-            } else if (next) {
-                let line = card.row.querySelector(".write-name-line");
-                if (!line) {
-                    line = element("span", "write-name-line");
-                    const name = card.row.querySelector(".value-name");
-                    name.replaceWith(line);
-                    line.appendChild(name);
-                }
-                line.prepend(next);
-            }
+        function updateFromSample(card, entry) {
+            const { item } = card;
+            const value = isWideInt(item.type) ? entry.valueText : Number(entry.value);
+            if (value == null || (typeof value === "number" && !Number.isFinite(value))) return;
+            confirmed[item.name] = value;
+            card.setVal(value);
+        }
+        function refreshWatchGates() {
+            for (const card of Object.values(cells)) if (card.item.fromWatch) applyGate(card);
+            page.refreshMenu?.();
+        }
+        function sampled(samples) {
+            const focused = document.activeElement;
+            const active = Object.values(cells).filter(
+                ({ item, input, slider, sliderEdited }) =>
+                    item.fromWatch &&
+                    (sliderEdited ||
+                        timers[item.name] ||
+                        latestSeq[item.name] !== undefined ||
+                        focused === input ||
+                        focused === slider)
+            );
+            watchWrites.sampled(samples, (name) => {
+                // Check pending values even if the final sample in the same batch restores the address.
+                for (const card of active) if (card.item.name.startsWith(name)) applyGate(card);
+            });
+            refreshWatchGates();
         }
         // Sampled values move idle cards; a card being dragged, typed into or waiting for a result keeps its value.
         function sync() {
             state.writeList.forEach((item) => {
                 const card = cells[item.name];
                 if (!card) return;
-                if (item.fromWatch) {
-                    const candidate = watchWrites.entry(item.name)?.entry;
-                    syncWatchIdentity(card, candidate);
-                    applyGate(card);
-                }
-                if (gateKey(item)) return;
+                const candidate = item.fromWatch ? watchWrites.entry(item.name) : null;
+                if (item.fromWatch ? applyGate(card, candidate) : gateKey(item)) return;
                 if (Date.now() - (lastAt[item.name] || 0) < 1000) return;
                 if (timers[item.name]) return;
                 if (card.input.classList.contains("pending")) return;
                 const ae = document.activeElement;
                 if (ae === card.input || ae === card.slider) return;
+                if (item.fromWatch) return updateFromSample(card, candidate.entry);
                 if (isWideInt(item.type)) {
-                    const text = item.fromWatch
-                        ? watchWrites.entry(item.name)?.entry?.valueText
-                        : state.latestText[item.name];
+                    const text = state.latestText[item.name];
                     if (text != null) {
                         card.setVal(text);
                         confirmed[item.name] = text;
                     }
                     return;
                 }
-                const sampled = item.fromWatch ? watchWrites.entry(item.name)?.entry?.value : state.latest[item.name];
+                const sampled = state.latest[item.name];
                 if (sampled === null || sampled === undefined) return;
                 let v = Number(sampled);
                 if (!Number.isFinite(v)) return;
@@ -736,12 +826,18 @@
         }
         // The host's saved list replaces the cards and forgets their confirmed values.
         function load(items) {
-            state.writeList = items.slice();
+            for (const item of state.writeList) if (item.fromWatch) cancelPending(item.name, true);
+            retiredSeq = Object.create(null);
+            state.writeList = items.map((item) => {
+                const binding = item.fromWatch && watchWriteBinding(item.writeBinding);
+                return binding ? { ...item, ...binding, writeBinding: binding } : item;
+            });
             confirmed = Object.create(null);
             render();
         }
         return {
             has,
+            canAddStatic,
             toggle,
             render,
             load,
@@ -749,8 +845,16 @@
             onResult,
             sync,
             menu: watchWrites.menu,
-            sampled: watchWrites.sampled,
-            invalidate: watchWrites.invalidate,
+            sampled,
+            invalidate() {
+                watchWrites.invalidate();
+                refreshWatchGates();
+            },
+            setExpansions(expansions) {
+                watchWrites.setExpansions(expansions);
+                refreshWatchGates();
+            },
+            forget: watchWrites.forget,
             displayName: watchWrites.displayName
         };
     }

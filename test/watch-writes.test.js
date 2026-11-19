@@ -4,7 +4,6 @@ const { scenario } = require("./helpers/scenario");
 const { FakeClock } = require("./helpers/fake-clock");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
-const { dynamicAccess } = require("../src/webview/sidebar/watchWrites");
 
 const types = [
     { kind: "scalar", typeName: "float", byteSize: 4, watchType: "f32" },
@@ -24,45 +23,8 @@ const types = [
     { kind: "pointer", target: 3, byteSize: 4, pointerTarget: "data" }
 ];
 const graph = { root: 4, types };
-const segments = (name) => require("../src/webview/runtime").memberPathSegments(name).segments;
 
 (async () => {
-    await scenario(
-        "Use DWARF qualifications to distinguish mutable leaves and semantic container elements",
-        async () => {
-            const access = (name) => dynamicAccess(graph, segments(name), {});
-            assert.strictEqual(access("motor.value.gain").type, "f32");
-            assert.strictEqual(access("motor.value.enabled").isBoolean, true);
-            assert.strictEqual(access("motor.value.limit").key, "sb.writeReadOnly");
-            assert.strictEqual(access("motor").key, "sb.writePointerStorage");
-            assert.strictEqual(access("motor.value.next").key, "sb.writePointerStorage");
-            assert.strictEqual(access("motor.value").key, "sb.writeScalarOnly");
-            assert.strictEqual(access("motor.gain").key, "sb.writePointerStorage");
-            const containers = (stl) => ({
-                root: 3,
-                types: [types[0], types[1], types[2], { kind: "class", stl, args: [0, 1] }]
-            });
-            assert.strictEqual(dynamicAccess(containers("vector"), segments("v[0]"), {}).type, "f32");
-            assert.strictEqual(dynamicAccess(containers("map"), segments("v[0].second"), {}).type, "u8");
-            assert.strictEqual(dynamicAccess(containers("map"), segments("v[0].first"), {}).key, "sb.writeReadOnly");
-            assert.strictEqual(dynamicAccess(containers("set"), segments("v[0]"), {}).key, "sb.writeReadOnly");
-            assert.strictEqual(dynamicAccess(containers("basic_string"), segments("v[0]"), {}).key, "sb.writeReadOnly");
-            assert.strictEqual(dynamicAccess(containers("tuple"), segments("v[1]"), {}).type, "u8");
-            assert.strictEqual(
-                dynamicAccess(containers("variant"), segments("v.value"), { typeName: "float" }).type,
-                "f32"
-            );
-            assert.strictEqual(
-                dynamicAccess(containers("variant"), segments("v.value"), {}).key,
-                "sb.writeTypeUnknown"
-            );
-            const union = { root: 0, types: [{ kind: "union", fields: [{ name: "value", type: 1 }] }, types[0]] };
-            assert.strictEqual(dynamicAccess(union, segments("u.value"), {}).key, "sb.writeUnsupported");
-            const incomplete = { root: 0, types: [{ kind: "alias", target: 0 }] };
-            assert.strictEqual(dynamicAccess(incomplete, [], {}).key, "sb.writeTypeUnknown");
-        }
-    );
-
     await scenario(
         "Add watched dynamic leaves without writing, gate stale values and recover from new samples",
         async () => {
@@ -87,13 +49,22 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                 };
                 view.send({ type: "availableVariables", symbols: [symbol] });
                 view.send({ type: "sidebarWatchList", items: [symbol, pointee] });
-                const status = { type: "liveStatus", running: true, canRead: true, canWrite: true, source: "openocd" };
+                let writeContext = 1;
+                const status = () => ({
+                    type: "liveStatus",
+                    running: true,
+                    canRead: true,
+                    canWrite: true,
+                    source: "openocd",
+                    writeContext
+                });
                 const tree = (gain, address = 0x20000400) => ({
                     kind: "class",
                     typeName: "Motor",
                     members: [
                         {
                             name: "gain",
+                            writeRestriction: "",
                             kind: "scalar",
                             type: "f32",
                             typeName: "float",
@@ -103,6 +74,8 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                         },
                         {
                             name: "enabled",
+                            writeRestriction: "",
+                            isBoolean: true,
                             kind: "scalar",
                             type: "u8",
                             typeName: "bool",
@@ -111,6 +84,7 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                         },
                         {
                             name: "limit",
+                            writeRestriction: "readOnly",
                             kind: "scalar",
                             type: "f32",
                             typeName: "float",
@@ -130,7 +104,7 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                 const sample = (gain, address) =>
                     view.send({
                         type: "liveCompositeSample",
-                        samples: [{ name: "motor.value", tree: tree(gain, address) }]
+                        samples: [{ name: "motor.value", tree: tree(gain, address), writeContext }]
                     });
                 const open = async (name = "motor.value.gain") => {
                     await Promise.resolve();
@@ -141,7 +115,7 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                     );
                     return view.document.querySelector(".watch-write-action");
                 };
-                view.send(status);
+                view.send(status());
                 assert((await open()).disabled, "placeholder values never enable addition");
                 sample(2.5);
                 await clock.advance(100);
@@ -154,12 +128,21 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                 assert.strictEqual(saved.fromWatch, true);
                 assert.strictEqual(saved.name, "motor.value.gain");
                 assert.strictEqual(saved.value, 2.5);
+                assert.deepStrictEqual(saved.writeBinding, {
+                    address: 0x20000400,
+                    type: "f32",
+                    size: 4,
+                    isBoolean: false,
+                    typeName: "float"
+                });
                 const input = view.document.querySelector(".write-input");
                 input.value = "3";
                 input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
                 const request = view.messages.findLast((message) => message.type === "writeVariable");
                 assert.strictEqual(request.name, "motor.value.gain");
                 assert.strictEqual(request.address, undefined);
+                assert.deepStrictEqual(request.binding, saved.writeBinding);
+                assert.strictEqual(request.writeContext, 1);
                 view.send({
                     ...request,
                     type: "writeResult",
@@ -173,16 +156,18 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                 assert(view.document.getElementById("noticeWrite").textContent.includes("本次未写入"));
                 sample(4, 0x20000500);
                 await clock.advance(1100);
-                assert.strictEqual(input.disabled, false);
-                assert.strictEqual(input.value, "4");
-                saved = view.messages.findLast((message) => message.type === "saveSidebarWrite").items[0];
-                view.send({ ...status, running: false, canRead: false, canWrite: false });
                 assert(input.disabled);
-                view.send(status);
+                assert.strictEqual(input.value, "2.5");
+                saved = view.messages.findLast((message) => message.type === "saveSidebarWrite").items[0];
+                view.send({ ...status(), running: false, canRead: false, canWrite: false });
+                assert(input.disabled);
+                writeContext++;
+                view.send(status());
                 assert(input.disabled, "restart waits for a sample from the current connection");
                 sample(5);
                 await clock.advance(100);
                 assert.strictEqual(input.disabled, false);
+                assert.strictEqual(input.value, "5");
                 for (const [name, hint] of [
                     ["limit", "只读"],
                     ["next", "指针本身"]
@@ -205,9 +190,9 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
             }
         }
     );
-    await scenario("Restore dynamic boolean controls and refresh relocated write risk indicators", async () => {
+    await scenario("Restore pinned boolean cards and leave risk indicators tied to the original address", async () => {
         const clock = new FakeClock();
-        const view = render(getModernWebviewContent({}, "en"), {}, { clock });
+        const view = render(getModernWebviewContent({}, "en"), { sbExpanded: { "motor.value": true } }, { clock });
         try {
             const symbol = { name: "motor", address: 0x20000000, size: 4, runtimeLayout: graph };
             const watch = {
@@ -221,7 +206,15 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
             view.send({
                 type: "sidebarWriteList",
                 items: [
-                    { name: "motor.value.enabled", type: "u8", min: 0, max: 1, value: 1, fromWatch: true },
+                    {
+                        name: "motor.value.enabled",
+                        type: "u8",
+                        min: 0,
+                        max: 1,
+                        value: 1,
+                        fromWatch: true,
+                        writeBinding: { address: 0x20000404, type: "u8", size: 1, isBoolean: true, typeName: "bool" }
+                    },
                     {
                         name: "motor.value.gain",
                         type: "f32",
@@ -229,30 +222,49 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
                         min: 0,
                         max: 10,
                         value: 2,
-                        fromWatch: true
+                        fromWatch: true,
+                        writeBinding: { address: 0x20000400, type: "f32", size: 4, isBoolean: false, typeName: "float" }
                     }
                 ]
             });
-            view.send({ type: "liveStatus", running: true, canRead: true, canWrite: true, source: "openocd" });
+            view.send({
+                type: "liveStatus",
+                running: true,
+                canRead: true,
+                canWrite: true,
+                source: "openocd",
+                writeContext: 1
+            });
             const sample = (address) =>
                 view.send({
                     type: "liveCompositeSample",
                     samples: [
                         {
                             name: "motor.value",
+                            writeContext: 1,
                             tree: {
                                 kind: "class",
                                 typeName: "Motor",
                                 members: [
                                     {
                                         name: "enabled",
+                                        writeRestriction: "",
+                                        isBoolean: true,
                                         kind: "scalar",
                                         type: "u8",
                                         typeName: "bool",
                                         value: 1,
                                         address: 0x20000404
                                     },
-                                    { name: "gain", kind: "scalar", type: "f32", value: 2, address }
+                                    {
+                                        name: "gain",
+                                        kind: "scalar",
+                                        type: "f32",
+                                        typeName: "float",
+                                        value: 2,
+                                        address,
+                                        writeRestriction: ""
+                                    }
                                 ]
                             }
                         }
@@ -263,7 +275,7 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
             const rows = view.document.querySelectorAll(".write-row");
             assert.strictEqual(rows[0].querySelector(".value-type").textContent, "bool");
             const input = rows[0].querySelector(".write-input");
-            assert.strictEqual(input.disabled, false);
+            assert.strictEqual(input.disabled, false, input.title);
             input.value = "2";
             input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
             assert.strictEqual(view.messages.filter((message) => message.type === "writeVariable").length, 0);
@@ -271,10 +283,122 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
             assert.strictEqual(rows[1].querySelector(".write-risk"), null);
             sample(0x20000402);
             await clock.advance(100);
-            assert(rows[1].querySelector(".write-risk").dataset.tip.includes("20000402"));
+            assert(rows[1].querySelector(".write-input").disabled);
+            assert.strictEqual(rows[1].querySelector(".write-risk"), null);
             sample(0x20000400);
             await clock.advance(100);
+            assert.strictEqual(rows[1].querySelector(".write-input").disabled, false);
             assert.strictEqual(rows[1].querySelector(".write-risk"), null);
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    });
+
+    await scenario("Cancel debounced and sent scalar writes across sample and session changes", async () => {
+        const clock = new FakeClock();
+        const view = render(getModernWebviewContent({}, "en"), {}, { clock });
+        try {
+            const name = "p.value";
+            const address = 0x20000400;
+            const binding = { address, type: "f32", size: 4, isBoolean: false, typeName: "float" };
+            const root = {
+                name: "p",
+                address: 0x20000000,
+                size: 4,
+                type: "u32",
+                isPointer: true,
+                runtimeLayout: { root: 1, types: [types[0], { ...types[4], target: 0 }] }
+            };
+            view.send({ type: "availableVariables", symbols: [root] });
+            view.send({ type: "sidebarWatchList", items: [{ ...root, name, isPointer: false, type: "f32" }] });
+            const stored = { name, ...binding, value: 1, min: 0, max: 10, fromWatch: true };
+            view.send({ type: "sidebarWriteList", items: [stored] });
+            const status = (writeContext, source = "dap") =>
+                view.send({
+                    type: "liveStatus",
+                    running: true,
+                    canRead: true,
+                    canWrite: true,
+                    writeContext,
+                    source,
+                    mode: source === "dap" ? "debug-paused-sampling" : "debug-running-sampling"
+                });
+            const sample = (samples) =>
+                view.send({
+                    type: "liveSample",
+                    samples: samples.map((next) => ({
+                        name,
+                        ...binding,
+                        writeContext: 1,
+                        writeRestriction: "",
+                        ...next
+                    }))
+                });
+            const input = () => view.document.querySelector(".write-input");
+            status(1);
+            sample([{ value: 2 }]);
+            assert(input().disabled && /add/i.test(input().title), "old cards require a newly pinned add");
+            view.send({ type: "sidebarWriteList", items: [{ ...stored, writeBinding: binding }] });
+            assert.strictEqual(input().disabled, false, input().title);
+            const slider = view.document.querySelector(".write-row input[type=range]");
+            slider.value = "6";
+            slider.dispatchEvent(new view.window.Event("input"));
+            sample([{ address: address + 4, value: 7 }, { value: 3 }]);
+            await clock.advance(500);
+            assert.strictEqual(input().value, "3");
+            slider.dispatchEvent(new view.window.Event("change"));
+            assert(!view.messages.some((message) => message.type === "writeVariable"));
+            sample([{ type: "u32", value: 3 }]);
+            assert(input().disabled, "equal address with a different encoding cannot write");
+            sample([{ typeName: "Other", value: 3 }]);
+            assert(input().disabled, "same encoding with a different DWARF type cannot write");
+            sample([{ value: 3, stale: true }]);
+            assert(input().disabled);
+            sample([{ value: 4 }]);
+            assert.strictEqual(input().disabled, false);
+            input().value = "5";
+            input().dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+            const request = view.messages.findLast((message) => message.type === "writeVariable");
+            status(2, "openocd");
+            assert(input().disabled);
+            assert(
+                view.messages.some((message) => message.type === "cancelSidebarWrite" && message.seq === request.seq)
+            );
+            sample([{ value: 7 }]);
+            assert(input().disabled, "a late sample from the former debug stop cannot unlock the card");
+            view.send({ ...request, type: "writeResult", ok: true, value: 5 });
+            assert.strictEqual(input().value, "4");
+            sample([{ value: 8, writeContext: 2 }]);
+            assert.strictEqual(input().disabled, false);
+            assert.strictEqual(input().value, "8");
+            for (const [writeContext, written, verified, text] of [
+                [3, false, false, /Nothing was written/],
+                [4, true, false, /Wrote 1\/1 values and could not finish read-back verification/],
+                [5, true, true, /passed read-back verification/]
+            ]) {
+                input().value = "9";
+                input().dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+                const sent = view.messages.findLast((message) => message.type === "writeVariable");
+                status(writeContext, "openocd");
+                sample([{ value: 8, writeContext }]);
+                view.send({
+                    ...sent,
+                    type: "writeResult",
+                    ok: false,
+                    diagnostic: {
+                        code: "DEBUG_STATE_CHANGED",
+                        details: { written, writtenItems: Number(written), totalItems: 1, verified }
+                    }
+                });
+                assert.match(view.document.getElementById("noticeWrite").textContent, text);
+                if (verified)
+                    assert.match(
+                        view.document.querySelector("#noticeWrite .notice-title").textContent,
+                        /Write verified/
+                    );
+                assert.strictEqual(input().value, "8", "an old session's outcome does not overwrite the current card");
+            }
             view.assertHealthy();
         } finally {
             view.close();
@@ -292,7 +416,8 @@ const segments = (name) => require("../src/webview/runtime").memberPathSegments(
             latestText: {}
         };
         const menu = create({ state, canRead: () => true, has: () => false, toggle: () => {} });
-        menu.sampled([{ name: "value", value: 3 }]);
+        menu.setContext(1);
+        menu.sampled([{ name: "value", value: 3, writeContext: 1 }]);
         assert.strictEqual(menu.entry("value").key, "sb.writeTypeUnknown");
         symbol.hasDwarfWriteType = true;
         assert.strictEqual(menu.entry("value").entry.type, "u32");

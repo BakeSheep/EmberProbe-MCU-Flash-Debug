@@ -86,6 +86,9 @@ jobs:
     name: ARM GDB image transfers (memory-only RSP)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # All symbols and debug information for these fixtures are available locally.
+      DEBUGINFOD_URLS: ""
     steps:
       - uses: actions/checkout@v5
         with:
@@ -99,6 +102,11 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends
           gcc-arm-none-eabi binutils-arm-none-eabi gdb-multiarch
           libstdc++-arm-none-eabi-dev libnewlib-dev
+      - name: Show ARM toolchain versions
+        run: |
+          arm-none-eabi-g++ --version
+          arm-none-eabi-nm --version
+          gdb-multiarch --version
       - run: node test/gdb/debug-images.test.js
         env:
           IMAGE_GDB: gdb-multiarch

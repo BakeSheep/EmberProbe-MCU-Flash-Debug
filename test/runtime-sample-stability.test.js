@@ -150,7 +150,7 @@ const sample = (item, read) =>
     const cleared = failed(now + 1);
     assert.strictEqual(hold.apply([cleared], now + 1)[0], cleared);
 
-    // Batches: one message carries the latest state of each composite.
+    // Charts keep the last frame. The sidebar delivers intermediate states to invalidate queued writes.
     const Provider = loadProvider({});
     const p = Object.create(Provider.prototype);
     const posted = [];
@@ -169,10 +169,16 @@ const sample = (item, read) =>
         p._sampling._postSidebarBatch([], [{ name: "h", tree: { value } }], t);
     }
     p._sampling._flushPendingWebviewSamples();
-    for (const messages of [posted, sidebarPosted]) {
+    for (const [messages, values] of [
+        [posted, ["error"]],
+        [sidebarPosted, ["good", "error"]]
+    ]) {
         const composites = messages.filter((message) => message.type === "liveCompositeSample");
         assert.strictEqual(composites.length, 1);
-        assert.deepStrictEqual(composites[0].samples, [{ name: "h", tree: { value: "error" } }]);
+        assert.deepStrictEqual(
+            composites[0].samples,
+            values.map((value) => ({ name: "h", tree: { value } }))
+        );
     }
 
     // Sidebar: runtime cards read only what they opened.

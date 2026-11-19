@@ -118,15 +118,13 @@ class SvdManager {
         });
     }
 
-    async boundForDebug(folder) {
-        if (!this.library.bindings()[folder.uri.toString()]) return "";
-        const identity = await this.identityForAsync(folder);
-        return (await this.library.resolveBound(folder.uri, identity.exact ? identity : null))?.path || "";
-    }
-
-    discoverAfterDebug(folder) {
-        if (!folder || this.disposed) return;
-        void this.resolveForFolder(folder).catch((error) => console.error("SVD discovery failed:", error.message));
+    async pathForDebug(folder) {
+        try {
+            return await this.currentPath(folder);
+        } catch (error) {
+            console.error("SVD discovery failed:", error.message);
+            return "";
+        }
     }
 
     async resolveForFolder(folder) {

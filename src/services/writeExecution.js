@@ -1,8 +1,14 @@
 "use strict";
 const path = require("path");
-const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("../writeAccess");
+const {
+    isNonHaltingWordWrite,
+    runtimeWriteDisabledError,
+    WRITE_GUARD,
+    assertSidebarWriteCurrent
+} = require("../writeAccess");
 const elfSymbols = require("../elfSymbols");
 const { writeUnavailableKey } = require("../webview/runtime");
+const { watchWriteBinding } = require("../webview/sidebar/watchWrites");
 const { writeConnectionIdentity } = require("../writeAuthorization");
 const { FirmwareRecord } = require("./firmwareRecord");
 const agentPlans = require("./agentPlans");
@@ -12,12 +18,10 @@ const { SYSTEM_CLOCK } = require("../samplingClock");
 const { runtimeWriteRequests, resolveRuntimeWriteTargets, validateRuntimeWritePlan } = require("./runtimeWritePlan");
 
 const TARGET_CHANGED_WRITE_MESSAGES = {
-    notWritten:
-        "The debug target changed state (pause, step or breakpoint) before the write; nothing was written. Retry once it is running again",
+    notWritten: "The target or session changed before the write. Nothing was written.",
     unverified:
-        "The debug target changed state (pause, step or breakpoint) during the write; {written}/{total} value(s) were written but not verified. Check the current value before retrying",
-    verified:
-        "The value was written and read back, but the debug target changed state (pause, step or breakpoint) right after; the result may be stale"
+        "The target or session changed during the write. Wrote {written}/{total} values and could not finish read-back verification. Check the current value before retrying.",
+    verified: "The write passed read-back verification. The target state or session changed afterward."
 };
 
 // A cancelled runtime write must say whether target memory already changed.
@@ -40,6 +44,14 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
     });
 }
 
+function sidebarTargetChanged(message) {
+    return Object.assign(new Error(message), {
+        code: "WRITE_TARGET_CHANGED",
+        retryable: false,
+        details: { written: false, writtenItems: 0 }
+    });
+}
+
 // Variable writes from the sidebar and the Agent: the probe connection a write goes through, firmware and identity
 // checks, the plan-bound confirmation grants, and the shared write execution with read-back. host is the
 // MainViewProvider.
@@ -55,26 +67,42 @@ class WriteExecution {
         this._uiTicket = 0;
         this._uiLatest = new Map();
         this._uiFailures = new Map();
+        this._uiActive = null;
+        this._uiContextId = 0;
+        this._uiContext = null;
     }
     // Queues a sidebar write behind the one in flight. A queued value that a newer request for the same variable
     // supersedes is skipped and resolves to null, so releasing a dragged slider does not replay the backlog.
-    queueUiWrite(name, value, options) {
+    queueUiWrite(name, value, options = {}) {
         const ticket = ++this._uiTicket;
-        this._uiLatest.set(name, ticket);
+        const context = options.fromWatch ? this.sidebarWriteContext() : null;
+        // The OpenOCD transaction runs in a Worker. The flag is shared until its final pre-write check.
+        const guard = options.fromWatch ? new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)) : null;
+        const request = { name, owner: options.owner, seq: options.seq, context, guard };
+        const cancelled = () => guard && Atomics.load(guard, 0) === WRITE_GUARD.cancelled;
+        this._uiLatest.set(name, request);
         const run = this._uiPromise
             .catch(() => {})
             .then(async () => {
-                if (this._uiLatest.get(name) !== ticket) return null;
+                if (this._uiLatest.get(name) !== request) return null;
                 try {
+                    if (cancelled()) return null;
                     const failure = this._uiFailures.get(name);
-                    if (failure && ticket <= failure.throughTicket) throw failure.error;
-                    return await this.writeUiVariable(name, value, options);
+                    if (failure && context === failure.context && ticket <= failure.throughTicket) throw failure.error;
+                    this._uiActive = request;
+                    return await this.writeUiVariable(name, value, {
+                        ...options,
+                        context,
+                        guard
+                    });
                 } catch (error) {
+                    if (cancelled() && error?.code === "SIDEBAR_WRITE_CANCELLED") return null;
                     // Preserve the error for the newest already-queued value so its UI request can finish.
-                    this._uiFailures.set(name, { throughTicket: this._uiTicket, error });
+                    if (!cancelled()) this._uiFailures.set(name, { throughTicket: this._uiTicket, context, error });
                     throw error;
                 } finally {
-                    if (this._uiLatest.get(name) === ticket) {
+                    if (this._uiActive === request) this._uiActive = null;
+                    if (this._uiLatest.get(name) === request) {
                         this._uiLatest.delete(name);
                         this._uiFailures.delete(name);
                     }
@@ -82,6 +110,13 @@ class WriteExecution {
             });
         this._uiPromise = run;
         return run;
+    }
+    cancelUiWrite(name, seq, owner) {
+        if (!Number.isSafeInteger(seq)) return;
+        for (const request of [this._uiActive, this._uiLatest.get(name)]) {
+            if (request?.guard && request.name === name && request.owner === owner && request.seq <= seq)
+                Atomics.store(request.guard, 0, WRITE_GUARD.cancelled);
+        }
     }
     assertSessionCurrent(session) {
         if (session === this.host._debugBridge && this.host._debugBridge.replBusy)
@@ -180,13 +215,32 @@ class WriteExecution {
     runtimeContext(session = null) {
         const bridge = this.host._debugBridge;
         const targetEpoch = Number.isSafeInteger(session?.targetEpoch) ? session.targetEpoch : undefined;
-        return bridge.activeSession || targetEpoch !== undefined
+        return bridge?.activeSession || targetEpoch !== undefined
             ? {
-                  sessionId: bridge.activeSession?.id || null,
-                  stopEpoch: bridge.activeSession ? bridge.stopEpoch : null,
+                  sessionId: bridge?.activeSession?.id || null,
+                  stopEpoch: bridge?.activeSession ? bridge.stopEpoch : null,
                   ...(targetEpoch !== undefined ? { targetEpoch } : {})
               }
             : null;
+    }
+    sidebarWriteContext() {
+        const bridge = this.host._debugBridge;
+        const sampleSession = this.host._sampling;
+        const session =
+            bridge?.paused && bridge.activeSession
+                ? bridge
+                : this.host.debugLaunch?.managedServer || sampleSession?.session;
+        if (!session || sampleSession?.closing || sampleSession?.exitUnconfirmed) {
+            this._uiContext = null;
+        } else {
+            const target = this.runtimeContext(session);
+            const signature = JSON.stringify([target, this.host._elfService?.generation]);
+            if (this._uiContext?.session !== session || this._uiContext.signature !== signature)
+                this._uiContext = { id: ++this._uiContextId, session, signature, target };
+        }
+        if (this._uiActive?.guard && this._uiActive.context !== this._uiContext)
+            Atomics.compareExchange(this._uiActive.guard, 0, 0, WRITE_GUARD.targetChanged);
+        return this._uiContext;
     }
     async preparePlan(values, selectedSession = null, onResolved = null) {
         await this.host._elfView.prepareLayouts(values);
@@ -233,7 +287,8 @@ class WriteExecution {
                     JSON.stringify(this.runtimeContext(session)) !== JSON.stringify(runtimeContext)
                 )
                     throw Object.assign(new Error("Session changed during dynamic write planning"), {
-                        code: "WRITE_TARGET_CHANGED"
+                        code: "WRITE_TARGET_CHANGED",
+                        details: { written: false, writtenItems: 0, verified: false }
                     });
             };
             const read = async (address, size) => {
@@ -316,14 +371,20 @@ class WriteExecution {
         let transaction;
         try {
             transaction = await session.writeAndVerify(
-                items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes })),
+                items.map(({ name, address, bytes, runtimeWrite }) => ({
+                    name,
+                    address,
+                    bytes,
+                    ...(runtimeWrite ? { runtimeWrite: true } : {})
+                })),
                 5000,
                 plan.runtimeChecks || [],
-                session === this.host._debugBridge ? plan.runtimeContext?.stopEpoch : plan.runtimeContext?.targetEpoch
+                session === this.host._debugBridge ? plan.runtimeContext?.stopEpoch : plan.runtimeContext?.targetEpoch,
+                plan.sidebarGuard
             );
         } catch (error) {
             if (error?.code !== "LIVE_READ_CANCELLED") throw error;
-            if (plan.runtimeChecks && error.details?.resultUnknown) {
+            if (error.details?.resultUnknown && (plan.runtimeChecks || items.some((item) => item.runtimeWrite))) {
                 error.code = "DEBUG_STATE_CHANGED";
                 error.retryable = false;
                 throw error;
@@ -339,6 +400,7 @@ class WriteExecution {
             try {
                 dynamicChanged =
                     this.host.readElfSymbols().elf.sha256 !== elfResult.elf.sha256 ||
+                    (plan.sidebarContext && this.sidebarWriteContext() !== plan.sidebarContext) ||
                     JSON.stringify(this.runtimeContext(session)) !== JSON.stringify(plan.runtimeContext);
             } catch {
                 dynamicChanged = true;
@@ -394,7 +456,14 @@ class WriteExecution {
                 retryable: false,
                 i18nKey: "sb.writeReadBackFailed",
                 i18nParams: { msg },
-                details: { results, targetHaltedDuringWrite: halted }
+                details: {
+                    results,
+                    targetHaltedDuringWrite: halted,
+                    written: true,
+                    writtenItems: items.length,
+                    totalItems: items.length,
+                    verified: false
+                }
             });
         }
         if (results.some((r) => !r.verified)) {
@@ -408,7 +477,15 @@ class WriteExecution {
                     code: "WRITE_VERIFY_FAILED",
                     retryable: true,
                     i18nKey: halted ? "sb.writeVerifyFailedHalted" : "sb.writeVerifyFailedRunning",
-                    details: { results, targetHaltedDuringWrite: halted, alignedWordWrites: true }
+                    details: {
+                        results,
+                        targetHaltedDuringWrite: halted,
+                        alignedWordWrites: items.every(isNonHaltingWordWrite),
+                        written: true,
+                        writtenItems: items.length,
+                        totalItems: items.length,
+                        verified: false
+                    }
                 }
             );
         }
@@ -533,7 +610,19 @@ class WriteExecution {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
         this.assertUiWatch(name, options);
+        const expected = options.fromWatch ? watchWriteBinding(options.binding) : null;
+        const context = options.fromWatch ? (options.context ?? this.sidebarWriteContext()) : null;
+        const assertContext = () => {
+            assertSidebarWriteCurrent(options.guard);
+            if (
+                options.fromWatch &&
+                (!expected || !context || context.id !== options.writeContext || this.sidebarWriteContext() !== context)
+            )
+                throw sidebarTargetChanged("The write card belongs to a different target or sample context");
+        };
+        assertContext();
         await this._confirmUiFirmware(options.requestedAt ?? Date.now());
+        assertContext();
         const status = this.host._sampling.status();
         const dapSession = status.canWrite && this.host._debugBridge.canWrite ? this.host._debugBridge : null;
         const runtimeSession =
@@ -546,7 +635,34 @@ class WriteExecution {
             const key = writeUnavailableKey(status) || "sb.writeUnavailable";
             throw Object.assign(new Error(this.host._t(key)), { i18nKey: key });
         }
-        const plan = await this.preparePlan([{ name, value }], session);
+        const values = [{ name, value }];
+        let plan;
+        if (options.fromWatch) {
+            if (context.session !== session) throw sidebarTargetChanged("The write session changed before planning");
+            try {
+                plan = await this.preparePlan(values, session);
+            } catch (error) {
+                assertContext();
+                if (
+                    ["WRITE_TARGET_CHANGED", "LIVE_READ_CANCELLED", "DEBUG_STATE_CHANGED", "ELF_CHANGED"].includes(
+                        error?.code
+                    )
+                )
+                    throw sidebarTargetChanged(error.message);
+                throw error;
+            }
+            assertContext();
+            const actual = watchWriteBinding(plan.items[0]);
+            if (!actual || JSON.stringify(actual) !== JSON.stringify(expected))
+                throw sidebarTargetChanged("The variable no longer matches the write card's address or type");
+            plan.runtimeChecks ||= [];
+            plan.runtimeContext = context.target;
+            plan.sidebarContext = context;
+            plan.sidebarGuard = options.guard;
+        } else {
+            await this.host._elfView.prepareLayouts(values);
+            plan = agentPlans.writePlan(values, () => this.host.readElfSymbols());
+        }
         this.assertUiWatch(name, options);
         const currentStatus = this.host._sampling.status();
         if (!currentStatus.canWrite) {

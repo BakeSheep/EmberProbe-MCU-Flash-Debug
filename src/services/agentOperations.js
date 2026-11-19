@@ -250,7 +250,12 @@ class AgentOperations {
                 for (const leaf of expanded) appendResolved({ ...leaf, name: leaf.path });
                 continue;
             }
-            const runtime = require("./runtimeWatch").runtimeWatchEntry(rawPath, symbol, parsed?.segments || []);
+            const runtime = require("./runtimeWatch").runtimeWatchEntry(
+                rawPath,
+                symbol,
+                parsed?.segments || [],
+                destination === "sidebar"
+            );
             if (runtime) {
                 appendResolved(runtime);
                 continue;
