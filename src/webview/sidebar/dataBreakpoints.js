@@ -4,6 +4,8 @@
     else root.EmberProbeSidebarDataBreakpoints = factory();
 })(globalThis, function () {
     const SVG_NS = "http://www.w3.org/2000/svg";
+    const MENU_INSET = 4;
+    const MENU_RIGHT_INSET = 12;
     // 16px stroke glyphs drawn in currentColor, so menu selection and disabled colors apply.
     const ICONS = {
         check: "M3.5 8.4l3 3 6-6.6",
@@ -36,6 +38,10 @@
             t({ write: "sb.dataWrite", read: "sb.dataRead", readWrite: "sb.dataAccess" }[type]);
         const statusLabel = (entry) =>
             t({ enabled: "sb.dataEnabled", disabled: "sb.dataDisabled", failed: "sb.dataFailed" }[stateOf(entry)]);
+        const entryTitle = (entry) =>
+            [accessLabel(entry.accessType), statusLabel(entry), entry.description, entry.condition, entry.message]
+                .filter(Boolean)
+                .join(" · ");
         function send(action, args = {}, context = null) {
             const s = get();
             const requestId = ++s.sequence;
@@ -101,19 +107,7 @@
                     "failed",
                     points.some((entry) => entry.enabled && !entry.verified)
                 );
-                mark.title = points
-                    .map((entry) =>
-                        [
-                            accessLabel(entry.accessType),
-                            statusLabel(entry),
-                            entry.description,
-                            entry.condition,
-                            entry.message
-                        ]
-                            .filter(Boolean)
-                            .join(" · ")
-                    )
-                    .join("\n");
+                mark.title = points.map(entryTitle).join("\n");
                 mark.setAttribute("aria-label", mark.title);
                 row.appendChild(mark);
             }
@@ -125,10 +119,10 @@
             control.disabled = disabled;
             if (checked === undefined) control.setAttribute("role", "menuitem");
             else {
-                control.setAttribute("role", "menuitemcheckbox");
+                control.setAttribute("role", "menuitemradio");
                 control.setAttribute("aria-checked", String(checked));
             }
-            const gutter = element("span", "data-breakpoint-gutter");
+            const gutter = element("span", checked === undefined ? "data-breakpoint-gutter" : "data-breakpoint-choice");
             if (glyph) gutter.appendChild(icon(glyph));
             control.append(gutter, element("span", "data-breakpoint-label", label));
             control.onclick = () => {
@@ -154,27 +148,23 @@
             };
             parent.appendChild(control);
         }
-        function separator(menu) {
-            const line = element("div", "data-breakpoint-separator");
-            line.setAttribute("role", "separator");
-            menu.appendChild(line);
+        function menuCard(menu, title, showTitle = true) {
+            const card = element("div", "data-breakpoint-menu-card");
+            card.setAttribute("role", "group");
+            card.setAttribute("aria-label", title);
+            if (showTitle) {
+                const heading = element("div", "data-breakpoint-card-title", title);
+                heading.setAttribute("aria-hidden", "true");
+                card.appendChild(heading);
+            }
+            menu.appendChild(card);
+            return card;
         }
         function storageText(info) {
             if (!info?.dataId || !info.address) return "";
             return t("sb.dataStorage", { address: info.address, bytes: info.bytes });
         }
-        function drawEntry(menu, entry) {
-            const row = element("div", "data-breakpoint-entry " + stateOf(entry));
-            row.setAttribute("role", "group");
-            row.setAttribute("aria-label", accessLabel(entry.accessType) + " · " + statusLabel(entry));
-            row.title = [entry.description, entry.message].filter(Boolean).join("\n");
-            const dot = element("span", "data-breakpoint-dot");
-            dot.setAttribute("aria-hidden", "true");
-            const copy = element("span", "data-breakpoint-entry-copy");
-            copy.appendChild(element("span", "data-breakpoint-entry-title", accessLabel(entry.accessType)));
-            if (entry.condition) copy.appendChild(element("code", "data-breakpoint-condition", entry.condition));
-            else if (stateOf(entry) !== "enabled")
-                copy.appendChild(element("span", "data-breakpoint-entry-state", statusLabel(entry)));
+        function entryTools(entry) {
             const tools = element("span", "data-breakpoint-tools");
             tool(
                 tools,
@@ -188,98 +178,130 @@
             );
             tool(tools, t("sb.dataCondition"), "condition", "condition", { id: entry.id, condition: entry.condition });
             tool(tools, t("sb.dataRemove"), "remove", "remove", { id: entry.id }, true);
-            row.append(dot, copy, tools);
-            menu.appendChild(row);
+            return tools;
+        }
+        function drawAccess(menu, s, accessType) {
+            const { dataId, accessTypes } = s.info || {};
+            const entries = s.entries.filter(
+                (entry) =>
+                    entry.accessType === accessType &&
+                    (entry.name === s.target.name || (dataId && entry.dataId === dataId))
+            );
+            const current = dataId && entries.find((entry) => entry.dataId === dataId);
+            const primary = current || entries[0];
+            const checked = Boolean(current?.enabled && current.verified);
+            const group = element("div", "data-breakpoint-access");
+            const row = element("div", "data-breakpoint-option");
+            group.appendChild(row);
+            button(
+                row,
+                accessLabel(accessType),
+                current ? "enable" : "add",
+                current ? { id: current.id, enabled: !checked } : { name: s.target.name, dataId, accessType },
+                {
+                    disabled: !dataId || (!checked && !accessTypes?.includes(accessType)),
+                    glyph: checked ? "check" : null,
+                    checked
+                }
+            );
+            if (primary) {
+                row.title = entryTitle(primary);
+                row.appendChild(entryTools(primary));
+                const status = stateOf(primary);
+                const detail = [
+                    dataId && !current ? primary.description : "",
+                    status !== "enabled" ? statusLabel(primary) : "",
+                    primary.condition
+                ]
+                    .filter(Boolean)
+                    .join(" · ");
+                if (detail) group.appendChild(element("div", "data-breakpoint-detail " + status, detail));
+            }
+            // A pointer can resolve to a new address, and a failed edit can leave a prior watchpoint.
+            // Keep every retained entry manageable under its access type.
+            for (const entry of entries) {
+                if (entry === primary) continue;
+                const extra = element("div", "data-breakpoint-option");
+                extra.title = entryTitle(entry);
+                const detail = [entry.description, entry.condition, statusLabel(entry)].filter(Boolean).join(" · ");
+                extra.append(element("span", "data-breakpoint-detail " + stateOf(entry), detail), entryTools(entry));
+                group.appendChild(extra);
+            }
+            menu.appendChild(group);
+        }
+        function drawWriteCard(menu, name) {
+            const card = menuCard(menu, t("sb.writeList"), false);
+            const action = writeMenu(name);
+            menu.dataset.writeState = JSON.stringify([action.selected, action.key]);
+            const control = button(
+                card,
+                t(action.selected ? "sb.removeFromWrite" : "sb.addToWrite"),
+                "",
+                {},
+                {
+                    disabled: !!action.key,
+                    glyph: action.selected ? "check" : "condition",
+                    className: "watch-write-action"
+                }
+            );
+            control.title = action.key ? t(action.key) : "";
+            control.onclick = () => {
+                action.run();
+                close(true);
+            };
+            if (action.key) card.appendChild(element("div", "data-breakpoint-note watch-write-note", t(action.key)));
+        }
+        function drawBreakpointCard(menu, s) {
+            const card = menuCard(menu, t("sb.dataMenu"));
+            if (!s.available) {
+                card.appendChild(element("div", "data-breakpoint-note", t("sb.dataNoSession")));
+                return;
+            }
+            if (!s.paused) {
+                button(card, t("sb.dataPause"), "pause", {}, { glyph: "pause" });
+                return;
+            }
+            const storage = storageText(s.info);
+            if (storage) {
+                const meta = element("div", "data-breakpoint-head-meta", storage);
+                if (s.info.description) meta.title = s.info.description;
+                card.appendChild(meta);
+            }
+            for (const accessType of ["write", "read", "readWrite"]) drawAccess(card, s, accessType);
+            if (!s.info?.dataId) {
+                const loading = !s.info;
+                const note = element(
+                    "div",
+                    "data-breakpoint-note" + (loading ? "" : " warn"),
+                    loading ? t("sb.dataLoading") : s.info.description || t("sb.dataUnsupported")
+                );
+                note.setAttribute("role", "status");
+                card.appendChild(note);
+            }
         }
         function draw() {
             const s = get();
             if (!s.menu || !s.target) return;
             const menu = s.menu;
-            menu.replaceChildren();
             const head = element("div", "data-breakpoint-head");
             head.appendChild(element("div", "data-breakpoint-head-name", displayName({ name: s.target.name })));
-            const meta = element("div", "data-breakpoint-head-meta");
-            head.appendChild(meta);
-            menu.appendChild(head);
-            if (writeMenu) {
-                const action = writeMenu(s.target.name);
-                menu.dataset.writeState = JSON.stringify([action.selected, action.key]);
-                const control = button(
-                    menu,
-                    t(action.selected ? "sb.removeFromWrite" : "sb.addToWrite"),
-                    "",
-                    {},
-                    {
-                        disabled: !!action.key,
-                        glyph: action.selected ? "check" : "condition",
-                        className: "watch-write-action"
-                    }
-                );
-                control.title = action.key ? t(action.key) : "";
-                control.onclick = () => {
-                    action.run();
-                    close(true);
-                };
-                if (action.key)
-                    menu.appendChild(element("div", "data-breakpoint-note watch-write-note", t(action.key)));
-                if (s.available) separator(menu);
-            }
-            if (!s.available) {
-                meta.textContent = writeMenu ? "" : t("sb.dataNoSession");
-                if (writeMenu)
-                    menu.appendChild(
-                        element("div", "data-breakpoint-note", t("sb.dataMenu") + " · " + t("sb.dataNoSession"))
-                    );
-            } else if (!s.paused) {
-                meta.textContent = t("sb.dataMenu");
-                separator(menu);
-                button(menu, t("sb.dataPause"), "pause", {}, { glyph: "pause" });
-            } else {
-                meta.textContent = storageText(s.info) || t("sb.dataMenu");
-                if (s.info?.description) head.title = s.info.description;
-                separator(menu);
-                for (const accessType of ["write", "read", "readWrite"]) {
-                    const existing = s.entries.some(
-                        (entry) => entry.dataId === s.info?.dataId && entry.accessType === accessType
-                    );
-                    button(
-                        menu,
-                        accessLabel(accessType),
-                        "add",
-                        { name: s.target.name, dataId: s.info?.dataId, accessType },
-                        {
-                            disabled: !s.info?.dataId || existing || !s.info.accessTypes?.includes(accessType),
-                            glyph: existing ? "check" : null,
-                            checked: existing
-                        }
-                    );
-                }
-                if (!s.info?.dataId) {
-                    const loading = !s.info;
-                    const note = element(
-                        "div",
-                        "data-breakpoint-note" + (loading ? " loading" : " warn"),
-                        loading ? t("sb.dataLoading") : s.info.description || t("sb.dataUnsupported")
-                    );
-                    note.setAttribute("role", "status");
-                    menu.appendChild(note);
-                }
-                const points = s.entries.filter(
-                    (entry) => entry.name === s.target.name || (s.info?.dataId && entry.dataId === s.info.dataId)
-                );
-                if (points.length) {
-                    separator(menu);
-                    menu.appendChild(element("div", "data-breakpoint-section", t("sb.dataActive")));
-                    for (const entry of points) drawEntry(menu, entry);
-                }
-            }
-            const zoom = doc.defaultView.EmberProbePageZoom;
-            const viewport = zoom
-                ? zoom.viewport(doc.defaultView)
-                : { width: doc.defaultView.innerWidth, height: doc.defaultView.innerHeight };
+            menu.replaceChildren(head);
+            if (writeMenu) drawWriteCard(menu, s.target.name);
+            drawBreakpointCard(menu, s);
+            const view = doc.defaultView;
+            const zoom = view.EmberProbePageZoom;
+            const width = doc.documentElement.clientWidth || view.innerWidth;
+            const visibleWidth = zoom ? zoom.coordinate(width, doc) : width;
+            const visibleHeight = zoom ? zoom.viewport(view).height : view.innerHeight;
+            menu.style.setProperty(
+                "--data-breakpoint-menu-width",
+                Math.max(0, visibleWidth - MENU_INSET - MENU_RIGHT_INSET) + "px"
+            );
             const position = s.target.position;
-            menu.style.left = Math.max(4, Math.min(position.x, viewport.width - menu.offsetWidth - 4)) + "px";
-            menu.style.top = Math.max(4, Math.min(position.y, viewport.height - menu.offsetHeight - 4)) + "px";
+            menu.style.left =
+                Math.max(MENU_INSET, Math.min(position.x, visibleWidth - menu.offsetWidth - MENU_RIGHT_INSET)) + "px";
+            menu.style.top =
+                Math.max(MENU_INSET, Math.min(position.y, visibleHeight - menu.offsetHeight - MENU_INSET)) + "px";
             (menu.querySelector("button:not(:disabled)") || menu).focus();
         }
         function open(name, anchor, event) {
@@ -344,6 +366,7 @@
                 items[next]?.focus();
             } else if (event.key === "Tab") close();
         });
+        doc.defaultView.addEventListener("wheel", () => close(), { capture: true, passive: true });
         doc.defaultView.addEventListener("blur", () => close());
         function receive(message) {
             const s = get();

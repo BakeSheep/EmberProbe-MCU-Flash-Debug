@@ -26,12 +26,12 @@ function followingChartHistory() {
         !state.frozen && chartState.follow && !chartState.drag && !chartState.endpointDrag && !chartState.timelineDrag
     );
 }
-function smoothFollowEnabled() {
+function smoothFollowEnabled(includePinned = false) {
     return (
         running &&
         !state.remoteHistory.operation &&
         followingChartHistory() &&
-        !chartState.startPinned &&
+        (includePinned || !chartState.startPinned) &&
         !!chartState.x &&
         window.matchMedia?.("(prefers-reduced-motion: reduce)").matches !== true
     );
@@ -756,6 +756,7 @@ function applyI18n() {
 }
 function rerenderLive() {
     applyI18n();
+    samplingSpeedControl.render();
     Object.keys(noticeAreas).forEach(function (id) {
         noticeAreas[id].relocalize();
     });
@@ -1369,6 +1370,7 @@ function start() {
     requestedFrequencyHz = frequencyHz;
     renderUnlimited(true);
     starting = true;
+    samplingSpeedControl.setRunning(running, starting);
     updateRun();
     setStatusKey("lw.starting");
     post({ type: "start", items: state.watch, frequencyHz: frequencyHz });
@@ -1376,6 +1378,7 @@ function start() {
 function stop() {
     if (!running && !starting) return;
     starting = false;
+    samplingSpeedControl.setRunning(running, starting);
     post({ type: "stop" });
     setStatusKey("lw.stopping");
     updateRun();
@@ -1976,15 +1979,6 @@ function syncTimeBounds() {
     viewportController.syncBounds(next, state.frozen || state.remoteHistory.operation, smoothFollowEnabled());
     return true;
 }
-function padRange(lo, hi) {
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { min: -1, max: 1 };
-    if (hi <= lo) {
-        var bump = Math.abs(lo) * 0.05 || 1;
-        return { min: lo - bump, max: hi + bump };
-    }
-    var padding = (hi - lo) * 0.08;
-    return { min: lo - padding, max: hi + padding };
-}
 function formatChartTime(ms) {
     var d = new Date(ms),
         two = function (v) {
@@ -2051,7 +2045,8 @@ function draw(now) {
         state.dirty = true;
     }
     if (!state.dirty) return;
-    var interval = smooth ? Math.max(16, Math.min(80, 2 * (chartState.drawDuration || 0))) : 80;
+    var animating = smooth || chartState.yFitMotion?.pending;
+    var interval = animating ? Math.max(16, Math.min(80, 2 * (chartState.drawDuration || 0))) : 80;
     if ((smooth || !chartState.fastDirty) && now - lastDraw < interval) return;
     var drawStarted = performance.now();
     lastDraw = now;
@@ -2075,14 +2070,15 @@ function draw(now) {
         style: getComputedStyle(document.body),
         elements: { chartEmpty: $("chartEmpty"), points: $("points"), range: $("range") },
         VP,
-        padRange,
+        padRange: VP.padRange,
         fmtNum,
         colorFor,
         styleFor,
         inspection: Inspection,
         formatChartTime,
         t,
-        now
+        now,
+        smoothY: smoothFollowEnabled(true)
     });
     updateChartEmpty(series, hasBounds);
     historyLoading.textContent = t("lw.historyLoading");
@@ -2109,7 +2105,7 @@ function draw(now) {
         $("chartEmpty").textContent = t("lw.historyLoading");
     }
     if (controls) controls.refresh(series);
-    if (chartState.autoY && chartState.fitHold != null) state.dirty = true;
+    if (chartState.autoY && (chartState.fitHold != null || chartState.yFitMotion?.pending)) state.dirty = true;
     var duration = performance.now() - drawStarted;
     chartState.drawDuration =
         chartState.drawDuration == null
@@ -2454,42 +2450,11 @@ window.EmberProbeMessages.connect(window, {
             }
         }
         applyUnlimitedStatus(m);
+        samplingSpeedControl.receiveStatus(m, { running: running, starting: false });
         if (typeof m.actualHz === "number" && running) {
             $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
         }
-        if (m.effectiveIntervalMs === 0) {
-            $("rate").title = [
-                "Target: unlimited",
-                "P95: " + (m.p95DurationMs || 0) + "ms",
-                "Limited by: " + (m.limitedBy || "-"),
-                "Host hold: " + (m.hostHoldMs || 0) + "ms" + (m.pauseReason ? " | Paused: " + m.pauseReason : "")
-            ].join(" | ");
-        } else if (m.effectiveIntervalMs !== undefined) {
-            var targetHz = m.frequencyHz || requestedFrequencyHz;
-            $("rate").title = [
-                "Target: " + targetHz + " Hz",
-                "Effective: " + (1000 / m.effectiveIntervalMs).toFixed(1) + " Hz (" + m.effectiveIntervalMs + " ms)",
-                "P95: " + (m.p95DurationMs || 0) + "ms",
-                "Missed: " + (m.missedDeadlines || 0) + (m.pauseReason ? " | Paused: " + m.pauseReason : "")
-            ].join(" | ");
-        }
-        if ($("rate").title) {
-            var extras = [];
-            if (m.hostLoopDelayMs !== undefined)
-                extras.push(
-                    "Host stall: " +
-                        (m.hostLoopDelayMs || 0) +
-                        "ms | Backlog: " +
-                        (m.backlogBatches || 0) +
-                        " (" +
-                        (m.backlogAgeMs || 0) +
-                        "ms) | Dropped: " +
-                        (m.droppedBatches || 0)
-                );
-            if (Number.isFinite(m.adapterSpeedKhz) && m.adapterSpeedKhz > 0)
-                extras.push("SWD: " + m.adapterSpeedKhz + " kHz");
-            if (extras.length) $("rate").title += " | " + extras.join(" | ");
-        }
+        $("rate").title = window.EmberProbeSamplingSpeedControl.rateTitle(m, requestedFrequencyHz, $("rate").title);
         starting = false;
         updateRun();
         if (m.error && (m.key || m.message != null)) setStatusMsg(m, "error", "live");
@@ -2650,6 +2615,7 @@ var chartBackground = window.EmberProbeBackgroundIconController.create({
         state.dirty = true;
     }
 });
+var samplingSpeedControl = window.EmberProbeSamplingSpeedControl.create({ document, post, t });
 $("chartSettingsToggle").onclick = function () {
     setChartSettings($("chartSettingsPopup").hidden);
 };
@@ -2704,6 +2670,7 @@ window.EmberProbeMessages.connect(window, {
         });
         valueRefresh.schedule();
         applyUnlimitedStatus(m);
+        samplingSpeedControl.receiveStatus(m);
         applyArchiveBudget(m.archive);
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
     },
@@ -2833,6 +2800,9 @@ window.EmberProbeMessages.connect(window, {
     liveFrequency: function (m) {
         requestedFrequencyHz = m.frequencyHz;
         renderUnlimited(true);
+    },
+    samplingSpeedConfig: function (m) {
+        samplingSpeedControl.receiveConfig(m);
     }
 });
 EmberProbePageZoom.create({
@@ -2855,6 +2825,7 @@ new MutationObserver(function () {
     state.dirty = true;
 }).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 renderUnlimited(true);
+samplingSpeedControl.render();
 updateRun();
 if (norm) $("norm").classList.remove("ghost");
 // Persist identity before the ready handshake, including for a chart closed during initialization.

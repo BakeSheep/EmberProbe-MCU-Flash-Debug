@@ -17,6 +17,8 @@ const NOTICE_SLOTS = {
     global: "noticeGlobal",
     flash: "noticeFlash",
     config: "noticeConfig",
+    firmware: "noticeFirmware",
+    mcp: "noticeMcp",
     chip: "noticeChip",
     live: "noticeLive",
     write: "noticeWrite",
@@ -39,12 +41,8 @@ function noticeArea(area) {
     });
     return notices[area];
 }
-function setNotice(area, id, notice) {
-    noticeArea(area)?.set(id, notice);
-}
-function clearNotice(area, id) {
-    notices[area]?.clear(id);
-}
+const setNotice = (area, id, notice) => noticeArea(area)?.set(id, notice);
+const clearNotice = (area, id) => notices[area]?.clear(id);
 let availableTypesReady = true,
     availableLayoutPending = new Set(),
     availableAddPending = new Set(),
@@ -409,13 +407,11 @@ function renderConnectedProbes(m) {
             : t(
                   m.state === "unavailable"
                       ? "probe.inventoryUnavailable"
-                      : m.state === "identifying"
-                        ? "probe.identifyingTargets"
-                        : m.state === "script"
-                          ? "probe.scriptDecides"
-                          : devices.length
-                            ? "probe.selectPrompt"
-                            : "probe.noneConnected"
+                      : m.state === "script"
+                        ? "probe.scriptDecides"
+                        : devices.length
+                          ? "probe.selectPrompt"
+                          : "probe.noneConnected"
               );
     const notes = [...new Set([m.state === "absent" ? "" : error, locked ? source : "", status])].filter(Boolean);
     cards.unshift(...notes.map((note) => probeCard({ title: note, info: true })));
@@ -1484,8 +1480,7 @@ window.EmberProbeMessages.connect(window, {
     skillStatus: function (m) {
         renderSkillStatus(m);
     },
-    agentPermissions: (m) => agentControls.receive(m),
-    mcpClients: (m) => agentControls.renderClients(m),
+    ...agentControls.routes,
     agentAccess: (m) => renderAgentAccess(m),
     openocdStatus: (m) => openocdCard?.onStatus(m),
     notice: function (m) {
@@ -1718,6 +1713,7 @@ window.EmberProbeMessages.connect(window, {
     }
 });
 updateLangToggle();
+if (window.__FIRMWARE_NOTICE__) setNotice("firmware", "cubemx-firmware", window.__FIRMWARE_NOTICE__);
 if (uiState.sidebarStatus?.openocd) openocdCard?.onStatus(uiState.sidebarStatus.openocd);
 renderSkillStatus(uiState.sidebarStatus?.skill || lastSkill);
 if (langToggle) langToggle.onclick = () => setLang(LANG === "zh" ? "en" : "zh", true);

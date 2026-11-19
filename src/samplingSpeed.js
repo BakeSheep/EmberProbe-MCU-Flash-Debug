@@ -30,11 +30,16 @@ const IMPROVEMENT_MIN_RATIO = 0.03;
 const IMPROVEMENT_MIN_SAVED_MS = 0.15;
 const SLOWDOWN_RATIO = 1.1;
 const MAX_PLATEAU_STEPS = 2;
+const MIN_MANUAL_SAMPLING_SPEED_KHZ = 1000;
+const MAX_MANUAL_SAMPLING_SPEED_KHZ = 20000;
+const MANUAL_SAMPLING_SPEED_STEP_KHZ = 1000;
+const DEFAULT_MANUAL_SAMPLING_SPEED_KHZ = 2000;
+const TUNING_BUDGET_EXHAUSTED = "SAMPLING_SPEED_BUDGET_EXHAUSTED";
 
 const ELIGIBILITY_QUERY_CMD =
     "set _ep_t [target current]; " +
     'set _ep_rd [expr {[llength [info commands read_memory]] ? "read_memory" : "ocd_read_memory"}]; ' +
-    'join [list [$_ep_t cget -type] [transport select] [adapter speed] [$_ep_rd 0xE000ED00 32 1] $_ep_rd] "\\n"';
+    'join [list [$_ep_t cget -type] [transport select] $_ep_rd] "\\n"';
 
 /** @param {Record<string, any>} [options] */
 function configuredSamplingSpeedKhz(options = {}) {
@@ -46,6 +51,23 @@ function configuredSamplingSpeedKhz(options = {}) {
 /** @param {Record<string, any>} [options] */
 function samplingSpeedLadder(options = {}) {
     return SAMPLING_SPEED_LADDERS_KHZ[probeFamily(options)] || DEFAULT_SPEED_LADDER_KHZ;
+}
+
+function clampManualSamplingSpeedKhz(value, fallback = DEFAULT_MANUAL_SAMPLING_SPEED_KHZ) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return fallback;
+    const clamped = Math.min(MAX_MANUAL_SAMPLING_SPEED_KHZ, Math.max(MIN_MANUAL_SAMPLING_SPEED_KHZ, num));
+    return Math.round(clamped / MANUAL_SAMPLING_SPEED_STEP_KHZ) * MANUAL_SAMPLING_SPEED_STEP_KHZ;
+}
+
+function isValidManualSamplingSpeedKhz(value) {
+    return (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= MIN_MANUAL_SAMPLING_SPEED_KHZ &&
+        value <= MAX_MANUAL_SAMPLING_SPEED_KHZ &&
+        value % MANUAL_SAMPLING_SPEED_STEP_KHZ === 0
+    );
 }
 
 function parseAdapterSpeedKhz(text) {
@@ -236,10 +258,10 @@ function resetSessionMetrics(session) {
     session._samplingThroughput.reset();
 }
 
-async function ensureConnected(session) {
+async function ensureConnected(session, timeoutMs) {
     if (session.stopped || session.connectionFailed) return false;
     try {
-        await session._ensureTclConnected?.();
+        if (!session.tcl.connected) await session._ensureTclConnected(timeoutMs);
     } catch {
         return false;
     }
@@ -264,7 +286,7 @@ class SamplingSpeedTuner {
             this.reason = "explicit_config";
             this.effectiveKhz = this.configuredSpeedKhz;
             this.requestedKhz = this.configuredSpeedKhz;
-        } else if (this.options.adaptiveAdapterSpeed === false) {
+        } else if (!this.hasSamplingIntent()) {
             this.state = "disabled";
             this.reason = "disabled";
             this.effectiveKhz = null;
@@ -290,17 +312,19 @@ class SamplingSpeedTuner {
         this._pendingStepDown = false;
     }
 
+    hasSamplingIntent() {
+        return this.options.adaptiveAdapterSpeed === "sampling" || this.options.adaptiveAdapterSpeed === "agent";
+    }
+
     isEnabled() {
-        return (
-            this.mode === "standalone" && this.configuredSpeedKhz === 0 && this.options.adaptiveAdapterSpeed !== false
-        );
+        return this.mode === "standalone" && this.configuredSpeedKhz === 0 && this.hasSamplingIntent();
     }
 
     shouldTuneAtStart(watch) {
         return (
             this.isEnabled() &&
             !this._tuned &&
-            (this.options.adaptiveAdapterSpeed === true || (Array.isArray(watch) && watch.length > 0))
+            (this.options.adaptiveAdapterSpeed === "agent" || (Array.isArray(watch) && watch.length > 0))
         );
     }
 
@@ -351,7 +375,10 @@ class SamplingSpeedTuner {
             await this.tune(session);
             changed = true;
         }
-        if (changed) resetSessionMetrics(session);
+        if (changed) {
+            resetSessionMetrics(session);
+            if (session.samplingEnabled) session._status?.({ key: "sb.sampling" });
+        }
         return (
             !session.samplingEnabled ||
             session.stopped ||
@@ -374,7 +401,11 @@ class SamplingSpeedTuner {
 
     async finishCycle(session, tunedInCycle) {
         try {
-            if (tunedInCycle || (await this.stepDown(session))) resetSessionMetrics(session);
+            const stepped = !tunedInCycle && (await this.stepDown(session));
+            if (tunedInCycle || stepped) {
+                resetSessionMetrics(session);
+                if (session.samplingEnabled) session._status?.({ key: "sb.sampling" });
+            }
         } catch {
             /* Keep caller's lock release intact if a step-down fails unexpectedly. */
         }
@@ -394,86 +425,116 @@ class SamplingSpeedTuner {
         return this.options.backendKind === "tcp" ? TCP_BUDGET_MS : DEFAULT_BUDGET_MS;
     }
 
-    async _probeEligibility(session, stepTimeoutMs) {
-        let response;
+    async _probeBefore(session, cmd, deadline) {
+        const budgetError = () =>
+            Object.assign(new Error("Sampling clock tuning budget exhausted"), {
+                code: TUNING_BUDGET_EXHAUSTED
+            });
+        const remainingMs = Math.floor(deadline - this.clock.monotonicMs());
+        if (remainingMs <= 0) throw budgetError();
+        let reply;
+        try {
+            reply = await session.tcl.probe(cmd, Math.min(this._stepTimeoutMs(), remainingMs));
+        } catch (error) {
+            if (this.clock.monotonicMs() >= deadline) throw budgetError();
+            throw error;
+        }
+        if (this.clock.monotonicMs() >= deadline) throw budgetError();
+        return reply;
+    }
+
+    _abort(session, error) {
+        if (session.stopped || session.connectionFailed) return;
+        this.state = "failed";
+        this.reason = "restore_failed";
+        this.effectiveKhz = null;
+        this.requestedKhz = null;
+        session._abortConnection(error);
+    }
+
+    async _recoverConnection(session) {
+        if (!(await ensureConnected(session, this._budgetMs())))
+            this._abort(
+                session,
+                Object.assign(new Error("Could not reconnect OpenOCD Tcl after sampling clock tuning"), {
+                    code: "SAMPLING_CLOCK_RECONNECT_FAILED",
+                    i18nKey: "live.connectionClosed"
+                })
+            );
+    }
+
+    async _probeEligibility(session, deadline, allowRecheck) {
         this._tentativeError = null;
         this.probingActive = true;
         try {
-            response = await session.tcl.probe(ELIGIBILITY_QUERY_CMD, stepTimeoutMs);
+            const response = await this._probeBefore(session, ELIGIBILITY_QUERY_CMD, deadline);
+            const [targetType, transport, readCmd, extra] = String(response || "")
+                .trim()
+                .split(/\r?\n/);
+            if (extra !== undefined || !["read_memory", "ocd_read_memory"].includes(readCmd)) {
+                this.state = "ineligible";
+                this.reason = "invalid_baseline";
+                return null;
+            }
+            if (!ALLOWED_TARGETS.has(targetType) || !ALLOWED_TRANSPORTS.has(transport)) {
+                this.state = "ineligible";
+                this.reason = "unsupported_target_or_transport";
+                return null;
+            }
+            const baseKhz = parseAdapterSpeedKhz(await this._probeBefore(session, "adapter speed", deadline));
+            const cpuid = await this._probeBefore(session, `${readCmd} 0x${CPUID_ADDRESS.toString(16)} 32 1`, deadline);
+            const values = parseMemoryElements(cpuid, 32);
+            const expectedCpuid = values.length === 1 ? values[0] : 0;
+            if (this._tentativeError || !baseKhz || !expectedCpuid || expectedCpuid === 0xffffffff) {
+                this.state = "ineligible";
+                this.reason = "invalid_baseline";
+                return null;
+            }
+            return { baseKhz, expectedCpuid, readCmd };
         } catch (error) {
             if (!session.stopped && !session.connectionFailed) {
-                if (/not examined/i.test(String(error?.message || ""))) {
+                if (allowRecheck && /not examined/i.test(String(error?.message || ""))) {
                     this._recheckAfterFirstCycle = true;
-                    this._tuned = false;
                 } else {
                     this.state = "ineligible";
-                    this.reason = "baseline_read_failed";
+                    this.reason = error.code === TUNING_BUDGET_EXHAUSTED ? "budget_reached" : "baseline_read_failed";
                 }
-                await ensureConnected(session);
+                await this._recoverConnection(session);
             }
             return null;
         } finally {
             this.probingActive = false;
         }
-        if (session.stopped || session.connectionFailed) return null;
-        const lines = String(response || "")
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean);
-        if (lines.length !== 5) {
-            this.state = "ineligible";
-            this.reason = "invalid_baseline";
-            return null;
-        }
-        const [targetType, transport, speedLine, cpuidLine, readCmd] = lines;
-        if (!ALLOWED_TARGETS.has(targetType) || !ALLOWED_TRANSPORTS.has(transport)) {
-            this.state = "ineligible";
-            this.reason = "unsupported_target_or_transport";
-            return null;
-        }
-        const baseKhz = parseAdapterSpeedKhz(speedLine);
-        const cpuidValues = parseMemoryElements(cpuidLine, 32);
-        const expectedCpuid = cpuidValues.length === 1 ? cpuidValues[0] : 0;
-        if (
-            baseKhz <= 0 ||
-            expectedCpuid === 0 ||
-            expectedCpuid === 0xffffffff ||
-            !["read_memory", "ocd_read_memory"].includes(readCmd)
-        ) {
-            this.state = "ineligible";
-            this.reason = "invalid_baseline";
-            return null;
-        }
-        return { baseKhz, expectedCpuid, readCmd };
     }
 
-    async _sendBenchmark(session, plan, timeoutMs) {
+    async _sendBenchmark(session, plan, deadline) {
         const replies = [];
         for (const cmd of plan.commands) {
             this._tentativeError = null;
             try {
-                const reply = await session.tcl.probe(cmd, timeoutMs);
+                const reply = await this._probeBefore(session, cmd, deadline);
                 if (this._tentativeError || session.stopped || session.connectionFailed) {
                     return { ok: false, batchUnsupported: false };
                 }
                 replies.push(reply);
             } catch (error) {
+                if (error.code === TUNING_BUDGET_EXHAUSTED) throw error;
                 return { ok: false, batchUnsupported: isBatchSyntaxError(error) };
             }
         }
         return { ok: verifyBenchmarkReply(plan, replies), batchUnsupported: false };
     }
 
-    async _measureStep(session, plan, stepTimeoutMs, timedCount = null) {
+    async _measureStep(session, plan, deadline, timedCount = null) {
         const warmStart = this.clock.monotonicMs();
-        const warmup = await this._sendBenchmark(session, plan, stepTimeoutMs);
+        const warmup = await this._sendBenchmark(session, plan, deadline);
         const warmMs = this.clock.monotonicMs() - warmStart;
         if (!warmup.ok) return { ok: false, medianMs: null, batchUnsupported: warmup.batchUnsupported };
         const count = timedCount ?? (warmMs > 60 ? 2 : 3);
         const durations = [];
         for (let i = 0; i < count; i++) {
             const t0 = this.clock.monotonicMs();
-            const res = await this._sendBenchmark(session, plan, stepTimeoutMs);
+            const res = await this._sendBenchmark(session, plan, deadline);
             const dt = this.clock.monotonicMs() - t0;
             if (!res.ok) return { ok: false, medianMs: null, batchUnsupported: res.batchUnsupported };
             durations.push(dt);
@@ -484,11 +545,11 @@ class SamplingSpeedTuner {
             : { ok: true, medianMs: med, timedCount: count, batchUnsupported: false };
     }
 
-    async _measureBaseline(session, expectedCpuid, readCmd, stepTimeoutMs) {
+    async _measureBaseline(session, expectedCpuid, readCmd, deadline) {
         const initialRamBlock = selectBenchmarkRamBlock(session.watch, session.ramSectionRanges);
         const attempts = initialRamBlock ? [initialRamBlock, null] : [null];
         for (const ramBlock of attempts) {
-            if (session.stopped || session.connectionFailed) return null;
+            if (session.stopped || session.connectionFailed || !session.tcl.connected) return null;
             let plan = buildBenchmarkPlan({
                 scatterReads: !!session.scatterReads,
                 readCmd,
@@ -499,7 +560,7 @@ class SamplingSpeedTuner {
             this.probingActive = true;
             let res;
             try {
-                res = await this._measureStep(session, plan, stepTimeoutMs);
+                res = await this._measureStep(session, plan, deadline);
                 if (!res.ok && res.batchUnsupported) {
                     session._batchUnsupported = true;
                     plan = buildBenchmarkPlan({
@@ -509,51 +570,55 @@ class SamplingSpeedTuner {
                         expectedCpuid,
                         batchUnsupported: true
                     });
-                    res = await this._measureStep(session, plan, stepTimeoutMs);
+                    res = await this._measureStep(session, plan, deadline);
                 }
             } finally {
                 this.probingActive = false;
             }
             if (res.ok) return { plan, medianMs: res.medianMs, timedCount: res.timedCount };
-            await ensureConnected(session);
         }
         return null;
     }
 
-    async _restoreSpeed(session, targetKhz, expectedCpuid, readCmd, stepTimeoutMs) {
-        if (!(await ensureConnected(session))) return false;
+    async _restoreSpeed(session, targetKhz, { expectedCpuid, readCmd }, deadline) {
+        const remainingMs = Math.floor(deadline - this.clock.monotonicMs());
+        if (remainingMs <= 0 || !(await ensureConnected(session, remainingMs))) return false;
         this._lastReduced = null;
         this._tentativeError = null;
         this.probingActive = true;
         try {
-            await session.tcl.probe(`adapter speed ${targetKhz}`, stepTimeoutMs);
-            const reply = await session.tcl.probe(`${readCmd} 0x${CPUID_ADDRESS.toString(16)} 32 1`, stepTimeoutMs);
+            const speed = parseAdapterSpeedKhz(
+                await this._probeBefore(session, `adapter speed ${targetKhz}`, deadline)
+            );
+            if (!speed || this._resolveEffectiveKhz(targetKhz, speed) !== targetKhz) return false;
+            const reply = await this._probeBefore(session, `${readCmd} 0x${CPUID_ADDRESS.toString(16)} 32 1`, deadline);
             return !this._tentativeError && verifyWordElement(reply, expectedCpuid);
         } catch {
-            await ensureConnected(session);
             return false;
         } finally {
             this.probingActive = false;
         }
     }
 
-    async _probeCandidate(session, khz, plan, stepTimeoutMs, timedCount, testedEffective) {
+    async _probeCandidate(session, khz, plan, deadline, timedCount, testedEffective) {
         this._lastReduced = null;
         this._tentativeError = null;
         this.probingActive = true;
         try {
             let speedReply;
             try {
-                speedReply = await session.tcl.probe(`adapter speed ${khz}`, stepTimeoutMs);
-            } catch {
+                speedReply = await this._probeBefore(session, `adapter speed ${khz}`, deadline);
+            } catch (error) {
+                if (error.code === TUNING_BUDGET_EXHAUSTED) throw error;
                 return { status: "rejected" };
             }
-            const reportedKhz = parseAdapterSpeedKhz(speedReply) || khz;
+            const reportedKhz = parseAdapterSpeedKhz(speedReply);
+            if (!reportedKhz || this._tentativeError) return { status: "rejected" };
             let effectiveKhz = this._resolveEffectiveKhz(khz, reportedKhz);
             if (testedEffective.has(effectiveKhz)) {
                 return { status: "duplicate", reportedKhz, effectiveKhz };
             }
-            const step = await this._measureStep(session, plan, stepTimeoutMs, timedCount);
+            const step = await this._measureStep(session, plan, deadline, timedCount);
             effectiveKhz = this._resolveEffectiveKhz(khz, reportedKhz);
             return {
                 status: step.ok ? "ok" : "failed",
@@ -566,17 +631,27 @@ class SamplingSpeedTuner {
         }
     }
 
+    _abortUnverifiedSpeed(session) {
+        this._abort(
+            session,
+            Object.assign(new Error("Could not restore a verified sampling clock"), {
+                code: "SAMPLING_CLOCK_RESTORE_FAILED",
+                i18nKey: "live.connectionClosed"
+            })
+        );
+    }
+
     async tune(session) {
         if (!this.isEnabled() || session.stopped || session.connectionFailed || !session.tcl.connected) return;
+        const allowRecheck = !this._recheckAfterFirstCycle;
         this._tuned = true;
         this._recheckAfterFirstCycle = false;
-        const startedAt = this.clock.monotonicMs();
-        const stepTimeoutMs = this._stepTimeoutMs();
-        const budgetMs = this._budgetMs();
+        const deadline = this.clock.monotonicMs() + this._budgetMs();
 
-        const baselineInfo = await this._probeEligibility(session, stepTimeoutMs);
-        if (!baselineInfo) return;
+        const baselineInfo = await this._probeEligibility(session, deadline, allowRecheck);
+        if (!baselineInfo || session.stopped || session.connectionFailed) return;
         const { baseKhz, expectedCpuid, readCmd } = baselineInfo;
+        this._baselineInfo = baselineInfo;
         this.baseKhz = baseKhz;
         this.effectiveKhz = baseKhz;
         this.requestedKhz = baseKhz;
@@ -590,10 +665,20 @@ class SamplingSpeedTuner {
             return;
         }
 
-        const baseline = await this._measureBaseline(session, expectedCpuid, readCmd, stepTimeoutMs);
+        let baseline;
+        try {
+            baseline = await this._measureBaseline(session, expectedCpuid, readCmd, deadline);
+        } catch (error) {
+            if (error.code !== TUNING_BUDGET_EXHAUSTED) throw error;
+            this.state = "unchanged";
+            this.reason = "budget_reached";
+            await this._recoverConnection(session);
+            return;
+        }
         if (!baseline) {
             this.state = "ineligible";
             this.reason = "baseline_read_failed";
+            await this._recoverConnection(session);
             return;
         }
 
@@ -611,7 +696,7 @@ class SamplingSpeedTuner {
 
         while (queue.length) {
             if (session.stopped || session.connectionFailed) return;
-            if (this.clock.monotonicMs() - startedAt >= budgetMs) {
+            if (deadline - this.clock.monotonicMs() < 1) {
                 stopReason = "budget_reached";
                 break;
             }
@@ -624,14 +709,22 @@ class SamplingSpeedTuner {
             }
             attemptedRequested.add(khz);
 
-            const probe = await this._probeCandidate(
-                session,
-                khz,
-                baseline.plan,
-                stepTimeoutMs,
-                baseline.timedCount,
-                testedEffective
-            );
+            let probe;
+            try {
+                probe = await this._probeCandidate(
+                    session,
+                    khz,
+                    baseline.plan,
+                    deadline,
+                    baseline.timedCount,
+                    testedEffective
+                );
+            } catch (error) {
+                if (error.code !== TUNING_BUDGET_EXHAUSTED) throw error;
+                currentEffectiveKhz = null;
+                stopReason = "budget_reached";
+                break;
+            }
             if (session.stopped || session.connectionFailed) return;
             if (probe.status === "duplicate") {
                 currentReportedKhz = probe.reportedKhz;
@@ -645,7 +738,7 @@ class SamplingSpeedTuner {
             const rejected = probe.status === "rejected";
             const stepEffective = rejected ? khz : probe.effectiveKhz;
             currentReportedKhz = rejected ? currentReportedKhz : probe.reportedKhz;
-            currentEffectiveKhz = rejected ? currentEffectiveKhz : probe.effectiveKhz;
+            currentEffectiveKhz = rejected ? null : probe.effectiveKhz;
             this.testedSteps.push({
                 requestedKhz: khz,
                 effectiveKhz: stepEffective,
@@ -653,32 +746,22 @@ class SamplingSpeedTuner {
                 ok: probe.status === "ok"
             });
             if (rejected || probe.status === "failed") {
-                const restored = await this._restoreSpeed(
-                    session,
-                    best.effectiveKhz,
-                    expectedCpuid,
-                    readCmd,
-                    stepTimeoutMs
-                );
-                if (!restored) {
-                    if (best.effectiveKhz !== baseKhz)
-                        await this._restoreSpeed(session, baseKhz, expectedCpuid, readCmd, stepTimeoutMs);
-                    best = { requestedKhz: baseKhz, effectiveKhz: baseKhz, medianMs: baseline.medianMs };
-                    currentEffectiveKhz = baseKhz;
-                    currentReportedKhz = baseKhz;
-                    stopReason = "restore_failed";
-                    break;
-                }
-                currentEffectiveKhz = best.effectiveKhz;
-                currentReportedKhz = best.effectiveKhz;
+                // A failed benchmark can leave the adapter at an unverified speed even if the setter returned an error.
+                currentEffectiveKhz = null;
+                stopReason = rejected ? "driver_rejected" : "stability_limit";
                 if (!entry.refined) {
                     const mid = midpointCandidateKhz(lastGoodRequestedKhz, khz);
                     if (mid && !attemptedRequested.has(mid)) {
-                        queue = [{ khz: mid, refined: true }];
-                        continue;
+                        if (await this._restoreSpeed(session, best.effectiveKhz, baselineInfo, deadline)) {
+                            currentEffectiveKhz = best.effectiveKhz;
+                            currentReportedKhz = best.effectiveKhz;
+                            queue = [{ khz: mid, refined: true }];
+                            stopReason = "";
+                            continue;
+                        }
+                        stopReason = deadline - this.clock.monotonicMs() < 1 ? "budget_reached" : "restore_failed";
                     }
                 }
-                stopReason = rejected ? "driver_rejected" : "stability_limit";
                 break;
             }
 
@@ -707,17 +790,25 @@ class SamplingSpeedTuner {
 
         if (session.stopped || session.connectionFailed) return;
         let locked = best;
-        if (currentEffectiveKhz !== best.effectiveKhz || currentReportedKhz !== best.effectiveKhz) {
-            const restored = await this._restoreSpeed(
-                session,
-                best.effectiveKhz,
-                expectedCpuid,
-                readCmd,
-                stepTimeoutMs
-            );
-            if (!restored && best.effectiveKhz !== baseKhz) {
-                await this._restoreSpeed(session, baseKhz, expectedCpuid, readCmd, stepTimeoutMs);
-                locked = { requestedKhz: baseKhz, effectiveKhz: baseKhz, medianMs: baseline.medianMs };
+        if (
+            currentEffectiveKhz !== best.effectiveKhz ||
+            currentReportedKhz !== best.effectiveKhz ||
+            !session.tcl.connected
+        ) {
+            const recoveryDeadline = this.clock.monotonicMs() + this._budgetMs();
+            const restored =
+                stopReason !== "restore_failed" &&
+                (await this._restoreSpeed(session, best.effectiveKhz, baselineInfo, recoveryDeadline));
+            if (session.stopped || session.connectionFailed) return;
+            if (!restored) {
+                if (
+                    best.effectiveKhz === baseKhz ||
+                    !(await this._restoreSpeed(session, baseKhz, baselineInfo, recoveryDeadline))
+                ) {
+                    this._abortUnverifiedSpeed(session);
+                    return;
+                }
+                locked = verifiedSteps[0];
                 stopReason = "restore_failed";
             }
         }
@@ -771,20 +862,25 @@ class SamplingSpeedTuner {
         this._runtimeFailures = 0;
         const nextIndex = this._fallbackCount === 0 ? Math.max(0, this._chainIndex - 1) : 0;
         const targetKhz = this.verifiedChain[nextIndex];
-        if (!Number.isInteger(targetKhz) || targetKhz <= 0 || !(await ensureConnected(session))) return false;
-        this.probingActive = true;
-        try {
-            await session.tcl.probe(`adapter speed ${targetKhz}`, this._stepTimeoutMs());
-        } catch {
-            await ensureConnected(session);
-            return false;
-        } finally {
-            this.probingActive = false;
+        if (!Number.isInteger(targetKhz) || targetKhz <= 0 || !this._baselineInfo) return false;
+        let lockedIndex = nextIndex;
+        const deadline = this.clock.monotonicMs() + this._budgetMs();
+        if (!(await this._restoreSpeed(session, targetKhz, this._baselineInfo, deadline))) {
+            await this._recoverConnection(session);
+            if (session.stopped || session.connectionFailed) return false;
+            const recoveryDeadline = this.clock.monotonicMs() + this._budgetMs();
+            if (await this._restoreSpeed(session, this.effectiveKhz, this._baselineInfo, recoveryDeadline))
+                return false;
+            if (!(await this._restoreSpeed(session, this.baseKhz, this._baselineInfo, recoveryDeadline))) {
+                this._abortUnverifiedSpeed(session);
+                return false;
+            }
+            lockedIndex = 0;
         }
         this._fallbackCount++;
-        this._chainIndex = nextIndex;
-        this.effectiveKhz = targetKhz;
-        this.requestedKhz = targetKhz;
+        this._chainIndex = lockedIndex;
+        this.effectiveKhz = this.verifiedChain[lockedIndex];
+        this.requestedKhz = this.effectiveKhz;
         this.state = "fallback";
         this.reason = "runtime_fallback";
         return true;
@@ -826,8 +922,14 @@ module.exports = {
     IMPROVEMENT_MIN_SAVED_MS,
     SLOWDOWN_RATIO,
     MAX_PLATEAU_STEPS,
+    MIN_MANUAL_SAMPLING_SPEED_KHZ,
+    MAX_MANUAL_SAMPLING_SPEED_KHZ,
+    MANUAL_SAMPLING_SPEED_STEP_KHZ,
+    DEFAULT_MANUAL_SAMPLING_SPEED_KHZ,
     configuredSamplingSpeedKhz,
     samplingSpeedLadder,
+    clampManualSamplingSpeedKhz,
+    isValidManualSamplingSpeedKhz,
     parseAdapterSpeedKhz,
     u32ToLittleEndianHex,
     selectBenchmarkRamBlock,

@@ -7,7 +7,7 @@ const { isDeepStrictEqual } = require("util");
 const { editConfig, readEntry, removeConfig, yamlTargets } = require("./mcpConfigEdits");
 
 const MAX_CONFIG_BYTES = 2 * 1024 * 1024;
-const FILE_CLIENTS = Object.freeze(["claude", "codex", "gemini", "opencode", "antigravity", "dsh"]);
+const FILE_CLIENTS = Object.freeze(["claude", "codex", "gemini", "opencode", "antigravity", "dsh", "workbuddy"]);
 
 async function exists(file, io) {
     try {
@@ -47,6 +47,13 @@ async function configTargets(client, { home = os.homedir(), env = process.env, i
         return { targets: [path.join(absolute(env.CODEX_HOME, path.join(home, ".codex")), "config.toml")] };
     if (client === "gemini") return { targets: [path.join(home, ".gemini", "settings.json")] };
     if (client === "antigravity") return { targets: [path.join(home, ".gemini", "config", "mcp_config.json")] };
+    if (client === "workbuddy") {
+        const dir = absolute(env.WORKBUDDY_CONFIG_DIR, path.join(home, ".workbuddy"));
+        const preferred = path.join(dir, ".mcp.json");
+        return (await exists(preferred, io))
+            ? { targets: [preferred] }
+            : { targets: [path.join(dir, "mcp.json")], absent: [preferred] };
+    }
     if (env.OPENCODE_CONFIG) return { targets: [absolute(env.OPENCODE_CONFIG, "")] };
     const global = path.join(absolute(env.XDG_CONFIG_HOME, path.join(home, ".config")), "opencode");
     for (const name of ["opencode.jsonc", "opencode.json"]) {
@@ -90,7 +97,7 @@ function configText(previous) {
 
 async function preparePlan(client, options, transform) {
     const io = options.io || fs;
-    const { targets, guard } = await configTargets(client, options);
+    const { targets, guard, absent = [] } = await configTargets(client, options);
     const files = [];
     const seen = new Set();
     for (const target of targets) {
@@ -107,6 +114,13 @@ async function preparePlan(client, options, transform) {
         files.push({ file, sources: [target], ...original, next });
     }
     const guards = [];
+    for (const source of absent) {
+        const file = await canonical(source, io);
+        const original = await snapshot(file, io);
+        if (original.previous)
+            throw new Error("MCP configuration changed during installation; retry to review the current files");
+        guards.push({ file, sources: [source], ...original });
+    }
     if (guard) {
         const file = await canonical(guard, io);
         const original = await snapshot(file, io);

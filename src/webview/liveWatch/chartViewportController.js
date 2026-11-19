@@ -26,6 +26,7 @@
             c.viewHistory = [];
             c.lastWheel = -Infinity;
             c.fitHold = null;
+            c.yFitMotion = null;
             c.fitRequested = false;
             c.suppressClickUntil = 0;
         }
@@ -63,6 +64,7 @@
             if (c.follow && c.bounds)
                 c.x = c.startPinned ? copy(c.bounds) : VP.followEnd(c.x, null, c.bounds, minimumXSpan());
             c.fitHold = null;
+            c.yFitMotion = null;
             c.fitRequested = false;
             c.lastWheel = -Infinity;
             env.setWindow(view.window);
@@ -82,6 +84,7 @@
             env.resetFollowClock();
             c.heldFitX = copy(c.x);
             c.fitHold = null;
+            c.yFitMotion = null;
             dirty();
         }
         function acquisitionChanged(running, suspended) {

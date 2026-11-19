@@ -155,6 +155,8 @@ class FakeOpenOcdServer {
     _executeRead(command, behavior = null) {
         const read = command.match(/^(?:ocd_)?read_memory\s+(0x[0-9a-f]+)\s+(8|16|32)\s+(\d+)$/i);
         if (!read) return null;
+        if (this.targetNotExamined && read[1].toLowerCase() === "0xe000ed00")
+            return { ok: false, response: "Target not examined yet" };
         if (behavior?.fail) return { ok: false, response: behavior.errorMessage || "target memory read failed" };
         if (this.transientFailures > 0) {
             this.transientFailures--;
@@ -175,17 +177,9 @@ class FakeOpenOcdServer {
         this.commands.push(command);
         if (this.adapterSpeedKhz !== null) {
             if (command.startsWith("set _ep_t [target current];")) {
-                if (this.targetNotExamined) return { ok: false, response: "Target not examined yet" };
-                const reported = this._reportedSpeedKhz ?? this.adapterSpeedKhz;
                 return {
                     ok: true,
-                    response: [
-                        this.targetType,
-                        this.transport,
-                        `adapter speed: ${reported} kHz`,
-                        `0x${(this.cpuid >>> 0).toString(16)}`,
-                        this.readCmdName
-                    ].join("\n")
+                    response: [this.targetType, this.transport, this.readCmdName].join("\n")
                 };
             }
             const speedMatch = command.match(/^adapter speed(?:\s+(\d+))?$/i);

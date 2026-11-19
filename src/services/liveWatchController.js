@@ -29,12 +29,16 @@ const {
     runtimeWritableRanges,
     writableRamSectionRanges
 } = require("./liveWatchService");
+const { normalizeAdapterSpeed } = require("../../skills/_emberprobe/probe-connection");
+const { clampManualSamplingSpeedKhz, isValidManualSamplingSpeedKhz } = require("../samplingSpeed");
 const { CACHE_KEYS } = require("../cacheKeys");
 
 // Waveform sampling without a rate cap (the slider's "Max rate" notch), remembered per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 // Waveform runtime objects read only the parts their view opened (default) or everything parsed.
 const POINTER_EXPANDED_ONLY_STATE_KEY = "liveWatch.pointerExpandedOnly";
+// Last user-chosen manual SWD clock (kHz) for restoring when toggling adaptive clock off before running.
+const MANUAL_SAMPLING_SPEED_STATE_KEY = "liveWatch.manualSamplingSpeedKhz";
 // A pending webview batch keeps one sample per name (latest wins), so one message never carries an
 // older and a newer state of the same variable.
 function latestByName(pending, next) {
@@ -49,7 +53,7 @@ class LiveWatchController {
     /**
      * @param {any} host
      * @param {{ vscode?: any, ManagedOpenOcdSession?: any, frequencyHz?: number, unlimited?: boolean,
-     *     pointerExpandedOnly?: boolean }} [settings]
+     *     pointerExpandedOnly?: boolean, manualSamplingSpeedKhz?: number }} [settings]
      */
     constructor(
         host,
@@ -58,7 +62,8 @@ class LiveWatchController {
             ManagedOpenOcdSession,
             frequencyHz = DEFAULT_FREQUENCY_HZ,
             unlimited = false,
-            pointerExpandedOnly = true
+            pointerExpandedOnly = true,
+            manualSamplingSpeedKhz = 2000
         } = {}
     ) {
         this.host = host;
@@ -68,11 +73,14 @@ class LiveWatchController {
         this.intervalMs = intervalMsFromHz(frequencyHz);
         this._unlimitedRequested = unlimited === true;
         this.pointerExpandedOnly = pointerExpandedOnly !== false;
+        this.lastManualSpeedKhz = clampManualSamplingSpeedKhz(manualSamplingSpeedKhz, 2000);
+        this.lastAdaptiveSpeedKhz = null;
         this.session = null;
         this.intent = false;
         this.consumers = new Set();
         // Set while this controller writes the frequency setting, so the configuration event does not apply it again.
         this.savingFrequency = false;
+        this.savingSamplingSpeed = false;
         this._hostLoopDelay = null;
         this._runtimeDeniedKey = "";
         this._runtimeOverBudgetKey = "";
@@ -461,6 +469,110 @@ class LiveWatchController {
     unlimitedState() {
         return { type: "liveUnlimited", enabled: this.unlimitedEnabled() };
     }
+    _isSamplingSpeedLocked() {
+        return Boolean(
+            this.intent || this.inUse || this.closing || this.exitUnconfirmed || this.host?._agentOps?.readRunning
+        );
+    }
+    captureAdaptiveSpeed(source) {
+        const stats = typeof source?.stats === "function" ? source.stats() : source;
+        const adaptive = stats?.adaptiveSpeed;
+        if (
+            adaptive &&
+            ["tuned", "unchanged", "fallback"].includes(adaptive.state) &&
+            Number.isFinite(adaptive.effectiveKhz) &&
+            adaptive.effectiveKhz > 0
+        ) {
+            this.lastAdaptiveSpeedKhz = adaptive.effectiveKhz;
+        }
+    }
+    clearAdaptiveSpeedMemory() {
+        this.lastAdaptiveSpeedKhz = null;
+    }
+    samplingSpeedState() {
+        const cfg = this._vscode?.workspace?.getConfiguration?.("emberprobe");
+        let samplingAdapterSpeedKhz = 0;
+        let adapterSpeedKhz = 0;
+        try {
+            samplingAdapterSpeedKhz = normalizeAdapterSpeed(cfg?.get?.("samplingAdapterSpeedKhz", 0) ?? 0);
+        } catch {
+            samplingAdapterSpeedKhz = 0;
+        }
+        try {
+            adapterSpeedKhz = normalizeAdapterSpeed(cfg?.get?.("adapterSpeedKhz", 0) ?? 0);
+        } catch {
+            adapterSpeedKhz = 0;
+        }
+        const adaptive = samplingAdapterSpeedKhz === 0;
+        const session = this.session && !this.host?._debugBridge?.hasSession ? this.session : null;
+        const stats = typeof session?.stats === "function" ? session.stats() : null;
+        const adaptiveStats = stats?.adaptiveSpeed || null;
+        if (adaptive) this.captureAdaptiveSpeed(stats);
+        const effectiveKhz = stats?.adapterSpeedKhz > 0 ? stats.adapterSpeedKhz : null;
+        const adaptiveEffectiveKhz = adaptive
+            ? adapterSpeedKhz > 0
+                ? adapterSpeedKhz
+                : adaptiveStats &&
+                    ["tuned", "unchanged", "fallback"].includes(adaptiveStats.state) &&
+                    adaptiveStats.effectiveKhz > 0
+                  ? adaptiveStats.effectiveKhz
+                  : this.lastAdaptiveSpeedKhz
+            : null;
+        return {
+            type: "samplingSpeedConfig",
+            adaptive,
+            samplingAdapterSpeedKhz,
+            adapterSpeedKhz,
+            effectiveKhz,
+            adaptiveEffectiveKhz,
+            adaptiveState: adaptiveStats?.state ?? null,
+            adaptiveReason: adaptiveStats?.reason ?? null,
+            manualSpeedKhz: this.lastManualSpeedKhz,
+            locked: this._isSamplingSpeedLocked()
+        };
+    }
+    broadcastSamplingSpeedState() {
+        const state = this.samplingSpeedState();
+        for (const entry of this.host?._livePanels?.values?.() || []) {
+            if (typeof entry?.post === "function") entry.post(state);
+        }
+        return state;
+    }
+    async setSamplingSpeed(params = {}) {
+        if (!params || typeof params.adaptive !== "boolean")
+            throw Object.assign(new Error("Sampling clock mode must include boolean adaptive"), {
+                code: "INVALID_PARAMS"
+            });
+        if (this._isSamplingSpeedLocked())
+            throw Object.assign(new Error(this.host._t("lw.samplingClockLocked")), {
+                code: "PROBE_CONFIGURATION_BUSY",
+                i18nKey: "lw.samplingClockLocked"
+            });
+        const adaptive = params.adaptive;
+        let targetKhz = 0;
+        if (!adaptive) {
+            if (params.speedKhz !== undefined) {
+                if (!isValidManualSamplingSpeedKhz(params.speedKhz))
+                    throw Object.assign(new Error("Sampling clock must be 1000 to 20000 kHz in 1000 kHz steps"), {
+                        code: "INVALID_PARAMS"
+                    });
+                targetKhz = params.speedKhz;
+            } else {
+                targetKhz = clampManualSamplingSpeedKhz(this.lastAdaptiveSpeedKhz ?? this.lastManualSpeedKhz, 2000);
+            }
+            this.lastManualSpeedKhz = targetKhz;
+            await this.host._context.workspaceState.update(MANUAL_SAMPLING_SPEED_STATE_KEY, targetKhz);
+        }
+        this.savingSamplingSpeed = true;
+        try {
+            await this._vscode.workspace
+                .getConfiguration("emberprobe")
+                .update("samplingAdapterSpeedKhz", targetKhz, this._vscode.ConfigurationTarget.Workspace);
+        } finally {
+            this.savingSamplingSpeed = false;
+        }
+        return this.broadcastSamplingSpeedState();
+    }
     async setUnlimited(enabled) {
         if (typeof enabled !== "boolean")
             throw Object.assign(new Error("Unlimited sampling state must be a boolean"), { code: "INVALID_PARAMS" });
@@ -536,6 +648,8 @@ class LiveWatchController {
                         bytesPerSecond: status.bytesPerSecond,
                         unlimitedActive: status.unlimitedActive,
                         limitedBy: status.limitedBy,
+                        adapterSpeedKhz: status.adapterSpeedKhz,
+                        adaptiveSpeed: status.adaptiveSpeed,
                         archive: this.host._samplingArchiveBudget()
                     });
                 if (composites.length)
@@ -814,6 +928,7 @@ class LiveWatchController {
         status.droppedBatches = stats?.droppedBatches ?? 0;
         status.adapterSpeedKhz = stats?.adapterSpeedKhz ?? null;
         status.adaptiveSpeed = stats?.adaptiveSpeed ?? null;
+        if (!this.host._debugBridge?.hasSession && stats) this.captureAdaptiveSpeed(stats);
         // The event-loop monitor wakes the host periodically, so it runs only while sampling is requested.
         if (status.running) status.hostLoopDelayMs = (this._hostLoopDelay ||= new HostLoopDelay()).maxMs();
         else {
@@ -856,17 +971,8 @@ class LiveWatchController {
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
-    // Restarts a running session with its current plan once the old one stopped, unless sampling was stopped or
-    // started again meanwhile.
-    restart() {
-        const stopped = this.stop({ preserveIntent: true, discardPending: true });
-        const generation = this._startGeneration;
-        return Promise.resolve(stopped).then(() => {
-            if (generation === this._startGeneration && this.intent)
-                return this.start(undefined, this.intervalMs, "refresh", false);
-        });
-    }
     start(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
+        if ((consumer === "refresh" || consumer === "restore") && !this.intent) return Promise.resolve();
         if (this.stopPromise || this._startPromise)
             return Promise.reject(Object.assign(new Error(this.host._t("live.starting")), { code: "PROBE_BUSY" }));
         this.host._historyFeed.resetWarnings();
@@ -878,6 +984,10 @@ class LiveWatchController {
         }
         this._startPromise = this._start(intervalMs, interactive, generation)
             .catch((error) => {
+                if (generation === this._startGeneration && this.intent && !this.session) {
+                    this.intent = false;
+                    this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, false);
+                }
                 if (agentChart) {
                     this.agentChart = null;
                     this.invalidateConsumerTypes();
@@ -1042,6 +1152,7 @@ class LiveWatchController {
                     probe: debuggerCfg,
                     target: mcuCore,
                     ...connection,
+                    adaptiveAdapterSpeed: "sampling",
                     cwd,
                     port,
                     intervalMs: validation.clampInteger(intervalMs ?? this.intervalMs, this.intervalMs, 5, 10000)
@@ -1097,11 +1208,13 @@ class LiveWatchController {
                 }
             );
             this.session = session;
+            this.lastAdaptiveSpeedKhz = null;
             if (generation !== this._startGeneration) return;
             this.applySamplingPlan(session, this.activeReadPlan());
             this.session = session;
             await session.start();
             if (this.session !== session || startingLease.released || generation !== this._startGeneration) return;
+            this.captureAdaptiveSpeed(session);
             this.host._samplingCoordinator.setDeliveryHold(session);
             session.setSamplingEnabled(!!this.intent);
             this._lease = startingLease.transition("liveWatch");
@@ -1109,6 +1222,10 @@ class LiveWatchController {
             this.host._postConsumerStatuses({ key: this.intent ? "sb.sampling" : "sb.stopped" });
             this.host._rtt?.onSessionsChanged();
         } catch (error) {
+            if (generation === this._startGeneration) {
+                this.intent = false;
+                this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, false);
+            }
             if (session && this.session === session) {
                 const closed = await session.stop().catch(() => false);
                 if (closed !== false) {
@@ -1152,6 +1269,7 @@ class LiveWatchController {
             this.host._debugBridge.setIntent(false);
             this.host.debugLaunch.managedServer?.setSamplingEnabled(false);
         }
+        this.captureAdaptiveSpeed(this.session);
         this.session?.setSamplingEnabled?.(false);
         this.closing = !!(this._startPromise || this.session);
         this.exitUnconfirmed = false;
@@ -1177,6 +1295,7 @@ class LiveWatchController {
                     code: "PROBE_EXIT_UNCONFIRMED",
                     i18nKey: "live.exitUnconfirmed"
                 });
+            this.captureAdaptiveSpeed(session);
             await historyFlushed;
             if (this.session === session) this.session = null;
             this._startLease?.release();
@@ -1212,4 +1331,9 @@ class LiveWatchController {
     }
 }
 
-module.exports = { LiveWatchController, POINTER_EXPANDED_ONLY_STATE_KEY, UNLIMITED_SAMPLING_STATE_KEY };
+module.exports = {
+    LiveWatchController,
+    POINTER_EXPANDED_ONLY_STATE_KEY,
+    UNLIMITED_SAMPLING_STATE_KEY,
+    MANUAL_SAMPLING_SPEED_STATE_KEY
+};

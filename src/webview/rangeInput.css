@@ -1,0 +1,26 @@
+.write-slider {
+    flex: 1;
+    min-width: 0;
+    height: 10px;
+    margin: 0;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+}
+.write-slider::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--vscode-foreground) 24%, transparent);
+}
+.write-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 11px;
+    height: 11px;
+    margin-top: -4px;
+    border: 1px solid #5a5a5a;
+    border-radius: 50%;
+    background: #7d7d7d;
+}
+.write-slider:disabled {
+    cursor: default;
+}

@@ -17,6 +17,7 @@ async function ready({ host, entry, post, watchKey }) {
     host.chartBackground().ready(entry);
     post(host._sampling.unlimitedState());
     post(host._sampling.pointerState());
+    post(host._sampling.samplingSpeedState());
     post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
     post({ type: "curveVisibility", hidden: host._curveVisibility(watchKey) });
     host._syncGraphTarget(entry);
@@ -197,6 +198,13 @@ const LIVE_PANEL_ROUTES = {
             await host._sampling.setPointerExpandedOnly(message.enabled);
         } finally {
             post(host._sampling.pointerState());
+        }
+    },
+    setSamplingSpeed: async ({ host, post }, message) => {
+        try {
+            await host._sampling.setSamplingSpeed(message);
+        } finally {
+            post(host._sampling.samplingSpeedState());
         }
     },
     setSeriesStyle: async ({ host }, message) => {

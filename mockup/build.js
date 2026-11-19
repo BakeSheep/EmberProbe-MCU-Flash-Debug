@@ -56,10 +56,12 @@ const SIDEBAR_STATE = {
     mcu: "stm32f4x.cfg",
     cubemxPath: "C:\\ST\\STM32CubeMX\\STM32CubeMX.exe",
     iocPath: "EmberProbeDemo.ioc",
-    cubemxStatus: "已启用 CubeMX 集成 · 最近生成 2026-09-18 14:22",
+    cubemxStatus: "CubeMX 已就绪",
     cubemxFirmware: {
         family: "F4",
         requiredVersion: "1.28.0",
+        versions: ["1.28.0"],
+        state: "installed",
         installed: true,
         repository: "C:\\Users\\dev\\STM32Cube\\Repository"
     },

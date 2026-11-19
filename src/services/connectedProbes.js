@@ -32,9 +32,6 @@ class ConnectedProbes {
         this.monitor = null;
         this.driverSwitching = false;
         this.lastMessage = "";
-        // The list's automatic chip read (identifyTargets).
-        this.targetsReading = false;
-        this.targetsReadFor = "";
     }
     inventory() {
         // Created on first use; recently switched J-Link drivers are reconciled into every scan.
@@ -127,18 +124,6 @@ class ConnectedProbes {
                 if (!reading) return false;
                 return expected ? sameTarget(reading, expected) : targetMatchesModel(reading, mcuCore) === true;
             });
-            // Chip readings live only in memory: after a restart the list reads them itself (see
-            // identifyTargets) rather than asking the user to pick a probe automatic mode can find.
-            const readKey = this._readKey(view, mcuCore);
-            if (
-                matches.length !== 1 &&
-                service.identifyTarget &&
-                mcuCore &&
-                candidates.length > 1 &&
-                candidates.some((device) => !readings.get(device.id)) &&
-                this.targetsReadFor !== readKey
-            )
-                Object.assign(view, { state: "identifying", error: null });
             if (matches.length === 1)
                 Object.assign(view, {
                     state: "selected",
@@ -158,27 +143,10 @@ class ConnectedProbes {
             );
         return view;
     }
-    _readKey(view, target) {
-        return JSON.stringify([view.debugger, target, ...view.devices.map((device) => device.id)]);
-    }
-    // Reads the chips once for this.host set of probes, so automatic mode's choice shows without a manual refresh. A
-    // probe that cannot be read leaves the list asking the user to pick, as before.
-    identifyTargets(view) {
-        if (this.targetsReading) return;
-        const key = this._readKey(view, this.host._context.workspaceState.get(CACHE_KEYS.mcuCore) || "");
-        this.targetsReading = true;
-        void this.readTargets()
-            .catch((error) => console.error("Probe chip read failed:", error.message))
-            .finally(() => {
-                this.targetsReading = false;
-                this.targetsReadFor = key;
-                return this.refresh();
-            })
-            .catch((error) => console.error("Probe list refresh failed:", error.message));
-    }
     // Refresh reads the chip on each listed probe the extension can open on its own. Nothing is read while a probe
     // operation runs; a probe another program holds cannot be opened and keeps no reading, so neither shows a chip.
-    async readTargets() {
+    async readTargets(origin = "") {
+        if (origin !== "user") return false;
         const service = this.host._probeConnectionService;
         const target = this.host._context.workspaceState.get(CACHE_KEYS.mcuCore) || "";
         if (!service?.identifyTarget || !target || this.driverSwitching) return false;
@@ -230,7 +198,6 @@ class ConnectedProbes {
             this.lastMessage = message;
             this.host._webviewView?.webview.postMessage(JSON.parse(message));
         }
-        if (view.state === "identifying") this.identifyTargets(view);
         return view;
     }
     // Opens the sidebar's connected probe list where the user picks the probe an operation could not choose.
@@ -258,7 +225,7 @@ class ConnectedProbes {
         if (!deviceId) {
             await store.clear();
             this.host._probeConnectionService.clearTargetMismatch();
-            this.host._resolvedProbeConnection = null;
+            this._selectionChanged();
             return this.refresh();
         }
         const view = this.view((await this.inventory().scan()).inventory);
@@ -299,10 +266,15 @@ class ConnectedProbes {
                 await this.host._context.workspaceState.update(CACHE_KEYS.debugger, current || undefined);
             throw error;
         }
-        this.host._resolvedProbeConnection = null;
+        this._selectionChanged();
         // The card's tooltip announced the script it switches to; the configuration row shows it.
         if (probe !== current) await this.host._showDebuggerConfig();
         return this.refresh();
+    }
+    _selectionChanged() {
+        this.host._resolvedProbeConnection = null;
+        this.host._sampling?.clearAdaptiveSpeedMemory();
+        this.host._sampling?.broadcastSamplingSpeedState();
     }
     _logDriverDiagnostics(target) {
         if (!target.interfaces?.length) return;

@@ -17,6 +17,9 @@
         var running = false;
         var frequencyHz = 30;
         var unlimitedEnabled = false;
+        var adaptiveSamplingSpeed = true;
+        var manualSamplingSpeedKhz = 2000;
+        var adaptiveEffectiveKhz = null;
         var watchItems = data.watchList();
         var styles = Object.assign({}, data.seriesStyles);
         var stopped = false;
@@ -126,10 +129,26 @@
         // host owns the one sampling session and setSampling follows it.
         var phase = "stopped";
 
+        function samplingSpeedState() {
+            var adaptiveActiveKhz = adaptiveSamplingSpeed ? adaptiveEffectiveKhz : null;
+            var configuredKhz = adaptiveSamplingSpeed ? 0 : manualSamplingSpeedKhz;
+            return {
+                type: "samplingSpeedConfig",
+                adaptive: adaptiveSamplingSpeed,
+                samplingAdapterSpeedKhz: configuredKhz,
+                adapterSpeedKhz: 0,
+                effectiveKhz: running ? (adaptiveSamplingSpeed ? adaptiveEffectiveKhz : configuredKhz) : null,
+                adaptiveEffectiveKhz: adaptiveActiveKhz,
+                manualSpeedKhz: manualSamplingSpeedKhz,
+                locked: running
+            };
+        }
+
         function sendPhaseStatus() {
             var status = root.EmberProbeSidebarData.samplingStatus(phase);
             var active = root.EmberProbeSidebarData.samplingActive(phase);
             if (status.running) {
+                if (adaptiveSamplingSpeed && !adaptiveEffectiveKhz) adaptiveEffectiveKhz = 12000;
                 var hz = active ? frequencyHz : 0;
                 status.actualHz = hz;
                 status.bytesPerSecond = hz * 24;
@@ -137,10 +156,14 @@
                 status.effectiveIntervalMs = Math.round(1000 / frequencyHz);
                 status.p95DurationMs = Math.round((1000 / frequencyHz) * 0.85);
                 status.missedDeadlines = 0;
+                status.adapterSpeedKhz = adaptiveSamplingSpeed ? adaptiveEffectiveKhz : manualSamplingSpeedKhz;
+                if (adaptiveSamplingSpeed && phase === "sampling")
+                    status.adaptiveSpeed = { state: "tuned", effectiveKhz: adaptiveEffectiveKhz };
                 // A debug session samples at the last finite frequency, never unlimited.
                 if (unlimitedEnabled && phase === "debug-sampling") status.unlimitedSuppressedReason = "debug";
             }
             send(status);
+            send(samplingSpeedState());
         }
 
         function setSampling(next) {
@@ -349,6 +372,18 @@
                     // Preview only: keep the simulator's bounded timer while mirroring the selected mode.
                     if (typeof message.enabled === "boolean") unlimitedEnabled = message.enabled;
                     send({ type: "liveUnlimited", enabled: unlimitedEnabled });
+                    break;
+                case "setSamplingSpeed":
+                    if (!running && typeof message.adaptive === "boolean") {
+                        adaptiveSamplingSpeed = message.adaptive;
+                        if (!adaptiveSamplingSpeed && Number.isInteger(message.speedKhz)) {
+                            manualSamplingSpeedKhz = Math.min(
+                                20000,
+                                Math.max(1000, Math.round(message.speedKhz / 1000) * 1000)
+                            );
+                        }
+                    }
+                    send(samplingSpeedState());
                     break;
                 case "importVariables":
                     sendVariableList();

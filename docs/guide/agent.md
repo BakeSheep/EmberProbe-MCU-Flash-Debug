@@ -11,7 +11,7 @@ Agent 读取芯片信息、变量和外设不需要逐次确认。烧录、写�
 侧栏的“Agent 配置”卡片集中管理 Agent 开关：
 
 - **工作区 Agent 访问**：首项常驻开关，控制当前工作区是否允许 Agent 连接。
-- **MCP 服务器**：逐个客户端安装、升级或移除，见 [MCP 服务器](#mcp-服务器)。
+- **MCP 服务器**：逐个客户端安装、升级或移除，也可检测服务器连通性，见 [MCP 服务器](#mcp-服务器)。
 - **Agent Skills**：把 skills 安装到工作区。
 - **完全允许 Agent 操作**：免去操作确认，见[下文](#完全允许-agent-操作)。
 
@@ -118,6 +118,7 @@ EmberProbe 随扩展提供 MCP 服务器，让支持 MCP 的 Agent 客户端直�
 | Cursor                 | 自动注册，或使用安装链接                                                         |
 | Antigravity            | `~/.gemini/config/mcp_config.json`                                               |
 | DeepSeek Harness (DSH) | `$DSH_HOME/profiles/<profile>/cordis.patch.yml`，默认 `~/.dsh`                   |
+| WorkBuddy              | `~/.workbuddy/mcp.json`，已有 `.mcp.json` 时优先使用，支持 `WORKBUDDY_CONFIG_DIR` |
 | 其他客户端             | 复制通用 JSON，自行合并                                                          |
 
 也可以运行命令 `EmberProbe: 安装 MCP 服务器到客户端`，在对话框中预览配置，或使用客户端 CLI、复制配置。
@@ -126,6 +127,13 @@ EmberProbe 随扩展提供 MCP 服务器，让支持 MCP 的 Agent 客户端直�
 
 - **Antigravity**：安装后在客户端刷新 MCP 服务器，可在 **MCP Servers → Manage MCP Servers → View raw config** 查看结果。
 - **DSH**：安装后重启相应 profile，例如 `dsh web`。自动写入失败时，把复制的内容保存为 `emberprobe.cordis.yml`，运行 `dsh web --patch "/absolute/path/emberprobe.cordis.yml"`。这是 YAML patch，不能粘贴到 `mcpServers` JSON 中。DSH 不支持 MCP prompts，直接使用工具即可。
+- **WorkBuddy**：安装后打开 WorkBuddy 的 **专家 · 技能 · 连接器**，找到 EmberProbe 并按提示信任、启用。配置未出现时重新打开 WorkBuddy。
+
+### 检测连通性
+
+展开侧栏 **Agent 配置**，点击 **MCP 服务器** 右侧的刷新图标。检测会启动本地 EmberProbe MCP 服务器并读取工具列表。刷新会展开 MCP 服务器区域，区内的提示卡片会显示工具数量，或说明启动、读取工具列表与超时等故障。
+
+检测无需开启工作区 Agent 访问或连接调试器。客户端加载配置和访问工程仍由客户端的连接器状态及当前工作区的 Agent 访问权限决定。
 
 ### 选择工程
 
@@ -190,7 +198,7 @@ CubeMX2 自动查找支持 Windows 和 Linux，macOS 暂不支持。
 
 ### 选择工程
 
-在侧栏“其他配置”的“.ioc / .ioc2 路径”中选择工程文件。自动配置会识别这两种工程：只有一个候选工程时自动填入；存在多个工程时，点击自动配置后选择。后台自动配置保留已有的有效选择，也不会弹出选择框。工程文件决定使用哪个工具。“CubeMX / 固件包”行显示版本摘要，点击摘要可展开完整的固件包和版本列表。缺包时点击“安装”，已装版本较低时点击“升级”，在 CubeMX 中完成后点击刷新图标重新检查。已装版本较新但与工程指定版本不一致时，仍需“安装”工程要求的版本。
+在侧栏“其他配置”的“.ioc / .ioc2 路径”中选择工程文件。自动配置会识别这两种工程：只有一个候选工程时自动填入；存在多个工程时，点击自动配置后选择。后台自动配置保留已有的有效选择，也不会弹出选择框。工程文件决定使用哪个工具。“CubeMX / 固件包”行显示固件包名称和已安装版本。已安装版本与工程要求不匹配时，「其他配置」内的提示卡片会列出需求版本和已安装版本。在 CubeMX 中安装所需版本后，点击该行右侧的刷新图标重新检查。
 
 传统 CubeMX 按 `.ioc` 的固件系列与版本检查本地仓库。CubeMX2 按 `.ioc2` 中声明的各个 pack 检查，支持 C5 及后续系列，分别列出工程要求和本机已安装的版本。CubeMX2 的包目录优先使用 `CMSIS_PACK_ROOT`，其次使用 Cube 用户配置的 `cmsis_pack_root`，最后使用系统默认目录。
 

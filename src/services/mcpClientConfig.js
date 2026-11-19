@@ -1,7 +1,17 @@
 "use strict";
 // Client-specific MCP formats. Keep one stdio launch spec; translate only at the client boundary, as cc-switch does.
 const SERVER_NAME = "emberprobe";
-const CLIENTS = Object.freeze(["claude", "codex", "gemini", "opencode", "cursor", "antigravity", "dsh", "json"]);
+const CLIENTS = Object.freeze([
+    "claude",
+    "codex",
+    "gemini",
+    "opencode",
+    "cursor",
+    "antigravity",
+    "dsh",
+    "workbuddy",
+    "json"
+]);
 const CLI_CLIENTS = Object.freeze({ claude: "claude", codex: "codex", gemini: "gemini" });
 // Covers human confirmation and CubeMX without changing Bridge operation budgets.
 const LONG_CALL_TIMEOUT_MS = 30 * 60 * 1000;

@@ -18,7 +18,6 @@ module.exports = Object.freeze({
     "sb.dataEnabled": "Enabled",
     "sb.dataDisabled": "Disabled",
     "sb.dataFailed": "Could not enable",
-    "sb.dataActive": "Active",
     "sb.dataStorage": "{address} · {bytes} bytes",
     "dbg.dataBreakpointUnsafe":
         "Cannot continue while an unconfirmed software watchpoint remains enabled. Delete or disable it in the GDB console, then retry.",
@@ -133,7 +132,6 @@ module.exports = Object.freeze({
     "probe.absentTag": "Not connected",
     "probe.scanning": "Detecting…",
     "probe.noneConnected": "No probe detected",
-    "probe.identifyingTargets": "Reading the chip on each probe to choose one by target chip…",
     "probe.selectPrompt": "Select a probe",
     "probe.autoSelect": "Auto",
     "probe.autoKeepHint":
@@ -275,6 +273,11 @@ module.exports = Object.freeze({
     "lw.pointerExpandedOnly": "Sample expanded pointer parts only",
     "lw.pointerExpandedOnlyHint":
         "Pointer targets and STL containers read only their expanded parts at the target rate; off reads everything parsed. Both are recorded to disk and exportable as CSV",
+    "lw.samplingClock": "Sampling clock",
+    "lw.samplingClockAuto": "Auto",
+    "lw.samplingClockPending": "Pending",
+    "lw.samplingClockHint": "Setting the clock frequency can improve the sampling rate",
+    "lw.samplingClockLocked": "Stop sampling before changing the sampling clock",
     "lw.runtimeCollapsed": "Sampling starts when expanded",
     "lw.removeWatch": "Remove watch",
     "lw.noReading": "No data",
@@ -291,20 +294,13 @@ module.exports = Object.freeze({
     "lw.frozenNew": "Variable absent from snapshot; resume live to display",
     "cubemx.firmwareTitle": "CubeMX / Firmware",
     "cubemx2.firmwareTitle": "CubeMX2 / Packs",
-    "cubemx.requiredVersion": "Need",
     "cubemx.currentVersion": "Have",
-    "cubemx.upgradeFirmware": "Upgrade",
     "cubemx.firmwareUnknown": "Firmware unverified",
-    "cubemx.firmwareMismatch": "Version mismatch",
-    "cubemx.anyVersion": "any version",
-    "cubemx.packUnknown": "Verify this requirement in CubeMX2",
+    "cubemx.firmwareMismatch": "Firmware version mismatch",
+    "cubemx.firmwareMismatchVersions": "{name} requires {required}. Installed versions {installed}.",
     "cubemx.refreshFirmware": "Recheck firmware",
-    "cubemx2.openPackManager": "Manage",
     "cubemx2.firmwareOpened":
         "CubeMX2 opened. Install the required packs and versions in Pack Manager, then return and check firmware again.",
-    "cubemx.firmwareInstalled": "Installed",
-    "cubemx.firmwareMissing": "Firmware missing",
-    "cubemx.installFirmware": "Install",
     "cubemx.chooseFirmware": "Select the firmware version to install in CubeMX",
     "cubemx.firmwareVersion": "Enter a firmware version (number.number.number)",
     "cubemx.firmwareOpened":
@@ -993,6 +989,7 @@ module.exports = Object.freeze({
     "mcp.client.cursor": "Cursor",
     "mcp.client.antigravity": "Antigravity",
     "mcp.client.dsh": "DeepSeek Harness (DSH)",
+    "mcp.client.workbuddy": "WorkBuddy",
     "mcp.client.json": "Other clients",
     "mcp.method.cursor": "Open the Cursor install link",
     "mcp.method.json": "Copy mcpServers JSON to the clipboard",
@@ -1009,6 +1006,12 @@ module.exports = Object.freeze({
     "mcp.action.upgrade": "Upgrade",
     "mcp.action.uninstall": "Remove",
     "mcp.action.copy": "Copy config",
+    "mcp.checkConnection": "Recheck MCP connection",
+    "mcp.connection.checking": "Checking…",
+    "mcp.connection.connected": "MCP connected · {count} tools",
+    "mcp.connection.initialize": "Could not start or initialize the EmberProbe MCP server.",
+    "mcp.connection.tools": "The MCP server did not return a tool list.",
+    "mcp.connection.timeout": "The MCP connection check timed out.",
     "mcp.state.notInstalled": "Not installed",
     "mcp.state.installed": "Installed",
     "mcp.state.outdated": "Outdated",
@@ -1032,6 +1035,8 @@ module.exports = Object.freeze({
         "OpenCode JSON copied: merge mcp.emberprobe into your active opencode.json/jsonc, preserving other entries. Enable Agent access in EmberProbe",
     "mcp.configCopied.antigravity":
         "Antigravity configuration copied: merge the emberprobe entry in MCP Servers → Manage MCP Servers → View raw config, then refresh servers; enable Agent access for this workspace in EmberProbe",
+    "mcp.configCopied.workbuddy":
+        "WorkBuddy configuration copied. Merge mcpServers.emberprobe into the active WorkBuddy MCP configuration, then enable EmberProbe in Connectors.",
     "mcp.configCopied.dsh":
         "DSH configuration copied: save as emberprobe.cordis.yml and run dsh web --patch <file-path>; enable Agent access for this workspace in EmberProbe",
     "agent.cleanupConfirm":

@@ -67,13 +67,16 @@
         inspection,
         formatChartTime,
         t,
-        now = 0
+        now = 0,
+        smoothY = false
     }) {
         const $ = (id) => elements[id];
         const sourceSeries = series;
         const heldX = chartState.heldFitX;
         if (chartState.fitRequested || (heldX && (heldX.min !== chartState.x?.min || heldX.max !== chartState.x?.max)))
             chartState.heldFitX = null;
+        smoothY = smoothY && chartState.autoY && !chartState.heldFitX;
+        if (!smoothY) chartState.yFitMotion = null;
         inspection = inspection || defaultInspection;
         const prepareKey = norm;
         if (!chartState.prepared || chartState.prepared.source !== series || chartState.prepared.key !== prepareKey)
@@ -84,10 +87,12 @@
             chartState.axisOrigin !== undefined &&
             chartState.axisOrigin !== prepared.origin &&
             chartState.y &&
-            (!chartState.autoY || chartState.heldFitX)
+            (!chartState.autoY || chartState.heldFitX || smoothY)
         ) {
             const shift = Number((chartState.axisOrigin ?? 0n) - (prepared.origin ?? 0n));
             chartState.y = { min: chartState.y.min + shift, max: chartState.y.max + shift };
+            const fitted = chartState.yFitMotion?.target;
+            if (fitted) chartState.yFitMotion.target = { min: fitted.min + shift, max: fitted.max + shift };
         }
         chartState.axisOrigin = prepared.origin;
         series = prepared.series;
@@ -186,6 +191,7 @@
                 chartState.hits = [];
                 chartState.rangeStats = null;
                 chartState.geometry = null;
+                chartState.yFitMotion = null;
                 empty.classList.remove("hidden");
                 $("points").textContent = t("lw.points", { n: 0 });
                 $("range").textContent = "-";
@@ -258,6 +264,7 @@
             });
             if (!Number.isFinite(vMin) || !Number.isFinite(vMax)) {
                 chartState.hits = [];
+                chartState.yFitMotion = null;
                 empty.classList.remove("hidden");
                 $("points").textContent = t("lw.points", { n: 0 });
                 $("range").textContent = "-";
@@ -268,7 +275,9 @@
                 const range = norm ? { min: 0, max: 1 } : { min: vMin, max: vMax };
                 const padded = norm ? { min: -0.08, max: 1.08 } : padRange(vMin, vMax);
                 const target = VP.fitY(range, chartState.fitMode, padded);
-                chartState.y = VP.stabilizeY(chartState, target, now);
+                chartState.y = smoothY
+                    ? VP.followY(chartState, target, range, now)
+                    : VP.stabilizeY(chartState, target, now);
                 chartState.fitRequested = false;
             }
             var bs = style,

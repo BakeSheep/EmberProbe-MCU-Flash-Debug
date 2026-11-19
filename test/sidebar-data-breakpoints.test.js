@@ -210,6 +210,7 @@ function serviceFixture() {
             await Promise.resolve();
             view.send(status);
             const row = view.document.querySelector('[data-breakpoint-path="counter"]');
+            Object.defineProperty(view.document.documentElement, "clientWidth", { value: 260 });
             const open = () =>
                 row.dispatchEvent(
                     new view.window.MouseEvent("contextmenu", {
@@ -222,6 +223,8 @@ function serviceFixture() {
             open();
             const request = view.messages.at(-1);
             assert.strictEqual(request.action, "info");
+            let menu = view.document.querySelector('[role="menu"]');
+            Object.defineProperty(menu, "offsetWidth", { value: 220 });
             view.send({
                 ...status,
                 requestId: request.requestId,
@@ -231,8 +234,11 @@ function serviceFixture() {
                     accessTypes: ["write", "read", "readWrite"]
                 }
             });
-            let menu = view.document.querySelector('[role="menu"]');
             assert(menu);
+            assert.strictEqual(menu.style.left, "28px", "leave 12px before the page's scrollbar");
+            assert.strictEqual(menu.style.getPropertyValue("--data-breakpoint-menu-width"), "244px");
+            assert.strictEqual(menu.querySelectorAll('[role="menuitemradio"]').length, 3);
+            assert.strictEqual(menu.querySelector(".data-breakpoint-choice svg"), null);
             assert.strictEqual(menu.querySelectorAll("button:not(:disabled)").length, 3);
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
             assert.strictEqual(view.document.activeElement.textContent, "读取时中断");
@@ -260,18 +266,114 @@ function serviceFixture() {
                 entries: [entry]
             });
             menu = view.document.querySelector('[role="menu"]');
-            assert([...menu.querySelectorAll("button")].some((button) => button.textContent === "编辑条件…"));
+            assert.ok(!menu.textContent.includes("已设置"));
+            const breakpointCard = menu.querySelector('[role="group"][aria-label="数据断点"]');
+            const options = [...breakpointCard.querySelectorAll('[role="menuitemradio"]')];
+            assert.deepStrictEqual(
+                options.map((option) => option.getAttribute("aria-checked")),
+                ["false", "true", "false"]
+            );
+            assert(options[1].querySelector(".data-breakpoint-choice svg"));
+            assert.deepStrictEqual(
+                options.map((option) => option.disabled),
+                [true, false, true]
+            );
+            assert.deepStrictEqual(
+                [...options[1].parentElement.querySelectorAll(".data-breakpoint-tool")].map(
+                    (button) => button.textContent
+                ),
+                ["禁用数据断点", "编辑条件…", "删除数据断点"]
+            );
+            assert.strictEqual(menu.querySelectorAll(".data-breakpoint-tool").length, 3);
             assert.strictEqual(menu.querySelector(".data-breakpoint-note:not(.watch-write-note)"), null);
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
             assert.strictEqual(view.document.activeElement.textContent, "删除数据断点");
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
             assert.strictEqual(view.document.activeElement, row);
+            const openWith = (entry) => {
+                open();
+                view.send({
+                    ...status,
+                    requestId: view.messages.at(-1).requestId,
+                    info: { dataId: "storage", accessTypes: ["read"] },
+                    entries: [entry]
+                });
+                return view.document.querySelectorAll('[role="menuitemradio"]')[1];
+            };
+            openWith(entry).click();
+            assert.strictEqual(view.messages.at(-1).action, "enable");
+            assert.strictEqual(view.messages.at(-1).id, entry.id);
+            assert.strictEqual(view.messages.at(-1).enabled, false);
+            const unchecked = openWith({ ...entry, enabled: false, verified: false });
+            assert.strictEqual(unchecked.getAttribute("aria-checked"), "false");
+            unchecked.click();
+            assert.strictEqual(view.messages.at(-1).action, "enable");
+            assert.strictEqual(view.messages.at(-1).enabled, true);
             open();
             const late = view.messages.at(-1);
             view.send({ ...status, sessionId: "two", epoch: 2, entries: [] });
             view.send({ ...status, requestId: late.requestId, info: { dataId: "old" } });
             assert.strictEqual(view.document.querySelector('[role="menu"]'), null);
             assert.strictEqual(row.querySelector(".data-breakpoint-mark"), null);
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    });
+    await scenario("disabled entries stay manageable beside their trigger and scrolling closes the menu", async () => {
+        const view = render(getModernWebviewContent({}, "en"));
+        try {
+            const entry = {
+                id: "1",
+                name: "counter",
+                accessType: "write",
+                enabled: false,
+                verified: false,
+                dataId: "storage",
+                condition: "counter > 5"
+            };
+            const status = {
+                type: "sidebarDataBreakpoints",
+                sessionId: "one",
+                epoch: 1,
+                available: true,
+                paused: true,
+                entries: [entry]
+            };
+            const info = { dataId: "storage", accessTypes: ["write", "read", "readWrite"] };
+            view.send({ type: "sidebarWatchList", items: [{ name: "counter", type: "u32" }] });
+            await Promise.resolve();
+            view.send(status);
+            const row = view.document.querySelector('[data-breakpoint-path="counter"]');
+            const menu = () => view.document.querySelector(".data-breakpoint-menu");
+            const open = () => {
+                row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
+                return view.messages.at(-1).requestId;
+            };
+            view.send({ ...status, requestId: open(), info });
+            const choice = menu().querySelector('[role="menuitemradio"]');
+            assert.strictEqual(choice.getAttribute("aria-checked"), "false");
+            assert.strictEqual(choice.querySelector(".data-breakpoint-choice svg"), null);
+            assert.match(choice.parentElement.parentElement.textContent, /Disabled · counter > 5/);
+            assert.strictEqual(choice.nextElementSibling.firstElementChild.textContent, "Enable Data Breakpoint");
+            choice.nextElementSibling.firstElementChild.click();
+            assert.deepStrictEqual(
+                {
+                    action: view.messages.at(-1).action,
+                    id: view.messages.at(-1).id,
+                    enabled: view.messages.at(-1).enabled
+                },
+                { action: "enable", id: "1", enabled: true }
+            );
+            for (const deltaY of [-75, 75]) {
+                const requestId = open();
+                const wheel = new view.window.WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY });
+                (deltaY < 0 ? menu() : row).dispatchEvent(wheel);
+                assert.strictEqual(menu(), null);
+                assert.strictEqual(wheel.defaultPrevented, false, "leave scrolling available");
+                view.send({ ...status, requestId, info });
+                assert.strictEqual(menu(), null, "a delayed storage lookup cannot reopen the menu");
+            }
             view.assertHealthy();
         } finally {
             view.close();
@@ -378,7 +480,17 @@ function serviceFixture() {
             assert.strictEqual(view.document.querySelector('[role="menu"]'), null);
             view.send({ ...status, available: false, sessionId: null });
             row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
-            assert(view.document.querySelector('[role="menu"]').textContent.includes("Select an available"));
+            const cards = [...view.document.querySelectorAll('[role="menu"] > [role="group"]')];
+            assert.deepStrictEqual(
+                cards.map((card) => card.getAttribute("aria-label")),
+                ["Write List", "Data Breakpoints"]
+            );
+            const writeAction = cards[0].querySelector(".watch-write-action");
+            assert.strictEqual(cards[0].querySelector(".data-breakpoint-card-title"), null);
+            assert.strictEqual(writeAction.disabled, true);
+            assert.strictEqual(cards[0].querySelector(".watch-write-note").textContent, writeAction.title);
+            assert.match(cards[1].querySelector(".data-breakpoint-note").textContent, /^Select an available/);
+            assert.strictEqual(cards[1].querySelector(".watch-write-action, .watch-write-note"), null);
         } finally {
             view.close();
         }

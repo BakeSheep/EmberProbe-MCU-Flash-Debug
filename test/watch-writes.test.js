@@ -25,6 +25,83 @@ const types = [
 const graph = { root: 4, types };
 
 (async () => {
+    await scenario("Add fixed-address ELF scalars and members while sampling is stopped", async () => {
+        const view = render(getModernWebviewContent({}, "en"), { sbExpanded: { bundle: true } });
+        try {
+            const scalar = {
+                name: "counter",
+                address: 0x20000000,
+                watchType: "u32",
+                size: 4,
+                hasDwarfWriteType: true
+            };
+            const bundle = {
+                name: "bundle",
+                address: 0x20000010,
+                size: 16,
+                isComposite: true,
+                compositeLayout: {
+                    kind: "class",
+                    members: [
+                        { name: "signature", offset: 4, byteSize: 4, watchType: "f32" },
+                        { name: "limit", offset: 8, byteSize: 4, watchType: "f32", isConst: true }
+                    ]
+                },
+                runtimeLayout: {
+                    root: types.length,
+                    types: [
+                        ...types,
+                        {
+                            kind: "class",
+                            typeName: "Bundle",
+                            byteSize: 16,
+                            fields: [
+                                { name: "signature", offset: 4, type: 0 },
+                                { name: "limit", offset: 8, type: 2 },
+                                { name: "next", offset: 12, type: 4 }
+                            ]
+                        }
+                    ]
+                }
+            };
+            view.send({
+                type: "availableVariables",
+                symbols: [scalar, bundle],
+                writeRanges: [{ start: 0x20000000, end: 0x20000020 }]
+            });
+            view.send({ type: "sidebarWatchList", items: [{ ...scalar, type: "u32" }, bundle] });
+            await Promise.resolve();
+            const open = (name) => {
+                const row = view.document.querySelector(`[data-breakpoint-path="${name}"]`);
+                assert(row, name);
+                row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true }));
+                return view.document.querySelector(".watch-write-action");
+            };
+            const writeList = () => view.messages.findLast((message) => message.type === "saveSidebarWrite").items;
+            assert.strictEqual(open("bundle.limit").disabled, true);
+            assert.strictEqual(open("counter").disabled, false);
+            open("counter").click();
+            assert.strictEqual(open("bundle.signature").disabled, false);
+            open("bundle.signature").click();
+            assert.deepStrictEqual(
+                writeList().map(({ name, address, fromWatch }) => [name, address, fromWatch]),
+                [
+                    ["counter", 0x20000000, undefined],
+                    ["bundle.signature", 0x20000014, undefined]
+                ]
+            );
+            assert([...view.document.querySelectorAll(".write-input")].every((input) => input.disabled));
+            assert(!view.messages.some((message) => message.type === "writeVariable"));
+            open("bundle.signature").click();
+            assert.deepStrictEqual(
+                writeList().map(({ name }) => name),
+                ["counter"]
+            );
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    });
     await scenario(
         "Add watched dynamic leaves without writing, gate stale values and recover from new samples",
         async () => {

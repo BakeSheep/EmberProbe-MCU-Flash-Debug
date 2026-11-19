@@ -183,6 +183,7 @@ class McpRegistration {
         this.commitInstall = options.commitInstall || commitClientInstall;
         this.readStatus = options.readStatus || clientStatus;
         this.busyClient = "";
+        this.connectionCheck = null;
         this.emitter = null;
         this.registered = false;
         this.host = "";
@@ -342,6 +343,17 @@ class McpRegistration {
         } catch (error) {
             console.warn("MCP client status:", error.message);
         }
+    }
+
+    async checkConnection() {
+        if (!this.connectionCheck) {
+            // Load the MCP client SDK only when the check is requested.
+            const { checkMcpConnection } = require("./mcpConnectivity");
+            this.connectionCheck = checkMcpConnection(this.serverSpec()).finally(() => {
+                this.connectionCheck = null;
+            });
+        }
+        return this.connectionCheck;
     }
 
     pick(client) {

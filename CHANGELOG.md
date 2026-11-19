@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### MCP
+
+- 支持在侧栏安装、升级和移除 WorkBuddy 的 EmberProbe MCP 配置。新增连通性检测，可验证本地 MCP 服务器启动和工具列表。
+- Install, upgrade, and remove the EmberProbe MCP configuration for WorkBuddy from the sidebar. Test the local MCP server's startup and tool listing on demand.
+
 ### CubeMX
 
 - CubeMX2 的侧栏固件包检查覆盖工程声明的 pack、所需版本与已安装版本，适用于 C5 及后续系列；缺包时可打开 CubeMX2 管理并重新检查。传统 CubeMX 同样明确显示版本不匹配，补装工程要求的版本。
@@ -22,8 +27,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - OpenOCD 的 scatter 读取失败回复会结束本轮读取；即使诊断日志晚于 Tcl 回复，也不会在本轮发起普通读取。收到明确的 CMSIS-DAP 通信错误日志时结束会话并报告 `PROBE_COMMUNICATION_FAILED`。探针初始化时正常的 USB 清空超时不会触发断连。
 - End the current read when OpenOCD reports a scatter memory read failure, even if the diagnostic log arrives after the Tcl reply. An explicit CMSIS-DAP communication failure log closes the session with `PROBE_COMMUNICATION_FAILED`. Expected USB drain timeouts during initialization do not trigger a disconnect.
 
-- 当 `emberprobe.samplingAdapterSpeedKhz` 与 `emberprobe.adapterSpeedKhz` 均为 `0` 时，独立 Cortex-M SWD 采样会在启动后自动按探针阶梯校验并选择吞吐最优的稳定链路时钟（检测驱动钳制、平台期与 SWD WAIT 减速，支持中点细化与运行中自动回退），不改变调试、烧录、单次读取、RTT 或写入授权绑定。
-- Automatically benchmark and select the fastest verified stable SWD adapter clock for standalone Cortex-M sampling when both `emberprobe.samplingAdapterSpeedKhz` and `emberprobe.adapterSpeedKhz` are `0` (respecting driver clamps, throughput plateaus, SWD WAIT slowdowns, midpoint refinement, and runtime step-down fallback), without affecting debug, flashing, one-shot reads, RTT, or write-authorization bindings.
+- 当 `emberprobe.samplingAdapterSpeedKhz` 与 `emberprobe.adapterSpeedKhz` 均为 `0` 时，独立 Cortex-M SWD 采样会在启动后自动按探针阶梯校验并选择吞吐最优的稳定链路时钟（检测驱动钳制、平台期与 SWD WAIT 减速，支持中点细化与运行中自动回退），并在波形窗口绘图设置中提供对应的「采样时钟」自适应开关与滑条（1000–20000 kHz，步进 1000 kHz，运行期间锁定灰显，写入工作区 `emberprobe.samplingAdapterSpeedKhz`），不改变调试、烧录、单次读取、RTT 或写入授权绑定。
+- Automatically benchmark and select the fastest verified stable SWD adapter clock for standalone Cortex-M sampling when both `emberprobe.samplingAdapterSpeedKhz` and `emberprobe.adapterSpeedKhz` are `0` (respecting driver clamps, throughput plateaus, SWD WAIT slowdowns, midpoint refinement, and runtime step-down fallback), and add a Sampling Clock option (Auto toggle + 1000–20000 kHz slider in 1000 kHz steps, locked while sampling, persisted to workspace `emberprobe.samplingAdapterSpeedKhz`) in the waveform settings popover, without affecting debug, flashing, one-shot reads, RTT, or write-authorization bindings.
 
 ### 调试 / Debug
 

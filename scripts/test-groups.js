@@ -165,6 +165,7 @@ const TEST_GROUPS = Object.freeze({
         "bridge-security.test.js",
         "mcp-baseline.test.js",
         "mcp-config-files.test.js",
+        "mcp-connectivity.test.js",
         "mcp-registration.test.js",
         "mcp-server.test.js",
         "chart-host.test.js",

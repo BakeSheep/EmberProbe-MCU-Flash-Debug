@@ -191,9 +191,10 @@ async function networkAndIdentity() {
         intent: true,
         _startGeneration: 0,
         stop: (options) => {
-            assert(options.preserveIntent);
+            assert.deepStrictEqual(options, { discardPending: true });
             stopped++;
-            provider._sampling._startGeneration++;
+            provider._sampling.intent = false;
+            provider._sampling.session = null;
         },
         start: async () => {
             restarted++;
@@ -201,7 +202,7 @@ async function networkAndIdentity() {
     });
     provider.connectionConfigurationChanged(true, true);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual([marked, stopped, restarted], [1, 1, 1]);
+    assert.deepStrictEqual([marked, stopped, restarted], [1, 1, 0]);
 }
 
 async function fractionalStorage() {

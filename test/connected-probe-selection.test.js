@@ -290,7 +290,7 @@ async function main() {
         _commandContext: () => ({ cwd: "/work" })
     });
     provider._probeConnectionService.rememberTargetReading(second, f407);
-    assert.strictEqual(await provider._connectedProbes.readTargets(), true);
+    assert.strictEqual(await provider._connectedProbes.readTargets("user"), true);
     assert.deepStrictEqual(requests, [
         ["jlink.cfg", "1234", "stm32f4x.cfg", "openocd", "/work"],
         ["jlink.cfg", "5678", "stm32f4x.cfg", "openocd", "/work"],
@@ -313,7 +313,7 @@ async function main() {
     // While an operation holds the probe in use, nothing is read and that probe shows no chip.
     const lease = provider._probeCoordinator.acquire("liveWatch");
     requests.length = 0;
-    assert.strictEqual(await provider._connectedProbes.readTargets(), false);
+    assert.strictEqual(await provider._connectedProbes.readTargets("user"), false);
     assert.deepStrictEqual(requests, []);
     await provider._connectedProbes.refresh();
     assert.strictEqual(labels()[first.id], "");
@@ -325,56 +325,58 @@ async function main() {
     assert.deepStrictEqual(cores(), ["Cortex-M7", "", "Cortex-M4"]);
     // Nothing to read with: no target configuration, or no OpenOCD.
     state.delete("mcu.mcuCore");
-    assert.strictEqual(await provider._connectedProbes.readTargets(), false);
+    assert.strictEqual(await provider._connectedProbes.readTargets("user"), false);
     state.set("mcu.mcuCore", "stm32f4x.cfg");
     provider._resolveOpenOcdPath = async () => "";
-    assert.strictEqual(await provider._connectedProbes.readTargets(), false);
+    assert.strictEqual(await provider._connectedProbes.readTargets("user"), false);
     assert.deepStrictEqual(requests, []);
     // An obsolete setting cannot hide the other probes from target discovery.
     provider._resolveOpenOcdPath = async () => "openocd";
     settings.probeSerial = "5678";
-    assert.strictEqual(await provider._connectedProbes.readTargets(), true);
+    assert.strictEqual(await provider._connectedProbes.readTargets("user"), true);
     assert.deepStrictEqual(
         requests.map((request) => request[1]),
         ["1234", "5678", ""]
     );
     settings.probeSerial = "";
 
-    // After a restart automatic mode has its recorded chip but no reading of which probe holds it: the list reads
-    // the chips itself, once, instead of asking the user to pick a probe the next operation would find.
-    const settled = async () => {
-        for (let tick = 0; tick < 50 && provider._connectedProbes.targetsReading; tick++)
-            await new Promise((resolve) => setImmediate(resolve));
-        await new Promise((resolve) => setImmediate(resolve));
-    };
-    await provider._connectedProbes.select("");
-    // Without a record the list reads too, for the one probe with the configured model; this one finds none.
-    await settled();
-    assert.strictEqual(shown().state, "ambiguous");
-    await provider._probeConnectionService.saveTarget("jlink.cfg", "stm32f4x.cfg", f407);
-    provider._probeConnectionService.targetReadings.clear();
-    provider._connectedProbes.targetsReadFor = "";
-    chips[5678] = f407;
-    requests.length = 0;
-    await provider._connectedProbes.refresh();
-    assert.deepStrictEqual([shown().state, shown().error], ["identifying", null]);
-    await settled();
-    assert.deepStrictEqual([shown().state, shown().source, selectedId()], ["selected", "target-chip", second.id]);
-    assert.strictEqual(requests.length, 3);
-    // A probe that cannot be read leaves the choice to the user, without reading again on every poll.
-    provider._probeConnectionService.targetReadings.clear();
-    provider._connectedProbes.targetsReadFor = "";
-    delete chips[5678];
-    await provider._connectedProbes.refresh();
-    await settled();
-    assert.strictEqual(shown().state, "ambiguous");
-    requests.length = 0;
-    await provider._connectedProbes.refresh();
-    await settled();
-    assert.deepStrictEqual([shown().state, requests], ["ambiguous", []]);
-    await provider._connectedProbes.select("");
+    await scenario("passive probe refresh only enumerates until the user requests a target scan", async () => {
+        await provider._connectedProbes.select("");
+        await provider._probeConnectionService.saveTarget("jlink.cfg", "stm32f4x.cfg", f407);
+        provider._probeConnectionService.targetReadings.clear();
+        chips[5678] = f407;
+        requests.length = 0;
+        await provider._connectedProbes.refresh();
+        await provider._connectedProbes.refresh();
+        assert.deepStrictEqual([shown().state, requests], ["ambiguous", []]);
+        assert.strictEqual(await provider._connectedProbes.readTargets(), false);
+        assert.deepStrictEqual(requests, []);
+        assert.strictEqual(await provider._connectedProbes.readTargets("user"), true);
+        await provider._connectedProbes.refresh();
+        assert.deepStrictEqual([shown().state, shown().source, selectedId()], ["selected", "target-chip", second.id]);
+        assert.strictEqual(requests.length, 3);
+    });
+    await scenario("selecting and clearing a physical probe discards the previous adaptive clock", async () => {
+        const sampling = provider._sampling;
+        const configs = [];
+        provider._livePanels = new Map([[1, { post: (message) => configs.push(message) }]]);
+        const rememberClock = () =>
+            sampling.captureAdaptiveSpeed({ adaptiveSpeed: { state: "tuned", effectiveKhz: 12000 } });
+        rememberClock();
+        await provider._connectedProbes.select(anonymous.id);
+        assert.strictEqual(sampling.lastAdaptiveSpeedKhz, null);
+        assert.strictEqual(configs.at(-1).adaptiveEffectiveKhz, null);
+        rememberClock();
+        await provider._connectedProbes.select("");
+        assert.strictEqual(sampling.lastAdaptiveSpeedKhz, null);
+        assert.strictEqual(configs.at(-1).adaptiveEffectiveKhz, null);
+    });
     delete provider._probeConnectionService.identifyTarget;
-    assert.strictEqual(await provider._connectedProbes.readTargets(), false, "only the extension host reads chips");
+    assert.strictEqual(
+        await provider._connectedProbes.readTargets("user"),
+        false,
+        "only the extension host reads chips"
+    );
     inventory = earlierInventory;
 
     // The sidebar's list of probes is part of the webview message protocol.

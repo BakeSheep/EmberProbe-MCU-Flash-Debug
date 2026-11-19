@@ -1537,7 +1537,7 @@ async function smoothRender() {
         assert.strictEqual(options.elements.range.textContent, `${base + 109n} ～ ${base + 211n}`);
     });
 
-    function followScenario(run, reduced = false) {
+    function followScenario(run, reduced = false, sample = (_time, index) => Math.sin(index / 20)) {
         let now = 10000,
             callback,
             drawCost = 0,
@@ -1599,7 +1599,7 @@ async function smoothRender() {
                         item: { name: "a", type: "f32", address: 0x20000000 },
                         arr: Array.from({ length: 801 }, (_, i) => ({
                             t: dataMax - 16000 + i * 20,
-                            v: Math.sin(i / 20)
+                            v: sample(dataMax - 16000 + i * 20 - origin, i)
                         }))
                     }
                 ]
@@ -1687,6 +1687,36 @@ async function smoothRender() {
         frame();
         assert.strictEqual(w.chartState.followClock, null);
     });
+
+    for (const mode of ["center", "fill"]) {
+        followScenario(
+            ({ w, frame, commit }) => {
+                commit();
+                frame();
+                w.viewportController.fit(mode, true);
+                frame();
+                const originalSpan = w.VP.span(w.chartState.y);
+                frame(48);
+                for (let batch = 0; batch < 20; batch++) {
+                    commit(80, 16);
+                    frame();
+                    for (let f = 0; f < 3; f++) {
+                        const previous = w.chartState.y;
+                        frame();
+                        const next = w.chartState.y;
+                        assert.ok(next.min > previous.min && next.max > previous.max, "Y follows between data commits");
+                        assert.ok(Math.abs(w.VP.span(next) - originalSpan) < 1e-6, "a ramp does not change the scale");
+                    }
+                }
+                w.freezeChart();
+                const frozenY = { ...w.chartState.y };
+                frame(500);
+                assert.deepStrictEqual({ ...w.chartState.y }, frozenY, "freezing stops the vertical transition");
+            },
+            false,
+            (time) => time / 10
+        );
+    }
 
     for (const disable of [
         (w) => w.freezeChart(),
@@ -2214,6 +2244,11 @@ async function fitAndUndo() {
     assert.deepEqual(viewport.stabilizeY(centered, narrow, 1000), narrow);
     const wide = { min: 8, max: 28 };
     assert.deepEqual(viewport.stabilizeY(centered, wide, 1200), wide, "expanding keeps padding symmetric");
+    const following = { fitMode: "fill", y: { min: -1, max: 1 } };
+    const spike = { min: -20, max: 100 };
+    following.y = viewport.followY(following, viewport.padRange(spike.min, spike.max), spike, 16);
+    assert.ok(following.y.min <= spike.min && following.y.max >= spike.max, "a new live spike is visible immediately");
+    assert.ok(following.yFitMotion.pending, "the padded scale continues to ease in");
 }
 
 async function fitButtonGestures() {

@@ -7,51 +7,51 @@ const { getModernWebviewContent } = require("../src/modernView");
 
 const configured = { elf: "app.elf", debugger: "interface/stlink.cfg", mcu: "stm32f4x.cfg" };
 
-scenario("Align CubeMX firmware requirements and installed versions with the appropriate action", () => {
-    for (const [state, versions, installed, action, english] of [
-        ["version-mismatch", ["1.11.0"], false, "升级", "Upgrade"],
-        ["version-mismatch", ["1.13.0"], false, "安装", "Install"],
-        ["version-mismatch", ["1.10.0", "1.9.0"], false, "升级", "Upgrade"],
-        ["version-mismatch", ["1.11.0", "1.13.0"], false, "安装", "Install"],
-        ["missing", [], false, "安装", "Install"],
-        ["unknown", [], false, "安装", "Install"],
-        ["installed", ["1.12.1", "1.13.0"], true, null, null]
+scenario("Show installed CubeMX versions inline and mismatched requirements in the configuration notice", () => {
+    for (const [state, versions] of [
+        ["version-mismatch", ["1.11.0"]],
+        ["version-mismatch", ["1.13.0", "1.11.0"]],
+        ["missing", []],
+        ["unknown", []],
+        ["installed", ["1.12.1", "1.13.0"]]
     ]) {
+        const required = "1.12.1";
         const page = render(
             getModernWebviewContent(
                 {
                     ...configured,
                     cubemxStatus: "CubeMX 已就绪",
-                    cubemxFirmware: {
-                        family: "H7",
-                        requiredVersion: "1.12.1",
-                        versions,
-                        repository: 'C:/firmware/<packages>"',
-                        state,
-                        installed
-                    }
+                    cubemxFirmware: { family: "H7", requiredVersion: required, versions, state }
                 },
                 "zh"
             )
         );
         try {
             const row = page.document.querySelector(".cubemx-config-row");
-            const card = row.querySelector(".cubemx-firmware");
             assert.strictEqual(row.parentElement, page.document.querySelector("#otherConfig > .tree"));
             assert.strictEqual(row.previousElementSibling.dataset.command, "mcu-vscode.selectIoc");
-            assert.strictEqual(card.querySelector(".cubemx-firmware-label").textContent, "CubeMX / 固件包");
-            assert.ok(!row.textContent.includes("已就绪"));
-            assert.strictEqual(card.querySelector(".cubemx-package-name").textContent, "STM32Cube H7");
-            assert.ok(card.querySelector(".cubemx-package-versions").textContent.includes("需求 1.12.1"));
-            assert.strictEqual(card.querySelector(".cubemx-current-version").textContent, versions.join(", ") || "—");
-            assert.strictEqual(card.querySelector(".cubemx-package-list").title, 'C:/firmware/<packages>"');
-            const install = card.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]');
-            assert.strictEqual(install?.textContent || null, action);
-            if (install) {
-                install.click();
-                assert.strictEqual(page.messages.at(-1).cmd, "mcu-vscode.installCubeMxFirmware");
-            }
-            const refresh = card.querySelector(".cubemx-refresh");
+            assert.strictEqual(row.querySelector(".cubemx-firmware-label").textContent, "CubeMX / 固件包");
+            assert.strictEqual(row.querySelector(".cubemx-package-name").textContent, "STM32Cube H7");
+            assert.strictEqual(row.querySelector(".cubemx-current-version").textContent, versions.join(", ") || "—");
+            assert.ok(!row.textContent.includes("需求") && !row.textContent.includes("已就绪"));
+            assert.strictEqual(row.querySelector("details, select"), null);
+            assert.strictEqual(row.querySelectorAll("button").length, 1);
+            assert.strictEqual(row.querySelector(".tag").textContent, "可选");
+
+            const notice = page.document.querySelector('[data-notice-id="cubemx-firmware"]');
+            if (state === "version-mismatch") {
+                assert.strictEqual(notice.closest("details").id, "otherConfig");
+                assert.ok(page.document.getElementById("noticeConfig").hidden);
+                assert.ok(notice.classList.contains("notice--warning"));
+                assert.strictEqual(notice.querySelector(".notice-title").textContent, "固件包版本不匹配");
+                assert.strictEqual(
+                    notice.querySelector("li").textContent,
+                    `STM32Cube H7 需要 ${required}，已安装 ${versions.join(", ")}。`
+                );
+            } else assert.strictEqual(notice, null);
+
+            const refresh = row.querySelector(".cubemx-refresh");
+            assert.strictEqual(page.window.getComputedStyle(refresh).borderRadius, "4px");
             refresh.click();
             assert.strictEqual(page.messages.at(-1).cmd, "mcu-vscode.refreshCubeMxFirmware");
             page.send({ type: "setLang", lang: "en" });
@@ -60,8 +60,13 @@ scenario("Align CubeMX firmware requirements and installed versions with the app
                 page.document.getElementById(refresh.getAttribute("aria-labelledby")).textContent,
                 "Recheck firmware"
             );
-            if (install) assert.strictEqual(install.textContent, english);
-            assert.ok(card.querySelector(".cubemx-package-versions").textContent.includes("Need 1.12.1"));
+            assert.strictEqual(row.querySelector(".tag").textContent, "Optional");
+            if (notice) {
+                assert.strictEqual(
+                    page.document.querySelector("#noticeFirmware li").textContent,
+                    `STM32Cube H7 requires ${required}. Installed versions ${versions.join(", ")}.`
+                );
+            }
             page.assertHealthy();
         } finally {
             page.close();
@@ -90,85 +95,38 @@ scenario("Keep tool failures visible without repeating successful CubeMX detecti
     }
 });
 
-scenario("Summarize CubeMX packs in one line and reveal the full version list on demand", () => {
+scenario("List all installed CubeMX2 pack versions and warn only for incompatible packs", () => {
     const packs = [
-        { name: "stm32c5xx_dfp", requiredVersion: "2.1.0", versions: ["2.0.0"], state: "version-mismatch" },
-        { name: "cmsis", requiredVersion: "6.0.0", versions: ["6.0.0"], state: "installed" }
+        { name: "stm32c5xx_dfp", requiredVersion: "^2.1.0", versions: ["2.0.0"], state: "version-mismatch" },
+        { name: "cmsis", requiredVersion: "6.0.0", versions: ["6.0.0"], state: "installed" },
+        { name: "hal", requiredVersion: "1.0.0", versions: ["1.1.0"], state: "version-mismatch" },
+        { name: "conditional", requiredVersion: "${VERSION}", versions: ["2.0.0"], state: "unknown" }
     ];
     const page = render(getModernWebviewContent({ cubemxFirmware: { generator: "cubemx2", packs } }, "en"));
     try {
-        const disclosure = page.document.querySelector(".cubemx-packages");
-        const summary = disclosure.querySelector("summary");
-        assert.strictEqual(disclosure.open, false);
-        assert.ok(summary.textContent.includes("stm32c5xx_dfp Need 2.1.0 Have 2.0.0"));
-        assert.ok(summary.textContent.endsWith("+1"));
-        assert.ok(!summary.textContent.includes("cmsis"));
-        summary.click();
-        assert.strictEqual(disclosure.open, true);
+        const row = page.document.querySelector(".cubemx-config-row");
+        assert.strictEqual(row.querySelector(".cubemx-firmware-label").textContent, "CubeMX2 / Packs");
+        assert.strictEqual(row.querySelector("details, select"), null);
         assert.deepStrictEqual(
-            Array.from(
-                disclosure.querySelectorAll(".cubemx-package-list .cubemx-package-name"),
-                (name) => name.textContent
-            ),
+            Array.from(row.querySelectorAll(".cubemx-package-name"), (name) => name.textContent),
             packs.map(({ name }) => name)
+        );
+        assert.deepStrictEqual(
+            Array.from(row.querySelectorAll(".cubemx-current-version"), (version) => version.textContent),
+            packs.map(({ versions }) => versions.join(", "))
+        );
+        assert.deepStrictEqual(
+            Array.from(page.document.querySelectorAll("#noticeFirmware li"), (item) => item.textContent),
+            [
+                "stm32c5xx_dfp requires ^2.1.0. Installed versions 2.0.0.",
+                "hal requires 1.0.0. Installed versions 1.1.0."
+            ]
         );
         page.assertHealthy();
     } finally {
         page.close();
     }
 });
-
-scenario(
-    "Choose install, upgrade or manage for CubeMX2 packs without treating newer exact versions as upgrades",
-    () => {
-        for (const [requiredVersion, versions, state, action] of [
-            [">=2.1.0", ["2.0.0"], "version-mismatch", "升级"],
-            ["^2.1.0", ["2.0.0"], "version-mismatch", "升级"],
-            ["~2.1.0", ["2.0.0"], "version-mismatch", "升级"],
-            ["2.1.0", ["2.2.0"], "version-mismatch", "安装"],
-            ["2.1.0", [], "missing", "安装"],
-            ["${VERSION}", ["2.0.0"], "unknown", "管理"],
-            ["2.1.0", ["2.0.0-beta.1"], "version-mismatch", "安装"]
-        ]) {
-            const page = render(
-                getModernWebviewContent(
-                    {
-                        cubemxStatus: "已找到 CubeMX2 安装",
-                        cubemxFirmware: {
-                            generator: "cubemx2",
-                            family: "C5",
-                            installed: false,
-                            state,
-                            packs: [
-                                {
-                                    vendor: "STMicroelectronics",
-                                    name: "stm32c5xx_dfp",
-                                    requiredVersion,
-                                    versions,
-                                    state
-                                }
-                            ]
-                        }
-                    },
-                    "zh"
-                )
-            );
-            try {
-                const card = page.document.querySelector(".cubemx-firmware");
-                assert.strictEqual(card.querySelector(".cubemx-firmware-label").textContent, "CubeMX2 / 固件包");
-                assert.strictEqual(
-                    card.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]').textContent,
-                    action
-                );
-                assert.ok(card.textContent.includes(requiredVersion));
-                assert.ok(!card.textContent.includes("已找到"));
-                page.assertHealthy();
-            } finally {
-                page.close();
-            }
-        }
-    }
-);
 
 scenario("Keep CubeMX executable paths in machine-wide User settings rather than the sidebar", () => {
     const properties = Object.assign(
@@ -227,7 +185,22 @@ try {
     assert.strictEqual(mcpMenu.parentElement.closest("details"), agents);
     assert.strictEqual(mcpMenu.open, false);
     assert.strictEqual(doc.getElementById("mcpClientList").closest("details"), mcpMenu);
-    assert.strictEqual(mcpMenu.querySelector(":scope > summary").textContent, "MCP server");
+    const mcpLabel = doc.getElementById("mcpLabel");
+    const checkMcpConnection = doc.getElementById("mcpCheckConnection");
+    const mcpNotice = () => doc.querySelector('[data-notice-id="mcp-connection"]');
+    assert.strictEqual(mcpLabel.textContent, "MCP server");
+    assert.strictEqual(mcpLabel.nextElementSibling, checkMcpConnection);
+    assert.ok(checkMcpConnection.querySelector("svg"));
+    assert.strictEqual(checkMcpConnection.title, "Recheck MCP connection");
+    checkMcpConnection.click();
+    assert.strictEqual(mcpMenu.open, true, "refresh reveals the connection status inside the server section");
+    assert.deepStrictEqual(view.messages.at(-1), { type: "checkMcpConnection" });
+    assert.strictEqual(checkMcpConnection.disabled, true);
+    assert.strictEqual(mcpNotice().closest("details"), mcpMenu);
+    assert.strictEqual(mcpNotice().querySelector(".notice-text").textContent, "Checking…");
+    view.send({ type: "mcpConnection", state: "connected", toolCount: 42 });
+    assert.strictEqual(checkMcpConnection.disabled, false);
+    assert.strictEqual(mcpNotice().querySelector(".notice-text").textContent, "MCP connected · 42 tools");
     assert.ok(view.messages.some((message) => message.type === "getMcpClients"));
     view.send({
         type: "mcpClients",
@@ -253,6 +226,25 @@ try {
     assert.strictEqual(client("json").querySelector("small").title, "broken file");
     view.send({ type: "setLang", lang: "zh" });
     assert.deepStrictEqual(actions("codex"), ["升级", "移除"]);
+    assert.strictEqual(checkMcpConnection.title, "重新检测 MCP 连通性");
+    assert.strictEqual(mcpNotice().querySelector(".notice-text").textContent, "MCP 已连通 · 42 个工具");
+    for (const [state, error] of [
+        ["initialize", "无法启动或初始化 EmberProbe MCP 服务器。"],
+        ["tools", "MCP 服务器未返回工具列表。"],
+        ["timeout", "MCP 连通性检测超时。"]
+    ]) {
+        checkMcpConnection.click();
+        view.send({ type: "mcpConnection", state });
+        assert.strictEqual(checkMcpConnection.disabled, false);
+        assert.strictEqual(mcpNotice().getAttribute("role"), "alert");
+        assert.strictEqual(mcpNotice().querySelector(".notice-text").textContent, error);
+    }
+    checkMcpConnection.click();
+    mcpMenu.open = false;
+    view.send({ type: "mcpConnection", state: "connected", toolCount: 42 });
+    assert.ok(mcpNotice().classList.contains("notice--success"));
+    assert.strictEqual(mcpNotice().closest("details"), mcpMenu);
+    assert.strictEqual(mcpMenu.open, false, "a completed check respects a subsequent collapse");
     client("codex").querySelector('[data-action="upgrade"]').click();
     assert.deepStrictEqual(view.messages.at(-1), { type: "mcpClientAction", client: "codex", action: "upgrade" });
     assert.ok(

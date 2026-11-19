@@ -87,6 +87,24 @@
             failed.textContent = failure;
             failed.hidden = !failure;
         }
+        const checkConnection = document.getElementById("mcpCheckConnection");
+        function renderConnection({ state: result, toolCount }) {
+            const checking = result === "checking";
+            checkConnection.disabled = checking;
+            setNotice("mcp", "mcp-connection", {
+                level: checking ? "info" : result === "connected" ? "success" : "error",
+                text: { key: `mcp.connection.${result}`, params: { count: toolCount } },
+                busy: checking
+            });
+        }
+        checkConnection.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!api || checkConnection.disabled) return;
+            document.getElementById("mcpClientsSection").open = true;
+            renderConnection({ state: "checking" });
+            api.postMessage({ type: "checkMcpConnection" });
+        };
         function renderSkills(message) {
             const el = document.getElementById("skillStatus");
             if (!el) return;
@@ -137,7 +155,8 @@
         });
         refresh();
         api?.postMessage({ type: "getMcpClients" });
-        return { receive, renderSkills, renderAccess, renderClients, commandFinished };
+        const routes = { agentPermissions: receive, mcpClients: renderClients, mcpConnection: renderConnection };
+        return { routes, renderSkills, renderAccess, commandFinished };
     }
     return { create };
 });

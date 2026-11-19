@@ -143,6 +143,16 @@
         return { min, max, count };
     }
 
+    function padRange(lo, hi) {
+        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { min: -1, max: 1 };
+        if (hi <= lo) {
+            const bump = Math.abs(lo) * 0.05 || 1;
+            return { min: lo - bump, max: hi + bump };
+        }
+        const padding = (hi - lo) * 0.08;
+        return { min: lo - padding, max: hi + padding };
+    }
+
     function fitY(range, mode, padded) {
         if (mode !== "center") return padded;
         if (!validRange(range)) return zoomCentered(padded, 2.5);
@@ -152,14 +162,11 @@
         return validRange(result) ? result : padded;
     }
 
-    // Center mode follows the data midpoint immediately while using the same delayed contraction as fill mode.
-    function stabilizeY(state, target, now) {
-        if (!validRange(state.y) || state.fitRequested || !state.fitMode) {
+    function stabilizeY(state, target, now, current = state.y, centered = state.fitMode === "center") {
+        if (!validRange(current) || state.fitRequested || !state.fitMode) {
             state.fitHold = null;
             return target;
         }
-        const centered = state.fitMode === "center";
-        let current = state.y;
         if (centered) {
             const midpoint = target.min / 2 + target.max / 2;
             const halfSpan = span(current) / 2;
@@ -181,6 +188,27 @@
         if (now - state.fitHold < 1000) return current;
         state.fitHold = null;
         return target;
+    }
+
+    function followY(state, target, visible, now) {
+        const motion = state.yFitMotion;
+        // Move the fitted range with the data before testing contraction. Accumulating space on the trailing
+        // side of a drifting curve would repeatedly widen the scale before dropping back to the fitted span.
+        const fit = stabilizeY(state, target, now, motion?.target, true);
+        if (!validRange(state.y) || state.fitRequested) {
+            state.yFitMotion = null;
+            return fit;
+        }
+        // History arrives in batches. Ease the displayed bounds between commits while keeping new extrema visible.
+        const elapsed = Math.max(0, now - (motion?.at ?? now));
+        const weight = -Math.expm1(-elapsed / 120);
+        const y = {
+            min: Math.min(visible.min, state.y.min + (fit.min - state.y.min) * weight),
+            max: Math.max(visible.max, state.y.max + (fit.max - state.y.max) * weight)
+        };
+        const pending = Math.max(Math.abs(fit.min - y.min), Math.abs(fit.max - y.max)) > span(fit) * 0.001;
+        state.yFitMotion = { target: fit, at: now, pending };
+        return pending ? y : fit;
     }
 
     function timeTick(time, width) {
@@ -209,8 +237,10 @@
         isAtEnd,
         followEnd,
         visibleRange,
+        padRange,
         fitY,
         stabilizeY,
+        followY,
         timeTick
     };
 });

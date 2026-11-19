@@ -490,7 +490,7 @@ function cursorApi() {
             const result = await registration.installClient();
             assert.deepStrictEqual(
                 state.picks.map((pick) => pick.client),
-                ["claude", "codex", "gemini", "opencode", "cursor", "antigravity", "dsh", "json"]
+                ["claude", "codex", "gemini", "opencode", "cursor", "antigravity", "dsh", "workbuddy", "json"]
             );
             assert.strictEqual(state.picks[0].description, "mcp.method.native");
             assert.strictEqual(state.picks[1].description, "mcp.method.native");
@@ -555,7 +555,7 @@ function cursorApi() {
         });
 
         await scenario("Install every named harness directly after displaying target files", async () => {
-            for (const client of ["claude", "codex", "gemini", "opencode", "antigravity", "dsh"]) {
+            for (const client of ["claude", "codex", "gemini", "opencode", "antigravity", "dsh", "workbuddy"]) {
                 const state = { pick: client, confirm: "mcp.install" };
                 const { registration, clientHome, events, cli, clipboard } = setup({}, state);
                 state.onConfirm = (message, options) => {
@@ -728,7 +728,7 @@ function cursorApi() {
         await scenario(
             "Copy named client configurations with setup guidance and no CLI or link side effects",
             async () => {
-                for (const client of ["antigravity", "dsh", "gemini", "opencode"]) {
+                for (const client of ["antigravity", "dsh", "gemini", "opencode", "workbuddy"]) {
                     const { registration, clipboard, cli, opened, messages, events, state } = setup(
                         {},
                         {
@@ -889,6 +889,30 @@ function cursorApi() {
             await registration.installClient();
             const gemini = posted.at(-1).clients.find((item) => item.client === "gemini");
             assert.strictEqual(gemini.state, "installed");
+        });
+
+        await scenario("Check the shared launcher without configuring a client or opening the Bridge", async () => {
+            const { registration, events, clientHome } = setup(
+                {},
+                { platform: process.platform, runtime: process.execPath }
+            );
+            const serverPath = registration.serverPath();
+            fs.mkdirSync(path.dirname(serverPath), { recursive: true });
+            const source = require.resolve("../src/mcp/server");
+            fs.writeFileSync(serverPath, `module.exports = require(${JSON.stringify(source)});\n`);
+            await registration.writeLauncher();
+
+            const first = registration.checkConnection();
+            const running = registration.connectionCheck;
+            const second = registration.checkConnection();
+            assert.ok(running);
+            assert.strictEqual(registration.connectionCheck, running);
+            const [result, duplicate] = await Promise.all([first, second]);
+            assert.strictEqual(result.state, "connected");
+            assert.strictEqual(duplicate, result);
+            assert.strictEqual(registration.connectionCheck, null);
+            assert.deepStrictEqual(events, { resolved: 0, configured: 0 });
+            assert.ok(!fs.existsSync(clientHome));
         });
     } finally {
         fs.rmSync(base, { recursive: true, force: true });

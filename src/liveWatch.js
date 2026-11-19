@@ -498,9 +498,9 @@ class ManagedOpenOcdSession {
         };
     }
 
-    async _ensureTclConnected() {
+    async _ensureTclConnected(timeoutMs = 1000) {
         if (this.tcl.connected || this.stopped || this.connectionFailed) return;
-        this.tcl.attach(await this._connectWithRetry(clampInteger(this.options.port, 6666, 1, 65535), 1000));
+        this.tcl.attach(await this._connectWithRetry(clampInteger(this.options.port, 6666, 1, 65535), timeoutMs));
     }
 
     _recordCycle(durationMs, success = true, timestamp = this.clock.now()) {
@@ -809,44 +809,49 @@ class ManagedOpenOcdSession {
 
     _connectWithRetry(port, timeoutMs) {
         return new Promise((resolve, reject) => {
-            const deadline = this.clock.now() + timeoutMs;
+            const deadline = this.clock.monotonicMs() + timeoutMs;
+            const rejectTimeout = () => {
+                const diagnostic = diagnoseOpenOcdFailure(this.server.logTail, {
+                    ...connectionDetails(this.options),
+                    port
+                });
+                reject(Object.assign(new Error(diagnostic.message), diagnostic));
+            };
             const attempt = () => {
                 if (this.stopped) return reject(this.connectionError || new Error("Stopped"));
+                const remainingMs = deadline - this.clock.monotonicMs();
+                if (remainingMs <= 0) return rejectTimeout();
                 const sock = net.connect({ host: "127.0.0.1", port });
                 this.connectingSocket = sock;
                 const onConnect = () => {
-                    sock.removeListener("error", onInitialError);
-                    if (this.connectingSocket === sock) this.connectingSocket = null;
-                    if (this.stopped) {
-                        try {
-                            sock.destroy();
-                        } catch (e) {
-                            /* ignore */
-                        }
-                        reject(this.connectionError || new Error("Stopped"));
-                        return;
+                    cleanup();
+                    if (this.stopped || this.clock.monotonicMs() >= deadline) {
+                        sock.destroy();
+                        return this.stopped ? reject(this.connectionError || new Error("Stopped")) : rejectTimeout();
                     }
                     resolve(sock);
                 };
                 const onInitialError = () => {
-                    sock.removeListener("connect", onConnect);
-                    if (this.connectingSocket === sock) this.connectingSocket = null;
-                    try {
-                        sock.destroy();
-                    } catch (e) {
-                        /* ignore */
-                    }
+                    cleanup();
+                    sock.destroy();
                     if (this.stopped) reject(this.connectionError || new Error("Stopped"));
-                    else if (this.clock.now() > deadline) {
-                        const diagnostic = diagnoseOpenOcdFailure(this.server.logTail, {
-                            ...connectionDetails(this.options),
-                            port
-                        });
-                        reject(Object.assign(new Error(diagnostic.message), diagnostic));
-                    } else this.clock.schedule(attempt, 200);
+                    else this.clock.schedule(attempt, Math.max(0, Math.min(200, deadline - this.clock.monotonicMs())));
+                };
+                const timer = this.clock.schedule(() => {
+                    cleanup();
+                    sock.destroy();
+                    rejectTimeout();
+                }, remainingMs);
+                const cleanup = () => {
+                    this.clock.cancel(timer);
+                    sock.removeListener("connect", onConnect);
+                    sock.removeListener("error", onInitialError);
+                    sock.removeListener("close", onInitialError);
+                    if (this.connectingSocket === sock) this.connectingSocket = null;
                 };
                 sock.once("connect", onConnect);
                 sock.once("error", onInitialError);
+                sock.once("close", onInitialError);
             };
             attempt();
         });

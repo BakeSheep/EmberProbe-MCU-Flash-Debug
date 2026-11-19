@@ -27,7 +27,8 @@ const { createLivePanelHandler } = require("./controllers/livePanelRoutes");
 const {
     LiveWatchController,
     POINTER_EXPANDED_ONLY_STATE_KEY,
-    UNLIMITED_SAMPLING_STATE_KEY
+    UNLIMITED_SAMPLING_STATE_KEY,
+    MANUAL_SAMPLING_SPEED_STATE_KEY
 } = require("./services/liveWatchController");
 const { ElfViewController } = require("./services/elfViewController");
 const { DebugLaunch } = require("./services/debugLaunch");
@@ -176,7 +177,8 @@ class MainViewProvider {
         this._samplingController = createSamplingController(this, {
             frequencyHz: configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe")),
             unlimited: context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true,
-            pointerExpandedOnly: context.workspaceState.get(POINTER_EXPANDED_ONLY_STATE_KEY) !== false
+            pointerExpandedOnly: context.workspaceState.get(POINTER_EXPANDED_ONLY_STATE_KEY) !== false,
+            manualSamplingSpeedKhz: context.workspaceState.get(MANUAL_SAMPLING_SPEED_STATE_KEY)
         });
         const services = createServices(this, context, { vscode });
         this._probeCoordinator = services.probeCoordinator;
@@ -392,6 +394,8 @@ class MainViewProvider {
             const debuggerCfg = selected.label;
             this._assertConnectionEditable({ debugger: debuggerCfg });
             await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
+            this._sampling.clearAdaptiveSpeedMemory();
+            this._sampling.broadcastSamplingSpeedState();
             await this._showDebuggerConfig();
             await this._connectedProbes.refresh();
             return true;
@@ -415,6 +419,8 @@ class MainViewProvider {
             const mcuCore = selected.label;
             this._assertConnectionEditable({ mcu: mcuCore });
             await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
+            this._sampling.clearAdaptiveSpeedMemory();
+            this._sampling.broadcastSamplingSpeedState();
             await this.updateView();
             return true;
         };
@@ -477,8 +483,16 @@ class MainViewProvider {
             this._connectedProbes
                 .refresh()
                 .catch((error) => console.error("Probe inventory check failed:", error.message));
-        if (samplingSpeedChanged && this._sampling.session)
-            void this._sampling.restart().catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
+        if (!samplingSpeedOnly || (samplingSpeedChanged && !this._sampling.savingSamplingSpeed))
+            this._sampling.clearAdaptiveSpeedMemory();
+        this._sampling.broadcastSamplingSpeedState();
+        if (samplingSpeedChanged && (this._sampling.session || this._sampling.starting))
+            void Promise.resolve(this._sampling.stop({ discardPending: true }))
+                .then(() => {
+                    this._sampling.clearAdaptiveSpeedMemory();
+                    this._sampling.broadcastSamplingSpeedState();
+                })
+                .catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
     }
     _focusedLivePanel() {
         return selectFocusedPanel(this._livePanels);
@@ -1038,6 +1052,7 @@ class MainViewProvider {
             type: "liveStatus",
             ...this._sampling.status()
         });
+        post(this._sampling.samplingSpeedState());
         if (entry.latestSamples.size) {
             const now = Date.now();
             const scalarSamples = [],

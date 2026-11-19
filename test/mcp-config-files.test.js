@@ -75,12 +75,16 @@ function assertClean(home) {
         await scenario("Resolve native paths and supported environment overrides", async () => {
             const options = fixture();
             const custom = path.join(options.home, "custom");
+            assert.deepStrictEqual((await configTargets("workbuddy", options)).targets, [
+                path.join(options.home, ".workbuddy", "mcp.json")
+            ]);
             assert.deepStrictEqual((await configTargets("claude", options)).targets, [
                 path.join(options.home, ".claude.json")
             ]);
             for (const [client, env, expected] of [
                 ["claude", { CLAUDE_CONFIG_DIR: custom }, path.join(custom, ".claude.json")],
                 ["codex", { CODEX_HOME: custom }, path.join(custom, "config.toml")],
+                ["workbuddy", { WORKBUDDY_CONFIG_DIR: custom }, path.join(custom, "mcp.json")],
                 [
                     "opencode",
                     { OPENCODE_CONFIG: path.join(custom, "special.jsonc") },
@@ -96,12 +100,47 @@ function assertClean(home) {
             );
             for (const [client, env] of [
                 ["codex", { CODEX_HOME: "relative" }],
+                ["workbuddy", { WORKBUDDY_CONFIG_DIR: "relative" }],
                 ["opencode", { OPENCODE_CONFIG: "relative.json" }]
             ]) {
                 await assert.rejects(configTargets(client, { ...options, env }), /absolute paths/);
             }
             await assert.rejects(configTargets("json", options), /No configuration file adapter/);
             await assert.rejects(configTargets("toString", options), /No configuration file adapter/);
+        });
+
+        await scenario("Prefer an existing WorkBuddy .mcp.json and preserve its JSONC settings", async () => {
+            const options = fixture();
+            const root = path.join(options.home, ".workbuddy");
+            const preferred = path.join(root, ".mcp.json");
+            const fallback = path.join(root, "mcp.json");
+            const snippet = configSnippet("workbuddy", spec);
+            await write(fallback, "{}");
+
+            const pending = await prepareClientInstall("workbuddy", snippet, options);
+            const native =
+                '{\n    // WorkBuddy connectors\n    "mcpServers": { "other": { "command": "local" }, },\n}\n';
+            await write(preferred, native);
+            await assert.rejects(commitClientInstall(pending), /configuration changed/);
+            assert.strictEqual(await fsp.readFile(fallback, "utf8"), "{}");
+            assert.strictEqual(await fsp.readFile(preferred, "utf8"), native);
+
+            const install = await prepareClientInstall("workbuddy", snippet, options);
+            await commitClientInstall(install);
+            const installed = await fsp.readFile(preferred, "utf8");
+            assert.match(installed, /\/\/ WorkBuddy connectors/);
+            assert.strictEqual(jsonc.parse(installed).mcpServers.other.command, "local");
+            assert.deepStrictEqual(await clientStatus("workbuddy", snippet, options), {
+                state: "installed",
+                files: [preferred]
+            });
+
+            await commitClientInstall(await prepareClientUninstall("workbuddy", options));
+            const removed = await fsp.readFile(preferred, "utf8");
+            assert.match(removed, /\/\/ WorkBuddy connectors/);
+            assert.deepStrictEqual(jsonc.parse(removed).mcpServers, { other: { command: "local" } });
+            assert.strictEqual(await fsp.readFile(fallback, "utf8"), "{}");
+            assertClean(options.home);
         });
 
         await scenario("Stay in user-level files and prefer OpenCode JSONC over JSON", async () => {

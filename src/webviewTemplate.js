@@ -56,6 +56,7 @@ const PAGE_PRELUDE = {
         "backgroundIconController.js",
         "chart.js",
         "samplingRateMotion.js",
+        "samplingSpeedControl.js",
         "panelLayout.js",
         "exportDialog.js",
         "variableEntry.js"

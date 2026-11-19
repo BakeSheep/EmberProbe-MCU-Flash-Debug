@@ -6,8 +6,8 @@
 const MAX_FILE_LINES = 1500;
 const MAX_FUNCTION_LINES = 300;
 const FILE_LINE_CEILINGS = {
-    "src/webview/liveWatch/renderer.js": 2798,
-    "src/webview/sidebar/renderer.js": 1672
+    "src/webview/liveWatch/renderer.js": 2769,
+    "src/webview/sidebar/renderer.js": 1668
 };
 // Webview modules are excluded: their UMD factory function is the whole file.
 const FUNCTION_LINE_CEILINGS = {

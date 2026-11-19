@@ -12,7 +12,7 @@ const spec = Object.freeze({
 const env = spec.env;
 
 scenario("Export harness-specific JSON without changing the shared launch spec", () => {
-    for (const client of ["claude", "gemini", "antigravity", "json"]) {
+    for (const client of ["claude", "gemini", "antigravity", "workbuddy", "json"]) {
         const config = JSON.parse(configSnippet(client, spec)).mcpServers.emberprobe;
         const timeout =
             client === "gemini" ? { timeout: 1800000 } : client === "antigravity" ? { timeoutSeconds: 1800 } : {};

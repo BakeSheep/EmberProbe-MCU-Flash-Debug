@@ -172,6 +172,17 @@ function testMockUnlimitedPreset() {
         assert.strictEqual(latest(frame, "liveUnlimited").enabled, true);
         env.deliver(frame, { type: "setUnlimitedSampling", enabled: false });
         assert.strictEqual(latest(frame, "liveUnlimited").enabled, false);
+        assert.strictEqual(latest(frame, "samplingSpeedConfig").adaptive, true);
+        env.deliver(frame, { type: "setSamplingSpeed", adaptive: false, speedKhz: 12000 });
+        assert.deepStrictEqual(
+            {
+                adaptive: latest(frame, "samplingSpeedConfig").adaptive,
+                khz: latest(frame, "samplingSpeedConfig").samplingAdapterSpeedKhz
+            },
+            { adaptive: false, khz: 12000 }
+        );
+        env.deliver(frame, { type: "setSamplingSpeed", adaptive: true });
+        assert.strictEqual(latest(frame, "samplingSpeedConfig").adaptive, true);
     } finally {
         host.destroy();
     }

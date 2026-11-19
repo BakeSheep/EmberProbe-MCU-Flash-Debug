@@ -249,15 +249,17 @@ const { getModernWebviewContent } = require("../src/modernView");
                 view.assertHealthy();
                 assert.strictEqual(
                     view.document.querySelectorAll('#otherConfig [data-i18n="common.optional"]').length,
-                    2
+                    3
                 );
-                view.document.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]').click();
-                assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.installCubeMxFirmware");
+                assert.strictEqual(
+                    view.document.querySelector('[data-command="mcu-vscode.installCubeMxFirmware"]'),
+                    null
+                );
             } finally {
                 view.window.close();
             }
         }
-        await scenario("Display pack requirements and installed versions inline in both languages", () => {
+        await scenario("Display installed packs inline and mismatched requirements in a notice", () => {
             for (const lang of ["zh", "en"]) {
                 const view = render(
                     getModernWebviewContent(
@@ -286,9 +288,10 @@ const { getModernWebviewContent } = require("../src/modernView");
                     view.assertHealthy();
                     const card = view.document.querySelector(".cubemx-firmware");
                     const details = card.querySelector(".cubemx-package").textContent;
-                    assert.ok(details.includes("2.1.0") && details.includes("2.2.0"));
+                    assert.ok(!details.includes("2.1.0") && details.includes("2.2.0"));
                     assert.ok(details.includes("stm32c5xx_dfp"));
-                    assert.ok(card.textContent.includes("2.2.0"));
+                    const notice = view.document.querySelector("#otherConfig .notice--warning").textContent;
+                    assert.ok(notice.includes("2.1.0") && notice.includes("2.2.0"));
                     view.document.querySelector('[data-command="mcu-vscode.refreshCubeMxFirmware"]').click();
                     assert.strictEqual(view.messages.at(-1).cmd, "mcu-vscode.refreshCubeMxFirmware");
                 } finally {

@@ -37,7 +37,64 @@
         for (const element of tree.elements || [])
             sampleNodes(element, path + "[" + element.index + "]", found, depth + 1, valid);
     }
-    function create({ state, canRead, has, toggle }) {
+    const fixedStorage = (node) =>
+        node &&
+        !node.unobservable &&
+        !node.isConst &&
+        !node.isPointer &&
+        !node.isReference &&
+        !node.isMemberPointer &&
+        !node.memberRole &&
+        !node.stdSummary &&
+        !/^(?:(?:struct|class|union)\s+)?(?:std|__gnu_cxx|__cxxabiv1)::/.test(node.typeName || "");
+
+    function staticWriteEntry(state, name) {
+        const parsed = runtime.memberPathSegments(name);
+        const symbol = parsed && state.symbols.get(parsed.base);
+        if (!fixedStorage(symbol) || !Number.isSafeInteger(symbol.address) || symbol.address <= 0) return null;
+        if (!parsed.segments.length) {
+            if (!symbol.hasDwarfWriteType) return null;
+            return { ...symbol, type: symbol.watchType || symbol.type };
+        }
+        const watched = state.watch.find((item) => item.name === symbol.name);
+        const root =
+            !symbol.compositeLayout && watched?.address === symbol.address && watched.size === symbol.size
+                ? watched
+                : symbol;
+        if (
+            !fixedStorage(root) ||
+            runtime.requiresRuntimePath(root, parsed.segments) ||
+            (root !== symbol && runtime.requiresRuntimePath(symbol, parsed.segments))
+        )
+            return null;
+        let node = root.compositeLayout;
+        let path = symbol.name;
+        let address = symbol.address;
+        for (const segment of parsed.segments) {
+            const layout = node?.compositeLayout || node;
+            if (!fixedStorage(node) || !fixedStorage(layout)) return null;
+            if (segment.kind === "member") {
+                const member = layout.members?.find((item) => item.name === segment.name);
+                if (!member || !Number.isSafeInteger(member.offset)) return null;
+                path = runtime.layoutMemberPath(path, member);
+                address += member.offset;
+                node = runtime.layoutBranch(root, member, path);
+            } else if (segment.kind === "index" && layout.kind === "array") {
+                const element = layout.elementType;
+                if (!Number.isSafeInteger(element?.byteSize) || !(segment.index < layout.totalElements)) return null;
+                path += "[" + segment.index + "]";
+                address += segment.index * element.byteSize;
+                node = runtime.layoutBranch(root, element, path);
+            } else return null;
+            if (node?.expansionRoot && runtime.runtimeGraph(root)) return null;
+        }
+        if (!fixedStorage(node) || node.compositeLayout || !node.watchType || path !== name) return null;
+        const size = node.byteSize || runtime.typeByteLength(node.watchType);
+        if (!(address >= symbol.address && address + size <= symbol.address + symbol.size)) return null;
+        return { ...node, name, address, type: node.watchType, size };
+    }
+
+    function create({ state, canRead, canAddStatic = () => false, has, toggle }) {
         state.writeWatch = {
             samples: new Map(),
             blocked: new Set(),
@@ -203,16 +260,19 @@
         function block(name) {
             get().blocked.add(name);
         }
+        function menuEntry(name) {
+            const staticEntry = staticWriteEntry(state, name);
+            return staticEntry && canAddStatic(staticEntry) ? { entry: staticEntry } : entry(name);
+        }
         function menu(name) {
             const selected = has(name);
-            const candidate = entry(name);
             return {
                 selected,
-                key: selected ? "" : candidate.key || "",
+                key: selected ? "" : menuEntry(name).key || "",
                 run: () => {
-                    const current = entry(name);
-                    if (has(name)) toggle({ name });
-                    else if (current.entry) toggle(current.entry);
+                    if (has(name)) return toggle({ name });
+                    const current = menuEntry(name);
+                    if (current.entry) toggle(current.entry);
                 }
             };
         }

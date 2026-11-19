@@ -143,7 +143,7 @@ const PROBE_ACTIONS = {
     refreshConnectedProbes: async (host) => {
         host._connectedProbes.inventory().resetBackoff();
         await host._connectedProbes.refresh();
-        if (await host._connectedProbes.readTargets()) await host._connectedProbes.refresh();
+        if (await host._connectedProbes.readTargets("user")) await host._connectedProbes.refresh();
     }
 };
 
@@ -214,6 +214,15 @@ const SIDEBAR_ROUTES = {
         }
     },
     getMcpClients: async ({ host, post }) => post(await host._mcpRegistration.clientStatuses()),
+    checkMcpConnection: async ({ host, post }) => {
+        let result;
+        try {
+            result = await host._mcpRegistration.checkConnection();
+        } catch {
+            result = { state: "initialize" };
+        }
+        post({ type: "mcpConnection", ...result });
+    },
     mcpClientAction: async ({ host, post }, message) => {
         let failure;
         try {

@@ -71,7 +71,8 @@
             opencode: "notInstalled",
             cursor: "notInstalled",
             antigravity: "notInstalled",
-            dsh: "notInstalled"
+            dsh: "notInstalled",
+            workbuddy: "notInstalled"
         };
         var MCP_ACTIONS = {
             notInstalled: ["install"],
@@ -553,6 +554,9 @@
             switch (message.type) {
                 case "getMcpClients":
                     sendMcpClients();
+                    break;
+                case "checkMcpConnection":
+                    send({ type: "mcpConnection", state: "connected", toolCount: 50 });
                     break;
                 case "mcpClientAction":
                     if (message.client !== "json")

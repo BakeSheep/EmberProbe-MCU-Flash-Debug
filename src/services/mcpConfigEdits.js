@@ -9,7 +9,7 @@ const { CLIENTS, SERVER_NAME } = require("./mcpClientConfig");
 // Older releases wrote this binding into user-level configuration, which sent every project to one window. Merging
 // removes it, and the entry reads as outdated until then.
 const STALE_BINDING = "EMBERPROBE_WORKSPACE";
-const LENIENT_JSON = new Set(["opencode", "cursor"]);
+const LENIENT_JSON = new Set(["opencode", "cursor", "workbuddy"]);
 
 function invalid(format) {
     // Parser messages may contain user configuration (including credentials); never surface them in notifications.

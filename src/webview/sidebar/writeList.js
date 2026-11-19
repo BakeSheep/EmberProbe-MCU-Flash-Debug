@@ -145,7 +145,13 @@
             confirmed = Object.create(null),
             seq = 0,
             access = { canWrite: false, haltWrite: false, halted: false, unavailableKey: "sb.writeNeedSampling" };
-        const watchWrites = watchWriteModule.create({ state, canRead: () => access.canWrite, has, toggle });
+        const watchWrites = watchWriteModule.create({
+            state,
+            canRead: () => access.canWrite,
+            canAddStatic,
+            has,
+            toggle
+        });
         const reorder =
             box &&
             cardReorder.attach(box, {

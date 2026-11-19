@@ -28,6 +28,8 @@ OpenCode 优先使用 `OPENCODE_CONFIG` 指定的绝对路径；未指定时查�
 `$XDG_CONFIG_HOME/opencode`（默认 `~/.config/opencode`），同目录优先 `opencode.jsonc`，没有文件时创建用户配置
 `opencode.json`。工程内的 `opencode.json` 由用户自行维护，其中的同名服务器可能覆盖用户配置。环境变量路径覆盖必须为绝对路径。未被当前 VS Code 进程继承的环境设置不会被探测到，请核对安装对话框中的目标路径。
 
+WorkBuddy 使用 `$WORKBUDDY_CONFIG_DIR`（默认 `~/.workbuddy`）的用户级 JSONC。已有 `.mcp.json` 时优先合并，否则使用 `mcp.json`。预览和提交之间如果出现优先级更高的文件，本次写入会中止。配置位于 `mcpServers.emberprobe`。
+
 自动合并保留其他服务器、设置、注释以及 EmberProbe 条目中的自定义选项和额外环境变量；更新启动命令、参数、
 支持的超时字段。JSONC 和 TOML 使用语法树定位编辑，DSH 只替换匹配的 MCP 条目，不重新序列化
 其他 YAML 插件或执行 `!!js`。损坏/歧义配置、管理条目使用 YAML 标签/锚点、非 UTF-8 或超过 2 MiB 的文件会拒绝写入，
@@ -51,6 +53,12 @@ DSH 多 profile 先全部校验再写入，中途失败回滚已写文件；若�
 启动器和包装脚本在每次激活时重写为当前安装的扩展与运行时路径，因此扩展或编辑器升级后无需修改客户端配置。远程窗口（Remote-SSH、WSL）中路径属于远端，只适用于同样运行在远端的客户端。
 
 Bridge 的端口和 token 每次启动都会变化，并且只保存在 globalStorage 中，所以只提供 stdio，不提供 HTTP 传输：stdio 服务器在每次调用时重新定位当前的 Bridge，客户端配置中没有 token。
+
+### 连通性检测
+
+侧栏按需用外部客户端共用的启动命令启动一次 stdio 服务器，执行 MCP 初始化与 `tools/list`，并校验服务器名称。两步共用 10 秒期限，完成后关闭子进程。同一窗口的并发检测复用一次启动。
+
+检测的输入来自扩展生成的启动命令。第三方配置文件中的命令、参数与环境变量不参与执行。检测只覆盖启动器和 MCP 协议，无需调用 Agent Bridge 或操作硬件。实现参考 [CC Switch 的 MCP 连通性检测入口](https://github.com/farion1231/cc-switch/blob/main/src-tauri/src/commands/mcp.rs)。
 
 ### 客户端超时
 
@@ -148,3 +156,4 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 | Cursor                 | 扩展 API / 安装链接        | —                           | —                    | —      | 待实测                                                                                       |
 | Antigravity            | 原生 JSON 写入             | —                           | 按客户端能力选择     | —      | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测                              |
 | DeepSeek Harness (DSH) | 原生 profile YAML 写入     | —                           | 未声明时使用聊天确认 | —      | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持          |
+| WorkBuddy              | 原生 JSONC 写入            | —                           | —                    | —      | 配置与 stdio 检测由自动测试覆盖，客户端交互待实测                                           |

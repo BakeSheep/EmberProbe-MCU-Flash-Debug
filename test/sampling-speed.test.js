@@ -24,11 +24,17 @@ const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { CACHE_KEYS } = require("../src/cacheKeys");
 const { writeConnectionIdentity } = require("../src/writeAuthorization");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { createLivePanelHandler } = require("../src/controllers/livePanelRoutes");
 const {
     SAMPLING_SPEED_LADDERS_KHZ,
     DEFAULT_SPEED_LADDER_KHZ,
+    MIN_MANUAL_SAMPLING_SPEED_KHZ,
+    MAX_MANUAL_SAMPLING_SPEED_KHZ,
+    MANUAL_SAMPLING_SPEED_STEP_KHZ,
     configuredSamplingSpeedKhz,
     samplingSpeedLadder,
+    clampManualSamplingSpeedKhz,
+    isValidManualSamplingSpeedKhz,
     parseAdapterSpeedKhz,
     u32ToLittleEndianHex,
     selectBenchmarkRamBlock,
@@ -97,6 +103,7 @@ async function createTunedSession({
             target: "stm32f4x.cfg",
             port: fake.port,
             intervalMs: 100,
+            adaptiveAdapterSpeed: "sampling",
             ...options,
             clock
         },
@@ -181,6 +188,21 @@ function stlinkV3Table(requestedKhz) {
         assert.throws(() => configuredSamplingSpeedKhz({ samplingAdapterSpeedKhz: -5 }), {
             code: "ADAPTER_SPEED_INVALID"
         });
+        assert.deepStrictEqual(
+            [MIN_MANUAL_SAMPLING_SPEED_KHZ, MAX_MANUAL_SAMPLING_SPEED_KHZ, MANUAL_SAMPLING_SPEED_STEP_KHZ],
+            [1000, 20000, 1000]
+        );
+        assert.strictEqual(clampManualSamplingSpeedKhz(1800), 2000);
+        assert.strictEqual(clampManualSamplingSpeedKhz(500), 1000);
+        assert.strictEqual(clampManualSamplingSpeedKhz(24000), 20000);
+        assert.strictEqual(clampManualSamplingSpeedKhz(null), 2000);
+        assert.strictEqual(isValidManualSamplingSpeedKhz(1000), true);
+        assert.strictEqual(isValidManualSamplingSpeedKhz(12000), true);
+        assert.strictEqual(isValidManualSamplingSpeedKhz(20000), true);
+        assert.strictEqual(isValidManualSamplingSpeedKhz(1500), false);
+        assert.strictEqual(isValidManualSamplingSpeedKhz(500), false);
+        assert.strictEqual(isValidManualSamplingSpeedKhz(24000), false);
+        assert.strictEqual(isValidManualSamplingSpeedKhz("1000"), false);
 
         assert.strictEqual(parseAdapterSpeedKhz("adapter speed: 2000 kHz\n"), 2000);
         assert.strictEqual(parseAdapterSpeedKhz("adapter speed: RCLK - adaptive"), 0);
@@ -578,7 +600,8 @@ function stlinkV3Table(requestedKhz) {
                 [{ samplingAdapterSpeedKhz: 4000 }, "explicit_config", 4000],
                 [{ adapterSpeedKhz: 1500 }, "explicit_config", 1500],
                 [{ mode: "debug", gdbPort: 13333 }, "debug_mode", null],
-                [{ adaptiveAdapterSpeed: false }, "disabled", null]
+                [{ adaptiveAdapterSpeed: false }, "disabled", null],
+                [{ adaptiveAdapterSpeed: undefined }, "disabled", null]
             ]) {
                 const f = await createTunedSession({ options: opts });
                 try {
@@ -588,6 +611,7 @@ function stlinkV3Table(requestedKhz) {
                     assert.strictEqual(st.adaptiveSpeed.reason, reason);
                     assert.strictEqual(st.adapterSpeedKhz, expectedSpeed);
                     assert.ok(!f.fake.commands.some((c) => c.startsWith("adapter speed")));
+                    assert.ok(!f.fake.commands.some((c) => /target current|0xe000ed00/i.test(c)));
                 } finally {
                     await f.close();
                 }
@@ -595,6 +619,7 @@ function stlinkV3Table(requestedKhz) {
 
             for (const [targetType, transport] of [
                 ["riscv", "jtag"],
+                ["cortex_a", "swd"],
                 ["cortex_m", "jtag"]
             ]) {
                 const f = await createTunedSession();
@@ -604,21 +629,34 @@ function stlinkV3Table(requestedKhz) {
                     await f.session.start();
                     assert.strictEqual(f.session.stats().adaptiveSpeed.state, "ineligible");
                     assert.strictEqual(f.session.stats().adaptiveSpeed.reason, "unsupported_target_or_transport");
+                    assert.ok(!f.fake.commands.some((command) => /0xe000ed00|adapter speed/i.test(command)));
                 } finally {
                     await f.close();
                 }
             }
 
-            const deferred = await createTunedSession({ initialKhz: 1000 });
+            let failSample = true;
+            const deferred = await createTunedSession({
+                initialKhz: 1000,
+                speedReadBehavior: (_actual, _requested, command) => ({
+                    fail: failSample && /0x20000/i.test(command)
+                })
+            });
             deferred.fake.targetNotExamined = true;
             try {
                 await deferred.session.start();
                 assert.strictEqual(deferred.session.stats().adaptiveSpeed.state, "pending");
                 assert.strictEqual(deferred.session._speedTuner.shouldRecheckAfterFirstCycle(), true);
+                const countEligibility = () =>
+                    deferred.fake.commands.filter((command) => command.startsWith("set _ep_t")).length;
+                for (let i = 0; i < 3; i++) await deferred.session._sampleTick();
+                assert.strictEqual(countEligibility(), 1, "failed sample cycles do not re-probe eligibility");
                 deferred.fake.targetNotExamined = false;
+                failSample = false;
                 await deferred.session._sampleTick();
                 assert.strictEqual(deferred.session.stats().adaptiveSpeed.state, "tuned");
                 assert.ok(deferred.session.stats().adapterSpeedKhz > 1000);
+                assert.strictEqual(countEligibility(), 2, "the first good cycle rechecks eligibility once");
             } finally {
                 await deferred.close();
             }
@@ -674,14 +712,90 @@ function stlinkV3Table(requestedKhz) {
         const f = await createTunedSession({
             probe: "cmsis-dap.cfg",
             initialKhz: 1000,
-            speedReadBehavior: (actual) => ({ advanceMs: actual === 1000 ? 150 : actual === 2000 ? 60 : 10 })
+            speedReadBehavior: (actual) => ({ advanceMs: actual === 1000 ? 125 : actual === 2000 ? 30 : 15 })
         });
         try {
+            const start = f.getMonoMs();
+            const timedProbes = [];
+            const probe = f.session.tcl.probe.bind(f.session.tcl);
+            f.session.tcl.probe = (cmd, timeoutMs) => {
+                timedProbes.push({ cmd, timeoutMs, elapsed: f.getMonoMs() - start });
+                return probe(cmd, timeoutMs);
+            };
             await f.session.start();
             const st = f.session.stats();
             assert.strictEqual(st.adaptiveSpeed.reason, "budget_reached");
             assert.strictEqual(st.adapterSpeedKhz, 2000);
+            assert.strictEqual(f.fake.adapterSpeedKhz, 2000, "overdue candidate is restored");
             assert.ok(!st.adaptiveSpeed.testedSteps.some((s) => s.requestedKhz === 8000));
+            const attempted = timedProbes.findIndex(({ cmd }) => cmd === "adapter speed 4000");
+            assert.ok(attempted > 0);
+            assert.ok(timedProbes[attempted + 1].timeoutMs <= 600 - timedProbes[attempted + 1].elapsed);
+            assert.strictEqual(timedProbes[attempted + 2].cmd, "adapter speed 2000", "skip remaining benchmark RPCs");
+            assert.ok(f.getMonoMs() - start < 700, "only bounded recovery can extend tuning");
+        } finally {
+            await f.close();
+        }
+    });
+
+    await scenario("startup reports only a verified recovery clock and aborts when neither restore works", async () => {
+        for (const restoreBase of [true, false]) {
+            const f = await createTunedSession({
+                initialKhz: 2000,
+                speedReadBehavior: (actual) => ({ advanceMs: actual === 2000 ? 10 : 5, fail: actual === 8000 })
+            });
+            f.fake.speedMap = (khz) => ({
+                reject: f.fake.adapterSpeedKhz === 8000 && (khz === 4000 || !restoreBase)
+            });
+            try {
+                if (restoreBase) {
+                    await f.session.start();
+                    assert.strictEqual(f.session.stats().adaptiveSpeed.reason, "restore_failed");
+                    assert.strictEqual(f.session.stats().adapterSpeedKhz, 2000);
+                    assert.strictEqual(f.fake.adapterSpeedKhz, 2000);
+                    assert.strictEqual(f.session.stopped, false);
+                } else {
+                    await assert.rejects(f.session.start(), { code: "SAMPLING_CLOCK_RESTORE_FAILED" });
+                    assert.strictEqual(f.session.stats().adapterSpeedKhz, null);
+                    assert.strictEqual(f.session.stats().adaptiveSpeed.state, "failed");
+                    assert.strictEqual(f.fake.adapterSpeedKhz, 8000);
+                    assert.strictEqual(f.session.stopped, true);
+                    assert.strictEqual(f.disconnects.length, 0, "startup rejection is the only notification");
+                }
+            } finally {
+                await f.close();
+            }
+        }
+    });
+
+    await scenario("scheduled fallback aborts and reports Tcl reconnect failure", async () => {
+        const f = await createTunedSession({
+            initialKhz: 2000,
+            speedReadBehavior: (actual) => ({ advanceMs: actual >= 8000 ? 2 : 16000 / actual })
+        });
+        try {
+            await f.session.start();
+            assert.strictEqual(f.session.stats().adapterSpeedKhz, 8000);
+            let reconnects = 0;
+            f.session.tcl.probe = async (cmd) => {
+                assert.strictEqual(cmd, "adapter speed 4000");
+                f.session.tcl.close();
+                throw Object.assign(new Error("Tcl timeout"), { code: "OPENOCD_RPC_TIMEOUT" });
+            };
+            f.session._connectWithRetry = async (_port, timeoutMs) => {
+                reconnects++;
+                assert.ok(timeoutMs > 0 && timeoutMs <= 600);
+                throw new Error("Tcl reconnect refused");
+            };
+            f.session._speedTuner.requestStepDown();
+            await f.session._sampleTick(true);
+            assert.strictEqual(reconnects, 1);
+            assert.strictEqual(f.session.samplingEnabled, false);
+            assert.strictEqual(f.session.connectionFailed, true);
+            assert.strictEqual(f.session.timer, null);
+            assert.strictEqual(f.session.stats().adapterSpeedKhz, null);
+            assert.strictEqual(f.disconnects.length, 1);
+            assert.strictEqual(f.disconnects[0].code, "SAMPLING_CLOCK_RECONNECT_FAILED");
         } finally {
             await f.close();
         }
@@ -692,9 +806,9 @@ function stlinkV3Table(requestedKhz) {
         const f = await createTunedSession({
             probe: "cmsis-dap.cfg",
             initialKhz: 1000,
-            speedReadBehavior: (actual) => ({
+            speedReadBehavior: (actual, _requested, cmd) => ({
                 advanceMs: actual >= 8000 ? 2 : actual >= 4000 ? 4 : 8,
-                fail: failReads,
+                fail: failReads && !/^(?:ocd_)?read_memory 0xe000ed00 32 1$/i.test(cmd),
                 errorMessage: "scatter memory read failed (-4)"
             })
         });
@@ -744,7 +858,7 @@ function stlinkV3Table(requestedKhz) {
         assert.strictEqual(fallback.stats().adaptiveSpeed, null);
 
         const workerSession = new SamplingSession(
-            { intervalMs: 20 },
+            { intervalMs: 20, adaptiveAdapterSpeed: "sampling" },
             {},
             path.join(__dirname, "helpers/sampling-worker-fixture.js")
         );
@@ -849,7 +963,7 @@ function stlinkV3Table(requestedKhz) {
         await provider._agentOps.withProbe(async () => "ok", { total: 1 });
         assert.strictEqual(createdOptions.at(-1).adaptiveAdapterSpeed, false);
         await provider._agentOps.withProbe(async () => "ok", { total: 10 });
-        assert.strictEqual(createdOptions.at(-1).adaptiveAdapterSpeed, true);
+        assert.strictEqual(createdOptions.at(-1).adaptiveAdapterSpeed, "agent");
 
         const rttHost = {
             debugLaunch: { managedServer: null, starting: false, liveSession: () => null },
@@ -923,6 +1037,278 @@ function stlinkV3Table(requestedKhz) {
             assert.ok(!rate.title.includes("SWD:"));
         } finally {
             graph.close();
+        }
+    });
+
+    await scenario(
+        "host controller persists samplingAdapterSpeedKhz, remembers adaptive kHz and locks while active",
+        async () => {
+            const wsState = new Map();
+            const cfgValues = { samplingAdapterSpeedKhz: 0, adapterSpeedKhz: 0 };
+            const cfgUpdates = [];
+            const vscode = {
+                ConfigurationTarget: { Workspace: 2 },
+                workspace: {
+                    getConfiguration: () => ({
+                        get: (key, fallback) => (Object.hasOwn(cfgValues, key) ? cfgValues[key] : fallback),
+                        update: async (key, value, target) => {
+                            cfgUpdates.push({ key, value, target });
+                            cfgValues[key] = value;
+                        }
+                    })
+                }
+            };
+            const Provider = loadProvider(vscode);
+            const provider = Object.create(Provider.prototype);
+            const panelMessages = [];
+            const entry = {
+                panelId: 2,
+                watchKey: CACHE_KEYS.watchList,
+                latestSamples: new Map(),
+                post: (m) => panelMessages.push(m)
+            };
+            Object.assign(provider, {
+                _context: {
+                    workspaceState: {
+                        get: (k) => wsState.get(k),
+                        update: async (k, v) => wsState.set(k, v)
+                    }
+                },
+                _lang: "zh",
+                _probeCoordinator: new ProbeCoordinator(),
+                _samplingCoordinator: new SamplingCoordinator(),
+                _debugBridge: { hasSession: false, hasAnySession: false, setIntent: () => {} },
+                _agentOperations: { readRunning: false },
+                _probeConnectionService: { markConfigurationChanged: () => {} },
+                _connectedProbesController: { refresh: async () => {} },
+                _livePanels: new Map([[2, entry]]),
+                _seriesStyleStore: { styles: {} },
+                _chartBackgroundState: () => ({ type: "chartBackgroundIcon", icon: null }),
+                chartBackground: () => ({ ready: () => {} }),
+                _curveVisibility: () => ({}),
+                _syncGraphTarget: () => {},
+                _samplingArchive: { clear: () => {}, status: () => ({ variables: [] }) },
+                _postLive: () => {},
+                _postProbeOperationStatus: () => {},
+                _postConsumerStatuses: () => {}
+            });
+            provider._samplingController = undefined;
+            provider._sampling.lastManualSpeedKhz = 2000;
+
+            const handle = createLivePanelHandler(provider, entry, vscode);
+            await handle({ type: "ready", panelId: 2 });
+            const initial = panelMessages.find((m) => m.type === "samplingSpeedConfig");
+            assert.deepStrictEqual(initial, {
+                type: "samplingSpeedConfig",
+                adaptive: true,
+                samplingAdapterSpeedKhz: 0,
+                adapterSpeedKhz: 0,
+                effectiveKhz: null,
+                adaptiveEffectiveKhz: null,
+                adaptiveState: null,
+                adaptiveReason: null,
+                manualSpeedKhz: 2000,
+                locked: false
+            });
+
+            // Adaptive session chooses 12000 kHz and stops: lastAdaptiveSpeedKhz stays visible on stopped UI.
+            provider._sampling.session = {
+                stats: () => ({
+                    adapterSpeedKhz: 12000,
+                    adaptiveSpeed: { state: "tuned", reason: "plateau", effectiveKhz: 12000 }
+                }),
+                setSamplingEnabled: () => {},
+                stop: async () => true
+            };
+            provider._sampling.intent = true;
+            assert.strictEqual(provider._sampling.samplingSpeedState().locked, true);
+            assert.strictEqual(provider._sampling.samplingSpeedState().adaptiveEffectiveKhz, 12000);
+
+            // Changing while active is rejected cleanly and resyncs panel state.
+            panelMessages.length = 0;
+            await handle({ type: "setSamplingSpeed", adaptive: false, speedKhz: 8000, panelId: 2 });
+            assert.strictEqual(cfgUpdates.length, 0);
+            assert.strictEqual(panelMessages.at(-1).type, "liveError");
+            assert.strictEqual(panelMessages.at(-2).type, "samplingSpeedConfig");
+            assert.strictEqual(panelMessages.at(-2).locked, true);
+
+            await provider._sampling.stop();
+            assert.strictEqual(provider._sampling.samplingSpeedState().locked, false);
+            assert.strictEqual(provider._sampling.samplingSpeedState().adaptiveEffectiveKhz, 12000);
+
+            // Turning adaptive off without speedKhz adopts the adaptive-selected 12000 kHz cleanly.
+            await handle({ type: "setSamplingSpeed", adaptive: false, panelId: 2 });
+            assert.strictEqual(cfgValues.samplingAdapterSpeedKhz, 12000);
+            assert.strictEqual(wsState.get("liveWatch.manualSamplingSpeedKhz"), 12000);
+            assert.strictEqual(cfgUpdates.at(-1).target, vscode.ConfigurationTarget.Workspace);
+
+            // Invalid manual steps/bounds are rejected without updating settings.
+            for (const bad of [
+                { adaptive: "yes" },
+                { adaptive: false, speedKhz: 1500 },
+                { adaptive: false, speedKhz: 24000 }
+            ]) {
+                const count = cfgUpdates.length;
+                panelMessages.length = 0;
+                await handle({ type: "setSamplingSpeed", ...bad, panelId: 2 });
+                assert.strictEqual(cfgUpdates.length, count);
+                assert.strictEqual(panelMessages.at(-1).type, "liveError");
+            }
+
+            // Slider updates persist 1000..20000 kHz, and turning adaptive on writes explicit 0.
+            await handle({ type: "setSamplingSpeed", adaptive: false, speedKhz: 16000, panelId: 2 });
+            assert.strictEqual(cfgValues.samplingAdapterSpeedKhz, 16000);
+            await handle({ type: "setSamplingSpeed", adaptive: true, panelId: 2 });
+            assert.strictEqual(cfgValues.samplingAdapterSpeedKhz, 0);
+
+            // Agent read in progress also locks sampling clock updates.
+            provider._agentOperations.readRunning = true;
+            panelMessages.length = 0;
+            await handle({ type: "setSamplingSpeed", adaptive: false, speedKhz: 6000, panelId: 2 });
+            assert.strictEqual(cfgValues.samplingAdapterSpeedKhz, 0);
+            assert.strictEqual(panelMessages.at(-1).type, "liveError");
+            assert.strictEqual(panelMessages.at(-2).locked, true);
+            provider._agentOperations.readRunning = false;
+
+            // External connection/adapterSpeedKhz change clears cached adaptive clock and broadcasts state.
+            cfgValues.adapterSpeedKhz = 4000;
+            panelMessages.length = 0;
+            provider.connectionConfigurationChanged(false, false);
+            const synced = panelMessages.find((m) => m.type === "samplingSpeedConfig");
+            assert.strictEqual(synced.adapterSpeedKhz, 4000);
+            assert.strictEqual(synced.adaptiveEffectiveKhz, 4000);
+            assert.strictEqual(provider._sampling.lastAdaptiveSpeedKhz, null);
+        }
+    );
+
+    await scenario("chart settings popup renders sampling clock slider/switch states cleanly across locales", () => {
+        for (const lang of ["en", "zh"]) {
+            const view = render(getLiveWatchContent({ panelId: 4 }, lang));
+            try {
+                const doc = view.document;
+                const toggle = doc.getElementById("chartSettingsToggle");
+                const popup = doc.getElementById("chartSettingsPopup");
+                const option = doc.getElementById("samplingClockOption");
+                const label = doc.getElementById("samplingClockLabel");
+                const autoSwitch = doc.getElementById("samplingClockAuto");
+                const slider = doc.getElementById("samplingClockSlider");
+                const value = doc.getElementById("samplingClockValue");
+                const hint = doc.getElementById("samplingClockHint");
+                const hints = {
+                    zh: "提供时钟频率可有效提高采样率",
+                    en: "Setting the clock frequency can improve the sampling rate"
+                };
+                assert.strictEqual(hint.textContent, hints[lang]);
+                assert.strictEqual(autoSwitch.getAttribute("aria-label"), lang === "zh" ? "自适应" : "Auto");
+                assert.ok(
+                    !option.textContent.replace(label.textContent, "").includes(autoSwitch.getAttribute("aria-label"))
+                );
+                assert.ok(!option.textContent.includes("1000 kHz") && !option.textContent.includes("MHz"));
+                assert.ok(slider.classList.contains("write-slider"));
+                assert.strictEqual(doc.getElementById("chartSettings").nextElementSibling, null);
+                assert.strictEqual(slider.min, "1000");
+                assert.strictEqual(slider.max, "20000");
+                assert.strictEqual(slider.step, "1000");
+                assert.strictEqual(autoSwitch.checked, true);
+                assert.strictEqual(autoSwitch.disabled, false);
+                assert.strictEqual(slider.disabled, true);
+
+                assert.strictEqual(value.textContent, lang === "zh" ? "待采样" : "Pending");
+
+                toggle.click();
+                assert.strictEqual(popup.hidden, false);
+
+                // While running, both switch and slider are grayed out and locked at the adaptive-selected clock.
+                view.send({
+                    type: "liveStatus",
+                    running: true,
+                    adapterSpeedKhz: 12000,
+                    adaptiveSpeed: { state: "tuned", effectiveKhz: 12000 }
+                });
+                assert.strictEqual(autoSwitch.disabled, true);
+                assert.strictEqual(slider.disabled, true);
+                assert.ok(option.classList.contains("is-locked"));
+                assert.strictEqual(hint.textContent, hints[lang]);
+                assert.strictEqual(slider.value, "12000");
+                assert.strictEqual(value.textContent, "12000 kHz");
+
+                // Runtime fallback or deferred update via chartValues updates the locked slider readout live.
+                view.send({
+                    type: "chartValues",
+                    samples: [],
+                    adapterSpeedKhz: 8000,
+                    adaptiveSpeed: { state: "fallback", effectiveKhz: 8000 }
+                });
+                assert.strictEqual(slider.value, "8000");
+                assert.strictEqual(value.textContent, "8000 kHz");
+                assert.strictEqual(autoSwitch.disabled, true);
+
+                // Stopping unlocks the adaptive switch while keeping the slider disabled and fixed on 8000 kHz.
+                view.send({ type: "liveStatus", running: false, actualHz: 0 });
+                assert.strictEqual(autoSwitch.disabled, false);
+                assert.strictEqual(slider.disabled, true);
+                assert.ok(!option.classList.contains("is-locked"));
+                assert.strictEqual(slider.value, "8000");
+                assert.strictEqual(value.textContent, "8000 kHz");
+
+                // Switching adaptive off unlocks the slider starting from 8000 kHz.
+                autoSwitch.checked = false;
+                autoSwitch.dispatchEvent(new view.window.Event("change"));
+                assert.deepStrictEqual(view.messages.at(-1), {
+                    type: "setSamplingSpeed",
+                    adaptive: false,
+                    speedKhz: 8000,
+                    panelId: 4
+                });
+                assert.strictEqual(slider.disabled, false);
+
+                // Drag preview updates readout on `input` and commits once on `change`; interaction keeps popup open.
+                const sentBefore = view.messages.length;
+                slider.value = "16000";
+                slider.dispatchEvent(new view.window.Event("input"));
+                assert.strictEqual(value.textContent, "16000 kHz");
+                assert.strictEqual(view.messages.length, sentBefore);
+                slider.dispatchEvent(new view.window.Event("change"));
+                assert.deepStrictEqual(view.messages.at(-1), {
+                    type: "setSamplingSpeed",
+                    adaptive: false,
+                    speedKhz: 16000,
+                    panelId: 4
+                });
+                assert.strictEqual(popup.hidden, false);
+
+                // Turning adaptive back on re-disables the slider cleanly.
+                autoSwitch.checked = true;
+                autoSwitch.dispatchEvent(new view.window.Event("change"));
+                assert.strictEqual(slider.disabled, true);
+                assert.deepStrictEqual(view.messages.at(-1), {
+                    type: "setSamplingSpeed",
+                    adaptive: true,
+                    panelId: 4
+                });
+
+                // An inherited adapter clock updates the readout while keeping the description fixed.
+                view.send({
+                    type: "samplingSpeedConfig",
+                    adaptive: true,
+                    samplingAdapterSpeedKhz: 0,
+                    adapterSpeedKhz: 4000,
+                    effectiveKhz: null,
+                    adaptiveEffectiveKhz: 4000,
+                    manualSpeedKhz: 16000,
+                    locked: false
+                });
+                assert.strictEqual(value.textContent, "4000 kHz");
+                assert.strictEqual(hint.textContent, hints[lang]);
+
+                // Language switch also relocalizes the fixed description.
+                view.send({ type: "setLang", lang: lang === "en" ? "zh" : "en" });
+                assert.strictEqual(label.textContent, lang === "en" ? "自适应采样时钟" : "Sampling clock");
+                assert.strictEqual(hint.textContent, hints[lang === "en" ? "zh" : "en"]);
+                view.assertHealthy();
+            } finally {
+                view.close();
+            }
         }
     });
 

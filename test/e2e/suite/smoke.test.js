@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const vscode = require("vscode");
 const { scenario } = require("../../helpers/scenario");
+const { checkMcpConnection } = require("../../../src/services/mcpConnectivity");
 
 async function waitFor(ready, label) {
     const deadline = Date.now() + 10000;
@@ -50,7 +51,19 @@ async function run() {
     // Hosts with the MCP API register the provider; older versions skip it quietly (unit tests cover the skip path).
     const mcpSupported = typeof vscode.lm?.registerMcpServerDefinitionProvider === "function";
     assert.strictEqual(extension.exports.mcpRegistered, mcpSupported);
-    assert.ok(fs.existsSync(path.join(extension.extensionPath, "dist", "mcp-server.js")), "MCP server is bundled");
+    const mcpServer = path.join(extension.extensionPath, "dist", "mcp-server.js");
+    assert.ok(fs.existsSync(mcpServer), "MCP server is bundled");
+    const mcpConnection = await checkMcpConnection({
+        command: process.execPath,
+        args: [mcpServer],
+        env: { ELECTRON_RUN_AS_NODE: "1" }
+    });
+    assert.strictEqual(
+        mcpConnection.state,
+        "connected",
+        "Editor runtime can start and initialize the bundled MCP server"
+    );
+    assert.ok(mcpConnection.toolCount > 0);
     console.log(`✓ MCP server definition provider ${mcpSupported ? "registered" : "skipped on this host"}`);
 
     const config = vscode.workspace.getConfiguration("emberprobe");
