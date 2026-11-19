@@ -590,6 +590,7 @@ class AgentOperations {
                         probe: debuggerCfg,
                         target: mcuCore,
                         ...connection,
+                        adaptiveAdapterSpeed: total > 1,
                         cwd,
                         port,
                         intervalMs: 10000

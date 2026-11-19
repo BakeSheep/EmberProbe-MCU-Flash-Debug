@@ -5,6 +5,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { ArchiveEncoder, decodeRecords, FILE_HEADER } = require("../src/services/samplingArchiveFormat");
+const { ChartHistoryService } = require("../src/services/chartHistoryService");
+const { createLivePanelHandler } = require("../src/controllers/livePanelRoutes");
+const { decodeViewport } = require("../src/webview/liveWatch/chartTransport");
 const elfSymbols = require("../src/elfSymbols");
 const { LiveWatchService } = require("../src/services/liveWatchService");
 const { getLiveWatchContent } = require("../src/liveWatchView");
@@ -325,20 +328,106 @@ async function testHeaderBudget(parentDir) {
         assert.strictEqual(archive.status().bytes, archive.maxBytes, "the header participates in the exact byte limit");
         assert.strictEqual(await archive.flush(), archive.maxBytes);
         assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 1);
-        assert.strictEqual(archive.append([{ name: "x", value: 1 }], 2000), false);
+        assert.strictEqual(archive.append([{ name: "new", value: 1 }], 2000, "another-panel"), false);
         assert.strictEqual(archive.status().limitReached, true);
+        assert.deepStrictEqual(archive.encoder.dictionary().scopes, [""], "a refused record cannot reserve a scope");
+        assert.deepStrictEqual(
+            archive.encoder.dictionary().channels.map(({ key }) => key),
+            ["x"]
+        );
         // Lowering the limit keeps written data and the full state; raising it lets the session record again.
         archive.setMaxBytes(512 * 1024);
         assert.strictEqual(archive.maxBytes, 1024 * 1024, "the limit never drops below 1 MiB");
         assert.strictEqual(archive.status().limitReached, true);
         archive.setMaxBytes(2 * 1024 * 1024);
         assert.strictEqual(archive.status().limitReached, false);
-        assert.strictEqual(archive.append([{ name: "x", value: 1 }], 2000), true);
+        assert.strictEqual(archive.append([{ name: "new", value: 1 }], 2000, "another-panel"), true);
         assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 1);
         await archive.flush();
         assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 2);
+        assert.equal((await archive.readCsv({ scope: "another-panel" })).valueRows, 1);
+        archive.setMaxBytes(1024 * 1024);
+        assert.equal(archive.status().limitReached, false, "no append has yet hit the lowered limit");
+        archive.clear();
+        await archive.reclaimCleared();
+        assert.ok(archive.status().bytes < archive.maxBytes);
+        assert.equal((await archive.readCsv({ scope: "another-panel" })).valueRows, 1);
     } finally {
         await archive.dispose();
+    }
+}
+
+async function testReclaim(parentDir) {
+    const history = new ChartHistoryService({
+        workerPath: path.resolve(__dirname, "../src/chartHistoryWorker.js"),
+        maxBytes: 64 * 1024 * 1024
+    });
+    let failOnce = true;
+    const archive = new SamplingArchive({
+        rootDir: path.join(parentDir, "reclaim"),
+        maxBytes: 1024 * 1024,
+        async compactArchive(request) {
+            if (!failOnce) return history.compactArchive(request);
+            failOnce = false;
+            await fs.promises.writeFile(request.outputPath, "partial replacement");
+            throw new Error("Simulated write failure");
+        }
+    });
+    const messages = [];
+    const entry = { panelId: 1, watchKey: "a", latestSamples: new Map(), post: (m) => messages.push(m) };
+    const host = {
+        _historyFeed: { resetWarnings() {}, discardAppend() {} },
+        _samplingArchive: archive,
+        _chartHistory: history,
+        _debugSamplingScope: (key) => key
+    };
+    const receive = createLivePanelHandler(host, entry, {});
+    const append = (key, t, value) => archive.append([{ name: "tick [i32]", value }], t, key);
+    const index = async () => {
+        await archive.flush();
+        await history.request("archiveProgress", [{ dataPath: archive.dataPath, bytes: archive.indexedBytes }]);
+    };
+    const readChart = async (snapshotId) =>
+        decodeViewport(
+            (await history.request("viewport", ["b", ["tick"], { min: 900, max: 3000 }, 100, snapshotId])).series
+        ).flatMap(({ arr }) => arr.map(({ v }) => v));
+    try {
+        await history.request("configure", ["b", [{ name: "tick", type: "i32", address: 0x20000000 }], 0]);
+        assert.ok(archive.append([{ name: "huge", valueText: "x".repeat(800 * 1024) }], 1000, "a"));
+        assert.ok(append("b", 1000, 10));
+        await index();
+        const { snapshotId } = await history.request("freeze", ["b"]);
+        assert.deepEqual(await readChart(snapshotId), [10]);
+        assert.ok(append("b", 1000, 20));
+        assert.ok(append("b", 2000, 30));
+        assert.equal(archive.append([{ name: "overflow", valueText: "x".repeat(256 * 1024) }], 2000, "a"), false);
+        const before = archive.status().bytes;
+        const original = archive.dataPath;
+        await receive({ type: "clearSamplingHistory", historyRevision: 1 });
+        assert.equal(messages.at(-1).message, "Simulated write failure");
+        assert.ok(messages.some((message) => message.type === "samplingHistoryCleared"));
+        assert.equal(archive.dataPath, original);
+        assert.equal(archive.status().bytes, before);
+        assert.equal(archive.status().limitReached, true);
+        assert.deepEqual(await readChart(snapshotId), [10]);
+
+        const exporting = archive.readCsv({ scope: "b" });
+        await receive({ type: "clearSamplingHistory", historyRevision: 2 });
+        const beforeSwitch = await exporting;
+        assert.equal(messages.at(-1).type, "samplingHistoryCleared");
+        assert.notEqual(archive.dataPath, original);
+        assert.equal(fs.existsSync(original), false, "cleared bytes are physically reclaimed");
+        assert.ok(archive.status().bytes < before / 2);
+        assert.equal(archive.status().limitReached, false);
+        assert.equal(archive.status("a").rows, 0);
+        assert.equal((await archive.readCsv({ scope: "b" })).csv, beforeSwitch.csv);
+        assert.deepEqual(await readChart(snapshotId), [10], "same-timestamp samples after freezing stay excluded");
+        assert.ok((await readChart()).includes(30), "the other chart retains its live history");
+        assert.ok(append("a", 3000, 40));
+        assert.equal((await archive.readCsv({ scope: "a" })).valueRows, 1);
+    } finally {
+        await archive.dispose();
+        await history.dispose();
     }
 }
 
@@ -348,6 +437,9 @@ async function main() {
     await testLegacyCsv(temporaryRoot);
     await testSourceBoundary(temporaryRoot);
     await testHeaderBudget(temporaryRoot);
+    await scenario("Reclaim full archive space without losing another panel's CSV or frozen history", () =>
+        testReclaim(temporaryRoot)
+    );
     const pauses = [];
     const errors = [];
     const archive = new SamplingArchive({

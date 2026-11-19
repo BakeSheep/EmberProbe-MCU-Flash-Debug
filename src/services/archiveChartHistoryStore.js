@@ -2,6 +2,7 @@
 
 const { ChartHistoryStore } = require("./chartHistoryStore");
 const { ArchiveHistoryIndex, compare } = require("./archiveHistoryIndex");
+const { compactSamplingArchive } = require("./samplingArchiveCompaction");
 const { columnBin } = require("../webview/liveWatch/chartInspection");
 
 const cancelled = () =>
@@ -143,12 +144,57 @@ class ArchiveChartHistoryStore extends ChartHistoryStore {
         return { limited: this.archive.dataPath ? !!this.archiveLimited : result.limited };
     }
     async archiveProgress(progress) {
+        if (this.previousArchivePath && progress.dataPath === this.previousArchivePath) return;
         this.archiveLimited = progress.limited === true;
         await this.archive.progress(progress);
         for (const [scope, state] of this.scopes) {
             state.revision++;
             await this.resolveBounds(scope);
         }
+    }
+    async compactArchive(request) {
+        const previous = this.archive;
+        const snapshots = [...this.snapshots.values()]
+            .filter((snapshot) => snapshot.archiveCapture)
+            .sort((a, b) => a.archiveOffset - b.archiveOffset);
+        const pinned = new Map();
+        for (const { scope, generation } of snapshots) {
+            if (!pinned.has(scope)) pinned.set(scope, new Set());
+            pinned.get(scope).add(generation);
+        }
+        const { offsets, ...result } = await compactSamplingArchive(
+            request,
+            snapshots.map(({ archiveOffset }) => archiveOffset),
+            pinned
+        );
+        const archive = new ArchiveHistoryIndex({
+            bucketSize: previous.bucketSize,
+            maxBytes: previous.maxBytes,
+            rawMaxBytes: previous.rawMaxBytes,
+            cacheMaxBytes: previous.cacheMaxBytes
+        });
+        const rebased = [];
+        for (const snapshot of snapshots) {
+            const bytes = offsets.get(snapshot.archiveOffset);
+            await archive.progress({ dataPath: request.outputPath, bytes });
+            rebased.push({ snapshot, bytes, capture: archive.capture(undefined, snapshot.scope, snapshot.generation) });
+        }
+        await archive.progress({ dataPath: request.outputPath, bytes: result.bytes });
+        if (archive.indexedOffset !== result.bytes) throw new Error("Could not index the compacted sampling archive");
+        archive.generations = previous.generations;
+        archive._budget();
+        for (const { snapshot, bytes, capture } of rebased) {
+            snapshot.archiveOffset = bytes;
+            snapshot.archiveSeries = capture.series;
+            snapshot.archiveCapture = capture;
+        }
+        for (const state of this.scopes.values()) {
+            state.revision++;
+            for (const series of state.series.values()) delete series.archiveBounds;
+        }
+        this.previousArchivePath = request.dataPath;
+        this.archive = archive;
+        return result;
     }
     async resolveBounds(scope) {
         const state = this._scope(scope),

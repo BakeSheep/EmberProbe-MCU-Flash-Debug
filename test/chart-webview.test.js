@@ -108,7 +108,7 @@ async function controls() {
             selected.click();
             assert.deepEqual(actions.at(-1), [
                 "style",
-                { name: "a", style: { color: "#aabbcc", line: selected.dataset.line } }
+                { name: "a", field: "line", style: { color: "#aabbcc", line: selected.dataset.line } }
             ]);
             for (const option of lineButtons)
                 assert.equal(option.getAttribute("aria-pressed"), String(option === selected));
@@ -456,6 +456,7 @@ async function experience() {
             "compareValues",
             "measureCurves",
             "fitY",
+            "chartUndo",
             "followLatest",
             "curveReadings",
             "cursorA",
@@ -465,6 +466,10 @@ async function experience() {
         assert.ok(doc.querySelector(".side-curve-tools #showAll"));
         assert.ok(doc.querySelector(".side-curve-tools #hideAll"));
         assert.equal(doc.getElementById("autoY"), null);
+        const windowSelect = doc.getElementById("timeWindow");
+        assert.equal(windowSelect.nextElementSibling.id, "chartTimeline");
+        assert.equal(windowSelect.selectedOptions[0].textContent, "30 s");
+        assert.equal(windowSelect.getAttribute("aria-label"), "Window");
         assert.equal(doc.getElementById("chartFit").parentNode.previousElementSibling.id, "chartTimeline");
         assert.equal(doc.querySelector(".remove").textContent, "×");
         const hitPoint = w.Inspection.pointAt(w.chartState.curveGeometry.value[0], 0);
@@ -2047,7 +2052,9 @@ async function fitAndUndo() {
             fit("fill", automatic);
             assert.ok(Math.abs(w.VP.span(chart.y) - 4.64) < 1e-9, "filled fitting keeps 8% data padding on each side");
         }
-        doc.getElementById("chartUndo").click();
+        doc.getElementById("chart").dispatchEvent(
+            new w.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true })
+        );
         host.draw(210);
         assert.equal(chart.fitMode, "center");
         assert.equal(chart.autoY, true);
@@ -2139,6 +2146,22 @@ async function fitAndUndo() {
         assert.ok(chart.y.max > 100, "auto Y holds before shrinking");
         host.draw(1500);
         assert.ok(w.VP.span(chart.y) < 2, "auto Y shrinks after a second of spare space");
+        w.viewportController.fit("center", true);
+        host.draw(1510);
+        for (const [time, value] of [
+            [6000, 100],
+            [8000, 200],
+            [10000, 300]
+        ]) {
+            host.samples([
+                { name: "a", value, t: time },
+                { name: "a", value: value + 1, t: time + 1000 }
+            ]);
+            chart.x = { min: time, max: time + 1000 };
+            host.draw(1510 + time);
+            assert.equal(chart.y.min + chart.y.max, 2 * value + 1, "auto center tracks a drifting curve immediately");
+            assert.equal(w.VP.span(chart.y), 2.5, "shifting the curve does not accumulate vertical range");
+        }
         w.freezeChart();
         host.pump();
         host.draw(1600);
@@ -2184,6 +2207,13 @@ async function fitAndUndo() {
     assert.equal(clipped.count, 0, "segment endpoints are clipped without adding sample counts");
     const constant = viewport.fitY({ min: 5, max: 5 }, "center", { min: 4, max: 6 });
     assert.ok(viewport.validRange(constant), "constant values have a finite, nonzero fit range");
+    const centered = { fitMode: "center", y: { min: -5, max: 5 } };
+    const narrow = { min: 10, max: 14 };
+    centered.y = viewport.stabilizeY(centered, narrow, 0);
+    assert.deepEqual(centered.y, { min: 7, max: 17 }, "delaying contraction still centers the curve");
+    assert.deepEqual(viewport.stabilizeY(centered, narrow, 1000), narrow);
+    const wide = { min: 8, max: 28 };
+    assert.deepEqual(viewport.stabilizeY(centered, wide, 1200), wide, "expanding keeps padding symmetric");
 }
 
 async function fitButtonGestures() {
@@ -2234,6 +2264,7 @@ async function fitButtonGestures() {
         ]) {
             const before = chart.viewHistory.length;
             pointer("pointerdown", button);
+            assert.equal(main.textContent, "Center", "a press previews the centered fit immediately");
             await clock.advance(duration);
             assert.equal(
                 chart.viewHistory.length,
@@ -2242,6 +2273,7 @@ async function fitButtonGestures() {
             );
             if (duration === 500) {
                 assert.ok(main.classList.contains("held"));
+                assert.equal(main.textContent, "Fill", "a sustained press previews full fit");
                 await clock.advance(800);
                 assert.equal(chart.viewHistory.length, before + 1, "a sustained hold fires once");
             }
@@ -2254,10 +2286,29 @@ async function fitButtonGestures() {
             );
             assert.equal(chart.fitMode, mode);
             assert.equal(chart.autoY, automatic);
+            assert.equal(main.textContent, automatic ? (mode === "center" ? "Center" : "Fill") : "Free");
             assert.equal(chart.fitPress, null);
             assert.equal(main.classList.contains("holding"), false);
             host.draw(clock.now());
         }
+        page.send({ type: "setLang", lang: "zh" });
+        assert.equal(main.textContent, "全屏");
+        pointer("pointerdown", 0);
+        assert.equal(main.textContent, "居中");
+        pointer("pointercancel", 0);
+        assert.equal(main.textContent, "全屏");
+        page.send({ type: "setLang", lang: "en" });
+        const canvas = doc.getElementById("chart");
+        canvas.dispatchEvent(
+            new w.WheelEvent("wheel", {
+                clientX: chart.geometry.padL - 2,
+                clientY: chart.geometry.padT + chart.geometry.ph / 2,
+                deltaY: -100,
+                cancelable: true
+            })
+        );
+        host.draw(clock.now());
+        assert.equal(main.textContent, "Free", "manual Y zoom clears the automatic fit label");
         assert.equal(
             pointer("contextmenu", 2).defaultPrevented,
             true,
@@ -3252,6 +3303,24 @@ async function remoteHistory() {
 }
 
 (async () => {
+    await scenario("Displayed point count excludes history prefetched outside the viewport", () => {
+        const page = render(getLiveWatchContent({}, "en"));
+        try {
+            const { window: w, document } = page;
+            const host = chartHistoryHost(page);
+            page.send({ type: "watchList", items: [{ name: "a", type: "u32", address: 0x20000000, size: 4 }] });
+            host.samples(Array.from({ length: 61 }, (_, i) => ({ name: "a", value: i, t: 1000 + 1000 * i })));
+            host.draw(120);
+            w.chartState.follow = false;
+            w.chartState.x = { min: 31000, max: 41000 };
+            host.draw(300);
+            host.draw(1400);
+            assert.equal(w.eval("state").remoteHistory.view.series[0].visibleCount, 31);
+            assert.equal(document.getElementById("points").textContent, "11 displayed points");
+        } finally {
+            page.close();
+        }
+    });
     await scenario("Toolbar controls, accessibility and overlap", controls);
     await scenario("Active curve allocation, expanded styles, visibility and overrides", activeStyles);
     await scenario("Curve identity, inspection, snapshots and interaction", experience);

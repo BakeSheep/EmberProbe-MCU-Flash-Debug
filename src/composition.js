@@ -258,6 +258,7 @@ function createSamplingServices(host, context, vscode) {
             `sampling-history-${process.pid}-${crypto.randomBytes(6).toString("hex")}`
         ),
         maxBytes: archiveLimitMiB * 1024 * 1024,
+        compactArchive: (request) => host._chartHistory.compactArchive(request),
         onWritten: (bytes) =>
             host._chartHistory?.archiveProgress({
                 dataPath: host._samplingArchive.dataPath,

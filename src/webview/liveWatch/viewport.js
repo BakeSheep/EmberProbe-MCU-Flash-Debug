@@ -152,16 +152,24 @@
         return validRange(result) ? result : padded;
     }
 
-    // Expand immediately to keep spikes visible; contract only after a second of substantial spare space.
+    // Center mode follows the data midpoint immediately while using the same delayed contraction as fill mode.
     function stabilizeY(state, target, now) {
         if (!validRange(state.y) || state.fitRequested || !state.fitMode) {
             state.fitHold = null;
             return target;
         }
-        const current = state.y;
-        if (target.min < current.min || target.max > current.max) {
+        const centered = state.fitMode === "center";
+        let current = state.y;
+        if (centered) {
+            const midpoint = target.min / 2 + target.max / 2;
+            const halfSpan = span(current) / 2;
+            current = { min: midpoint - halfSpan, max: midpoint + halfSpan };
+        }
+        if (!validRange(current) || target.min < current.min || target.max > current.max) {
             state.fitHold = null;
-            return { min: Math.min(target.min, current.min), max: Math.max(target.max, current.max) };
+            return centered
+                ? target
+                : { min: Math.min(target.min, current.min), max: Math.max(target.max, current.max) };
         }
         const spare = span(current) - span(target);
         const shift = Math.abs(target.min - current.min + (target.max - current.max)) / 2;

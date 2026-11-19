@@ -350,6 +350,22 @@ async function panels() {
     await panels[1].receive({ type: "setSeriesStyle", name: "shared", style: { color: "#123456", line: "dotted" } });
     assert.equal(panels[0].messages.at(-1).styles.shared.color, "#123456");
     assert.equal(panels[1].messages.at(-1).styles.shared.line, "dotted");
+    await scenario("Independent style edits from different tabs merge despite stale menu values", async () => {
+        await panels[0].receive({
+            type: "setSeriesStyle",
+            name: "shared",
+            field: "color",
+            style: { color: "#aa4400", line: "dotted" }
+        });
+        await panels[1].receive({
+            type: "setSeriesStyle",
+            name: "shared",
+            field: "line",
+            style: { color: "#123456", line: "dashed" }
+        });
+        for (const panel of panels)
+            assert.deepEqual(panel.messages.at(-1).styles.shared, { color: "#aa4400", line: "dashed" });
+    });
     await panels[0].receive({ type: "setSeriesStyle", panelId: 2, name: "other" });
     assert.equal(panels[0].messages.at(-1).type, "liveError");
     await panels[0].receive({ type: "setSeriesStyle", name: "shared", style: { color: "invalid", line: "solid" } });
@@ -742,6 +758,17 @@ async function identity() {
         await old.receive({ type: "saveWatch", panelId: 1, items: [] });
         assert.strictEqual(old.messages.at(-1).diagnostic.code, "INVALID_PANEL_ID");
         assert.deepStrictEqual(f.values.get(key), two, "cross-panel messages cannot change the list");
+        await scenario("A reopened chart uses the last rebased slot identity across host restarts", async () => {
+            await old.receive({ type: "saveWatch", panelId: 2, items: one });
+            old.dispose();
+            const restarted = fixture(structuredClone([...f.values]));
+            const pending = restarted.panel("波形图 #1");
+            const reopened = restarted.open();
+            assert.equal(restarted.entry(reopened).panelId, 2);
+            assert.equal(restarted.entry(reopened).watchKey, key);
+            assert.deepEqual(await restarted.ready(reopened), one);
+            pending.dispose();
+        });
     }
     // Number and storage key stay independent across another restart, even while the chart is hidden.
     {

@@ -31,25 +31,35 @@ function firmwareRow() {
     });
     const actionKey = upgrade ? "cubemx.upgradeFirmware" :
         fw?.state === "unknown" && isMx2 ? "cubemx2.openPackManager" : "cubemx.installFirmware";
-    const details = packs.map((pack) => {
+    function packageInfo(pack) {
         const key = pack.state === "unknown" ? "cubemx.firmwareUnknown" :
             pack.installed || pack.state === "installed" ? "cubemx.firmwareInstalled" :
             pack.state === "version-mismatch" ? "cubemx.firmwareMismatch" : "cubemx.firmwareMissing";
         const statusClass = pack.state === "unknown" ? "unknown" :
             pack.installed || pack.state === "installed" ? "ready" : "warning";
-        return '<div class="cubemx-package ' + statusClass + '" title="' +
+        return '<span class="cubemx-package ' + statusClass + '" title="' +
             esc((pack.vendor ? pack.vendor + "::" : "") + pack.name + " · " + tr(key) +
                 (pack.state === "unknown" && isMx2 ? " · " + tr("cubemx.packUnknown") : "")) + '">' +
             '<span class="cubemx-package-name">' + esc(pack.name) + '</span>' +
-            '<div class="cubemx-package-versions"><span><span data-i18n="cubemx.requiredVersion">' +
+            ' <span class="cubemx-package-versions"><span><span data-i18n="cubemx.requiredVersion">' +
             tr("cubemx.requiredVersion") + '</span> <b>' + esc(pack.requiredVersion || tr("cubemx.anyVersion")) +
-            '</b></span><span><span data-i18n="cubemx.currentVersion">' + tr("cubemx.currentVersion") +
+            '</b></span> <span><span data-i18n="cubemx.currentVersion">' + tr("cubemx.currentVersion") +
             '</span> <b class="cubemx-current-version">' + esc((pack.versions || []).join(", ") || "—") +
-            '</b></span></div></div>';
-    }).join("");
+            '</b></span></span></span>';
+    }
+    const status = '<small class="cubemx-status" title="' + esc(error) + '">' +
+        (error ? esc(v.cubemxFirmwareError ? tr("cubemx.firmwareUnknown") : error) : "") + '</small>';
+    const packages = packs.map(packageInfo);
+    const packageDetails = packages.length
+        ? '<details class="cubemx-packages"><summary>' + status + (error ? "" : packages[0]) +
+            (!error && packages.length > 1 ? '<span>+' + (packages.length - 1) + '</span>' : "") +
+            '</summary><div class="cubemx-package-list" title="' + esc(fw?.repository || "") + '">' +
+            packages.join("") + '</div></details>'
+        : status;
     return '<div class="tree-row cubemx-config-row"><span class="cubemx-config-icon">' + svg("chip") +
         '</span><div class="row-copy cubemx-firmware"><div class="cubemx-firmware-head">' +
-        '<span class="cubemx-firmware-label" data-i18n="' + titleKey + '">' + tr(titleKey) + '</span>' +
+        '<span class="cubemx-firmware-label" data-i18n="' + titleKey + '" data-i18n-title="' + titleKey +
+        '" title="' + tr(titleKey) + '">' + tr(titleKey) + '</span>' +
         '<span class="cubemx-firmware-actions">' +
         (fw && !fw.installed && !error ? '<button class="mini" type="button" ' +
             'data-command="mcu-vscode.installCubeMxFirmware" data-i18n="' + actionKey + '">' +
@@ -59,10 +69,7 @@ function firmwareRow() {
         '" aria-labelledby="cubemxRefreshLabel">' + svg("refresh") +
         '<span id="cubemxRefreshLabel" hidden data-i18n="cubemx.refreshFirmware">' +
         tr("cubemx.refreshFirmware") + '</span></button></span></div>' +
-        '<small class="cubemx-status" title="' + esc(error) + '">' +
-        (error ? esc(v.cubemxFirmwareError ? tr("cubemx.firmwareUnknown") : error) : "") + '</small>' +
-        '<div class="cubemx-package-list" title="' + esc(fw?.repository || "") + '">' + details +
-        '</div></div></div>';
+        packageDetails + '</div></div>';
 }
 function svdRow(){return `<div class="tree-row svd-config-row"><button class="svd-card-select" id="svdSelect" type="button">${svg('svd')}<span class="row-copy"><span data-i18n="svd.selectConfig">${tr('svd.selectConfig')}</span><small class="svd-status" id="svdStatus" data-i18n="svd.notConfigured">${tr('svd.notConfigured')}</small></span></button><span class="svd-row-actions"><span class="tag" data-i18n="common.optional">${tr('common.optional')}</span><button class="mini primary" id="svdDownload" type="button" data-i18n="svd.downloadOfficial">${tr('svd.downloadOfficial')}</button></span></div>`;}
 return `<!doctype html><html lang="${L==='zh'?'zh-CN':'en'}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'unsafe-inline';style-src 'unsafe-inline';"><title>MCU Tools</title><style>

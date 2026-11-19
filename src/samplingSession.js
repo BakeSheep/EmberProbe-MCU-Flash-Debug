@@ -154,7 +154,10 @@ class SamplingSession {
                 bytesPerSecond: 0,
                 p95DurationMs: 0,
                 missedDeadlines: 0,
-                pauseReason: this.stopped ? "stopped" : null
+                pauseReason: this.stopped ? "stopped" : null,
+                adapterSpeedKhz: null,
+                baseAdapterSpeedKhz: null,
+                adaptiveSpeed: null
             }
         );
     }

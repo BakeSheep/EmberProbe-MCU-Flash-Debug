@@ -10,20 +10,6 @@
     if (commonJs) module.exports = exportDialog;
     else root.EmberProbeExportDialog = exportDialog;
 })(typeof globalThis === "object" ? globalThis : this, function (cardReorder, pageZoom) {
-    function exportBounds(candidates) {
-        let from = Infinity,
-            to = -Infinity;
-        (candidates || []).forEach(function (c) {
-            (c.buffer || []).forEach(function (p) {
-                const time = Number(p && p.t);
-                if (Number.isFinite(time)) {
-                    from = Math.min(from, time);
-                    to = Math.max(to, time);
-                }
-            });
-        });
-        return { from: from, to: to };
-    }
     // The host archives separate type interpretations as "name [type]". Keep that key for export, but present its
     // variable name and sampled type in their own columns.
     function candidate(name, info, page) {
@@ -44,8 +30,7 @@
         return {
             name: name,
             displayName: displayName && displayName !== variableName ? displayName : page.displayName(variableName),
-            type: archivedType ? archivedType[1] : item && (item.typeName || item.type || item.watchType),
-            buffer: [{ t: info.firstTimestampMs }, { t: info.lastTimestampMs }]
+            type: archivedType ? archivedType[1] : item && (item.typeName || item.type || item.watchType)
         };
     }
 
@@ -53,10 +38,12 @@
     // clearPending() }
     function create(page) {
         const { $, t } = page;
+        const overlay = $("exportOverlay");
         let candidates = [],
-            openedAt = 0,
             timelineStart = 0,
             timelineEnd = 0,
+            previousFocus = null,
+            background = [],
             drag = null;
         function selected() {
             const picked = [];
@@ -77,7 +64,6 @@
                     if (cb.closest("tr").hidden) return;
                     cb.checked = invert ? !cb.checked : true;
                 });
-            setupTimeline(selected());
         }
         function filter() {
             endDrag();
@@ -113,11 +99,10 @@
                 to: page.formatElapsed(b)
             });
         }
-        function setupTimeline(picked) {
-            const bounds = exportBounds(picked);
-            timelineStart = Number.isFinite(bounds.from) ? Math.min(bounds.from, openedAt) : openedAt;
-            timelineEnd = Math.max(timelineStart, openedAt);
-            const span = Math.max(1, Math.round(timelineEnd - timelineStart)),
+        function setupTimeline(first, last) {
+            timelineStart = first;
+            timelineEnd = Math.max(first, last);
+            const span = Math.max(1, Math.ceil(timelineEnd - timelineStart)),
                 from = $("exportFromRange"),
                 to = $("exportToRange");
             from.min = to.min = "0";
@@ -131,8 +116,8 @@
         function range() {
             const a = Number($("exportFromRange").value),
                 b = Number($("exportToRange").value),
-                from = timelineStart + a,
-                to = timelineStart + b;
+                from = Math.min(timelineEnd, timelineStart + a),
+                to = Math.min(timelineEnd, timelineStart + b);
             if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
             if (a === 0 && b === Number($("exportToRange").max)) return {};
             return { from: from, to: to };
@@ -148,7 +133,6 @@
             if (event && event.type === "pointerup" && !current.moved && current.checkbox) {
                 current.checkbox.checked = !current.checkbox.checked;
             }
-            setupTimeline(selected());
         }
         function updateDrag() {
             if (!drag || !drag.moved) return;
@@ -265,8 +249,23 @@
         }
         function hide() {
             endDrag();
-            $("exportOverlay").classList.add("hidden");
+            overlay.classList.add("hidden");
+            for (const element of background) element.removeAttribute("inert");
+            background = [];
+            if (previousFocus?.isConnected) previousFocus.focus();
+            previousFocus = null;
             page.notice(null);
+        }
+        function showOverlay() {
+            if (overlay.classList.contains("hidden")) {
+                previousFocus = document.activeElement;
+                background = [...document.body.children].filter(
+                    (item) => item !== overlay && !item.hasAttribute("inert")
+                );
+                for (const element of background) element.setAttribute("inert", "");
+                overlay.classList.remove("hidden");
+            }
+            $("exportFileName").focus();
         }
         // Ask the host for the archived series; its reply opens the dialog through `show`.
         function open() {
@@ -301,13 +300,12 @@
                 candidates = [];
                 $("exportSeries").textContent = "";
                 page.notice("lw.noDataToExport");
-                $("exportOverlay").classList.remove("hidden");
+                showOverlay();
                 return;
             }
             candidates = names.map(function (name) {
-                return candidate(name, { ...info, firstTimestampMs: first, lastTimestampMs: last }, page);
+                return candidate(name, info, page);
             });
-            openedAt = last;
             const box = $("exportSeries"),
                 table = document.createElement("table"),
                 header = table.createTHead().insertRow(),
@@ -331,9 +329,6 @@
                 cb.type = "checkbox";
                 cb.checked = true;
                 cb.dataset.index = String(index);
-                cb.onchange = function () {
-                    setupTimeline(selected());
-                };
                 name.className = "export-series-name";
                 name.textContent = name.title = item.displayName;
                 typeCell.className = "export-series-type";
@@ -341,9 +336,9 @@
                 label.append(cb, name);
                 nameCell.appendChild(label);
             });
-            setupTimeline(candidates);
+            setupTimeline(first, last);
             page.notice(info.limitReached ? "lw.archiveTruncated" : info.limited ? "lw.memoryHistoryLimited" : null);
-            $("exportOverlay").classList.remove("hidden");
+            showOverlay();
         }
         function apply() {
             const picked = selected();
@@ -385,9 +380,25 @@
         $("exportInvert").onclick = function () {
             setSelection(true);
         };
-        $("exportOverlay").onclick = function (e) {
-            if (e.target === $("exportOverlay")) hide();
+        overlay.onclick = function (e) {
+            if (e.target === overlay) hide();
         };
+        overlay.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                hide();
+            } else if (event.key === "Tab") {
+                const controls = [...overlay.querySelectorAll("input:enabled, button:enabled")].filter(
+                    (item) => !item.closest("[hidden]")
+                );
+                const index = event.shiftKey ? 0 : controls.length - 1;
+                if (document.activeElement === controls[index]) {
+                    event.preventDefault();
+                    controls[event.shiftKey ? controls.length - 1 : 0].focus();
+                }
+            }
+        });
         $("exportSeries").addEventListener("pointerdown", beginDrag);
         $("exportSeries").addEventListener("pointermove", moveDrag);
         $("exportSeries").addEventListener("pointerup", endDrag);

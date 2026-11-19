@@ -22,6 +22,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - OpenOCD 的 scatter 读取失败回复会结束本轮读取；即使诊断日志晚于 Tcl 回复，也不会在本轮发起普通读取。收到明确的 CMSIS-DAP 通信错误日志时结束会话并报告 `PROBE_COMMUNICATION_FAILED`。探针初始化时正常的 USB 清空超时不会触发断连。
 - End the current read when OpenOCD reports a scatter memory read failure, even if the diagnostic log arrives after the Tcl reply. An explicit CMSIS-DAP communication failure log closes the session with `PROBE_COMMUNICATION_FAILED`. Expected USB drain timeouts during initialization do not trigger a disconnect.
 
+- 当 `emberprobe.samplingAdapterSpeedKhz` 与 `emberprobe.adapterSpeedKhz` 均为 `0` 时，独立 Cortex-M SWD 采样会在启动后自动按探针阶梯校验并选择吞吐最优的稳定链路时钟（检测驱动钳制、平台期与 SWD WAIT 减速，支持中点细化与运行中自动回退），不改变调试、烧录、单次读取、RTT 或写入授权绑定。
+- Automatically benchmark and select the fastest verified stable SWD adapter clock for standalone Cortex-M sampling when both `emberprobe.samplingAdapterSpeedKhz` and `emberprobe.adapterSpeedKhz` are `0` (respecting driver clamps, throughput plateaus, SWD WAIT slowdowns, midpoint refinement, and runtime step-down fallback), without affecting debug, flashing, one-shot reads, RTT, or write-authorization bindings.
+
 ### 调试 / Debug
 
 - 后端变量写入支持有类型的指针成员、链表节点和受支持容器的可变标量元素；按需解析地址并复核目标，写后回读。查看列表中的写入卡片绑定添加时的地址和类型，变化或采样失效后禁用写入并取消待提交值。ELF 全部变量列表只允许添加静态可写成员。

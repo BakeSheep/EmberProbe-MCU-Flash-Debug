@@ -2458,40 +2458,38 @@ window.EmberProbeMessages.connect(window, {
             $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
         }
         if (m.effectiveIntervalMs === 0) {
-            $("rate").title =
-                "Target: unlimited | P95: " +
-                (m.p95DurationMs || 0) +
-                "ms | Limited by: " +
-                (m.limitedBy || "-") +
-                " | Host hold: " +
-                (m.hostHoldMs || 0) +
-                "ms" +
-                (m.pauseReason ? " | Paused: " + m.pauseReason : "");
+            $("rate").title = [
+                "Target: unlimited",
+                "P95: " + (m.p95DurationMs || 0) + "ms",
+                "Limited by: " + (m.limitedBy || "-"),
+                "Host hold: " + (m.hostHoldMs || 0) + "ms" + (m.pauseReason ? " | Paused: " + m.pauseReason : "")
+            ].join(" | ");
         } else if (m.effectiveIntervalMs !== undefined) {
             var targetHz = m.frequencyHz || requestedFrequencyHz;
-            $("rate").title =
-                "Target: " +
-                targetHz +
-                " Hz | Effective: " +
-                (1000 / m.effectiveIntervalMs).toFixed(1) +
-                " Hz (" +
-                m.effectiveIntervalMs +
-                " ms) | P95: " +
-                (m.p95DurationMs || 0) +
-                "ms | Missed: " +
-                (m.missedDeadlines || 0) +
-                (m.pauseReason ? " | Paused: " + m.pauseReason : "");
+            $("rate").title = [
+                "Target: " + targetHz + " Hz",
+                "Effective: " + (1000 / m.effectiveIntervalMs).toFixed(1) + " Hz (" + m.effectiveIntervalMs + " ms)",
+                "P95: " + (m.p95DurationMs || 0) + "ms",
+                "Missed: " + (m.missedDeadlines || 0) + (m.pauseReason ? " | Paused: " + m.pauseReason : "")
+            ].join(" | ");
         }
-        if ($("rate").title && m.hostLoopDelayMs !== undefined)
-            $("rate").title +=
-                " | Host stall: " +
-                (m.hostLoopDelayMs || 0) +
-                "ms | Backlog: " +
-                (m.backlogBatches || 0) +
-                " (" +
-                (m.backlogAgeMs || 0) +
-                "ms) | Dropped: " +
-                (m.droppedBatches || 0);
+        if ($("rate").title) {
+            var extras = [];
+            if (m.hostLoopDelayMs !== undefined)
+                extras.push(
+                    "Host stall: " +
+                        (m.hostLoopDelayMs || 0) +
+                        "ms | Backlog: " +
+                        (m.backlogBatches || 0) +
+                        " (" +
+                        (m.backlogAgeMs || 0) +
+                        "ms) | Dropped: " +
+                        (m.droppedBatches || 0)
+                );
+            if (Number.isFinite(m.adapterSpeedKhz) && m.adapterSpeedKhz > 0)
+                extras.push("SWD: " + m.adapterSpeedKhz + " kHz");
+            if (extras.length) $("rate").title += " | " + extras.join(" | ");
+        }
         starting = false;
         updateRun();
         if (m.error && (m.key || m.message != null)) setStatusMsg(m, "error", "live");

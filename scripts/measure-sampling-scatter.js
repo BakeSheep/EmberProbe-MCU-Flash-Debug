@@ -288,7 +288,9 @@ async function main(argv = process.argv.slice(2)) {
             p95CycleMs: percentile(durations, 0.95),
             tclRpcsPerCycle: rpcCounts.reduce((a, b) => a + b, 0) / rpcCounts.length,
             scatterReads: stats.scatterReads ?? null,
-            noEchoResponses: stats.noEchoResponses ?? null
+            noEchoResponses: stats.noEchoResponses ?? null,
+            effectiveSpeedKhz: stats.adapterSpeedKhz ?? null,
+            adaptiveSpeed: stats.adaptiveSpeed ?? null
         };
         fs.mkdirSync(path.dirname(options.output), { recursive: true });
         fs.writeFileSync(options.output, JSON.stringify(report, null, 2) + "\n");

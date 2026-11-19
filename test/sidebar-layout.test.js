@@ -90,6 +90,34 @@ scenario("Keep tool failures visible without repeating successful CubeMX detecti
     }
 });
 
+scenario("Summarize CubeMX packs in one line and reveal the full version list on demand", () => {
+    const packs = [
+        { name: "stm32c5xx_dfp", requiredVersion: "2.1.0", versions: ["2.0.0"], state: "version-mismatch" },
+        { name: "cmsis", requiredVersion: "6.0.0", versions: ["6.0.0"], state: "installed" }
+    ];
+    const page = render(getModernWebviewContent({ cubemxFirmware: { generator: "cubemx2", packs } }, "en"));
+    try {
+        const disclosure = page.document.querySelector(".cubemx-packages");
+        const summary = disclosure.querySelector("summary");
+        assert.strictEqual(disclosure.open, false);
+        assert.ok(summary.textContent.includes("stm32c5xx_dfp Need 2.1.0 Have 2.0.0"));
+        assert.ok(summary.textContent.endsWith("+1"));
+        assert.ok(!summary.textContent.includes("cmsis"));
+        summary.click();
+        assert.strictEqual(disclosure.open, true);
+        assert.deepStrictEqual(
+            Array.from(
+                disclosure.querySelectorAll(".cubemx-package-list .cubemx-package-name"),
+                (name) => name.textContent
+            ),
+            packs.map(({ name }) => name)
+        );
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+});
+
 scenario(
     "Choose install, upgrade or manage for CubeMX2 packs without treating newer exact versions as upgrades",
     () => {

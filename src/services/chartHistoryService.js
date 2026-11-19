@@ -103,6 +103,11 @@ class ChartHistoryService {
             this.archiveTimer = setTimeout(send, Math.max(0, 250 - (Date.now() - this.archiveSentAt)));
         }
     }
+    compactArchive(request) {
+        if (this.archiveTimer) clearTimeout(this.archiveTimer);
+        this.archiveTimer = null;
+        return this.request("compactArchive", [request]);
+    }
     fail(error) {
         if (this.failed || this.disposed) return;
         this.failed = error;

@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { ArchiveEncoder, FILE_HEADER, scanArchive } = require("./samplingArchiveFormat");
+const { compactSamplingArchive, indexSampleTime } = require("./samplingArchiveCompaction");
 const { createSampleTimeFormatter } = require("./sampleTime");
 
 const fsp = fs.promises;
@@ -15,7 +16,6 @@ const RESUME_BYTES = 1024 * 1024;
 const DRAIN_BATCH_BYTES = 256 * 1024;
 const DRAIN_DELAY_MS = 150;
 const AGENT_CSV_MAX_BYTES = 64 * 1024 * 1024;
-const INDEX_BLOCK_BYTES = 64 * 1024;
 const HISTORY_WINDOW_MS = 30 * 60 * 1000;
 
 function codedError(code, message) {
@@ -135,6 +135,7 @@ class SamplingArchive {
         this.onError = options.onError || (() => {});
         this.onBackpressure = options.onBackpressure || (() => {});
         this.onWritten = options.onWritten || (() => {});
+        this.compactArchive = options.compactArchive || compactSamplingArchive;
         this.queue = [];
         this.queuedBytes = 0;
         this.writtenBytes = 0;
@@ -144,6 +145,8 @@ class SamplingArchive {
         this.variables = new Set();
         this.scopes = new Map();
         this.generations = new Map();
+        this.clearVersion = this.compactedThrough = 0;
+        this.reclaiming = null;
         this.handle = null;
         this.drainPromise = null;
         this.drainTimer = null;
@@ -167,7 +170,8 @@ class SamplingArchive {
     // Raising the limit lets a session that hit it record again; lowering it never discards written data.
     setMaxBytes(bytes) {
         this.maxBytes = Math.max(1024 * 1024, Number(bytes) || DEFAULT_MAX_BYTES);
-        if (this.limitReached && this.writtenBytes + this.queuedBytes < this.maxBytes) this.limitReached = false;
+        if (this.limitReached && !this.reclaiming && this.writtenBytes + this.queuedBytes < this.maxBytes)
+            this.limitReached = false;
         return this.status();
     }
 
@@ -188,7 +192,50 @@ class SamplingArchive {
     clear(scope = "") {
         // Logical reset isolates this consumer without disrupting other panels or active disk writes.
         this.generations.set(scope, (this.generations.get(scope) || 0) + 1);
-        this.scopes.delete(scope);
+        if (this.scopes.delete(scope)) this.clearVersion++;
+    }
+
+    reclaimCleared() {
+        if (this.reclaiming) return this.reclaiming;
+        const full = this.limitReached || this.writtenBytes + this.queuedBytes >= this.maxBytes;
+        if (!full || this.clearVersion === this.compactedThrough || this.closed || this.failed) return null;
+        const readers = [this.exportPromise, ...this.activeReads];
+        this.reclaiming = this._reclaim(readers).finally(() => {
+            this.reclaiming = null;
+            this._setBackpressure(this.queuedBytes >= RESUME_BYTES);
+        });
+        this._setBackpressure(true);
+        return this.reclaiming;
+    }
+
+    async _reclaim(readers) {
+        await Promise.allSettled(readers);
+        await this.flush();
+        if (this.closed || this.failed) return;
+        const dataPath = this.dataPath;
+        const outputPath = path.join(this.rootDir, `samples-${crypto.randomBytes(8).toString("hex")}.bin`);
+        const cutoff = this.indexedBytes;
+        const oldLimit = this.maxBytes;
+        const through = this.clearVersion;
+        if (this.handle) await this.handle.close();
+        this.handle = null;
+        let compacted;
+        try {
+            compacted = await this.compactArchive({ dataPath, outputPath, cutoff, generations: [...this.generations] });
+        } catch (error) {
+            await fsp.rm(outputPath, { force: true }).catch(() => {});
+            throw error;
+        }
+        this.dataPath = outputPath;
+        this.encoder = new ArchiveEncoder(compacted.dictionary);
+        this.timeIndex = compacted.timeIndex;
+        this.rows = compacted.rows;
+        this.writtenBytes = this.indexedBytes = compacted.bytes;
+        this.compactedThrough = through;
+        this.limitReached =
+            compacted.bytes >= this.maxBytes || (compacted.bytes === cutoff && oldLimit >= this.maxBytes);
+        this.onWritten(compacted.bytes);
+        await fsp.rm(dataPath, { force: true });
     }
 
     append(samples, timestampMs, scope = "") {
@@ -208,12 +255,11 @@ class SamplingArchive {
     }
 
     _appendRow(samples, timestampMs, scope) {
-        if (this.closed || this.failed || this.limitReached) return false;
+        if (this.closed || this.failed || this.limitReached || this.reclaiming) return false;
         const values = Object.create(null);
         for (const sample of Array.isArray(samples) ? samples : []) {
             if (!sample || typeof sample.name !== "string") continue;
             values[sample.name] = sampleValueText(sample);
-            this.variables.add(sample.name);
         }
         if (!Object.keys(values).length) return false;
         const timestamp = Number(timestampMs) || Date.now();
@@ -223,25 +269,29 @@ class SamplingArchive {
                 .filter((sample) => sample?.historyIdentity)
                 .map((sample) => [sample.name, sample.historyIdentity])
         );
+        const header = this.rows === 0 ? FILE_HEADER : Buffer.alloc(0);
+        const remaining = this.maxBytes - this.writtenBytes - this.queuedBytes - header.length;
         let buffer;
         try {
-            buffer = this.encoder.encodeRow({
-                t: timestamp,
-                scope,
-                generation,
-                values: Object.entries(values).map(([key, text]) => ({
-                    key,
-                    text,
-                    identity: Object.hasOwn(identities, key) ? identities[key] : undefined
-                }))
-            });
+            buffer = this.encoder.encodeRow(
+                {
+                    t: timestamp,
+                    scope,
+                    generation,
+                    values: Object.entries(values).map(([key, text]) => ({
+                        key,
+                        text,
+                        identity: Object.hasOwn(identities, key) ? identities[key] : undefined
+                    }))
+                },
+                remaining
+            );
         } catch (error) {
             this.failed = error;
             this.onError(error);
             return false;
         }
-        const header = this.rows === 0 ? FILE_HEADER : Buffer.alloc(0);
-        if (this.writtenBytes + this.queuedBytes + header.length + buffer.length > this.maxBytes) {
+        if (!buffer) {
             this.limitReached = true;
             this.onError(codedError("SAMPLING_ARCHIVE_FULL", "Sampling history reached its configured size limit"));
             return false;
@@ -256,7 +306,10 @@ class SamplingArchive {
             this.scopes.set(scope, history);
         }
         history.rows++;
-        for (const name of Object.keys(values)) history.variables.add(name);
+        for (const name of Object.keys(values)) {
+            history.variables.add(name);
+            this.variables.add(name);
+        }
         history.firstTimestampMs = Math.min(history.firstTimestampMs, timestamp);
         history.lastTimestampMs = Math.max(history.lastTimestampMs, timestamp);
         this.firstTimestampMs = this.firstTimestampMs == null ? timestamp : Math.min(this.firstTimestampMs, timestamp);
@@ -324,18 +377,14 @@ class SamplingArchive {
         }
         let recordOffset = batchStart;
         for (const entry of batch) {
-            let block = this.timeIndex[this.timeIndex.length - 1];
-            if (!block || recordOffset - block.offset >= INDEX_BLOCK_BYTES) {
-                block = { offset: recordOffset, tMin: entry.t, tMax: entry.t };
-                this.timeIndex.push(block);
-            }
-            block.tMin = Math.min(block.tMin, entry.t);
-            block.tMax = Math.max(block.tMax, entry.t);
+            indexSampleTime(this.timeIndex, recordOffset, entry.t);
             recordOffset += entry.buffer.length;
         }
         this.indexedBytes = recordOffset;
         this.onWritten(this.indexedBytes);
-        this._setBackpressure(this.queuedBytes >= (this.backpressured ? RESUME_BYTES : BACKPRESSURE_BYTES));
+        this._setBackpressure(
+            !!this.reclaiming || this.queuedBytes >= (this.backpressured ? RESUME_BYTES : BACKPRESSURE_BYTES)
+        );
     }
 
     async flush() {
@@ -350,6 +399,7 @@ class SamplingArchive {
         }
     }
     async historySource(scope) {
+        if (this.reclaiming) await this.reclaiming.catch(() => {});
         const generation = this.generations.get(scope) || 0;
         const lastTimestampMs = this.status(scope).lastTimestampMs;
         await this.flush();
@@ -401,6 +451,7 @@ class SamplingArchive {
     }
 
     async _exportCsv(request) {
+        if (this.reclaiming) await this.reclaiming.catch(() => {});
         const targetPath = path.resolve(String(request.outputPath || ""));
         if (!request.outputPath || path.extname(targetPath).toLowerCase() !== ".csv") {
             throw codedError("EXPORT_PATH_INVALID", "A CSV output path is required");
@@ -411,7 +462,8 @@ class SamplingArchive {
         const requested = Array.isArray(request.names) && request.names.length ? request.names : available;
         const names = [...new Set(requested.map(String))].filter((name) => available.includes(name));
         if (!names.length) throw codedError("CSV_EXPORT_EMPTY", "No recorded variables were selected");
-        const cutoff = await this.flush();
+        await this.flush();
+        const cutoff = this.indexedBytes;
         if (!cutoff) throw codedError("CSV_EXPORT_EMPTY", "No sampled data is available");
 
         const fromMs = Number.isFinite(Number(request.fromMs)) ? Number(request.fromMs) : -Infinity;
@@ -508,7 +560,7 @@ class SamplingArchive {
                 }
             };
             let reported = -1;
-            await scanArchive(
+            const scanned = await scanArchive(
                 this.dataPath,
                 {
                     end: cutoff,
@@ -524,6 +576,8 @@ class SamplingArchive {
                 },
                 visitor
             );
+            if (scanned.end !== cutoff)
+                throw codedError("SAMPLING_ARCHIVE_READ_FAILED", "The sampling archive contains an unreadable record");
             if (isCancelled()) throw cancelled();
             await writeLines();
             await output.datasync();
@@ -550,6 +604,7 @@ class SamplingArchive {
     async dispose() {
         if (this.closed) return;
         this.closed = true;
+        if (this.reclaiming) await this.reclaiming.catch(() => {});
         if (this.exportPromise) await this.exportPromise.catch(() => {});
         await Promise.allSettled([...this.activeReads]);
         await this.flush().catch(() => {});

@@ -220,6 +220,7 @@ input[type="number"] {
 }
 .chart-pane {
     display: flex;
+    container: waveform-pane / inline-size;
     min-width: 0;
     flex-direction: column;
     padding: 10px 12px 14px;
@@ -1354,9 +1355,15 @@ input[type="number"]::-webkit-outer-spin-button {
     border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%);
 }
-.chart-overview.disabled {
+.chart-overview.disabled #chartTimeline {
     opacity: 0.42;
     pointer-events: none;
+}
+#timeWindow {
+    flex: none;
+    height: 26px;
+    padding-block: 0;
+    border-radius: 4px;
 }
 #chartTimeline {
     flex: 1;
@@ -1366,6 +1373,24 @@ input[type="number"]::-webkit-outer-spin-button {
     display: inline-flex;
     flex: none;
 }
+@container waveform-pane (max-width: 310px) {
+    .chart-overview {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 8px;
+    }
+    #timeWindow {
+        max-width: 100%;
+        justify-self: start;
+    }
+    #chartTimeline {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+    .chart-fit-control {
+        justify-self: end;
+    }
+}
 .chart-fit-control > button {
     height: 26px;
     white-space: nowrap;
@@ -1373,6 +1398,7 @@ input[type="number"]::-webkit-outer-spin-button {
     user-select: none;
 }
 #chartFit {
+    min-inline-size: 64px;
     border-radius: 4px 0 0 4px;
     border-right: 0;
 }
@@ -3228,21 +3254,13 @@ input[type="number"]::-webkit-outer-spin-button {
 .history-tools > button,
 .toolbar .chart-settings-toggle,
 .toolbar #addName,
-.toolbar #timeWindow,
 .toolbar .frequency-field {
     height: var(--toolbar-control-height);
     border-radius: var(--toolbar-control-radius);
     padding-block: 0;
 }
-.toolbar #addName,
-.toolbar #timeWindow {
+.toolbar #addName {
     font-size: 13px;
-}
-/* Center the window caption on its select like the frequency caption, not on the select's baseline. */
-.history-tools > label {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
 }
 .toolbar .chart-settings-toggle {
     width: var(--toolbar-control-height);

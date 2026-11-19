@@ -36,14 +36,38 @@ class FakeOpenOcdServer {
         // `rtt channels` returns what it printed as its error when a channel's name cannot be read.
         this.rttChannelsTruncated = false;
         this.rttSupported = true;
+        // Opt-in adaptive adapter speed simulation (null keeps legacy FakeOpenOcdServer behavior).
+        this.adapterSpeedKhz = null;
+        this.targetType = "cortex_m";
+        this.transport = "swd";
+        this.cpuid = 0x410fc241;
+        this.readCmdName = "read_memory";
+        this.speedMap = null;
+        this.onSpeedLog = null;
+        this.speedReadBehavior = null;
+        this.targetNotExamined = false;
+        this._reportedSpeedKhz = null;
+        this._requestedSpeedKhz = null;
     }
 
     seed(address, bytes) {
         bytes.forEach((byte, index) => this.memory.set((address + index) >>> 0, byte & 0xff));
     }
 
-    bytes(address, count) {
-        return Array.from({ length: count }, (_, index) => this.memory.get((address + index) >>> 0) || 0);
+    bytes(address, count, corruptCpuid = false) {
+        return Array.from({ length: count }, (_, index) => {
+            const byteAddr = (address + index) >>> 0;
+            if (
+                this.adapterSpeedKhz !== null &&
+                byteAddr >= 0xe000ed00 &&
+                byteAddr < 0xe000ed04 &&
+                (corruptCpuid || !this.memory.has(byteAddr))
+            ) {
+                const word = corruptCpuid ? (this.cpuid ^ 0x10) >>> 0 : this.cpuid >>> 0;
+                return (word >>> ((byteAddr - 0xe000ed00) * 8)) & 0xff;
+            }
+            return this.memory.get(byteAddr) || 0;
+        });
     }
 
     async start() {
@@ -87,26 +111,40 @@ class FakeOpenOcdServer {
             }
             const prefix = "set _ep_rc [catch {";
             const suffix = "} _ep_msg]";
-            if (command.startsWith(prefix)) {
-                const boundary = command.indexOf(suffix, prefix.length);
-                if (boundary >= 0) {
-                    const inner = command.slice(prefix.length, boundary);
-                    const result = this._execute(inner);
-                    const responseFile = command.match(/set _ep_file \[open "([^"]+)" w\]/);
-                    if (responseFile) {
-                        const targetPath = responseFile[1].replace(/\\\\/g, "\\");
-                        fs.writeFileSync(targetPath, `${result.ok ? 0 : 1}\n${result.response}`);
-                        this.responses.push("");
-                        socket.write(SUB);
-                    } else {
-                        const response = (result.ok ? "EP_OK:" : "EP_ERR:") + result.response;
-                        this.responses.push(response);
-                        socket.write(response + SUB);
-                    }
-                    return;
-                }
+            const hasWrapper = command.startsWith(prefix) && command.indexOf(suffix, prefix.length) >= 0;
+            const boundary = hasWrapper ? command.indexOf(suffix, prefix.length) : -1;
+            const inner = hasWrapper ? command.slice(prefix.length, boundary) : command;
+            let behavior = null;
+            if (
+                this.adapterSpeedKhz !== null &&
+                this.speedReadBehavior &&
+                /^(?:emberprobe_read_scatter\s+(?!version$)|join\s+\[list|(?:ocd_)?read_memory\s+)/i.test(inner)
+            ) {
+                behavior = this.speedReadBehavior(
+                    this.adapterSpeedKhz,
+                    this._requestedSpeedKhz ?? this.adapterSpeedKhz,
+                    inner
+                );
+                if (behavior?.logLine) this.onSpeedLog?.(behavior.logLine);
+                if (behavior?.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, behavior.latencyMs));
+                if (behavior?.timeout) return;
             }
-            const result = this._execute(command);
+            if (hasWrapper) {
+                const result = this._execute(inner, behavior);
+                const responseFile = command.match(/set _ep_file \[open "([^"]+)" w\]/);
+                if (responseFile) {
+                    const targetPath = responseFile[1].replace(/\\\\/g, "\\");
+                    fs.writeFileSync(targetPath, `${result.ok ? 0 : 1}\n${result.response}`);
+                    this.responses.push("");
+                    socket.write(SUB);
+                } else {
+                    const response = (result.ok ? "EP_OK:" : "EP_ERR:") + result.response;
+                    this.responses.push(response);
+                    socket.write(response + SUB);
+                }
+                return;
+            }
+            const result = this._execute(command, behavior);
             this.responses.push(result.response);
             socket.write(result.response + SUB);
         } finally {
@@ -114,15 +152,16 @@ class FakeOpenOcdServer {
         }
     }
 
-    _executeRead(command) {
+    _executeRead(command, behavior = null) {
         const read = command.match(/^(?:ocd_)?read_memory\s+(0x[0-9a-f]+)\s+(8|16|32)\s+(\d+)$/i);
         if (!read) return null;
+        if (behavior?.fail) return { ok: false, response: behavior.errorMessage || "target memory read failed" };
         if (this.transientFailures > 0) {
             this.transientFailures--;
             return { ok: false, response: "target memory read failed" };
         }
         const elementBytes = Number(read[2]) / 8;
-        const raw = this.bytes(parseInt(read[1], 16), Number(read[3]) * elementBytes);
+        const raw = this.bytes(parseInt(read[1], 16), Number(read[3]) * elementBytes, !!behavior?.corruptCpuid);
         const values = [];
         for (let offset = 0; offset < raw.length; offset += elementBytes) {
             let value = 0;
@@ -132,8 +171,49 @@ class FakeOpenOcdServer {
         return { ok: true, response: values.join(" ") };
     }
 
-    _execute(command) {
+    _execute(command, behavior = undefined) {
         this.commands.push(command);
+        if (this.adapterSpeedKhz !== null) {
+            if (command.startsWith("set _ep_t [target current];")) {
+                if (this.targetNotExamined) return { ok: false, response: "Target not examined yet" };
+                const reported = this._reportedSpeedKhz ?? this.adapterSpeedKhz;
+                return {
+                    ok: true,
+                    response: [
+                        this.targetType,
+                        this.transport,
+                        `adapter speed: ${reported} kHz`,
+                        `0x${(this.cpuid >>> 0).toString(16)}`,
+                        this.readCmdName
+                    ].join("\n")
+                };
+            }
+            const speedMatch = command.match(/^adapter speed(?:\s+(\d+))?$/i);
+            if (speedMatch) {
+                if (speedMatch[1] !== undefined) {
+                    const requested = Number(speedMatch[1]);
+                    this._requestedSpeedKhz = requested;
+                    const mapped = this.speedMap ? this.speedMap(requested) : null;
+                    if (mapped?.reject) return { ok: false, response: "unable to set adapter speed" };
+                    if (mapped?.logLine) this.onSpeedLog?.(mapped.logLine);
+                    this.adapterSpeedKhz = mapped?.actualKhz ?? requested;
+                    this._reportedSpeedKhz = mapped?.reportedKhz ?? this.adapterSpeedKhz;
+                }
+                return { ok: true, response: `adapter speed: ${this._reportedSpeedKhz ?? this.adapterSpeedKhz} kHz` };
+            }
+            if (
+                behavior === undefined &&
+                this.speedReadBehavior &&
+                /^(?:emberprobe_read_scatter\s+(?!version$)|join\s+\[list|(?:ocd_)?read_memory\s+)/i.test(command)
+            ) {
+                behavior = this.speedReadBehavior(
+                    this.adapterSpeedKhz,
+                    this._requestedSpeedKhz ?? this.adapterSpeedKhz,
+                    command
+                );
+                if (behavior?.logLine) this.onSpeedLog?.(behavior.logLine);
+            }
+        }
         if (command === "info commands *read_memory") return { ok: true, response: "ocd_read_memory read_memory" };
         if (command === "info commands *write_memory") return { ok: true, response: "ocd_write_memory write_memory" };
         if (command === "emberprobe_read_scatter version") {
@@ -142,6 +222,7 @@ class FakeOpenOcdServer {
                 : { ok: true, response: this.scatterVersion };
         }
         if (command.startsWith("emberprobe_read_scatter ")) {
+            if (behavior?.fail) return { ok: false, response: behavior.errorMessage || "scatter memory read failed" };
             if (this.scatterFailures > 0) {
                 this.scatterFailures--;
                 return { ok: false, response: "scatter memory read failed" };
@@ -155,7 +236,9 @@ class FakeOpenOcdServer {
                 ok: true,
                 response: segments
                     .map((match, index) =>
-                        Buffer.from(this.bytes(parseInt(match[1], 16), sizes[index])).toString("hex")
+                        Buffer.from(
+                            this.bytes(parseInt(match[1], 16), sizes[index], !!behavior?.corruptCpuid)
+                        ).toString("hex")
                     )
                     .join("\n")
             };
@@ -164,6 +247,7 @@ class FakeOpenOcdServer {
             if (this.rejectBatchCommand) {
                 return { ok: false, response: 'invalid command name "join"' };
             }
+            if (behavior?.fail) return { ok: false, response: behavior.errorMessage || "target memory read failed" };
             if (this.transientFailures > 0) {
                 this.transientFailures--;
                 return { ok: false, response: "target memory read failed" };
@@ -179,13 +263,13 @@ class FakeOpenOcdServer {
             }
             const results = [];
             for (const subCmd of innerCommands) {
-                const res = this._executeRead(subCmd);
+                const res = this._executeRead(subCmd, behavior);
                 if (!res || !res.ok) return res || { ok: false, response: "unknown batch subcmd" };
                 results.push(res.response);
             }
             return { ok: true, response: results.join("\n") };
         }
-        const readRes = this._executeRead(command);
+        const readRes = this._executeRead(command, behavior);
         if (readRes) return readRes;
         const write = command.match(/^(?:ocd_)?write_memory\s+(0x[0-9a-f]+)\s+(8|16|32)\s+\{([^}]*)\}$/i);
         if (write) {

@@ -62,20 +62,22 @@ async function clearSamplingHistory({ host, entry, post, watchKey }, message) {
     entry._batchTimer = null;
     entry._pendingScalars = [];
     entry._pendingComposites = [];
-    if (host._chartHistory && !host._chartHistory.failed)
-        await host._chartHistory.request("clear", [
-            host._debugSamplingScope(watchKey),
-            host._samplingArchive.generations?.get(host._debugSamplingScope(watchKey)) || 0
-        ]);
-    host._chartHistory?.archiveProgress(
-        {
-            dataPath: host._samplingArchive.dataPath,
-            bytes: host._samplingArchive.indexedBytes,
-            limited: host._samplingArchive.limitReached || !!host._samplingArchive.failed
-        },
-        true
-    );
-    post({ type: "samplingHistoryCleared", historyRevision: message.historyRevision });
+    const scope = host._debugSamplingScope(watchKey);
+    try {
+        if (host._chartHistory && !host._chartHistory.failed)
+            await host._chartHistory.request("clear", [scope, host._samplingArchive.generations?.get(scope) || 0]);
+        await host._samplingArchive.reclaimCleared?.();
+    } finally {
+        post({ type: "samplingHistoryCleared", historyRevision: message.historyRevision });
+        host._chartHistory?.archiveProgress(
+            {
+                dataPath: host._samplingArchive.dataPath,
+                bytes: host._samplingArchive.indexedBytes,
+                limited: host._samplingArchive.limitReached || !!host._samplingArchive.failed
+            },
+            true
+        );
+    }
 }
 
 async function chartHistoryRequest({ host, entry, post, watchKey }, message) {
@@ -198,7 +200,7 @@ const LIVE_PANEL_ROUTES = {
         }
     },
     setSeriesStyle: async ({ host }, message) => {
-        const styles = await host._seriesStyleStore.update(message.name, message.style);
+        const styles = await host._seriesStyleStore.update(message.name, message.style, message.field);
         for (const target of host._livePanels.values()) target.post({ type: "seriesStyles", styles });
     },
     resolveVariable: ({ host, post }, message) => host._resolveLiveVariable(message, post),

@@ -95,11 +95,16 @@ function run(port, options = {}) {
             }, 80)
         );
     };
-    port.on("message", async ({ id, method, args = [] }) => {
+    async function handle({ id, method, args = [] }) {
         try {
             let result;
-            if (method === "restore") result = await restoreHistory(store, args[0]);
-            else if (
+            if (method === "restore") {
+                if (store.previousArchivePath && args[0].dataPath === store.previousArchivePath)
+                    throw Object.assign(new Error("Archive was compacted while restoring history"), {
+                        code: "CHART_HISTORY_RESTORE_CANCELLED"
+                    });
+                result = await restoreHistory(store, args[0]);
+            } else if (
                 [
                     "configure",
                     "append",
@@ -112,6 +117,7 @@ function run(port, options = {}) {
                     "resume",
                     "release",
                     "archiveProgress",
+                    "compactArchive",
                     "clear",
                     "remove",
                     "setBudget"
@@ -143,6 +149,24 @@ function run(port, options = {}) {
             port.postMessage(
                 id ? { id, error: serializeError(error) } : { event: "error", error: serializeError(error) }
             );
+        }
+    }
+    // Cutovers wait for old reads, and keep new reads/snapshots off the archive until offsets have been rebased.
+    const active = new Set();
+    let compaction;
+    port.on("message", (request) => {
+        if (request.method === "compactArchive") {
+            const task = Promise.all([...active]).then(() => handle(request));
+            compaction = task;
+            active.add(task);
+            void task.finally(() => {
+                active.delete(task);
+                if (compaction === task) compaction = null;
+            });
+        } else {
+            const task = compaction ? compaction.then(() => handle(request)) : handle(request);
+            active.add(task);
+            void task.finally(() => active.delete(task));
         }
     });
     port.on("close", () => {

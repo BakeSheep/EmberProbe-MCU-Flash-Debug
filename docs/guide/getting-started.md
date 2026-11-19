@@ -142,9 +142,9 @@ EmberProbe 通过 OpenOCD 使用 J-Link，这要求 J-Link 在 Windows 上使用
 | --- | --- |
 | `emberprobe.transport` | 默认 `auto`，可改为 `swd` 或 `jtag` |
 | `emberprobe.adapterSpeedKhz` | 整数 kHz。`0` 使用脚本默认速度；非零值作为速度上限和烧录时钟 |
-| `emberprobe.samplingAdapterSpeedKhz` | 独立采样的时钟，`0` 沿用上一项。修改后采样会重新连接 |
+| `emberprobe.samplingAdapterSpeedKhz` | 独立采样的时钟，`0` 沿用上一项；两者均为 `0` 时，独立 Cortex-M SWD 采样自动验证并选用最快的稳定时钟，运行中遇错自动回退。修改后采样会重新连接 |
 
-已知的 Cortex-M 目标默认使用 SWD。EmberProbe 不会自动降速或切换协议重试。
+已知的 Cortex-M 目标默认使用 SWD。连接阶段不会自动降速或切换协议重试；独立采样启动后的自适应提速只作用于 Cortex-M SWD 采样会话。
 
 ### 切换到 WinUSB（Windows x64）
 

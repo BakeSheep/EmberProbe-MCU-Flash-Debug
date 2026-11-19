@@ -203,7 +203,7 @@ class ChartHistoryFeed {
             // One bounded catch-up pass includes samples archived during the first scan.
             const catchup = await this.host._samplingArchive.historySource(scope);
             if (!current()) return;
-            if (catchup.generation !== source.generation) return;
+            if (catchup.generation !== source.generation || catchup.dataPath !== source.dataPath) return;
             if (catchup.cutoff > source.cutoff)
                 await this.host._chartHistory.request("restore", [{ ...catchup, names, fromOffset: source.cutoff }]);
             if (!current()) return;

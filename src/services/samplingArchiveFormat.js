@@ -38,10 +38,14 @@ function valueKind(text) {
 }
 
 class ArchiveEncoder {
-    constructor() {
-        this.scopes = new Map();
+    constructor(dictionary = { scopes: [], channels: [] }) {
+        this.scopes = new Map(dictionary.scopes.map((scope, id) => [scope, id]));
         this.channels = new Map();
-        this.channelDefinitions = [];
+        this.channelDefinitions = dictionary.channels.slice();
+        this.channelDefinitions.forEach(({ key, identity }, id) => {
+            if (!this.channels.has(key)) this.channels.set(key, new Map());
+            this.channels.get(key).set(identity, id);
+        });
     }
 
     dictionary() {
@@ -51,7 +55,7 @@ class ArchiveEncoder {
         };
     }
 
-    encodeRow({ t, scope = "", generation = 0, values }) {
+    encodeRow({ t, scope = "", generation = 0, values }, maxBytes = Infinity) {
         if (
             !Number.isFinite(t) ||
             typeof scope !== "string" ||
@@ -94,9 +98,9 @@ class ArchiveEncoder {
         const definitionLengths = definitions.map(
             (definition) => 2 + definition.strings.reduce((size, text) => size + stringBytes(text), 0)
         );
-        const buffer = Buffer.allocUnsafe(
-            5 + rowLength + definitionLengths.reduce((size, length) => size + 5 + length, 0)
-        );
+        const length = 5 + rowLength + definitionLengths.reduce((size, length) => size + 5 + length, 0);
+        if (length > maxBytes) return null;
+        const buffer = Buffer.allocUnsafe(length);
         let offset = 0;
         definitions.forEach((definition, i) => {
             buffer.writeUInt8(definition.type, offset);

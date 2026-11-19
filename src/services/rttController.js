@@ -979,6 +979,7 @@ class RttController {
                     probe: debuggerCfg,
                     target: mcuCore,
                     ...connection,
+                    adaptiveAdapterSpeed: false,
                     cwd,
                     port,
                     intervalMs: 10000

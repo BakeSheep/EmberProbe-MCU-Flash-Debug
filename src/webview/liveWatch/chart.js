@@ -233,7 +233,7 @@
                     const { min: lo, max: hi, count } = VP.visibleRange(s.arr, chartState.x);
                     vMin = Math.min(vMin, lo);
                     vMax = Math.max(vMax, hi);
-                    total += s.visibleCount ?? count;
+                    total += count;
                     const previous = ranges.get(s.item.name) || { min: Infinity, max: -Infinity };
                     ranges.set(s.item.name, { min: Math.min(previous.min, lo), max: Math.max(previous.max, hi) });
                 });

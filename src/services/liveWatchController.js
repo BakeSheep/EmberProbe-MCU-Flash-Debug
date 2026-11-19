@@ -812,6 +812,8 @@ class LiveWatchController {
         status.backlogBatches = stats?.backlogBatches ?? 0;
         status.backlogAgeMs = stats?.backlogAgeMs ?? 0;
         status.droppedBatches = stats?.droppedBatches ?? 0;
+        status.adapterSpeedKhz = stats?.adapterSpeedKhz ?? null;
+        status.adaptiveSpeed = stats?.adaptiveSpeed ?? null;
         // The event-loop monitor wakes the host periodically, so it runs only while sampling is requested.
         if (status.running) status.hostLoopDelayMs = (this._hostLoopDelay ||= new HostLoopDelay()).maxMs();
         else {

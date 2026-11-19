@@ -8,13 +8,14 @@ const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { clampInteger } = require("./validation");
 const { SYSTEM_CLOCK, scheduleSamplingTick } = require("./samplingClock");
 const { SamplingThroughput } = require("./samplingThroughput");
+const { SamplingSpeedTuner } = require("./samplingSpeed");
 const { TclTransport } = require("./tclTransport");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = require("./services/runtimeObjectReader");
 const { MultiRatePlan } = require("./services/multiRatePlan");
 const { targetCheckMonitor } = require("./chip/targetIdentity");
-const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog } = require("./openocdProcess");
+const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog, isTransportProbeFailure } = require("./openocdProcess");
 const {
     MemoryWriter,
     validateManagedWritePlan,
@@ -133,6 +134,7 @@ class ManagedOpenOcdSession {
         this._recentCycleTimestamps = [];
         this._memoryReadBytes = 0;
         this._samplingThroughput = new SamplingThroughput();
+        this._speedTuner = new SamplingSpeedTuner({ options: this.options, mode: this.mode, clock: this.clock });
         this._timerResolutionHeld = false;
     }
 
@@ -491,8 +493,14 @@ class ManagedOpenOcdSession {
             scatterReads: this.scatterReads,
             p95DurationMs: Number(p95.toFixed(2)),
             missedDeadlines: this._missedDeadlines,
-            pauseReason: this._pauseReason
+            pauseReason: this._pauseReason,
+            ...this._speedTuner.stats()
         };
+    }
+
+    async _ensureTclConnected() {
+        if (this.tcl.connected || this.stopped || this.connectionFailed) return;
+        this.tcl.attach(await this._connectWithRetry(clampInteger(this.options.port, 6666, 1, 65535), 1000));
     }
 
     _recordCycle(durationMs, success = true, timestamp = this.clock.now()) {
@@ -584,6 +592,7 @@ class ManagedOpenOcdSession {
             this._pollFailureCount = 0;
         }
         this._pollFailureCount++;
+        if (this._pollFailureCount === 2 && this._speedTuner.canStepDown()) this._speedTuner.requestStepDown();
         this._error(message);
         if (this._pollFailureCount < 3 || now - this._pollFailureSince < 3000) return;
         this._pollFailureLocked = true;
@@ -657,10 +666,8 @@ class ManagedOpenOcdSession {
                         this.tcl.attach(sock);
                         this.tcl.release();
                         await this._detectScatter();
-                        if (!this.tcl.socket && !this.stopped) {
-                            // No-echo support belongs to the OpenOCD binary, so it survives this reconnect.
-                            this.tcl.attach(await this._connectWithRetry(port, 1000));
-                        }
+                        await this._ensureTclConnected();
+                        if (this._speedTuner.shouldTuneAtStart(this.watch)) await this._speedTuner.tune(this);
                         if (this.stopped) throw this.connectionError || new Error("Stopped");
                         this._status({ key: "lw.connected" });
                         if (this._samplingRequested) {
@@ -713,6 +720,8 @@ class ManagedOpenOcdSession {
         // OpenOCD's own error output after a failed check repeats it; the close handler reports it once.
         if (targetCheck.mismatched) return;
         this.server.record(clean);
+        this._speedTuner.observeLog(clean);
+        if (!isTransportProbeFailure(clean) && this._speedTuner.handleTentativeLog(clean)) return;
         // End the session on a confirmed probe transport failure before issuing another read.
         if (isFatalProbeLog(clean)) {
             if (!this.stopped && !this.connectionFailed) {
@@ -1495,6 +1504,15 @@ class ManagedOpenOcdSession {
             if (fromScheduler) this._samplingTickDeferred = true;
             return;
         }
+        if (this._speedTuner.needsPreCycle(this)) {
+            let stopTick;
+            try {
+                stopTick = await this._speedTuner.runPreCycle(this);
+            } finally {
+                if (stopTick !== false) this._releaseExclusive();
+            }
+            if (stopTick) return;
+        }
         const epoch = this.sampleEpoch;
         const startMs = this.clock.monotonicMs();
         const targetEpoch = this.targetEpoch;
@@ -1502,7 +1520,7 @@ class ManagedOpenOcdSession {
         const startedAt = this.clock.now();
         const deadline = startedAt + MAX_DEBUG_CYCLE_MS;
         const cycleStart = this.clock.sampleNow();
-        let readSuccess = false;
+        const tick = { ok: false, tuned: false, ms: 0 };
         try {
             const due = this.ratePlan?.due(startMs, this.effectiveIntervalMs);
             const items = due ? due.items : this.watch;
@@ -1517,7 +1535,7 @@ class ManagedOpenOcdSession {
             const delivered = due ? this.ratePlan.deliver(samples, t, due) : samples;
             if (this.handlers.onSample) this.handlers.onSample(delivered, t, due);
             if (ok === items.length) {
-                readSuccess = true;
+                tick.ok = true;
                 if (this._scatterRecheck) {
                     this._scatterRecheck = false;
                     try {
@@ -1525,6 +1543,10 @@ class ManagedOpenOcdSession {
                     } catch {
                         // Still unsupported (for example an HLA target): keep the batch path.
                     }
+                }
+                if (this._speedTuner.shouldRecheckAfterFirstCycle()) {
+                    await this._speedTuner.tune(this);
+                    tick.tuned = true;
                 }
                 if (this._sampleErrorActive) {
                     // One successful memory read does not prove target polling recovered.
@@ -1548,15 +1570,17 @@ class ManagedOpenOcdSession {
         } catch (e) {
             if (epoch === this.sampleEpoch && this.samplingEnabled && !this.connectionFailed) this._error(e.message);
         } finally {
+            tick.ms = this.clock.monotonicMs() - startMs;
+            if (!tick.tuned && epoch === this.sampleEpoch && targetEpoch === this.targetEpoch && this.samplingEnabled)
+                this._samplingThroughput.record(this._memoryReadBytes - readBytesBefore, startMs, startMs + tick.ms);
+            if (!tick.tuned && epoch === this.sampleEpoch) this._recordCycle(tick.ms, tick.ok, startedAt);
+            if (tick.tuned || this._speedTuner.needsStepDown(this, epoch, tick.ok))
+                await this._speedTuner.finishCycle(this, tick.tuned);
             this._releaseExclusive();
-            const durationMs = this.clock.monotonicMs() - startMs;
-            if (epoch === this.sampleEpoch && targetEpoch === this.targetEpoch && this.samplingEnabled)
-                this._samplingThroughput.record(this._memoryReadBytes - readBytesBefore, startMs, startMs + durationMs);
-            if (epoch === this.sampleEpoch) this._recordCycle(durationMs, readSuccess, startedAt);
             if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
                 const nextDelay = this.ratePlan
                     ? this.ratePlan.delay(this.clock.monotonicMs())
-                    : Math.max(0, Math.round(this.effectiveIntervalMs - durationMs));
+                    : Math.max(0, Math.round(this.effectiveIntervalMs - tick.ms));
                 this._scheduleNext(nextDelay);
             }
         }

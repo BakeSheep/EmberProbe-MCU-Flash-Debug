@@ -56,7 +56,9 @@
                 chartState.hits = [];
             }
             if (action === "style") {
-                state.seriesStyles[value.name] = value.style;
+                const previous = state.seriesStyles[value.name];
+                state.seriesStyles[value.name] =
+                    previous && value.field ? { ...previous, [value.field]: value.style[value.field] } : value.style;
                 post({ type: "setSeriesStyle", ...value });
                 renderVars();
             }
@@ -87,7 +89,6 @@
             }
             if (action === "remove") removeVar(value);
             if (action === "fitY") env.viewportController?.fit(value.mode, value.automatic);
-            if (action === "undoView") env.viewportController?.undo();
             chartState.fastDirty = true;
             state.dirty = true;
         };
@@ -107,10 +108,24 @@
         const group = doc.createElement("div");
         group.className = "chart-fit-control";
         doc.getElementById("chartTimeline").after(group);
-        const main = button("chartFit", "lw.fitYMenu", null, group);
+        const main = button("chartFit", "lw.fitFree", null, group);
+        function showMode() {
+            const press = chart.fitPress;
+            const mode = press ? (press.fired ? "fill" : "center") : !main.disabled && chart.autoY && chart.fitMode;
+            const key = mode === "center" ? "lw.fitCenter" : mode === "fill" ? "lw.fitFull" : "lw.fitFree";
+            const text = t(key);
+            if (main.dataset.i18n !== key) main.dataset.i18n = key;
+            if (main.textContent !== text) main.textContent = text;
+            const label = t("lw.fitYMenu") + " · " + text;
+            if (main.getAttribute("aria-label") !== label) main.setAttribute("aria-label", label);
+        }
+        function applyFit(mode, automatic) {
+            change("fitY", { mode, automatic });
+            showMode();
+        }
         main.onclick = (event) => {
             // Pointer gestures finish on pointerup; keyboard and assistive clicks have no click count.
-            if (event.detail === 0 && !chart.fitPress) change("fitY", { mode: "center", automatic: false });
+            if (event.detail === 0 && !chart.fitPress) applyFit("center", false);
         };
         const toggle = doc.createElement("button");
         toggle.id = "chartFitToggle";
@@ -157,7 +172,7 @@
                 "chartFit" + mode + automatic,
                 key,
                 () => {
-                    change("fitY", { mode, automatic });
+                    applyFit(mode, automatic);
                     openMenu(false, true);
                 },
                 menu
@@ -171,6 +186,7 @@
             chart.fitPress = null;
             clock.cancel(press.timer);
             main.classList.remove("holding", "held");
+            showMode();
             if (main.hasPointerCapture?.(press.pointerId)) main.releasePointerCapture(press.pointerId);
         }
         main.addEventListener("pointerdown", (event) => {
@@ -187,12 +203,13 @@
                 fired: false
             });
             main.classList.add("holding");
+            showMode();
             main.setPointerCapture?.(event.pointerId);
             press.timer = clock.schedule(() => {
                 if (chart.fitPress !== press || main.disabled) return;
                 press.fired = true;
                 main.classList.add("held");
-                change("fitY", { mode: "fill", automatic: press.button === 2 });
+                applyFit("fill", press.button === 2);
             }, 500);
         });
         main.addEventListener("pointerup", (event) => {
@@ -200,10 +217,7 @@
             if (!press || press.pointerId !== event.pointerId) return;
             cancel(event);
             if (!main.disabled && !press.fired && event.button === press.button)
-                change("fitY", {
-                    mode: clock.now() - press.started >= 500 ? "fill" : "center",
-                    automatic: press.button === 2
-                });
+                applyFit(clock.now() - press.started >= 500 ? "fill" : "center", press.button === 2);
         });
         main.addEventListener("pointermove", (event) => {
             const press = chart.fitPress;
@@ -258,6 +272,7 @@
                     cancel();
                     openMenu(false);
                 }
+                showMode();
             }
         };
     }
@@ -284,7 +299,7 @@
         button("hideAll", "lw.hideAll", () => change("hideAll"));
         button("importSidebar", "lw.importSidebar", () => change("importSidebar"));
         const fitControl = createFitControl({ ...env, button });
-        button("chartUndo", "lw.undoView", () => change("undoView"), $("freeze").parentNode);
+        fitControl.refresh();
         $("chart")?.setAttribute("aria-label", t("lw.chartNavigation"));
         const status = doc.createElement("span");
         status.id = "chartViewStatus";
@@ -381,7 +396,8 @@
             line.setAttribute("role", "group");
             line.setAttribute("aria-label", t("lw.curveLine"));
             let selectedLine = style.line;
-            const updateStyle = () => change("style", { name, style: { color: color.value, line: selectedLine } });
+            const updateStyle = (field) =>
+                change("style", { name, field, style: { color: color.value, line: selectedLine } });
             ["solid", "dashed", "dotted"].forEach((value) => {
                 const option = doc.createElement("button");
                 option.type = "button";
@@ -393,11 +409,11 @@
                     line.querySelectorAll("button").forEach((b) =>
                         b.setAttribute("aria-pressed", String(b === option))
                     );
-                    updateStyle();
+                    updateStyle("line");
                 };
                 line.append(option);
             });
-            color.oninput = updateStyle;
+            color.oninput = () => updateStyle("color");
             const appearance = doc.createElement("div");
             appearance.className = "series-appearance";
             appearance.append(color, line);
@@ -491,7 +507,6 @@
                 a = s.analysis;
             $("restoreCurves").hidden = !a.previousHidden;
             fitControl.refresh();
-            $("chartUndo").disabled = !c.viewHistory?.length || !!(c.drag || c.endpointDrag || c.timelineDrag);
             status.textContent =
                 t(
                     s.frozen

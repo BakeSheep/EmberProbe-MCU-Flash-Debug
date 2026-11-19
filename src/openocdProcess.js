@@ -16,12 +16,13 @@ const { withTargetCheck } = require("./chip/targetIdentity");
 const { SYSTEM_CLOCK } = require("./samplingClock");
 const { isProbeCommunicationFailure } = require("../skills/_emberprobe/openocd-diagnostics");
 
+function isTransportProbeFailure(line) {
+    return isProbeCommunicationFailure(line) || /WriteFile|ReadFile|LIBUSB_ERROR_NO_DEVICE/i.test(String(line || ""));
+}
+
 // A failed probe transport ends sampling even when the device is still enumerated.
 function isFatalProbeLog(line) {
-    return (
-        isProbeCommunicationFailure(line) ||
-        /WriteFile|ReadFile|LIBUSB_ERROR_NO_DEVICE|target communication error/i.test(String(line || ""))
-    );
+    return isTransportProbeFailure(line) || /target communication error/i.test(String(line || ""));
 }
 
 // Resolves true on the first "exit" or "close": once the process has exited its USB handle is
@@ -181,4 +182,4 @@ class OpenOcdProcess {
     }
 }
 
-module.exports = { OpenOcdProcess, managedServerLaunch, isFatalProbeLog, waitForChildExit };
+module.exports = { OpenOcdProcess, managedServerLaunch, isFatalProbeLog, isTransportProbeFailure, waitForChildExit };

@@ -71,6 +71,17 @@ Agent 有限采样把每轮读取耗时计入目标间隔，使用注入时钟�
 
 `npm run check:openocd-noecho`（或 `node scripts/check-openocd-noecho.js`）单独解包当前平台内置 OpenOCD 到 `test-results/`，仅用 dummy adapter 检查响应、无回显、普通回显与连接复用，不接触硬件，不属于普通测试组。更换内置 OpenOCD 时可单独运行，不能用软件检查代替实板验证。
 
+## 自适应采样链路时钟
+
+由于独立采样以 `init` 连接且不执行 `reset init`，各目标脚本默认时钟偏保守（如 STM32F1 1 MHz、STM32H7 1.8 MHz、STM32L4/C5 500 kHz，后者在 ST-Link V3 上还会向下取整为 200 kHz）。当 `emberprobe.samplingAdapterSpeedKhz` 与 `emberprobe.adapterSpeedKhz` 均为 `0`，且会话处于独立模式（`mode === "standalone"`）时，扩展会在 `start()` 检测到存在监视变量（或显式启用 `adaptiveAdapterSpeed: true`）后自动探测并提升链路时钟；调试模式、显式非零时钟、Agent 单次读取（`total === 1`）、独立 RTT（`adaptiveAdapterSpeed: false`）以及设置 `adaptiveAdapterSpeed: false` 的诊断会话均跳过提速。
+
+- **资格核对与基准读取**：通过单次受限超时 RPC 查询当前目标类型（仅限 `cortex_m` / `hla_target`）、传输协议（仅限 `swd` / `hla_swd` / `dapdirect_swd`）、当前 `adapter speed`、CPUID（`0xE000ED00`）与内存读取命令。若目标尚未 examine，则在首轮完整成功采样后延迟补测。存在已确认可写 RAM 区间与固定监视变量时，用首段对齐 RAM 块（16–128 字，夹紧在 CPUID 校验之间）做吞吐与完整性校验；若无 RAM 范围或基准 RAM 读取失败，自动退回纯 CPUID 多段/批量读作为基准。
+- **分探针阶梯与停走规则**：按探针家族选择目标时钟阶梯（`stlink` 2–24 MHz、`jlink` 2–24 MHz、`cmsis-dap` 2–20 MHz、`ftdi` 2–15 MHz、`xds110` 2–14 MHz、`nulink` 2–12 MHz，其余使用 2–12 MHz 默认阶梯），只测高于基线的挡位，总预算默认为 600 ms（TCP 后端 1200 ms）。
+  - **硬件/驱动钳制识别**：捕获 J-Link `Reduced speed from X kHz to Y kHz` 日志以及驱动返回的实际时钟；当中间请求（如 ST-Link V3 的 12 MHz）映射为已测过的实际时钟（8 MHz）且尚未命中硬件上限时，跳过重复基准并继续尝试更高挡位（以到达 24 MHz）；当已触及硬件上限时停止并锁定硬件上限。
+  - **平台期、减速与中点细化**：使用单调时钟中位耗时比较，仅当耗时下降至少 5%（或下降至少 3% 且绝对节省不少于 0.15 ms）才更新最优时钟；连续两个挡位未见显著提速即在平台期停止并回退到取得最优吞吐的最低时钟；若出现超过最优耗时 10% 的减速（如 SWD WAIT），立即停止并回退。某挡位被拒绝、读取失败、CPUID 不一致或 RPC 超时时，恢复当前最优时钟并尝试一次区间中点（500 kHz 步进），以兼顾不同连线与无线探针。
+  - **试探误差隔离与运行中回退**：试探期间的目标通信错误或 `Polling failed` 仅作废当轮试探并恢复安全时钟，不触发错误弹窗或关闭会话；探测超时断开的 Tcl 连接自动重连。真实 USB/HID 传输丢失（如 `LIBUSB_ERROR_NO_DEVICE`）仍立即中止会话。锁定后的已验证时钟序列留在会话中：运行期间若连续两轮读取失败或触发两次 `Polling failed`，在下一轮开始前先降回前一已验证挡位并重置吞吐/周期统计；再次连续失败则直接回落到基线时钟，且不再自动升回。
+- **状态与授权边界**：`stats()` 与控制器状态新增 `adapterSpeedKhz`、`baseAdapterSpeedKhz` 与 `adaptiveSpeed` 供界面提示（波形速率提示显示 `SWD: N kHz`）与诊断脚本使用；写入授权身份（`writeConnectionIdentity`）与设置一致性校验仍只绑定用户配置值，不受运行期自适应调速影响。当前软件测试覆盖各探针阶梯、钳制、平台期、超时恢复与运行中降速模型，具体实板最终达到的链路时钟与吞吐仍需在目标硬件上实测。
+
 ## 连接仲裁
 
 背靠背循环下，Tcl 连接空闲的窗口只有一个事件循环轮次。原先读写事务每 10 ms 轮询 `busy`，会被循环长期饿死。现在采样会话使用 FIFO 仲裁：

@@ -366,7 +366,7 @@
             "minimum": 0,
             "maximum": 2147483647,
             "default": 0,
-            "description": "独立采样的链路时钟（kHz）。0 沿用 adapterSpeedKhz；非零值只用于独立采样，并限制复位事件提速。修改后自动重连，不改变调试、烧录时钟或采样频率。 / Standalone sampling adapter clock (kHz). 0 inherits adapterSpeedKhz; nonzero values apply only to standalone sampling and cap reset-event speed increases. Changes reconnect sampling without changing debug/flash clocks or sampling frequency.",
+            "description": "独立采样的链路时钟（kHz）。0 沿用 adapterSpeedKhz；两者均为 0 时，独立 Cortex-M SWD 采样会自动逐级验证并选用最快的稳定时钟，运行中失败自动回退。非零值固定采样时钟并限制复位事件提速；修改后自动重连，不改变调试、烧录时钟或采样频率。 / Standalone sampling adapter clock (kHz). 0 inherits adapterSpeedKhz; when both are 0, standalone Cortex-M SWD sampling automatically benchmarks and selects the fastest verified stable clock and steps down on runtime errors. Nonzero values fix the sampling clock and cap reset-event speed increases; changes reconnect sampling without changing debug/flash clocks or sampling frequency.",
             "order": 2
           },
           "emberprobe.chartHistoryMaxMiB": {

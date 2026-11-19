@@ -68,7 +68,7 @@ class LivePanelRegistry {
             if (restored && id === requestedId) continue;
             usedKeys.add(this.bindings.get(id) || watchKeyFor(id));
         }
-        let watchKey = sourceKey || watchKeyFor(panelId);
+        let watchKey = sourceKey || this.bindings.get(panelId) || watchKeyFor(panelId);
         const copyFrom = sourceKey && usedKeys.has(sourceKey) ? sourceKey : null;
         // An unidentifiable legacy tab must never silently adopt another chart's old variables.
         if (usedKeys.has(watchKey) || (restored && !sourceKey)) watchKey = `${WATCH_KEY}.${randomUUID()}`;
@@ -77,7 +77,7 @@ class LivePanelRegistry {
         return { panelId, watchKey, initialized: this._persist(usedIds, copyFrom, watchKey) };
     }
     release(panelId) {
-        this.bindings.delete(panelId);
+        // The number is reusable immediately. Its last storage key lets a new tab reopen that slot.
         const ids = new Set([...this._tabIds(), ...this.entries.keys()]);
         ids.delete(panelId);
         return this._persist(ids);

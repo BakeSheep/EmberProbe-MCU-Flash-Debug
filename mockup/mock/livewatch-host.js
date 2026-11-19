@@ -374,8 +374,13 @@
                     watchItems = message.items || watchItems;
                     break;
                 case "setSeriesStyle":
-                    if (message.name && message.style)
-                        styles[message.name] = { color: message.style.color, line: message.style.line };
+                    if (message.name && message.style) {
+                        var previous = styles[message.name];
+                        styles[message.name] =
+                            previous && ["color", "line"].includes(message.field)
+                                ? { ...previous, [message.field]: message.style[message.field] }
+                                : { color: message.style.color, line: message.style.line };
+                    }
                     send({ type: "seriesStyles", styles: styles });
                     break;
                 case "importSidebarWatch": {
