@@ -2473,8 +2473,8 @@ input[type="number"]::-webkit-outer-spin-button {
     left: 0;
 }
 .member-row > .curve-toggle {
-    flex: 0 0 auto;
-    max-width: 40%;
+    flex: 1 1 auto;
+    min-width: 0;
     align-self: center;
     gap: 5px;
 }
@@ -2622,10 +2622,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .side .member-row > .member-value {
         max-width: 45%;
     }
-}
-/* The type badge's auto margin used to push the value right; the name now takes the free space. */
-.side .member-row > .curve-toggle {
-    margin-right: auto;
 }
 .side .member-row > .member-value {
     margin-left: 0;

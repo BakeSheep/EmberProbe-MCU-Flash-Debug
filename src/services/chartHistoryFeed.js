@@ -12,6 +12,8 @@ const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
 class ChartHistoryFeed {
     constructor(host) {
         this.host = host;
+        // Chart windows can be closed while the archive and its observation boundaries still exist.
+        this.itemsByScope = new Map();
         /** @type {Set<Promise<void>>} */
         this.pendingAppends = new Set();
         // Bytes batched on the host and not yet sent to the worker.
@@ -136,6 +138,7 @@ class ChartHistoryFeed {
     }
     configure(entry, acquisitionTime = Date.now()) {
         if (!this.host._chartHistory) return;
+        if (this.host._watchListsReady?.() === false) return;
         const scope = this.host._debugSamplingScope(entry.watchKey);
         const watched = this.host._scalarWatchList(entry.watchKey);
         const owners = new Set(watched.map((item) => item.name));
@@ -143,10 +146,8 @@ class ChartHistoryFeed {
             if (!owners.has(leaf.runtimeOwner)) entry.runtimeHistoryLeaves.delete(name);
         const items = buildChartHistoryItems(watched, elfSymbols, [...(entry.runtimeHistoryLeaves?.values() || [])]);
         const identity = (item) => JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
-        const previous = new Map(
-            (entry.historyScope === scope ? entry.historyItems || [] : []).map((item) => [item.name, item])
-        );
-        if (entry.historyScope && entry.historyScope !== scope) {
+        const previousItems = this.itemsByScope.get(scope);
+        if (!entry.archiveOnly && entry.historyScope && entry.historyScope !== scope) {
             this.discardAppend(entry);
             this.host._chartHistory
                 .request("remove", [entry.historyScope])
@@ -154,7 +155,8 @@ class ChartHistoryFeed {
         }
         entry.historyScope = scope;
         const signature = JSON.stringify([scope, items]);
-        if (entry.historySignature === signature) return;
+        if (entry.historySignature === signature && entry.historyItems === previousItems) return;
+        const previous = new Map((previousItems || []).map((item) => [item.name, item]));
         this.flushAppend(entry);
         entry.historySignature = signature;
         entry.historyItems = items.map((item) => ({
@@ -166,6 +168,8 @@ class ChartHistoryFeed {
                     : acquisitionTime
         }));
         entry.historyIdentities = new Map(entry.historyItems.map((item) => [item.name, item.historyIdentity]));
+        this.itemsByScope.set(scope, entry.historyItems);
+        if (entry.archiveOnly) return;
         this.host._chartHistory
             .request("configure", [scope, entry.historyItems, this.host._samplingArchive.generations?.get(scope) || 0])
             .then((status) => {

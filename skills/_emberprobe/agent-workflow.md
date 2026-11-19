@@ -56,12 +56,14 @@ USB serial or leave it empty for a uniquely matched probe. Network backends are 
 in the trusted interface script and do not require a local USB probe.
 An empty serial resolves in this order: a serial in the interface script, the workspace's
 selected probe (`config.get` → `selectedProbe` with `source: "user"`: the probe the user picked in
-the sidebar), then a unique connected probe. `probe.list` marks that device with `selected: true`;
-only the user changes the selection, in the sidebar. A selected probe that is not connected is
-reported as not found; it is never replaced by another device, so ask the user instead.
+the sidebar or asked the Agent to select), then a unique connected probe. `probe.list` marks that
+device with `selected: true`. To change the selection on the user's behalf, first list devices and
+use `probe.select` with the exact id of the device the user chose. A selected probe that is not
+connected is reported as not found; it is never replaced by another device, so ask the user instead.
 Without a pick the workspace is in automatic mode (`selectedProbe` absent, or `source` `"auto"` /
 `"success"` without a serial): several probes of one type are told apart by their target chip, and
-`PROBE_SELECTION_REQUIRED` means the user must pick one under **Connected probes** in the sidebar.
+`PROBE_SELECTION_REQUIRED` means a choice is needed. Ask the user which listed device to select or
+let them pick one under **Connected probes** in the sidebar.
 `PROBE_TARGET_MISMATCH` means the chip on the probe differs from the one automatic mode recorded;
 the operation did not run. Do not retry or work around it; ask the user to check the board and, if
 it is the intended one, click **Use this chip** in the sidebar.

@@ -78,6 +78,34 @@
             c.fitHold = null;
             dirty();
         }
+        function holdAxes() {
+            env.resetFollowClock();
+            c.heldFitX = copy(c.x);
+            c.fitHold = null;
+            dirty();
+        }
+        function acquisitionChanged(running, suspended) {
+            c.acquisitionStopped = !running;
+            if (!running) holdAxes();
+            else if (!suspended) c.heldFitX = null;
+        }
+        function syncBounds(next, suspended, smooth) {
+            const previous = c.bounds;
+            c.bounds = next;
+            if (!c.x) return env.applyWindowPreset(env.getWindow().preset);
+            if (suspended || c.acquisitionStopped || (previous?.min === next.min && previous.max === next.max)) return;
+            if (!c.follow) {
+                c.x = VP.clamp(c.x, next, minimumXSpan());
+                return;
+            }
+            // Smooth following lets the display clock advance X after a detail commit.
+            if (smooth && c.followClock) return;
+            const view = env.getWindow();
+            if (c.endpointDrag) c.x = VP.updateEndpoint(c.x, "max", next.max, next, minimumXSpan());
+            else if (view.value !== "custom") env.applyWindowPreset(view.preset);
+            else if (c.startPinned) c.x = copy(next);
+            else c.x = VP.followEnd(c.x, previous, next, minimumXSpan());
+        }
         function cursor(area) {
             canvas.style.cursor =
                 area === "plot" ? "crosshair" : area === "x" ? "ew-resize" : area === "y" ? "ns-resize" : "default";
@@ -201,6 +229,9 @@
             remember,
             undo,
             fit,
+            holdAxes,
+            acquisitionChanged,
+            syncBounds,
             reset,
             allowClick: () => clock.now() >= c.suppressClickUntil
         };

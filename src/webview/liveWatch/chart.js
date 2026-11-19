@@ -71,6 +71,9 @@
     }) {
         const $ = (id) => elements[id];
         const sourceSeries = series;
+        const heldX = chartState.heldFitX;
+        if (chartState.fitRequested || (heldX && (heldX.min !== chartState.x?.min || heldX.max !== chartState.x?.max)))
+            chartState.heldFitX = null;
         inspection = inspection || defaultInspection;
         const prepareKey = norm;
         if (!chartState.prepared || chartState.prepared.source !== series || chartState.prepared.key !== prepareKey)
@@ -81,7 +84,7 @@
             chartState.axisOrigin !== undefined &&
             chartState.axisOrigin !== prepared.origin &&
             chartState.y &&
-            !chartState.autoY
+            (!chartState.autoY || chartState.heldFitX)
         ) {
             const shift = Number((chartState.axisOrigin ?? 0n) - (prepared.origin ?? 0n));
             chartState.y = { min: chartState.y.min + shift, max: chartState.y.max + shift };
@@ -261,7 +264,7 @@
                 return;
             }
             empty.classList.add("hidden");
-            if (chartState.autoY || chartState.fitRequested || !VP.validRange(chartState.y)) {
+            if ((chartState.autoY && !chartState.heldFitX) || chartState.fitRequested || !VP.validRange(chartState.y)) {
                 const range = norm ? { min: 0, max: 1 } : { min: vMin, max: vMax };
                 const padded = norm ? { min: -0.08, max: 1.08 } : padRange(vMin, vMax);
                 const target = VP.fitY(range, chartState.fitMode, padded);

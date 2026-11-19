@@ -50,6 +50,11 @@ const execFileAsync = promisify(execFile);
         mcu: "stm32f4x.cfg"
     });
     assert.throws(() => configSkill.parseSet("broken"), /Invalid assignment/);
+    await scenario("The config skill accepts an opaque probe id and rejects conflicting actions", () => {
+        const id = String.raw`USB\VID_1366&PID_0101\1234`;
+        assert.deepStrictEqual(configSkill.args(["--select-probe", id]), { "select-probe": id });
+        assert.throws(() => configSkill.args(["--select-probe", id, "--probes"]), /Choose only one/);
+    });
     assert.deepStrictEqual(liveSkill.variableSpecs("tick,sinx:f32"), [{ name: "tick" }, { name: "sinx", type: "f32" }]);
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-output-boundary-"));
     try {

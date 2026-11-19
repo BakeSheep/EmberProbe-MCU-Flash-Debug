@@ -21,7 +21,7 @@ const agentClients = [
 ];
 
 const mcpTools = {
-    config: ["config_get", "config_set", "probe_list"],
+    config: ["config_get", "config_set", "probe_list", "probe_select"],
     target: ["chip_read", "target_control", "fault_read"],
     flash: ["flash_program", "flash_verify"],
     variables: ["variables_list", "variables_read", "variables_write"],

@@ -239,6 +239,14 @@ class ConnectedProbes {
         this.host._webviewView?.webview.postMessage({ type: "revealConnectedProbes" });
         this.refresh().catch((error) => console.error("Probe list refresh failed:", error.message));
     }
+    async selectForAgent(params) {
+        if (!params || !validation.connectedProbeId(params.deviceId) || Object.keys(params).length !== 1)
+            throw Object.assign(new Error("Pass the exact deviceId from probe.list"), {
+                code: "PROBE_SELECTION_INVALID"
+            });
+        const view = await this.select(params.deviceId);
+        return { deviceId: view?.deviceId || "", probe: view?.debugger || "", state: view?.state || "unknown" };
+    }
     // Makes a connected device the workspace's probe. A device of another family also switches the interface
     // script to that family's default, so the list and the next operation never disagree.
     async select(deviceId) {

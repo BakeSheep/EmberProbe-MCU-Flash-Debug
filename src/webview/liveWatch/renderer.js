@@ -1630,6 +1630,8 @@ var chartState = {
 function resetChartView() {
     resetFollowClock();
     viewportController?.reset();
+    chartState.heldFitX = null;
+    chartState.acquisitionStopped = false;
     chartState.rangeStats = null;
     chartState.bounds = null;
     chartState.x = null;
@@ -1650,10 +1652,10 @@ function resetChartView() {
     $("chartOverview").classList.add("disabled");
 }
 function freezeChart() {
-    syncTimeBounds();
-    resetFollowClock();
     if (state.remoteHistory.operation || state.frozen) return;
+    if (!chartState.x) syncTimeBounds();
     viewportController.reset();
+    viewportController.holdAxes();
     state.remoteHistory.operation = ++state.remoteHistory.nextId;
     state.dirty = true;
     chartState.fastDirty = true;
@@ -1669,6 +1671,7 @@ function resumeChart() {
     cancelChartHistoryRequests();
     post({ type: "chartResume", requestId: ++state.remoteHistory.nextId, historyRevision: historyRevision });
     state.frozen = false;
+    chartState.heldFitX = null;
     syncTimeBounds();
     applyWindowPreset(windowPreset);
     renderVars();
@@ -1733,6 +1736,8 @@ var viewportController = EmberProbeChartViewportController.create({
     stage: chartStage,
     chartState,
     state,
+    resetFollowClock,
+    applyWindowPreset,
     VP,
     clock: {
         now: function () {
@@ -1963,26 +1968,12 @@ function snapDraggedRangeEdges() {
     chartState.follow = false;
 }
 function syncTimeBounds() {
-    var next = retainedTimeBounds(),
-        previous = chartState.bounds;
+    var next = retainedTimeBounds();
     if (!next) {
         resetChartView();
         return false;
     }
-    var changed = !previous || previous.min !== next.min || previous.max !== next.max;
-    chartState.bounds = next;
-    if (!chartState.x) {
-        applyWindowPreset(windowPreset);
-    } else if (changed && chartState.follow && smoothFollowEnabled() && chartState.followClock) {
-        // Detail bounds are committed atomically, while the display clock owns the fixed-span view.
-    } else if (changed && chartState.follow) {
-        // While resizing, keep the chosen left edge fixed and only advance the attached right edge.
-        if (chartState.endpointDrag)
-            chartState.x = VP.updateEndpoint(chartState.x, "max", next.max, next, minimumXSpan());
-        else if ($("timeWindow").value !== "custom") applyWindowPreset(windowPreset);
-        else if (chartState.startPinned) chartState.x = { min: next.min, max: next.max };
-        else chartState.x = VP.followEnd(chartState.x, previous, next, minimumXSpan());
-    } else if (changed) chartState.x = VP.clamp(chartState.x, next, minimumXSpan());
+    viewportController.syncBounds(next, state.frozen || state.remoteHistory.operation, smoothFollowEnabled());
     return true;
 }
 function padRange(lo, hi) {
@@ -2454,6 +2445,8 @@ window.EmberProbeMessages.connect(window, {
         var fresh = window.EmberProbeRuntime.liveState({ running: running }, m).fresh;
         document.body.classList.toggle("debug-stale", !fresh);
         if (typeof m.running === "boolean") {
+            if (running !== m.running)
+                viewportController.acquisitionChanged(m.running, state.frozen || state.remoteHistory.operation);
             running = m.running;
             if (!running) {
                 $("rate").textContent = rateText(0, 0);
@@ -2791,6 +2784,7 @@ window.EmberProbeMessages.connect(window, {
         if (m.historyRevision !== historyRevision || m.requestId !== state.remoteHistory.operation) return;
         state.remoteHistory.operation = null;
         if (m.error) {
+            if (!chartState.acquisitionStopped) chartState.heldFitX = null;
             setStatusMsg({ message: m.error }, "error", "history");
             return;
         }

@@ -48,6 +48,7 @@ function createAgentRoutes(host, probes = listProbes) {
                 )
             };
         },
+        "probe.select": (params) => host._connectedProbes.selectForAgent(params),
         "config.set": (params) => host._agentOps.setConfiguration(params.values || {}),
         "cubemx.detect": async () => {
             // Both generators are reported; the selected project file decides which one runs.

@@ -162,13 +162,19 @@ class LiveWatchController {
         this.applySamplingPlan(server, plan.allowed);
         return plan.allowed;
     }
+    chartConsumers() {
+        if (!this.intent || !this.agentChart) return this.host._livePanels.values();
+        const entries = [...this.host._livePanels.values()];
+        if (!entries.some((entry) => entry.watchKey === this.agentChart.watchKey)) entries.push(this.agentChart);
+        return entries;
+    }
     // Chart and sidebar keep separate watch lists, and a variable may use a different watch type on each side. The read
     // plan deduplicates by variable name using the wider width, so one read serves every consumer. Composites
     // (structs/arrays) expand into leaf reads merged over the variable's whole address range.
     activeReadPlan() {
         const lists = [];
         const expansions = [];
-        for (const entry of this.host._livePanels.values()) {
+        for (const entry of this.chartConsumers()) {
             lists.push(this.host._scalarWatchList(entry.watchKey));
             expansions.push(this.panelRuntimeExpansions(entry.watchKey));
         }
@@ -298,7 +304,7 @@ class LiveWatchController {
             }
         }
         const graphs = new Map();
-        for (const entry of this.host._livePanels.values())
+        for (const entry of this.chartConsumers())
             graphs.set(entry.watchKey, build(this.host._scalarWatchList(entry.watchKey)));
         return { graphs, sidebar };
     }
@@ -332,7 +338,7 @@ class LiveWatchController {
             this._runtimeHoldKey = holdKey;
             this.host._runtimeSampleHold?.reset();
         }
-        for (const entry of this.host._livePanels.values()) this.host._historyFeed.configure(entry);
+        for (const entry of this.chartConsumers()) this.host._historyFeed.configure(entry);
         if (this.host._debugBridge.hasSession) {
             const planKey = debugReadPlanKey(active);
             this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, this.intent);
@@ -642,8 +648,12 @@ class LiveWatchController {
         const graphNames = consumers && new Set(consumers.graphNames);
         const sidebarNames = consumers && new Set(consumers.sidebarNames);
         const graphSamples = graphNames ? samples.filter((sample) => graphNames.has(sample.name)) : samples;
-        for (const entry of this.host._livePanels.values()) {
-            if (!entry.historySignature) this.host._historyFeed.configure(entry, t);
+        for (const entry of this.chartConsumers()) {
+            if (
+                !entry.historySignature ||
+                (entry.archiveOnly && entry.historyScope !== this.host._debugSamplingScope(entry.watchKey))
+            )
+                this.host._historyFeed.configure(entry, t);
             const currentSamples =
                 entry.historyClearedAt === undefined
                     ? graphSamples
@@ -682,7 +692,8 @@ class LiveWatchController {
                     ? entry.historyItems.map((item) => [item.name, item.type])
                     : types.graphs.get(entry.watchKey)
             );
-            if (recorded.length && this.host._chartHistory) this.host._historyFeed.queueAppend(entry, recorded, t);
+            if (recorded.length && this.host._chartHistory && !entry.archiveOnly)
+                this.host._historyFeed.queueAppend(entry, recorded, t);
             this.host._samplingArchive.append(
                 recorded.map((sample) => {
                     const spec = graphTypes.get(sample.name);
@@ -858,14 +869,27 @@ class LiveWatchController {
             return Promise.reject(Object.assign(new Error(this.host._t("live.starting")), { code: "PROBE_BUSY" }));
         this.host._historyFeed.resetWarnings();
         const generation = (this._startGeneration = (this._startGeneration || 0) + 1);
-        this._startPromise = this._start(items, intervalMs, consumer, interactive, generation).finally(() => {
-            this._startPromise = null;
-            this.host._postProbeOperationStatus();
-        });
+        const agentChart = consumer === "agent" && !this.agentChart && !this.host._livePanels.size;
+        if (agentChart) {
+            this.agentChart = { watchKey: CACHE_KEYS.watchList, latestSamples: new Map(), archiveOnly: true };
+            this.invalidateConsumerTypes();
+        }
+        this._startPromise = this._start(intervalMs, interactive, generation)
+            .catch((error) => {
+                if (agentChart) {
+                    this.agentChart = null;
+                    this.invalidateConsumerTypes();
+                }
+                throw error;
+            })
+            .finally(() => {
+                this._startPromise = null;
+                this.host._postProbeOperationStatus();
+            });
         this.host._postProbeOperationStatus();
         return this._startPromise;
     }
-    async _start(items, intervalMs, consumer, interactive, generation) {
+    async _start(intervalMs, interactive, generation) {
         if (this.host._externalDebug?.active && this.host._debugBridge.hasSession) {
             this.intent = true;
             this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, true);
@@ -1121,6 +1145,8 @@ class LiveWatchController {
         this.consumers.clear();
         if (!preserveIntent) {
             this.intent = false;
+            this.agentChart = null;
+            this.invalidateConsumerTypes();
             this.host._debugBridge.setIntent(false);
             this.host.debugLaunch.managedServer?.setSamplingEnabled(false);
         }

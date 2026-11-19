@@ -106,6 +106,21 @@ async function main() {
     assert.deepStrictEqual([shown().state, shown().source, selectedId()], ["selected", "remembered", second.id]);
     assert.strictEqual(notices.length, 0, "a same-family pick keeps the interface script");
 
+    await scenario("An Agent selects the exact connected probe through the shared sidebar selection", async () => {
+        const connected = provider._connectedProbes;
+        for (const params of [null, {}, { deviceId: "" }, { deviceId: first.id, probeSerial: "5678" }])
+            await assert.rejects(connected.selectForAgent(params), { code: "PROBE_SELECTION_INVALID" });
+        await assert.rejects(connected.selectForAgent({ deviceId: "missing" }), { code: "PROBE_SELECTED_NOT_FOUND" });
+        assert.strictEqual(selectedId(), second.id);
+        assert.deepStrictEqual(await connected.selectForAgent({ deviceId: first.id }), {
+            deviceId: first.id,
+            probe: "jlink.cfg",
+            state: "selected"
+        });
+        assert.strictEqual(state.get(SELECTED_PROBE_KEY).probeSerial, first.serial);
+        assert.strictEqual(selectedId(), first.id);
+    });
+
     // A device of another family switches the interface script to that family's default.
     await provider._connectedProbes.select(anonymous.id);
     assert.strictEqual(state.get("mcu.debugger"), "cmsis-dap.cfg");

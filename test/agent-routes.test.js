@@ -20,6 +20,7 @@ const { AgentService } = require("../src/services/agentService");
     const expected = {
         "config.get": "_configurationSnapshot",
         "config.set": "_agentOps.setConfiguration",
+        "probe.select": "_connectedProbes.selectForAgent",
         "cubemx.detect": "_cubemxConfiguration.detect",
         "cubemx.inspect": "_cubemxService.inspect",
         "cubemx.query": "_cubemxService.query",

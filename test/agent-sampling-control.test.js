@@ -3,8 +3,17 @@
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
+const fs = require("fs/promises");
+const os = require("os");
+const path = require("path");
 const { loadProvider } = require("./helpers/load-provider");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
+const { CACHE_KEYS } = require("../src/cacheKeys");
+const { ChartHistoryService } = require("../src/services/chartHistoryService");
+const { LiveWatchService } = require("../src/services/liveWatchService");
+const { SamplingArchive } = require("../src/services/samplingArchive");
+const elfSymbols = require("../src/elfSymbols");
+const { decodeViewport } = require("../src/webview/liveWatch/chartTransport");
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { args } = require("../skills/mcu-variables/scripts/sampling");
 const { FakeClock } = require("./helpers/fake-clock");
@@ -494,6 +503,74 @@ function fixture() {
         assert.strictEqual(reads, 1, "no sample is read after the stop");
         assert.deepStrictEqual(stops, ["agent", "live"]);
         assert.strictEqual(host._agentOps._sampleRuns.size, 0);
+    });
+
+    await scenario("Agent records the saved chart without a panel and reopens through the archive", async () => {
+        const { provider: host } = fixture();
+        const item = { name: "tick", address: 0x20000000, size: 4, type: "u32" };
+        const scope = CACHE_KEYS.watchList;
+        const history = new ChartHistoryService({
+            workerPath: path.resolve(__dirname, "../src/chartHistoryWorker.js"),
+            maxBytes: 512 * 1024 * 1024
+        });
+        const archive = new SamplingArchive({ rootDir: await fs.mkdtemp(path.join(os.tmpdir(), "agent-chart-")) });
+        Object.assign(host, {
+            _chartHistory: history,
+            _liveWatchService: new LiveWatchService(elfSymbols),
+            _samplingArchive: archive,
+            _scalarWatchList: (key) => (key === scope ? [item] : []),
+            readElfSymbols: () => ({ symbols: [item] }),
+            _latestSidebarSamples: new Map()
+        });
+        host._context.workspaceState.get = (key) => (key === CACHE_KEYS.sidebarWriteList ? [] : "configured");
+        host._livePanels.clear();
+        const sampling = host._sampling;
+        delete sampling.activeReadPlan;
+        sampling._postSidebarBatch = () => {};
+
+        try {
+            const started = await host._agentOps.controlSampling("start");
+            assert.strictEqual(started.running, true);
+            assert.deepStrictEqual(
+                sampling.session.items.map(({ name }) => name),
+                ["tick"]
+            );
+            const first = Date.now() + 1;
+            for (const [t, value] of [
+                [first, 7],
+                [first + 20, 9]
+            ]) {
+                const bytes = Buffer.alloc(4);
+                bytes.writeUInt32LE(value);
+                sampling.handleRawSamples([{ name: item.name, t, bytes }], t);
+            }
+            await host._agentOps.controlSampling("stop");
+            assert.strictEqual(archive.status(scope).rows, 2);
+
+            await archive.flush();
+            await history.request("archiveProgress", [{ dataPath: archive.dataPath, bytes: archive.indexedBytes }]);
+            for (let reopen = 0; reopen < 2; reopen++) {
+                const entry = { watchKey: scope, ready: true, latestSamples: new Map(), post() {} };
+                host._livePanels.set(1, entry);
+                host._syncGraphTarget(entry, true);
+                const result = await history.request("viewport", [
+                    scope,
+                    ["tick"],
+                    { min: first, max: first + 20 },
+                    100
+                ]);
+                assert.deepStrictEqual(
+                    decodeViewport(result.series).flatMap(({ arr }) => arr.map(({ v }) => v)),
+                    [7, 9]
+                );
+                await history.request("remove", [scope]);
+                host._livePanels.delete(1);
+            }
+        } finally {
+            await sampling.stop();
+            await history.dispose();
+            await archive.dispose();
+        }
     });
 
     console.log("Agent sampling control and shared UI state tests passed");

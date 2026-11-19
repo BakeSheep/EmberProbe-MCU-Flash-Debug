@@ -767,7 +767,7 @@ class AgentOperations {
             await this.host._sampling.start(
                 undefined,
                 params.intervalMs ?? this.host._sampling.intervalMs,
-                "sidebar",
+                "agent",
                 false
             );
         } else if (action === "stop") {

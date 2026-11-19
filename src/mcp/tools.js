@@ -216,6 +216,18 @@ const TOOLS = [
         request: (args) => ({ method: "probe.list", params: args })
     },
     {
+        name: "probe_select",
+        toolset: "core",
+        title: "Select a connected debug probe",
+        description:
+            "Set the workspace's probe to the device the user chose. Get its exact id from probe_list. Stop active debug and sampling sessions before changing the selection.",
+        methods: ["probe.select"],
+        inputSchema: object({ deviceId: str("Exact device id from probe_list", { minLength: 1, maxLength: 512 }) }, [
+            "deviceId"
+        ]),
+        request: (args) => ({ method: "probe.select", params: { deviceId: args.deviceId } })
+    },
+    {
         name: "chip_read",
         toolset: "core",
         title: "Read chip identity",

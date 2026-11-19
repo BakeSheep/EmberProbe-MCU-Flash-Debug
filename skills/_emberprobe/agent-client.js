@@ -729,6 +729,7 @@ const STATUS_QUERY_FOR = {
     "variables.exportCsv": "probe.list",
     "cubemx.execute": "cubemx.inspect",
     "config.set": "config.get",
+    "probe.select": "probe.list",
     "debug.start": "debug.status",
     "debug.control": "debug.status",
     "target.control": "chip.read",

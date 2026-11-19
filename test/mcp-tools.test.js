@@ -75,6 +75,13 @@ const validator = new AjvJsonSchemaValidator();
         const schema = (name) => validator.getValidator(tools.TOOLS.find((tool) => tool.name === name).inputSchema);
         assert.strictEqual(schema("config_set")({ values: { openocdPath: "/tmp/x" } }).valid, false);
         assert.strictEqual(schema("config_set")({ values: { mcu: "target/stm32f4x.cfg" } }).valid, true);
+        assert.strictEqual(schema("probe_select")({ deviceId: "" }).valid, false);
+        assert.strictEqual(schema("probe_select")({ deviceId: String.raw`USB\A` }).valid, true);
+        const selectProbe = tools.TOOLS.find((tool) => tool.name === "probe_select");
+        assert.deepStrictEqual(selectProbe.request({ deviceId: String.raw`USB\A` }), {
+            method: "probe.select",
+            params: { deviceId: String.raw`USB\A` }
+        });
         assert.strictEqual(schema("flash_program")({ transport: "usb" }).valid, false);
         assert.strictEqual(schema("flash_program")({ probeSerial: "0001A" }).valid, true);
         assert.strictEqual(schema("flash_verify")({ remember: true }).valid, false, "verification never remembers");

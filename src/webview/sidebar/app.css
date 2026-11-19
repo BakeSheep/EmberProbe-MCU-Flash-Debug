@@ -248,6 +248,13 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 #mcuConfigSection > .tree > .tree-row {
     padding-left: 12px;
 }
+#otherConfig > .tree {
+    display: grid;
+    grid-auto-rows: 1fr;
+}
+#otherConfig > .tree > .tree-row {
+    min-height: 48px;
+}
 /* Agent integrations share their own collapsible card. */
 .agent-block {
     padding: 8px;

@@ -1591,6 +1591,7 @@ async function smoothRender() {
                 series: [
                     {
                         name: "a",
+                        item: { name: "a", type: "f32", address: 0x20000000 },
                         arr: Array.from({ length: 801 }, (_, i) => ({
                             t: dataMax - 16000 + i * 20,
                             v: Math.sin(i / 20)
@@ -1732,6 +1733,37 @@ async function smoothRender() {
             "enabling reduced motion restores atomic step following"
         );
     });
+
+    for (const freeze of [true, false]) {
+        followScenario(({ w, page, commit, frame, advanceData }) => {
+            commit();
+            frame();
+            const x = { ...w.chartState.x };
+            const y = { min: -100, max: 100 };
+            w.chartState.y = { ...y };
+            w.chartState.fitHold = 0;
+            advanceData(200);
+            if (freeze) {
+                w.freezeChart();
+                page.send({
+                    type: "chartFreezeResult",
+                    requestId: w.eval("state").remoteHistory.operation,
+                    historyRevision: w.historyRevision,
+                    snapshotId: "frozen",
+                    bounds: { min: w.chartState.bounds.min, max: w.chartState.bounds.max + 200 }
+                });
+            } else {
+                page.send({ type: "liveStatus", running: false });
+            }
+            frame(2000);
+            assert.deepStrictEqual({ ...w.chartState.x }, x, "pausing retains the displayed time range");
+            assert.deepStrictEqual({ ...w.chartState.y }, y, "pausing cancels pending automatic contraction");
+            assert.strictEqual(w.chartState.autoY, true);
+            w.viewportController.fit("fill", false);
+            frame(80);
+            assert.notDeepStrictEqual({ ...w.chartState.y }, y, "an explicit fit still applies while paused");
+        });
+    }
 
     followScenario(({ w, commit, frame }) => {
         commit();
