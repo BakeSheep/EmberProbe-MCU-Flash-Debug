@@ -34,6 +34,18 @@ class MultiRatePlan {
             this.sidebarItems.length ? 50 : Infinity
         );
     }
+    retime(previous, interval) {
+        const graphShift = Math.max(this.graphIntervalMs, interval) - Math.max(this.graphIntervalMs, previous);
+        const sidebarShift = Math.max(SIDEBAR_INTERVAL_MS, interval) - Math.max(SIDEBAR_INTERVAL_MS, previous);
+        if (graphShift) {
+            if (this.nextGraph) this.nextGraph += graphShift;
+            this.graphTicks = [];
+        }
+        if (sidebarShift) {
+            if (this.nextSidebar) this.nextSidebar += sidebarShift;
+            this.sidebarTicks = [];
+        }
+    }
     due(now, effectiveIntervalMs) {
         const advance = (next, period) => (!next || now - next > period ? now + period : next + period);
         const graphPeriod = Math.max(this.graphIntervalMs, effectiveIntervalMs);

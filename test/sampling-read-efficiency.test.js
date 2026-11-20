@@ -295,7 +295,7 @@ function startupFixture(mode, branch) {
     standalone._lastBackoffOrErrorAt = 0;
     standalone._recentDurations = [...Array(28).fill(5), ...Array(4).fill(80)];
     standalone._evaluateAdaptiveSchedule(10000);
-    assert.strictEqual(standalone.effectiveIntervalMs, 85, "step-down also uses the mean");
+    assert.strictEqual(standalone.effectiveIntervalMs, 15, "recover directly to the measured interval");
     const debug = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debug._recentDurations = [...Array(28).fill(5), ...Array(4).fill(40)];
     debug._setClockInterval(10);
@@ -327,6 +327,14 @@ function startupFixture(mode, branch) {
     plan.due(200.5, 20);
     assert.strictEqual(plan.nextGraph, 220.5);
     assert.strictEqual(plan.nextSidebar, 250.5, "long stalls resync");
+    const warming = new MultiRatePlan({ graphItems: [item("g")], sidebarItems: [item("s")], graphIntervalMs: 20 });
+    for (const now of [100.5, 200.5]) warming.deliver([], now, warming.due(now, 100));
+    warming.retime(100, 20);
+    assert.strictEqual(warming.nextGraph, 220.5, "calibration replaces the outstanding slow graph period");
+    assert.strictEqual(warming.nextSidebar, 250.5, "sidebar uses its own period floor when retiming");
+    warming.deliver([], 220.5, warming.due(220.5, 20));
+    warming.deliver([], 240.5, warming.due(240.5, 20));
+    assert.strictEqual(warming.stats().graphHz, 50, "old warm-up frames do not bias the actual frame rate");
     for (const interval of [5, 33, 200, 10000]) {
         const plan = new MultiRatePlan({
             graphItems: [item("g")],

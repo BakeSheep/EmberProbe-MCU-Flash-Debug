@@ -6,7 +6,15 @@ const net = require("net");
 const { isDeepStrictEqual } = require("util");
 const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { clampInteger } = require("./validation");
-const { SYSTEM_CLOCK, scheduleSamplingTick } = require("./samplingClock");
+const {
+    SYSTEM_CLOCK,
+    adaptiveReadCost,
+    intervalForReadCost,
+    nextDebugSamplingInterval,
+    nextStandaloneSamplingInterval,
+    p95SamplingDuration,
+    scheduleSamplingTick
+} = require("./samplingClock");
 const { SamplingThroughput } = require("./samplingThroughput");
 const { SamplingSpeedTuner } = require("./samplingSpeed");
 const { TclTransport } = require("./tclTransport");
@@ -241,15 +249,21 @@ class ManagedOpenOcdSession {
         };
     }
 
-    _warmUp() {
+    _warmUp(frameDurationMs = null) {
         this._samplingThroughput.reset();
-        this.effectiveIntervalMs = this.unlimitedActive ? 0 : Math.max(100, this.targetIntervalMs);
+        const interval = this.unlimitedActive
+            ? 0
+            : frameDurationMs === null
+              ? Math.max(100, this.targetIntervalMs)
+              : intervalForReadCost(this.targetIntervalMs, frameDurationMs);
+        this.ratePlan?.retime(this.effectiveIntervalMs, interval);
+        this.effectiveIntervalMs = interval;
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
-        this._warmingUp = !this.unlimitedActive;
+        this._warmingUp = !this.unlimitedActive && frameDurationMs === null;
         const nowMonoMs = this.clock.monotonicMs();
         this._lastAdaptiveEvalAt = nowMonoMs;
-        this._lastBackoffOrErrorAt = nowMonoMs;
+        this._lastBackoffOrErrorAt = this.mode === "debug" ? nowMonoMs : -Infinity;
         this._recentCycleTimestamps = [];
         this._measuredTargetEpoch = this.targetEpoch;
     }
@@ -378,11 +392,11 @@ class ManagedOpenOcdSession {
         this.sampleEpoch++;
         this.options.intervalMs = interval;
         this.targetIntervalMs = interval;
-        const { duration, threshold } = this._adaptiveCost();
+        const { duration, threshold } = adaptiveReadCost(this.mode, this._recentDurations);
         this.effectiveIntervalMs = this.unlimitedActive
             ? 0
             : this._recentDurations.length >= 4
-              ? Math.min(10000, Math.max(interval, Math.ceil(duration / threshold)))
+              ? intervalForReadCost(interval, duration, threshold)
               : Math.max(100, interval);
         this._warmingUp = !this.unlimitedActive && this._recentDurations.length < 4;
         this._consecutiveSuccesses = 0;
@@ -447,24 +461,6 @@ class ManagedOpenOcdSession {
         }
     }
 
-    _computeP95Duration() {
-        if (!this._recentDurations.length) return 0;
-        const sorted = this._recentDurations.slice().sort((a, b) => a - b);
-        const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
-        return sorted[index];
-    }
-
-    _adaptiveCost() {
-        return this.mode === "debug"
-            ? { duration: this._computeP95Duration(), threshold: 0.4 }
-            : {
-                  duration:
-                      this._recentDurations.reduce((sum, value) => sum + value, 0) /
-                      (this._recentDurations.length || 1),
-                  threshold: 0.85
-              };
-    }
-
     _computeActualHz() {
         if (!this.samplingEnabled || this._recentCycleTimestamps.length < 2) return 0;
         const first = this._recentCycleTimestamps[0];
@@ -476,7 +472,7 @@ class ManagedOpenOcdSession {
     }
 
     stats() {
-        const p95 = this._computeP95Duration();
+        const p95 = p95SamplingDuration(this._recentDurations);
         const consumers = this.ratePlan?.stats();
         const actualHz = consumers ? consumers.graphHz : this._computeActualHz();
         return {
@@ -526,7 +522,12 @@ class ManagedOpenOcdSession {
             this._lastBackoffOrErrorAt = nowMonoMs;
         }
 
-        if ((this._warmingUp && this._consecutiveSuccesses >= 4) || nowMonoMs - this._lastAdaptiveEvalAt >= 1000) {
+        const evalInterval =
+            this.mode === "standalone" && this.effectiveIntervalMs > this.targetIntervalMs ? 250 : 1000;
+        if (
+            (this._warmingUp && this._consecutiveSuccesses >= 4) ||
+            nowMonoMs - this._lastAdaptiveEvalAt >= evalInterval
+        ) {
             this._evaluateAdaptiveSchedule(nowMonoMs);
             this._lastAdaptiveEvalAt = nowMonoMs;
         }
@@ -534,39 +535,32 @@ class ManagedOpenOcdSession {
 
     _evaluateAdaptiveSchedule(nowMonoMs = this.clock.monotonicMs()) {
         if (this.unlimitedActive || this._recentDurations.length < 4) return;
-        const { duration, threshold } = this._adaptiveCost();
+        const { duration, threshold } = adaptiveReadCost(this.mode, this._recentDurations);
+        const current = this.effectiveIntervalMs;
         const target = this.targetIntervalMs;
-
-        if (this._warmingUp && this._consecutiveSuccesses >= 4) {
-            this.effectiveIntervalMs = Math.min(10000, Math.max(target, Math.ceil(duration / threshold)));
-            this._warmingUp = false;
-            this._consecutiveSuccesses = 0;
-            this._recentCycleTimestamps = [];
-            return;
-        }
-
-        if (duration > this.effectiveIntervalMs * threshold) {
-            const requiredInterval = Math.ceil(duration / threshold);
-            const nextInterval = Math.min(
-                10000,
-                Math.max(this.effectiveIntervalMs + 5, requiredInterval, Math.round(this.effectiveIntervalMs * 1.25))
-            );
-            if (nextInterval > this.effectiveIntervalMs) {
-                this.effectiveIntervalMs = nextInterval;
-                this._consecutiveSuccesses = 0;
-                this._lastBackoffOrErrorAt = nowMonoMs;
-            }
-        } else if (
-            this._consecutiveSuccesses >= 32 &&
-            nowMonoMs - this._lastBackoffOrErrorAt >= 2000 &&
-            this.effectiveIntervalMs > target
-        ) {
-            const stepDown = Math.max(target, Math.round(this.effectiveIntervalMs * 0.85));
-            if (duration <= stepDown * threshold) {
-                this.effectiveIntervalMs = stepDown;
-                this._consecutiveSuccesses = 0;
-            }
-        }
+        const successes = this._consecutiveSuccesses;
+        const stableForMs = nowMonoMs - this._lastBackoffOrErrorAt;
+        const calibrated = this._warmingUp && successes >= 4;
+        const required = intervalForReadCost(target, duration, threshold);
+        const next = calibrated
+            ? required
+            : this.mode === "debug"
+              ? nextDebugSamplingInterval(current, target, required, successes, stableForMs)
+              : nextStandaloneSamplingInterval(
+                    current,
+                    target,
+                    this._recentDurations,
+                    required,
+                    successes,
+                    stableForMs
+                );
+        if (calibrated) this._warmingUp = false;
+        if (!calibrated && current === next) return;
+        if (this.mode === "debug" && next > current) this._lastBackoffOrErrorAt = nowMonoMs;
+        this.effectiveIntervalMs = next;
+        this.ratePlan?.retime(current, next);
+        this._consecutiveSuccesses = 0;
+        this._recentCycleTimestamps = [];
     }
 
     _status(msg) {
@@ -667,13 +661,15 @@ class ManagedOpenOcdSession {
                         this.tcl.release();
                         await this._detectScatter();
                         await this._ensureTclConnected();
-                        if (this._speedTuner.shouldTuneAtStart(this.watch)) await this._speedTuner.tune(this);
+                        const frameDurationMs = this._speedTuner.shouldTuneAtStart(this.watch)
+                            ? await this._speedTuner.tune(this)
+                            : null;
                         if (this.stopped) throw this.connectionError || new Error("Stopped");
                         this._status({ key: "lw.connected" });
                         if (this._samplingRequested) {
                             this.samplingEnabled = true;
                             this._pauseReason = null;
-                            this._warmUp();
+                            this._warmUp(frameDurationMs);
                             this._scheduleNext(0);
                         }
                         resolve(undefined);
@@ -986,14 +982,18 @@ class ManagedOpenOcdSession {
         }
     }
 
+    _sendReadCommand(cmd, guard) {
+        return guard?.probe ? guard.probe(cmd) : this.tcl.sendChecked(cmd);
+    }
+
     // Chooses 32/16/8-bit transfers by address and length, then unpacks everything into little-endian bytes.
-    async _readMemoryBytes(addr, count) {
+    async _readMemoryBytes(addr, count, guard = null) {
         const hex = "0x" + (addr >>> 0).toString(16);
         const shape = transferShape(addr, count);
         const build = (cmd) => `${cmd} ${hex} ${shape.widthBits} ${shape.count}`;
         let resp;
         try {
-            resp = await this.tcl.sendChecked(build(this.readCmd));
+            resp = await this._sendReadCommand(build(this.readCmd), guard);
         } catch (error) {
             if (
                 !this.altTried &&
@@ -1003,7 +1003,7 @@ class ManagedOpenOcdSession {
             ) {
                 this.altTried = true;
                 this.readCmd = this.readCmd === "ocd_read_memory" ? "read_memory" : "ocd_read_memory";
-                resp = await this.tcl.sendChecked(build(this.readCmd));
+                resp = await this._sendReadCommand(build(this.readCmd), guard);
             } else throw error;
         }
         const values = parseMemoryElements(resp, shape.widthBits);
@@ -1035,10 +1035,10 @@ class ManagedOpenOcdSession {
         }
     }
 
-    async _readBatchBytes(batch) {
+    async _readBatchBytes(batch, guard = null) {
         if (batch.length === 1) {
             const g = batch[0];
-            const bytes = await this._readMemoryBytes(g.start, g.byteCount);
+            const bytes = await this._readMemoryBytes(g.start, g.byteCount, guard);
             return [bytes];
         }
         const calls = batch.map((g) => {
@@ -1048,7 +1048,7 @@ class ManagedOpenOcdSession {
         const cmd = `join [list ${calls.join(" ")}] "\\n"`;
         let resp;
         try {
-            resp = await this.tcl.sendChecked(cmd);
+            resp = await this._sendReadCommand(cmd, guard);
         } catch (error) {
             if (
                 !this.altTried &&
@@ -1063,7 +1063,7 @@ class ManagedOpenOcdSession {
                     return `[${this.readCmd} ${hex} ${g.shape.widthBits} ${g.shape.count}]`;
                 });
                 const retryCmd = `join [list ${retryCalls.join(" ")}] "\\n"`;
-                resp = await this.tcl.sendChecked(retryCmd);
+                resp = await this._sendReadCommand(retryCmd, guard);
             } else {
                 throw error;
             }
@@ -1152,7 +1152,7 @@ class ManagedOpenOcdSession {
             const args = segments.map(
                 (unit) => `{0x${unit.start.toString(16)} ${unit.shape.widthBits} ${unit.shape.count}}`
             );
-            const response = await this.tcl.sendChecked(`emberprobe_read_scatter ${args.join(" ")}`);
+            const response = await this._sendReadCommand(`emberprobe_read_scatter ${args.join(" ")}`, guard);
             this._assertReadGuard(guard);
             const lines = String(response).split("\n");
             if (
@@ -1191,6 +1191,7 @@ class ManagedOpenOcdSession {
         // The native DAP failure reply can reach Tcl before the corresponding stderr line. End
         // this read without another transfer. A definite transport log separately ends the session.
         if (
+            guard?.probe ||
             this._isConnectionError(error) ||
             (error.code === "OPENOCD_TCL_ERROR" && /^scatter memory read failed \(-?\d+\)$/.test(error.message.trim()))
         ) {
@@ -1243,7 +1244,7 @@ class ManagedOpenOcdSession {
         }
         const reader = new RuntimeObjectReader(
             item,
-            (address, size) => this._readMemoryBytes(address, size),
+            (address, size) => this._readMemoryBytes(address, size, guard),
             () => this._assertReadGuard(guard),
             budget,
             {
@@ -1338,7 +1339,7 @@ class ManagedOpenOcdSession {
             let batchBytes = scatterBytes ? batch.map((unit) => scatterBytes.get(unit)) : null;
             if (!batchBytes && !this._batchUnsupported) {
                 try {
-                    batchBytes = await this._readBatchBytes(batch);
+                    batchBytes = await this._readBatchBytes(batch, guard);
                 } catch (error) {
                     const incompatible =
                         batch.length > 1 &&
@@ -1357,7 +1358,7 @@ class ManagedOpenOcdSession {
                     this._assertReadGuard(guard);
                     let bytes;
                     try {
-                        bytes = await this._readMemoryBytes(g.start, g.byteCount);
+                        bytes = await this._readMemoryBytes(g.start, g.byteCount, guard);
                     } catch (error) {
                         if (!scatterFailed || error.code !== "OPENOCD_TCL_ERROR") throw error;
                         this._lastReadError = error.message;
@@ -1400,7 +1401,7 @@ class ManagedOpenOcdSession {
                 if (bytes) ok++;
             }
         }
-        if (ok && !this.stopped && !this._connectionConfirmed) {
+        if (ok && !guard?.probe && !this.stopped && !this._connectionConfirmed) {
             this._assertReadGuard(guard);
             this._connectionConfirmed = true;
             this.handlers.onConnectionConfirmed?.();
@@ -1525,7 +1526,7 @@ class ManagedOpenOcdSession {
         const startedAt = this.clock.now();
         const deadline = startedAt + MAX_DEBUG_CYCLE_MS;
         const cycleStart = this.clock.sampleNow();
-        const tick = { ok: false, tuned: false, ms: 0 };
+        const tick = { ok: false, tuned: false, ms: 0, frameDurationMs: null };
         try {
             const due = this.ratePlan?.due(startMs, this.effectiveIntervalMs);
             const items = due ? due.items : this.watch;
@@ -1550,7 +1551,7 @@ class ManagedOpenOcdSession {
                     }
                 }
                 if (this._speedTuner.shouldRecheckAfterFirstCycle()) {
-                    await this._speedTuner.tune(this);
+                    tick.frameDurationMs = await this._speedTuner.tune(this);
                     tick.tuned = true;
                 }
                 if (this._sampleErrorActive) {
@@ -1580,7 +1581,7 @@ class ManagedOpenOcdSession {
                 this._samplingThroughput.record(this._memoryReadBytes - readBytesBefore, startMs, startMs + tick.ms);
             if (!tick.tuned && epoch === this.sampleEpoch) this._recordCycle(tick.ms, tick.ok, startedAt);
             if (tick.tuned || this._speedTuner.needsStepDown(this, epoch, tick.ok))
-                await this._speedTuner.finishCycle(this, tick.tuned);
+                await this._speedTuner.finishCycle(this, tick.tuned, tick.frameDurationMs);
             this._releaseExclusive();
             if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
                 const nextDelay = this.ratePlan

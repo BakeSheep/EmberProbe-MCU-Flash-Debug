@@ -1,7 +1,7 @@
 "use strict";
 
 const { normalizeAdapterSpeed, probeFamily } = require("../skills/_emberprobe/probe-connection");
-const { SYSTEM_CLOCK } = require("./samplingClock");
+const { SYSTEM_CLOCK, STANDALONE_READ_BUDGET_RATIO } = require("./samplingClock");
 const { parseMemoryElements } = require("./liveWatchReadPlan");
 
 const SAMPLING_SPEED_LADDERS_KHZ = Object.freeze({
@@ -26,7 +26,6 @@ const TCP_BUDGET_MS = 1200;
 const STEP_PROBE_TIMEOUT_MS = 500;
 const TCP_STEP_PROBE_TIMEOUT_MS = 1000;
 const IMPROVEMENT_RATIO = 0.05;
-const IMPROVEMENT_MIN_RATIO = 0.03;
 const IMPROVEMENT_MIN_SAVED_MS = 0.15;
 const SLOWDOWN_RATIO = 1.1;
 const MAX_PLATEAU_STEPS = 2;
@@ -117,7 +116,7 @@ function isMeaningfulImprovement(bestMs, candidateMs) {
     if (!(bestMs > 0) || !(candidateMs > 0) || candidateMs >= bestMs) return false;
     const savedMs = bestMs - candidateMs;
     const gain = savedMs / bestMs;
-    return gain >= IMPROVEMENT_RATIO || (gain >= IMPROVEMENT_MIN_RATIO && savedMs >= IMPROVEMENT_MIN_SAVED_MS);
+    return gain >= IMPROVEMENT_RATIO && savedMs >= IMPROVEMENT_MIN_SAVED_MS;
 }
 
 function isSignificantSlowdown(bestMs, candidateMs) {
@@ -249,13 +248,10 @@ function isBatchSyntaxError(error) {
     return /(?:invalid command name|unknown command)\s+["']?(?:join|list)/i.test(String(error?.message || ""));
 }
 
-function resetSessionMetrics(session) {
-    session._recentDurations = [];
-    session._consecutiveSuccesses = 0;
-    session._recentCycleTimestamps = [];
+function resetSessionMetrics(session, frameDurationMs = null) {
+    session._warmUp(frameDurationMs);
     session._pollFailureSince = null;
     session._pollFailureCount = 0;
-    session._samplingThroughput.reset();
 }
 
 async function ensureConnected(session, timeoutMs) {
@@ -307,6 +303,8 @@ class SamplingSpeedTuner {
         this._tentativeError = null;
         this._recheckAfterFirstCycle = false;
         this._tuned = false;
+        this._tunedFrameBudgetMs = null;
+        this._tunedWatch = null;
         this._runtimeFailures = 0;
         this._fallbackCount = 0;
         this._pendingStepDown = false;
@@ -328,8 +326,23 @@ class SamplingSpeedTuner {
         );
     }
 
-    shouldTuneBeforeTick(startCompleted, watch) {
-        return this.isEnabled() && startCompleted === true && !this._tuned && Array.isArray(watch) && watch.length > 0;
+    _frameBudgetMs(session) {
+        if (this.options.adaptiveAdapterSpeed !== "sampling" || session.unlimitedActive) return null;
+        return session.targetIntervalMs * STANDALONE_READ_BUDGET_RATIO;
+    }
+
+    shouldTuneBeforeTick(session) {
+        const frameBudgetMs = this._frameBudgetMs(session);
+        return (
+            this.isEnabled() &&
+            session._startCompleted === true &&
+            session.watch.length > 0 &&
+            (!this._tuned ||
+                (!!this._baselineInfo &&
+                    !this._fallbackCount &&
+                    (this._tunedFrameBudgetMs !== frameBudgetMs ||
+                        (frameBudgetMs !== null && this._tunedWatch !== session.watch))))
+        );
     }
 
     shouldRecheckAfterFirstCycle() {
@@ -365,18 +378,16 @@ class SamplingSpeedTuner {
     }
 
     needsPreCycle(session) {
-        return this.hasPendingStepDown() || this.shouldTuneBeforeTick(session._startCompleted, session.watch);
+        return this.hasPendingStepDown() || this.shouldTuneBeforeTick(session);
     }
 
     async runPreCycle(session) {
-        let changed = false;
-        if (this.hasPendingStepDown()) changed = await this.stepDown(session);
-        else if (this.shouldTuneBeforeTick(session._startCompleted, session.watch)) {
-            await this.tune(session);
-            changed = true;
-        }
-        if (changed) {
-            resetSessionMetrics(session);
+        const previousKhz = this.effectiveKhz;
+        const steppingDown = this.hasPendingStepDown();
+        const frameDurationMs = steppingDown ? null : await this.tune(session);
+        const changed = steppingDown ? await this.stepDown(session) : previousKhz !== this.effectiveKhz;
+        if (changed || frameDurationMs != null) resetSessionMetrics(session, frameDurationMs);
+        if (!steppingDown || changed) {
             if (session.samplingEnabled) session._status?.({ key: "sb.sampling" });
         }
         return (
@@ -399,11 +410,11 @@ class SamplingSpeedTuner {
         );
     }
 
-    async finishCycle(session, tunedInCycle) {
+    async finishCycle(session, tunedInCycle, frameDurationMs) {
         try {
             const stepped = !tunedInCycle && (await this.stepDown(session));
             if (tunedInCycle || stepped) {
-                resetSessionMetrics(session);
+                resetSessionMetrics(session, frameDurationMs);
                 if (session.samplingEnabled) session._status?.({ key: "sb.sampling" });
             }
         } catch {
@@ -508,6 +519,7 @@ class SamplingSpeedTuner {
     }
 
     async _sendBenchmark(session, plan, deadline) {
+        if (plan.watch) return this._sendFrameBenchmark(session, plan, deadline);
         const replies = [];
         for (const cmd of plan.commands) {
             this._tentativeError = null;
@@ -525,6 +537,35 @@ class SamplingSpeedTuner {
         return { ok: verifyBenchmarkReply(plan, replies), batchUnsupported: false };
     }
 
+    async _sendFrameBenchmark(session, { watch, epoch, expectedCpuid, readCmd }, deadline) {
+        if (epoch !== session.sampleEpoch || watch !== session.watch) return { ok: false };
+        this._tentativeError = null;
+        const guard = {
+            epoch,
+            probe: (cmd) => {
+                session._assertReadGuard(guard);
+                return this._probeBefore(session, cmd, deadline);
+            }
+        };
+        try {
+            const reply = await guard.probe(`${readCmd} 0x${CPUID_ADDRESS.toString(16)} 32 1`);
+            if (this._tentativeError || !verifyWordElement(reply, expectedCpuid)) return { ok: false };
+            const start = this.clock.monotonicMs();
+            const { samples, ok } = await session._readItems(watch, this.clock.now(), guard);
+            return {
+                ok:
+                    epoch === session.sampleEpoch &&
+                    ok === watch.length &&
+                    !this._tentativeError &&
+                    samples.every((sample) => !sample.diagnostic),
+                durationMs: this.clock.monotonicMs() - start
+            };
+        } catch (error) {
+            if (error.code === TUNING_BUDGET_EXHAUSTED) throw error;
+            return { ok: false };
+        }
+    }
+
     async _measureStep(session, plan, deadline, timedCount = null) {
         const warmStart = this.clock.monotonicMs();
         const warmup = await this._sendBenchmark(session, plan, deadline);
@@ -537,30 +578,35 @@ class SamplingSpeedTuner {
             const res = await this._sendBenchmark(session, plan, deadline);
             const dt = this.clock.monotonicMs() - t0;
             if (!res.ok) return { ok: false, medianMs: null, batchUnsupported: res.batchUnsupported };
-            durations.push(dt);
+            durations.push(res.durationMs ?? dt);
         }
         const med = median(durations);
+        const frameDurationMs = plan.watch ? durations.reduce((sum, duration) => sum + duration, 0) / count : null;
         return med === null
             ? { ok: false, medianMs: null, batchUnsupported: false }
-            : { ok: true, medianMs: med, timedCount: count, batchUnsupported: false };
+            : { ok: true, medianMs: med, frameDurationMs, timedCount: count, batchUnsupported: false };
     }
 
-    async _measureBaseline(session, expectedCpuid, readCmd, deadline) {
-        const initialRamBlock = selectBenchmarkRamBlock(session.watch, session.ramSectionRanges);
-        const attempts = initialRamBlock ? [initialRamBlock, null] : [null];
-        for (const ramBlock of attempts) {
-            if (session.stopped || session.connectionFailed || !session.tcl.connected) return null;
-            let plan = buildBenchmarkPlan({
-                scatterReads: !!session.scatterReads,
-                readCmd,
-                ramBlock,
-                expectedCpuid,
-                batchUnsupported: !!session._batchUnsupported
-            });
-            this.probingActive = true;
-            let res;
-            try {
-                res = await this._measureStep(session, plan, deadline);
+    async _measureBaseline(session, expectedCpuid, readCmd, deadline, frame) {
+        this.probingActive = true;
+        try {
+            if (frame) {
+                const plan = { ...frame, expectedCpuid, readCmd };
+                const res = await this._measureStep(session, plan, deadline);
+                return res.ok ? { ...res, plan } : null;
+            }
+            const initialRamBlock = selectBenchmarkRamBlock(session.watch, session.ramSectionRanges);
+            const attempts = initialRamBlock ? [initialRamBlock, null] : [null];
+            for (const ramBlock of attempts) {
+                if (session.stopped || session.connectionFailed || !session.tcl.connected) return null;
+                let plan = buildBenchmarkPlan({
+                    scatterReads: !!session.scatterReads,
+                    readCmd,
+                    ramBlock,
+                    expectedCpuid,
+                    batchUnsupported: !!session._batchUnsupported
+                });
+                let res = await this._measureStep(session, plan, deadline);
                 if (!res.ok && res.batchUnsupported) {
                     session._batchUnsupported = true;
                     plan = buildBenchmarkPlan({
@@ -572,12 +618,12 @@ class SamplingSpeedTuner {
                     });
                     res = await this._measureStep(session, plan, deadline);
                 }
-            } finally {
-                this.probingActive = false;
+                if (res.ok) return { ...res, plan };
             }
-            if (res.ok) return { plan, medianMs: res.medianMs, timedCount: res.timedCount };
+            return null;
+        } finally {
+            this.probingActive = false;
         }
-        return null;
     }
 
     async _restoreSpeed(session, targetKhz, { expectedCpuid, readCmd }, deadline) {
@@ -624,7 +670,8 @@ class SamplingSpeedTuner {
                 status: step.ok ? "ok" : "failed",
                 reportedKhz,
                 effectiveKhz,
-                medianMs: step.medianMs
+                medianMs: step.medianMs,
+                frameDurationMs: step.frameDurationMs
             };
         } finally {
             this.probingActive = false;
@@ -641,37 +688,65 @@ class SamplingSpeedTuner {
         );
     }
 
+    async _returnToBaseline(session, baselineInfo, deadline) {
+        const previousKhz = this.effectiveKhz;
+        if (previousKhz === null || previousKhz === baselineInfo.baseKhz) return true;
+        if (await this._restoreSpeed(session, baselineInfo.baseKhz, baselineInfo, deadline)) return true;
+        const recoveryDeadline = this.clock.monotonicMs() + this._budgetMs();
+        if (await this._restoreSpeed(session, previousKhz, baselineInfo, recoveryDeadline)) {
+            this.reason = "restore_failed";
+        } else {
+            this._abortUnverifiedSpeed(session);
+        }
+        return false;
+    }
+
     async tune(session) {
         if (!this.isEnabled() || session.stopped || session.connectionFailed || !session.tcl.connected) return;
         const allowRecheck = !this._recheckAfterFirstCycle;
         this._tuned = true;
         this._recheckAfterFirstCycle = false;
+        const frameBudgetMs = this._frameBudgetMs(session);
+        this._tunedFrameBudgetMs = frameBudgetMs;
+        this._tunedWatch = session.watch;
+        const frame = frameBudgetMs === null ? null : { watch: session.watch, epoch: session.sampleEpoch };
         const deadline = this.clock.monotonicMs() + this._budgetMs();
 
-        const baselineInfo = await this._probeEligibility(session, deadline, allowRecheck);
+        const baselineInfo = this._baselineInfo ?? (await this._probeEligibility(session, deadline, allowRecheck));
         if (!baselineInfo || session.stopped || session.connectionFailed) return;
+        if (!(await this._returnToBaseline(session, baselineInfo, deadline))) return;
+        if (session.stopped || session.connectionFailed) return;
         const { baseKhz, expectedCpuid, readCmd } = baselineInfo;
         this._baselineInfo = baselineInfo;
         this.baseKhz = baseKhz;
         this.effectiveKhz = baseKhz;
         this.requestedKhz = baseKhz;
+        this.verifiedChain = [baseKhz];
+        this._chainIndex = 0;
+        this._runtimeFailures = 0;
+        this.testedSteps = [];
 
         const primary = samplingSpeedLadder(this.options).filter((k) => k > baseKhz);
         if (!primary.length) {
             this.state = "unchanged";
             this.reason = "at_ceiling";
-            this.verifiedChain = [baseKhz];
-            this._chainIndex = 0;
             return;
         }
 
         let baseline;
         try {
-            baseline = await this._measureBaseline(session, expectedCpuid, readCmd, deadline);
+            baseline = await this._measureBaseline(session, expectedCpuid, readCmd, deadline, frame);
         } catch (error) {
             if (error.code !== TUNING_BUDGET_EXHAUSTED) throw error;
             this.state = "unchanged";
             this.reason = "budget_reached";
+            await this._recoverConnection(session);
+            return;
+        }
+        if (frame && frame.epoch !== session.sampleEpoch) {
+            this._tunedWatch = null;
+            this.state = "unchanged";
+            this.reason = "plan_changed";
             await this._recoverConnection(session);
             return;
         }
@@ -681,8 +756,18 @@ class SamplingSpeedTuner {
             await this._recoverConnection(session);
             return;
         }
+        if (frame && baseline.frameDurationMs <= frameBudgetMs) {
+            this.state = "unchanged";
+            this.reason = "target_reached";
+            return baseline.frameDurationMs;
+        }
 
-        let best = { requestedKhz: baseKhz, effectiveKhz: baseKhz, medianMs: baseline.medianMs };
+        let best = {
+            requestedKhz: baseKhz,
+            effectiveKhz: baseKhz,
+            medianMs: baseline.medianMs,
+            frameDurationMs: baseline.frameDurationMs
+        };
         const verifiedSteps = [best];
         const testedEffective = new Set([baseKhz]);
         const attemptedRequested = new Set([baseKhz]);
@@ -692,10 +777,14 @@ class SamplingSpeedTuner {
         let currentReportedKhz = baseKhz;
         let plateauCount = 0;
         let stopReason = "";
-        this.testedSteps = [];
 
         while (queue.length) {
             if (session.stopped || session.connectionFailed) return;
+            if (frame && frame.epoch !== session.sampleEpoch) {
+                this._tunedWatch = null;
+                stopReason = "plan_changed";
+                break;
+            }
             if (deadline - this.clock.monotonicMs() < 1) {
                 stopReason = "budget_reached";
                 break;
@@ -726,6 +815,12 @@ class SamplingSpeedTuner {
                 break;
             }
             if (session.stopped || session.connectionFailed) return;
+            if (frame && frame.epoch !== session.sampleEpoch) {
+                this._tunedWatch = null;
+                currentEffectiveKhz = null;
+                stopReason = "plan_changed";
+                break;
+            }
             if (probe.status === "duplicate") {
                 currentReportedKhz = probe.reportedKhz;
                 currentEffectiveKhz = probe.effectiveKhz;
@@ -771,9 +866,24 @@ class SamplingSpeedTuner {
                 break;
             }
             testedEffective.add(probe.effectiveKhz);
-            verifiedSteps.push({ requestedKhz: khz, effectiveKhz: probe.effectiveKhz, medianMs: probe.medianMs });
-            if (isMeaningfulImprovement(best.medianMs, probe.medianMs)) {
-                best = { requestedKhz: khz, effectiveKhz: probe.effectiveKhz, medianMs: probe.medianMs };
+            const previous = verifiedSteps.at(-1);
+            const step = {
+                requestedKhz: khz,
+                effectiveKhz: probe.effectiveKhz,
+                medianMs: probe.medianMs,
+                frameDurationMs: probe.frameDurationMs
+            };
+            verifiedSteps.push(step);
+            if (frame && step.frameDurationMs <= frameBudgetMs) {
+                best = step;
+                stopReason = "target_reached";
+                break;
+            }
+            if (
+                isMeaningfulImprovement(best.medianMs, step.medianMs) &&
+                isMeaningfulImprovement(previous.medianMs, step.medianMs)
+            ) {
+                best = step;
                 plateauCount = 0;
             } else if (isSignificantSlowdown(best.medianMs, probe.medianMs)) {
                 stopReason = "slowdown";
@@ -825,6 +935,7 @@ class SamplingSpeedTuner {
         this.requestedKhz = locked.requestedKhz;
         this.state = locked.effectiveKhz > baseKhz ? "tuned" : "unchanged";
         this.reason = stopReason || (locked.effectiveKhz > baseKhz ? "fastest_verified" : "baseline_optimal");
+        return frame && frame.epoch === session.sampleEpoch ? locked.frameDurationMs : null;
     }
 
     canStepDown() {
@@ -918,7 +1029,6 @@ module.exports = {
     STEP_PROBE_TIMEOUT_MS,
     TCP_STEP_PROBE_TIMEOUT_MS,
     IMPROVEMENT_RATIO,
-    IMPROVEMENT_MIN_RATIO,
     IMPROVEMENT_MIN_SAVED_MS,
     SLOWDOWN_RATIO,
     MAX_PLATEAU_STEPS,

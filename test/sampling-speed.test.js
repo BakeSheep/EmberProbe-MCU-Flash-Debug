@@ -56,6 +56,7 @@ async function createTunedSession({
     scatterVersion = "1",
     watch = WATCH_ITEM,
     ramRanges = RAM_RANGES,
+    unlimited = true,
     speedMap = null,
     speedReadBehavior = null,
     options = {},
@@ -133,7 +134,14 @@ async function createTunedSession({
         return true;
     };
 
-    if (watch.length) session.setWatch(watch, ramRanges);
+    if (watch.length) {
+        session.setSamplingPlan({
+            graphItems: watch,
+            ramSectionRanges: ramRanges,
+            graphIntervalMs: session.targetIntervalMs,
+            unlimited
+        });
+    }
 
     return {
         fake,
@@ -242,8 +250,8 @@ function stlinkV3Table(requestedKhz) {
         assert.strictEqual(median([0, -1, NaN]), null);
 
         assert.strictEqual(isMeaningfulImprovement(10, 9.4), true);
-        assert.strictEqual(isMeaningfulImprovement(10, 9.6), true); // 4% and 0.4ms >= 0.15ms
-        assert.strictEqual(isMeaningfulImprovement(1, 0.96), false); // 4% but only 0.04ms < 0.15ms
+        assert.strictEqual(isMeaningfulImprovement(10, 9.6), false); // Only 4% despite saving 0.4 ms.
+        assert.strictEqual(isMeaningfulImprovement(1, 0.9), false); // Only 0.1 ms despite saving 10%.
         assert.strictEqual(isMeaningfulImprovement(10, 9.8), false);
         assert.strictEqual(isSignificantSlowdown(5, 5.6), true);
         assert.strictEqual(isSignificantSlowdown(5, 5.5), false);
@@ -454,6 +462,199 @@ function stlinkV3Table(requestedKhz) {
             assert.strictEqual(st.adaptiveSpeed.reason, "plateau");
             assert.ok(!st.adaptiveSpeed.testedSteps.some((s) => s.requestedKhz === 20000));
             assert.strictEqual(f.fake.adapterSpeedKhz, 8000);
+        } finally {
+            await f.close();
+        }
+    });
+
+    await scenario("successive small improvements keep the lowest effective clock on a plateau", async () => {
+        const durations = { 2000: 12, 4000: 8, 7000: 5, 8000: 4.85, 9000: 4.71 };
+        const effectiveClocks = { 8000: 7000, 12000: 8000, 16000: 9000 };
+        const f = await createTunedSession({
+            initialKhz: 2000,
+            speedMap: (requested) => ({ actualKhz: effectiveClocks[requested] ?? requested }),
+            speedReadBehavior: (actual) => ({ advanceMs: durations[actual] ?? 4 })
+        });
+        try {
+            await f.session.start();
+            const { adaptiveSpeed, adapterSpeedKhz } = f.session.stats();
+            assert.deepStrictEqual(
+                adaptiveSpeed.testedSteps.map((step) => step.effectiveKhz),
+                [4000, 7000, 8000, 9000]
+            );
+            assert.strictEqual(isMeaningfulImprovement(5, 4.71), true, "cumulative gain alone would promote 9 MHz");
+            assert.strictEqual(adaptiveSpeed.reason, "plateau");
+            assert.strictEqual(adapterSpeedKhz, 7000);
+            assert.strictEqual(f.fake.adapterSpeedKhz, 7000);
+        } finally {
+            await f.close();
+        }
+    });
+
+    await scenario(
+        "capped sampling keeps the first clock that fits its read budget and retunes when the cap changes",
+        async () => {
+            const f = await createTunedSession({
+                initialKhz: 2000,
+                unlimited: false,
+                options: { intervalMs: 5 },
+                speedReadBehavior: (actual) => ({ advanceMs: actual <= 2000 ? 4.4 : actual <= 4000 ? 4.2 : 2 })
+            });
+            try {
+                await f.session.start();
+                const checkClock = (khz, reason, testedSteps) => {
+                    const stats = f.session.stats();
+                    assert.strictEqual(stats.adapterSpeedKhz, khz);
+                    assert.strictEqual(f.fake.adapterSpeedKhz, khz);
+                    assert.strictEqual(stats.adaptiveSpeed.reason, reason);
+                    assert.deepStrictEqual(
+                        stats.adaptiveSpeed.testedSteps.map((step) => step.requestedKhz),
+                        testedSteps
+                    );
+                };
+                checkClock(4000, "target_reached", [4000]);
+                assert.ok(!f.fake.commands.includes("adapter speed 8000"));
+
+                const plan = { graphItems: WATCH_ITEM, ramSectionRanges: RAM_RANGES, graphIntervalMs: 5 };
+                f.session.setSamplingPlan({ ...plan, unlimited: true });
+                await f.session._sampleTick();
+                checkClock(8000, "plateau", [4000, 8000, 12000, 16000]);
+
+                f.session.setSamplingPlan({ ...plan, unlimited: false });
+                await f.session._sampleTick();
+                checkClock(4000, "target_reached", [4000]);
+
+                f.session.setIntervalMs(10);
+                await f.session._sampleTick();
+                checkClock(2000, "target_reached", []);
+                const clockChanges = () => f.fake.commands.filter((cmd) => cmd.startsWith("adapter speed ")).length;
+                const changes = clockChanges();
+                await f.session._sampleTick();
+                assert.strictEqual(clockChanges(), changes);
+            } finally {
+                await f.close();
+            }
+        }
+    );
+
+    await scenario("the unlimited flag still uses the sidebar budget when the graph has no watches", async () => {
+        const f = await createTunedSession({
+            initialKhz: 2000,
+            watch: [],
+            speedReadBehavior: () => ({ advanceMs: 10 })
+        });
+        try {
+            f.session.setSamplingPlan({ sidebarItems: WATCH_ITEM, graphIntervalMs: 5, unlimited: true });
+            await f.session.start();
+            const stats = f.session.stats();
+            assert.strictEqual(stats.unlimitedActive, false);
+            assert.strictEqual(stats.targetIntervalMs, 50);
+            assert.strictEqual(stats.adapterSpeedKhz, 2000);
+            assert.strictEqual(stats.adaptiveSpeed.reason, "target_reached");
+            assert.deepStrictEqual(stats.adaptiveSpeed.testedSteps, []);
+        } finally {
+            await f.close();
+        }
+    });
+
+    await scenario("20 to 200 Hz uses the measured frame cost immediately after tuning", async () => {
+        let readsAt4000 = 0;
+        const f = await createTunedSession({
+            initialKhz: 2000,
+            unlimited: false,
+            options: { intervalMs: 50 },
+            speedReadBehavior: (actual, _requested, command) => {
+                if (!command.includes("0x20000100")) return { advanceMs: 0.5 };
+                if (actual === 2000) return { advanceMs: 8 };
+                // One slow measurement makes 4000 kHz miss the mean budget, despite a passing median.
+                if (actual === 4000 && ++readsAt4000 === 3) return { advanceMs: 9 };
+                return { advanceMs: actual === 4000 ? 3 : 0.5 };
+            }
+        });
+        try {
+            await f.session.start();
+            assert.strictEqual(f.session.stats().effectiveIntervalMs, 50);
+            assert.strictEqual(f.fake.adapterSpeedKhz, 2000);
+            const delays = [];
+            f.session._scheduleNext = (delay) => delays.push(delay);
+            await f.session._sampleTick(true);
+
+            f.session.setIntervalMs(5);
+            await f.session._sampleTick(true);
+            assert.strictEqual(f.fake.adapterSpeedKhz, 8000);
+            assert.strictEqual(f.session.stats().effectiveIntervalMs, 5);
+            assert.strictEqual(delays.at(-1), 4.5, "no 100 ms warm-up or old 20 Hz deadline");
+            assert.strictEqual(f.session.stats().actualHz, 0, "the 20 Hz points are out of the new rate window");
+
+            for (let frame = 0; frame < 220; frame++) {
+                f.addMonoMs(delays.at(-1));
+                await f.session._sampleTick(true);
+                assert.strictEqual(f.session.stats().actualHz, 200);
+            }
+        } finally {
+            await f.close();
+        }
+    });
+
+    await scenario("capped tuning times the watch plan and rechecks when the amount of data changes", async () => {
+        for (const scatterVersion of ["1", null]) {
+            const f = await createTunedSession({
+                initialKhz: 2000,
+                scatterVersion,
+                unlimited: false,
+                options: { intervalMs: 5 },
+                speedReadBehavior: (actual, _requested, cmd) => ({
+                    advanceMs: /0x20000100 32 64\b/.test(cmd) ? (actual === 2000 ? 7 : 3) : 2
+                })
+            });
+            try {
+                await f.session.start();
+                assert.strictEqual(f.fake.adapterSpeedKhz, 2000);
+                assert.ok(f.fake.commands.some((cmd) => /0x20000100 32 1\b/.test(cmd)));
+                assert.ok(!f.fake.commands.some((cmd) => cmd.startsWith("adapter speed ")));
+
+                f.session.setSamplingPlan({
+                    graphItems: [{ ...WATCH_ITEM[0], size: 256 }],
+                    graphIntervalMs: 5,
+                    ramSectionRanges: RAM_RANGES
+                });
+                await f.session._sampleTick();
+                assert.strictEqual(f.fake.adapterSpeedKhz, 4000);
+                assert.strictEqual(f.session.stats().adaptiveSpeed.reason, "target_reached");
+                assert.deepStrictEqual(
+                    f.session.stats().adaptiveSpeed.testedSteps.map((step) => step.requestedKhz),
+                    [4000]
+                );
+            } finally {
+                await f.close();
+            }
+        }
+    });
+
+    await scenario("a capped candidate must successfully read the watch plan before it is selected", async () => {
+        const f = await createTunedSession({
+            initialKhz: 2000,
+            unlimited: false,
+            options: { intervalMs: 5 },
+            speedReadBehavior: (actual, _requested, cmd) => ({
+                advanceMs: actual === 2000 ? 8 : 2,
+                fail: actual > 2000 && cmd.includes("0x20000100")
+            })
+        });
+        try {
+            await f.session.start();
+            const { adapterSpeedKhz, adaptiveSpeed } = f.session.stats();
+            assert.strictEqual(adapterSpeedKhz, 2000);
+            assert.strictEqual(f.fake.adapterSpeedKhz, 2000);
+            assert.strictEqual(adaptiveSpeed.reason, "stability_limit");
+            assert.deepStrictEqual(
+                adaptiveSpeed.testedSteps.map(({ requestedKhz, ok }) => [requestedKhz, ok]),
+                [
+                    [4000, false],
+                    [3000, false]
+                ]
+            );
+            assert.strictEqual(f.session.samplingEnabled, true);
         } finally {
             await f.close();
         }

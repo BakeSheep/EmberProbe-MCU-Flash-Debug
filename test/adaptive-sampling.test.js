@@ -2,7 +2,9 @@
 const assert = require("assert");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { compileReadBatches, MAX_BATCH_GROUPS, MAX_BATCH_BYTES } = require("../src/liveWatchReadPlan");
+const { FakeClock } = require("./helpers/fake-clock");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
+const { scenario } = require("./helpers/scenario");
 const { wait } = require("./helpers/wait");
 
 (async () => {
@@ -95,7 +97,11 @@ const { wait } = require("./helpers/wait");
         session._lastAdaptiveEvalAt = session.clock.monotonicMs() - 1500;
         session._evaluateAdaptiveSchedule();
         assert.ok(session.effectiveIntervalMs > 5, "Must back off when mean duration > 85%");
-        assert.strictEqual(session.effectiveIntervalMs, 10);
+        assert.strictEqual(
+            session.effectiveIntervalMs,
+            6,
+            "Backoff should reserve headroom without doubling the period"
+        );
         assert.strictEqual(session._consecutiveSuccesses, 0, "Success counter must reset on backoff");
 
         // In debug mode, threshold is 40%
@@ -110,6 +116,32 @@ const { wait } = require("./helpers/wait");
         debugSession._evaluateAdaptiveSchedule();
         assert.strictEqual(debugSession.effectiveIntervalMs, 15, "Debug mode must back off at 40% threshold");
     }
+
+    await scenario(
+        "standalone 200 Hz ignores isolated stalls and recovers directly from sustained read load",
+        async () => {
+            const clock = new FakeClock();
+            const session = new ManagedOpenOcdSession({ intervalMs: 5, clock: { monotonicMs: clock.now } }, {});
+            const record = (durations) => {
+                for (const duration of durations) session._recordCycle(duration, true, clock.now());
+            };
+            session._warmUp(0.5);
+            record(Array(31).fill(0.5));
+            await clock.advance(1000);
+            record([200]);
+            assert.strictEqual(session.effectiveIntervalMs, 5, "a single stall should not create a lower rate plateau");
+
+            record(Array(31).fill(8));
+            await clock.advance(1000);
+            record([8]);
+            assert.strictEqual(session.effectiveIntervalMs, 10, "sustained load still needs more time");
+
+            record(Array(31).fill(0.5));
+            await clock.advance(250);
+            record([0.5]);
+            assert.strictEqual(session.effectiveIntervalMs, 5, "recovery should go directly to the measured interval");
+        }
+    );
 
     // -------------------------------------------------------------
     // 3. Live Sampling: Single in-flight serial constraint & Batch reading
