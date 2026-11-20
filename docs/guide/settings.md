@@ -1,6 +1,6 @@
 # 设置与界面
 
-EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberprobe` 即可找到。共 30 项，按 5 个大类排列。设置键均以 `emberprobe.` 开头，下表省略这一前缀。
+在 VS Code 设置页搜索 `@ext:BakeSheep.emberprobe` 可查看 5 类插件设置。波形背景可在[绘图设置](waveform.md#波形图背景图标)中调整。下表中的设置键省略了 `emberprobe.` 前缀。
 
 | 分组 | 设置 | 用途 |
 | --- | --- | --- |
@@ -21,7 +21,6 @@ EmberProbe 的设置都在 VS Code 设置页中，搜索 `@ext:BakeSheep.emberpr
 | | `samplingAdapterSpeedKhz` | 独立采样的链路时钟 |
 | | `chartHistoryMaxMiB` | 波形历史的内存预算 |
 | | `samplingArchiveMaxMiB` | 采样归档的磁盘上限 |
-| | `chartBackgroundIcon.enabled` | 显示波形背景图标 |
 | RTT 日志 | `rtt.channels` | 读取的 up 通道及其模式、格式、编码、down 通道 |
 | | `rtt.autoStart` | 调试或采样开始时自动附加 RTT |
 | | `rtt.controlBlockAddress` | 控制块地址；未设置时自动定位 |

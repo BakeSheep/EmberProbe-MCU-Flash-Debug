@@ -24,8 +24,11 @@ const headingSlug = (heading) =>
         .replace(/\s/gu, "-");
 
 function anchorsOf(file) {
-    const headings = stripCode(fs.readFileSync(file, "utf8")).match(/^#{1,6} .+$/gmu) || [];
-    return new Set(headings.map((line) => headingSlug(line.replace(/^#+ /u, ""))));
+    const markdown = stripCode(fs.readFileSync(file, "utf8"));
+    const headings = markdown.match(/^#{1,6} .+$/gmu) || [];
+    const anchors = new Set(headings.map((line) => headingSlug(line.replace(/^#+ /u, ""))));
+    for (const [, name] of markdown.matchAll(/<a\s+name="([^"]+)"\s*><\/a>/gu)) anchors.add(name);
+    return anchors;
 }
 
 const isMarkdown = (file) => file.endsWith(".md");

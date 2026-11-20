@@ -15,7 +15,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Live variable write: adjusts writable variables with sliders, inputs, and step buttons, with automatic read-back verification. Aligned 32-bit writes can keep the target running; other widths or unaligned writes need a brief halt. Pause first for these writes during debugging.
 - Built-in debugging: breakpoints, stepping, stack frames, locals/globals/file statics/registers, expression assignment and memory access.
 - [Experimental external GDB server attach](docs/guide/flash-debug.md#外部-gdb-server): opt in through native VS Code settings and an explicit F5 configuration; existing debug entry points keep using OpenOCD.
-- Optionally installs Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
+- Use workspace Agent Skills or MCP to flash firmware, inspect variables and peripherals, debug, and manage project configuration.
 
 ## Requirements
 
@@ -29,40 +29,42 @@ Windows x64 offers bundled offline installation from the sidebar. Linux x64 auto
 
 The sidebar lists global/static variables of the selected ELF. Search by variable or member name, use + to watch and the pencil button to add a write card, then start sampling. Use an ELF matching the target firmware; refresh the list after rebuilding.
 
-- Type support: structs, unions, arrays, C++ classes, and common STL containers can be expanded. Data pointers support read-only expansion on demand; collapsing stops those reads. Same-named statics from different source files remain separate and accept qualified names such as `main.c::g_cfg`.
+- Type support: structs, unions, arrays, C++ classes, and common STL containers can be expanded. Data pointers can be expanded on demand. Collapsing stops reads of the expanded target. Same-named statics from different source files remain separate and accept qualified names such as `main.c::g_cfg`.
 - 64-bit precision: `u64/i64` charts use approximate Number values outside ±2^53; the sidebar, CSV, and Agent results prefer the exact decimal `valueText`.
 - CSV export: sampling automatically writes the complete history to a temporary archive, with no separate recording step. Export selected variables and time ranges at any time; internal data is deleted when the extension exits.
-- Live writes: the sidebar can add scalars with reliable DWARF types in ELF writable sections to a write list; writes are enabled only while sampling is active and are verified by reading the value back after each write.
+- Live writes: add supported variables and members to the write list. Members reached through pointers or containers need a valid sample before you add them. Writes require a writable connection, including during paused debugging, and EmberProbe reads the value back after each write.
 
 - Curve identity: colors and line styles are saved by full variable name in the workspace and shared across chart panels. Clicking a swatch only hides/shows the curve, including struct members, while retaining sampling and history. Right-click a variable card for display, style, and watch options.
 - Inspection: hover shows only a color bar and actual value. Clicking a curve uses the same snapshot freeze as the top toolbar; moving the pointer still inspects other positions and curves while frozen.
-- Visibility and axes: Show all / Hide all live under Current values; Auto Y lives in the top toolbar. Click a variable's color/name area to toggle visibility; × removes its watch.
+- Visibility and axes: Show all / Hide all live under Current values. **Fit Y** is on the right side of the timeline. Click a variable's color/name area to toggle visibility; × removes its watch.
 - Freeze: sampling and current values continue updating. Resume live releases the snapshot and follows new data. New variables appear after resuming; clearing history clears the snapshot.
 - CSV export always uses original archived samples, defaulting to the selected variables since sampling began or history was last cleared. Freezing does not change the export range. Clear History affects the current panel and debug session; other panels are unaffected. Archives are deleted when the extension exits, so export data you want to keep.
 - Layered sampling: every waveform watch, including hidden curves, follows the waveform target and is archived. Sidebar-only watches and write cards target a fixed 20 Hz without history. Global pause stops both consumers; probe throughput determines the actual rates.
 - The timeline and the All window cover the whole session since sampling started (or history was last cleared): recent data stays in memory and older data is read from the temporary disk archive. Memory pressure only shortens what stays in memory. A full archive or disk-write failure pauses sampling. Set `emberprobe.chartHistoryMaxMiB` and `emberprobe.samplingArchiveMaxMiB` to adjust capacities; see [live sampling](docs/guide/variables.md#实时采样与历史).
 
-- Chart navigation: wheel to zoom, left-drag to pan both axes, middle-drag to pan time only, and click a curve to freeze. Use Auto Y to restore automatic vertical scaling.
-- Sampling frequency: enter 0.1–200 Hz or choose a preset. The preset slider also offers [Max rate](docs/guide/variables.md#实时采样与历史), which applies to standalone sampling only.
+- Chart navigation: wheel to zoom, left-drag to pan both axes, middle-drag to pan time only, and click a curve to freeze. Use **Fit Y** to select one-time or automatic vertical fitting.
+- Sampling frequency: enter 0.1–200 Hz or choose a preset. The preset slider also offers [Max rate](docs/guide/variables.md#实时采样与历史), which applies to standalone sampling only. EmberProbe can automatically choose a sampling clock on supported standalone connections. To change it manually, stop sampling and turn off **Auto** under **Chart settings → Sampling clock**.
 
 ## Agent Skills
+
+Open **Agent Configuration** to enable workspace Agent access and install Skills for the current workspace. Under **MCP server**, you can configure clients such as Claude Code, Codex, Cursor, and WorkBuddy, and check local server availability. See [MCP setup](docs/guide/agent.md#mcp-服务器).
 
 - `mcu-flash`: detects and programs the newest ELF or independently verifies on-chip Flash, reporting the ELF SHA-256 during preflight and execution.
 - `mcu-variables`: reads live values, analyzes trends, exports chart history CSV, or safely writes scalar and composite-leaf variables through two-stage confirmation.
 - `mcu-chip-info`: reads chip info by the `identity`, `debug`, and `runtime` groups, or by specific fields.
 - `mcu-config`: reads or changes ELF, debugger, MCU, SVD, OpenOCD, and sampling parameters.
-- `mcu-cubemx`: updates an existing `.ioc` on Windows/Linux and generates code in an isolated copy, comparing changes and preserving user code before writing back; see [CubeMX generation](docs/guide/agent.md#cubemx-代码生成).
+- `mcu-cubemx`: prepares and generates code for CubeMX and CubeMX2 projects. Check required and installed firmware package versions in the sidebar, and review changes before updating your project. See [CubeMX generation](docs/guide/agent.md#cubemx-代码生成).
 - `mcu-fault-analyzer`: reads and decodes Cortex-M fault registers and symbolizes PC/LR with the current ELF.
 - `mcu-elf-analyze`: analyzes Flash/RAM usage, per-region capacities and percentages, section layout, and large symbols offline without occupying the debug probe; it prefers the matching `.map` and supports linker scripts.
-- `mcu-peripheral-debug`: parses the workspace SVD, reads and decodes paused peripheral registers/fields, and performs safe writes after a fresh one-time confirmation for every request.
+- `mcu-peripheral-debug`: reads peripheral registers and fields and adjusts writable values when the connection supports access. See [peripheral access](docs/guide/peripherals.md#什么时候可用).
 - `mcu-debug-control`: starts, stops, and controls debug sessions, including pause/continue/stepping/restart plus source-line and function breakpoints.
 - `mcu-debug-control`'s `inspect.js`: reads paused native task stacks, scopes and C++ class/STL objects with paging and stale-handle protection.
 - `mcu-rtos`: reads paused FreeRTOS task states, priorities and stack fill estimates, and inspects a selected task's stack and C/C++ locals. Structured snapshots currently require single-core little-endian Cortex-M ARM32.
 - `mcu-rtt`: starts or stops RTT logging, reads firmware output, and sends text or raw bytes after user approval.
 
-Sensitive operations require the Agent to present a plan and get confirmation in the conversation. Some operations can remember an explicitly selected permission for up to 24 hours; Flash verification and peripheral writes require confirmation each time. See [Agent permissions](docs/guide/agent.md#agent-权限).
+By default, sensitive operations require you to confirm the Agent's plan. Some operations can remember an explicitly selected permission for up to 24 hours; Flash verification and peripheral writes require confirmation each time. See [Agent permissions](docs/guide/agent.md#agent-权限).
 
-On Linux, select `STM32CubeMX` (without an extension) in the standalone installation and keep its bundled `jre/bin/java`. Discovery checks CubeMX updater records, PATH, and common installation directories. The installed version must match the `.ioc`; interactive firmware installation requires a graphical desktop. If debug tools are missing, EmberProbe refreshes PATH from the user’s login/interactive shell, with a timeout and manual directory selection as fallback.
+For standalone CubeMX on Linux, select `STM32CubeMX` (without an extension) in the installation and keep its bundled `jre/bin/java`. Discovery checks CubeMX updater records, PATH, and common installation directories. The installed version must match the `.ioc`; interactive firmware installation requires a graphical desktop. If debug tools are missing, EmberProbe refreshes PATH from the user’s login/interactive shell, with a timeout and manual directory selection as fallback.
 
 ## Development & Build
 

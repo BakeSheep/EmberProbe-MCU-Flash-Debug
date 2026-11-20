@@ -1,50 +1,25 @@
-# Peripheral access design
+# 外设寄存器访问设计
 
-User behavior is in [Peripheral registers](../guide/peripherals.md).
+用户操作见[外设寄存器](../guide/peripherals.md)。侧栏、Agent Skills 和 MCP 共用受 SVD 约束的外设服务。该服务支持读取及普通寄存器或字段写入。
 
-The sidebar, Agent skill and MCP tools use the same SVD-bound service. Reads and ordinary register/field writes
-work through an active sampling connection, during managed single-core OpenOCD debugging, and while debugging
-is paused. Without debugging, sampling must already be enabled and connected. Access itself never sends halt,
-reset or resume and never starts a temporary probe connection. Debug access does not require variable sampling.
+## 连接与访问宽度
 
-## Connection and widths
+- 独立运行时复用已连接的采样会话。没有可用会话时，返回 `PERIPHERAL_SAMPLING_REQUIRED`，仍可浏览 SVD 结构。
+- 托管单核 OpenOCD 调试运行时复用调试会话的连接。暂停时走所选会话的 DAP。多核共享组和外部 GDB 服务器仅支持暂停访问。调试访问不依赖变量采样。
+- 外设操作本身不发送暂停、复位或继续命令，也不临时打开探针连接。侧栏在连接可用时启用硬件控件，采样连接建立后刷新展开的寄存器。停止或替换连接使在途请求和缓存值失效。
+- 运行时的 Tcl 访问按 SVD 宽度执行对齐的 8、16 或 32 位传输，禁止扩大读取范围或执行较宽写入回退。64 位访问仅支持暂停 DAP。只写、读副作用、一次性写入及特殊写入语义均受约束。缺失 SVD 注解无法证明读取无副作用。
+- 自定义 OpenOCD 脚本自行决定初始化行为。运行时访问受目标和低功耗状态限制。
 
-Reuse an active sampling connection or the selected debug session's managed OpenOCD connection. Without either,
-reject register reads and writes with `PERIPHERAL_SAMPLING_REQUIRED`; SVD browsing remains available.
-Paused access retains the selected session's DAP path. Multicore groups and external GDB servers remain paused-only.
-The sidebar disables hardware controls until a supported connection is available and refreshes expanded registers
-when sampling connects. Stopping or replacing the sampling connection invalidates pending requests and cached values.
+## 授权、读回与并发
 
-Running Tcl access uses aligned 8/16/32-bit transfers at the SVD width, never widened RAM reads or write fallbacks.
-64-bit access remains paused DAP only. Read-side-effect, write-only, write-once and special modified-write
-restrictions remain in place. Missing SVD side-effect annotations cannot guarantee a harmless read.
+Agent 和 MCP 写入需要单次确认。计划绑定工作区、SVD、实际连接、采样连接代次、调试会话及停止代次（如有）、原值和请求的写入项。停止或替换采样连接，或探针、连接方式、目标及原值发生变化，均使原确认失效。实际写入前再次检查原值。位域读改写无法与固件、DMA 或外设硬件形成原子操作，CPU 暂停也不改变这一点。
 
-Custom OpenOCD scripts decide their own initialization behavior. Running access is not promised for every target or low-power state.
+结果包含访问模式和代次。写入保留 `previous`、`written`、`readBack` 和 `verified`，并通过 `verification` 标记 `matched`、`different` 或 `unavailable`。在独立采样或调试运行中，写入完成但回读不同或不可用时返回 `verified: false`。这个状态仅表示未验证。暂停 DAP 保持严格读回校验。超时或目标变化报告已经完成或尝试的项，以及无法确认的结果。禁止自动重发失败或未验证的写入。
 
-## Approval and readback
+所有写入和读回都完成后，调试状态或 SVD 才发生变化时，结果仍为成功，并附 `stateChangedAfterWrite`。运行态事务预算为 5 秒，在 OpenOCD 命令之间检查。单条命令另受 Tcl RPC 超时约束。
 
-Agent/MCP writes require single-use approval bound to the workspace, SVD, physical connection, selected debug
-session/stop (when present), sampling connection generation, original values and requested writes. Stopping or
-replacing the sampling connection invalidates approval, as does a changed probe/attachment/target or original value. Check original values again
-immediately before writing; cancel when they changed. Bitfield updates are not atomic against firmware, DMA or
-peripheral hardware, even when the CPU is halted.
+## 验证边界
 
-Responses add access mode and generation. Write results retain previous/written/readBack/verified and add
-verification: matched, different or unavailable. While running (including standalone), a completed write with
-different/unavailable readback reports verified: false; this does not prove the write did not happen. Paused DAP
-retains strict checking. Write timeouts/target changes report completed/attempted work and unknown outcomes.
-Never automatically resend a failed or unverified write. When the debug state or SVD changes only after every
-write and its readback finished, the result stays successful and adds stateChangedAfterWrite. Each running
-transaction has a 5 s budget checked between OpenOCD commands; each command is bounded by the Tcl RPC timeout.
+软件测试通过模拟的 OpenOCD 与 DAP 端点及真实 Worker RPC 覆盖三种访问状态、宽度、授权失效、读回差异、部分失败和过期代次。
 
-## Verification
-
-Software tests use fake OpenOCD/DAP endpoints and the real Worker RPC, covering all three states, widths,
-approval invalidation, readback differences, partial failures and stale generations. They do not establish board
-support. Hardware acceptance requires separate authorization and dedicated hardware; record the OS, probe,
-target script, firmware and SVD.
-
-2026-11-01: APM32F407 + J-Link/WinUSB passed all three read modes, running reads alongside sampling, and six
-explicitly approved same-value whole-register/field writes. This covers 32-bit transfers on that setup only.
-2026-11-03: the same setup passed again after the sidebar and write-outcome fixes, including running reads while
-sampling stayed active.
+有限实板结果只覆盖 Windows 下 APM32F407 与 J-Link/WinUSB 的 32 位寄存器访问，包括独立采样、调试运行和暂停 DAP。与采样并行的运行态读取及经单独授权的整寄存器和字段同值写入已验证。完整环境与历次结果见本地 `docs/records/validation/peripheral-board.md`。其他宽度、探针、系统和板卡按 [HIL 流程](../../test/hil/README.md)分别验收。

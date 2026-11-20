@@ -12,9 +12,9 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 - **固件烧录**：一键烧录 ELF 文件并运行，支持固件校验。
 - **芯片信息**：查看芯片身份、存储容量与运行状态。
 - **实时变量观测**：在目标运行时查看变量数值与波形，支持多图表、历史查看和 CSV 导出。
-- **实时变量写入**：在目标运行时调整变量值，并自动回读校验。
+- **实时变量写入**：在支持写入的连接中调整变量值，并自动回读校验。
 - **内置断点调试**：支持断点、单步、调用栈、变量与寄存器查看，以及内存读写。
-- **Agent 辅助开发**：提供可选安装的 Agent Skills，辅助完成固件开发、调试与分析。
+- **Agent 辅助开发**：通过工作区 Agent Skills 或 MCP，辅助完成固件开发、调试与分析。
 
 ## 环境要求
 
@@ -64,7 +64,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 | 配置项 | 说明 |
 | --- | --- |
 | SVD 文件 | 外设寄存器视图需要，可选择本地文件或 **下载官方 SVD**；下载前按提示确认来源许可 |
-| .ioc 路径 | 指定 CubeMX 工程；缺少固件包时可通过 **在 CubeMX 中安装** 补齐 |
+| .ioc / .ioc2 路径 | 选择 CubeMX 或 CubeMX2 工程。缺少所需固件包时，按侧栏提示补齐 |
 
 配置按工作区保存。更多目标与探针说明见 [OpenOCD 目标配置](docs/guide/getting-started.md#openocd-与目标配置)和[探针连接与选择](docs/guide/getting-started.md#探针连接)。
 
@@ -135,7 +135,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 ![实时读写：采样、复合变量、写入与变量筛选](docs/images/tutorial/05-live-read-write.gif)
 
-**写入列表**：添加可写变量后，先点击 **开始** 采样，再通过以下方式调整，写入后自动回读校验：
+**写入列表**：在查看列表中右键可写变量，选择 **加入写入列表**。指针或容器中的可写成员需要先采样到有效值。连接支持写入后，可通过以下方式调整数值，写入后自动回读校验：
 
 - 输入数值并按 Enter；
 - 使用 `−` / `+` 步进按钮；
@@ -150,7 +150,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 - 重新编译后点击 **↻** 刷新；
 - 同名静态变量按源文件区分，手动添加时可用 `main.c::g_cfg` 等限定名称。
 
-数据指针可按需只读展开，收起后停止读取。局部变量请在暂停调试时通过变量视图查看。
+数据指针可按需展开，收起后停止读取。局部变量请在暂停调试时通过变量视图查看。详见[从查看列表写入](docs/guide/variables.md#从查看列表写入)。
 
 **请使用与板上固件匹配的 ELF**，重新编译后确认已更新目标固件。Agent 会根据 EmberProbe 最近一次烧录记录提示差异，其他工具烧录不会更新该记录。
 
@@ -160,7 +160,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 ![波形图：采样、归一化、冻结、缩放与导出](docs/images/tutorial/06-waveform.gif)
 
-**工具栏**
+**波形控件**
 
 | 控件 | 作用 |
 | --- | --- |
@@ -170,8 +170,8 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 | 归一化 | 将不同量级的曲线缩放到相近高度，方便比较 |
 | 清空历史 | 清空本窗口当前会话的历史 |
 | 导出 CSV | 选择变量与时间范围，默认导出从开始采样或上次清空历史以来的原始采样点 |
-| 自动 Y 轴 | 恢复纵轴自动缩放 |
-| 绘图设置（齿轮） | **高频绘图优化**：高频抖动段画成半透明包络带，曲线只描走势（默认开启）；**指针仅展开部分采样**：指针目标与 STL 容器只读取已展开的部分 |
+| 纵轴适配 | 在时间轴右侧选择单次或自动适配 |
+| 绘图设置（齿轮） | **高频绘图优化**默认开启，用阴影显示波动范围。**指针仅展开部分采样**只读取指针目标与容器已展开的部分。停止采样后，可在 **自适应采样时钟** 中关闭 **自适应** 并手动设置时钟 |
 
 **图表操作**
 
@@ -187,7 +187,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 #### 6. 外设寄存器
 
-先在“其他配置”中选择或下载 **SVD 文件**，进入调试并**暂停芯片**后查看；目标运行时保留上次暂停时的数值。
+先在“其他配置”中选择或下载 **SVD 文件**。采样已连接或当前调试会话支持时，可展开 **外设寄存器** 查看数值。是否需要暂停目标取决于[当前访问方式](docs/guide/peripherals.md#什么时候可用)。
 
 | 操作 | 作用 |
 | --- | --- |
@@ -275,7 +275,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 | `emberprobe.probeSerial` | 指定探针序列号，优先于侧栏“已连接调试器”中的点选；一般直接在列表中点选即可 |
 | `emberprobe.transport` | 选择 `auto`（默认）、`swd` 或 `jtag` |
 | `emberprobe.adapterSpeedKhz` | 调试时钟，`0` 使用脚本默认值；连接不稳定时可降低 |
-| `emberprobe.samplingAdapterSpeedKhz` | 独立采样连接的调试时钟，`0` 沿用 `adapterSpeedKhz`；不影响调试与烧录 |
+| `emberprobe.samplingAdapterSpeedKhz` | 独立采样的时钟。保留默认时钟设置时，受支持的连接会自动选择稳定时钟。手动调整见[采样频率](docs/guide/variables.md#采样频率) |
 | `emberprobe.openocdPath` | 指定 OpenOCD 可执行文件 |
 | `emberprobe.tclPort` | 采样连接端口，默认自动分配，一般无需修改 |
 
@@ -303,19 +303,19 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动。
 
 #### 7. C++ 变量显示
 
-支持 C++ 类与常见 STL 容器的语义展开，默认隐藏编译器与标准库内部成员，每个变量可切换“显示原始成员”。指针显示目标名称，支持按需只读展开，见 [指针显示](docs/guide/variables.md#指针与-c-成员)。
+支持 C++ 类与常见 STL 容器的语义展开，默认隐藏编译器与标准库内部成员，每个变量可切换“显示原始成员”。指针显示目标名称，支持按需展开，见 [指针显示](docs/guide/variables.md#指针与-c-成员)。
 
 暂停调试时，`emberprobe.prettyPrintingMode` 可选 `builtin`（默认，内置显示）、`gdb`（加载 `emberprobe.prettyPrinterFiles` 指定的 Python 脚本）或 `raw`（原始成员）。
 
 #### 8. Agent Skills 与 CubeMX 代码生成
 
-在侧边栏 **Agent 配置** 卡片中打开 **Agent Skills** 开关，选择安装到当前项目、全局安装或卸载。安装后，兼容的 AI 编程助手可协助烧录、变量读写、调试与分析，能力列表见下方 [Agent Skills](#agent-skills)。
+在侧边栏 **Agent 配置** 中开启 **工作区 Agent 访问**。可用 **Agent Skills** 在当前工作区安装或移除技能。兼容的 AI 编程助手可协助烧录、变量读写、调试与分析，能力列表见下方 [Agent Skills](#agent-skills)。
 
-同一卡片的 **MCP 服务器** 区域列出各客户端（Claude Code、Codex、Cursor 等）的未安装、已安装、可升级状态，可直接安装、升级、移除或复制配置。配置只写入用户级文件，工程由 Agent 的 MCP roots 或工作目录决定，从工程目录启动客户端即可，多个工作区可同时使用。见 [MCP 说明](docs/guide/agent.md#mcp-服务器)。
+同一卡片的 **MCP 服务器** 区域列出 Claude Code、Codex、Cursor、WorkBuddy 等客户端的安装状态，可安装、升级、移除或复制配置，也可检查本地 MCP 服务器是否可用。配置可供多个工作区共用。见 [MCP 说明](docs/guide/agent.md#mcp-服务器)。
 
-烧录、变量/外设写入、CubeMX 生成等操作由 Agent 先展示计划，在对话中确认后执行。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 权限](docs/guide/agent.md#agent-权限)。
+烧录、变量或外设写入、CubeMX 生成等操作默认需要先确认 Agent 提供的计划。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 权限](docs/guide/agent.md#agent-权限)。
 
-CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在隔离副本中生成、比对，保留 `USER CODE` 后写回。见 [CubeMX 代码生成说明](docs/guide/agent.md#cubemx-代码生成)。
+支持 CubeMX 和 CubeMX2 工程。选定工程后，侧栏显示所需固件包与已安装版本。生成前可查看变更计划，确认后再写回工程。见 [CubeMX 代码生成说明](docs/guide/agent.md#cubemx-代码生成)。
 
 ### 四、实验性功能
 
@@ -335,7 +335,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 #### 3. STM32C5 支持
 
-内置 OpenOCD 包含 STM32C5 的 Flash 驱动与 `stm32c5x.cfg`（来自 ST 尚在上游评审中的补丁），`stm32c5` 工程自动选用。仅支持 Flash 擦写与读取，不含选项字节/RDP 命令，尚未经实板验证。见 [OpenOCD 目标配置](docs/guide/getting-started.md#openocd-与目标配置)。
+内置 OpenOCD 为 STM32C5 提供实验性的烧录与读取支持。已在 Windows 上使用 WCH-LinkW 验证 STM32C593 的烧录与校验。其他组合的兼容范围见 [OpenOCD 目标配置](docs/guide/getting-started.md#openocd-与目标配置)。
 
 ### 常见问题
 
@@ -343,9 +343,9 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 | --- | --- |
 | 变量类型显示为推测、成员无法展开、`optimized out` | 使用 Debug 预设重新构建，确认选中的是 Debug 目录下的 ELF，然后点击 ELF 全部变量的 **↻** |
 | 提示探针被占用 / 无法同时进行 | 同一探针同一时刻只能被一个 OpenOCD 使用：先停止实时采样或调试，或关闭 Ozone、CubeIDE 等其他占用探针的软件 |
-| J-Link `Failed to open device` | 按第一章第 4 节切换到 WinUSB 驱动，并确认没有其他软件占用 |
+| J-Link `Failed to open device` | 参照 [J-Link 配置](docs/guide/getting-started.md#j-link)检查 WinUSB 驱动，并确认没有其他软件占用 |
 | 读取芯片信息超时 / 目标电压异常 | 检查 SWD 接线、目标供电与 VTref；可在设置中降低 `emberprobe.adapterSpeedKhz` |
-| 外设寄存器无数值 | 需要配置 SVD，并在调试会话中暂停芯片 |
+| 外设寄存器无数值 | 确认已选择 SVD，并核对[当前连接是否支持外设访问](docs/guide/peripherals.md#什么时候可用) |
 | RTOS 任务为空 | 停在 `main` 时调度器尚未启动，继续运行后再暂停；确认使用 Debug 构建且内核符号未被裁剪 |
 | 调试启动超时 | 检查 GDB 是否能在终端正常启动，或在设置中指定 `emberprobe.gdbPath` |
 

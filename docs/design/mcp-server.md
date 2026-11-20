@@ -90,13 +90,13 @@ SDK 和自定义 profile 保持原状。条目使用 `@deepseek-ai/dsh-mcp-clien
 
 ## 工具
 
-MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cubemx`，不支持更改暴露范围。旧设置 `emberprobe.mcp.toolsets` 和环境变量 `EMBERPROBE_MCP_TOOLSETS` 不再生效。下表仅按功能分类：
+MCP 固定暴露 `core`、`debug` 和 `cubemx` 的全部工具和工作流提示。旧设置 `emberprobe.mcp.toolsets` 和环境变量 `EMBERPROBE_MCP_TOOLSETS` 已失效。完整清单以[工具定义](../../src/mcp/tools.js)和运行时的 `tools/list` 为准。
 
-| 工具集   | 工具                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core`   | `config_get` `config_set` `probe_list` `chip_read` `target_control` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_list` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `watch_list` `watch_remove` `sampling_status` `sampling_control` `rtt_status` `rtt_read` `rtt_control` `rtt_write` `peripherals_list` `peripherals_read` `peripherals_write` |
-| `debug`  | `debug_status` `debug_inspect` `debug_evaluate` `memory_read` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot`                                                                                                                                                                                                                                                             |
-| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_query` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel`                                                                                                                                                                                                                                                                                       |
+| 工具集 | 职责 |
+| --- | --- |
+| `core` | 工作区配置、探针与芯片、烧录、权限、变量与采样、RTT、外设 |
+| `debug` | 调试会话与执行控制、栈和变量检查、内存读取、断点、RTOS |
+| `cubemx` | 工具和工程检测、只读查询、候选计划、生成与一致性检查 |
 
 - 注解：`readOnlyHint` 由 `agent-client.js` 的 `READ_ONLY_METHODS`（可重试的只读方法）与 `OBSERVATION_METHODS`（不改变状态但可能访问硬件的方法）派生；`flash_program`、写入、CubeMX 生成与 `debug_control` 标记为 `destructiveHint`；所有工具 `openWorldHint: false`。
 - schema 手写在 `src/mcp/tools.js`，全部 `additionalProperties: false`；`probeSerial` 保持字符串原样传递。最终校验仍由 Bridge 完成。
@@ -108,7 +108,7 @@ MCP 固定暴露全部工具和工作流提示，包括 `core`、`debug` 和 `cu
 - `target_control` 不需要调试会话即可暂停、继续或复位目标，对应侧栏芯片卡片的按钮；需要先用 `chip_read` 在相同探针与目标上读取一次（否则 `CHIP_NOT_READ` / `CHIP_INFO_STALE`），调试、采样或烧录期间返回 `PROBE_BUSY`。动作已生效但随后的芯片信息刷新失败时，结果仍返回新的 `targetState` 并附 `refreshError`，不按失败处理。
 - `variables_list` 在扩展已加载的 ELF 符号表（`variables_read` 解析名称所用的同一份）中按名称、显示名或源文件做不区分大小写的子串搜索，分页返回地址、大小、DWARF 标量类型与 `composite` 标记；`nextStart` 存在时还有下一页。它对应 skill 的 `read.js --list`，但后者在本地解析工作区中最新的 ELF。
 - `watch_list` 返回侧栏观察列表与当前聚焦图表面板（`sampling_control start` 采样的范围）中保存的原始名称与显示名；`watch_remove` 接受原始名称或显示名，复合变量名会同时移除其成员（如 `sensor` 移除 `sensor.x`、`sensor[0]`），已记录的图表历史保留。
-- 以上新增工具目前只有 MCP 入口；对应的 skill 脚本参数尚未提供。
+- `probe_select` 接收用户指定的、由 `probe_list` 返回的准确设备 ID。Bridge 复用侧栏选择服务校验设备和占用状态，然后更新工作区探针记录。详见[探针选择设计](probe-selection.md#agent-与命令行)。
 
 ## 确认
 
@@ -136,24 +136,12 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 失败时 `isError: true`，`structuredContent` 与 skill 写到 stderr 的 `diagnostic` 同形（`{ ok: false, type: "diagnostic", operation, error: { code, category, likelyCause, retryable, suggestedActions, actions, details } }`），由同一个 `diagnosticForError` 生成。诊断表中与通道相关的片段写成占位符：skill 脚本渲染成原有的 CLI 写法（如 `mcu-debug-control --start`，输出不变），MCP 渲染成工具名（如 `debug_start`）；`actions: [{ method: "debug.start" }]` 是与通道无关的机器可读版本。
 
-## Prompts
+## 工作流提示
 
 服务器提供 `flash`、`fault_triage`、`variable_debug`、`rtos_inspect`、`rtt_logging`（`core` / `debug`）与 `cubemx_generate`（`cubemx`）六个 prompt，可选参数 `goal`。内容在调用时直接读取随扩展分发的 `skills/<name>/SKILL.md` 与 `agent-workflow.md` 的 “Failure handling” 段落，并附上脚本到 MCP 工具的对照表，唯一来源仍是 `skills/`；`test/mcp-prompts.test.js` 检查对照表中的脚本与工具都真实存在。各 `SKILL.md` 也注明：会话提供 EmberProbe MCP 工具时优先使用，脚本是回退方式。
 
 每次 Bridge 调用都会在输出面板 “EmberProbe Agent Bridge” 中记录通道（`skill` / `mcp` / `legacy`）、客户端、方法与结果码，不记录参数值。
 
-## 客户端实测状态
+## 验收边界
 
-以下行为需要在各客户端中实测后记录；本表不预设结果。实测流程、发给客户端的步骤和回报模板见 [MCP harness 实机验收](../development/mcp-harness-acceptance.md)：
-
-| 客户端                 | 连接                       | 工具列表与注解              | elicitation          | roots  | 实测记录                                                                                     |
-| ---------------------- | -------------------------- | --------------------------- | -------------------- | ------ | -------------------------------------------------------------------------------------------- |
-| VS Code Copilot        | provider                   | —                           | —                    | —      | 待实测                                                                                       |
-| Claude Code            | 原生 JSON / 可选 CLI       | 39 个工具；注解对模型不可见 | 未实测               | 未实测 | 2026-11-05 H750 只读通过；确认路径待实测 |
-| Codex                  | 原生 TOML / 可选 CLI       | 39 个工具；注解对模型不可见 | 未实测               | 未实测 | 2026-11-05 H750 只读通过；确认路径待实测 |
-| Gemini CLI             | 原生 JSON / 可选 CLI       | —                           | 按客户端能力选择     | —      | 配置与 stdio 回归由自动测试覆盖；客户端交互待实测                                            |
-| OpenCode               | 原生 local JSON/JSONC 写入 | 39 个工具；注解对模型不可见 | 未实测               | 未实测 | 2026-11-05 H750 只读通过；确认路径待实测 |
-| Cursor                 | 扩展 API / 安装链接        | —                           | —                    | —      | 待实测                                                                                       |
-| Antigravity            | 原生 JSON 写入             | —                           | 按客户端能力选择     | —      | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测                              |
-| DeepSeek Harness (DSH) | 原生 profile YAML 写入     | —                           | 未声明时使用聊天确认 | —      | 配置合并、文件事务及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持          |
-| WorkBuddy              | 原生 JSONC 写入            | —                           | —                    | —      | 配置与 stdio 检测由自动测试覆盖，客户端交互待实测                                           |
+自动测试验证配置更新、文件事务和 stdio 协议。客户端是否将工具注解和工作流提示交给模型、是否提供 elicitation、如何报告 roots，均需按实际客户端和版本分别验证。只读测试通过仅覆盖记录中的客户端、工作区与目标组合，写入及确认路径须单独验收。见 [MCP 客户端验收流程](../development/mcp-harness-acceptance.md)。

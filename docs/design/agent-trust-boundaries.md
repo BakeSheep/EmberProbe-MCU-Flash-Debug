@@ -1,130 +1,52 @@
-# Agent approval and local trust boundaries
+# Agent 授权与本地信任边界
 
-User behavior is in [Agent permissions](../guide/agent.md#agent-权限).
+用户操作见 [Agent 权限](../guide/agent.md#agent-权限)。本文说明扩展宿主、Agent、客户端与本地进程各自负责的检查。
 
-Agent Bridge calls require a trusted VS Code workspace. Sensitive operations are confirmed
-in the Agent conversation by default: the Agent shows the returned plan, waits for the human's answer,
-then resubmits its one-time confirmation ID. There is no second VS Code operation approval
-dialog. The Bridge checks plan identity and ID expiry/reuse; it does not independently
-attest that the Agent obtained a human answer. A returned ID alone never authorizes an
-Agent to execute.
+## 工作区信任与访问开关
 
-The sidebar now groups Agent Skills, MCP installation and **Allow all Agent operations** in a separate
-collapsible Agent Configuration card beside MCU Configuration. Full access is off by default and stored
-only in VS Code workspace state (`emberprobe.agentFullAccess`). Only a sidebar interaction can set it;
-there is no Bridge method or configuration field that lets an Agent grant it to itself. Enabling also
-opens the Agent channel. While active in a trusted workspace with Agent access enabled, supported
-operations report `mode: "full"` and skip the operation confirmation exchange. Disabling affects future
-authorizations and keeps ordinary Agent access enabled; it does not cancel an operation already running.
-The sidebar shows the new state only after the extension host has saved it, and a reopened page reads it from
-the host rather than a Webview cache.
-Hardware/identity guards, register side-effect restrictions, file boundaries and firmware mismatch
-checks stay in place. Anonymous probes still require one-time Flash and variable-write confirmation.
-Existing skill-content approval and MCP client trust settings remain independent.
+Agent Bridge 只在受信任且启用了 Agent 访问的工作区启动。`emberprobe.agentAccess` 保存在 VS Code 工作区状态。显式设为 `enabled` 时启用。未设置时，为兼容旧版，检测到已安装的工作区 Skills 也会启用。显式的 `disabled` 优先于已安装状态，直至重新安装工作区 Skills。旧版全局副本 `~/.agents/skills` 无法启动 Bridge，侧栏提供清理入口。
 
-Without full access, Flash verification and peripheral writes use one-time confirmation. Flash programming,
-variable writes and CubeMX can remember an explicitly requested chat choice for up to
-24 hours. Variable writes bind it to the ELF digest and connection, CubeMX to the
-project/tool identity. Flash programming binds it to the ELF path, target, probe identity,
-transport, adapter speed and OpenOCD executable but not to the image digest, so rebuilding
-the same path keeps the permission; every programming result still reports the SHA-256 that
-was written. Probes without a reliable serial and Flash verification never remember.
-`remember` requires a valid confirmation ID and must not be inferred from a request to
-perform the operation. Resetting permission clears the pending confirmations and remembered
-authorization. Old independent modal grant records are no longer consulted.
+侧栏的「Agent 配置」集中管理 Agent Skills、MCP 安装和「完全允许 Agent 操作」。完全访问默认关闭，保存在工作区状态 `emberprobe.agentFullAccess`。只有侧栏操作可修改此项，Bridge 和配置字段均不提供自授权入口。启用时同时开启 Agent 访问。侧栏以宿主完成保存后的状态为准，Webview 重开后由宿主重新提供状态。
 
-The MCP server maps the same confirmation responses to MCP elicitation when the client
-supports it: the form offers only the Bridge's `choices` plus `deny`, defaults to `deny`, and
-the confirmation ID stays inside the server. A form rendered by the client is closer to
-evidence of a human action than chat text, but the Bridge still does not authenticate it (a
-client can be configured to answer automatically), so plan binding and one-time use of IDs
-are unchanged. Clients without elicitation receive the plan and ID and must confirm in chat as
-skills do. The MCP server never chooses `remember` from the initial request and never accepts
-a confirmation on its own. The Bridge records each call's channel, client, method and result
-code (not parameter values) in the "EmberProbe Agent Bridge" output channel.
+在受信任且启用了 Agent 访问的工作区，适用操作返回 `mode: "full"` 并跳过逐次确认。关闭完全访问只影响后续授权，普通 Agent 访问继续可用，已在运行的操作继续执行。硬件和身份校验、寄存器副作用限制、文件边界和固件一致性检查仍生效。没有可靠序列号的探针仍受单次烧录和变量写入确认限制。Skills 内容审核与 MCP 客户端信任设置独立于该开关。
 
-EmberProbe records the digest of the last image it programmed in each workspace. Agent
-reads, samples and writes report `firmwareConsistency` (`match`, `mismatch` or `unknown`)
-against the configured ELF and add an `ELF_TARGET_MISMATCH` warning on mismatch; a
-remembered variable-write permission does not apply while the ELF differs. Programming by
-other tools is not observed, so `unknown` or a stale record is evidence, not proof.
-A built-in debugger launch updates the record too when it programs the ELF. The record is written only when
-the executable keeps the same size and modification time from before GDB reads it until it
-is hashed. A launch with custom `loadFiles`, or one where the ELF changed during the launch,
-clears the record, so it reports `unknown` instead of a stale match.
+## 逐次确认与工作区授权
 
-RTT status/read only project cached data. RTT start carries its Agent origin through the shared
-terminal service into the controller. Configured channel mode overrides write target RAM and therefore
-require a direct start from VS Code; an Agent start that would apply them is refused before probe
-acquisition. The Agent may read a user-started attachment. Channel and polling settings are frozen
-for the manual run, so later configuration edits cannot add writes during automatic reattachment.
-Mode intent is also bound to the verified connection, selected probe/target, ELF and control-block
-address; an identity change requires a new user start. This adds no Agent mode setter or implicit
-approval through workspace configuration.
+默认由 Agent 在会话中展示计划，等待用户明确答复，再提交绑定该计划的一次性确认 ID。扩展宿主校验计划身份、期限和是否使用过。Bridge 无法独立证明 Agent 已取得用户答复，收到 ID 本身不构成执行授权。扩展不会为同一操作再弹出 VS Code 确认框。
 
-RTT input (`rtt.write`) reaches firmware code that may act on it, so it is a sensitive operation like a
-variable write. Without full access the first call returns the exact bytes (text, line ending, size and
-SHA-256), the channel and the firmware identity, and a one-time ID bound to those bytes, the down channel,
-the buffer generation and the control-block address; a reattachment or any other byte needs a new plan.
-The 24-hour choice is bound to the channel, ELF path and digest, probe and target configuration; without a
-readable ELF digest only `once` is offered. Text the Agent sends is echoed in the user's RTT terminal with an
-`[Agent]` marker (control characters escaped); raw bytes are not echoed. A write that reached the socket
-reports `written: true`, which says nothing about what the firmware did.
+- Flash 校验和外设写入采用单次确认。Flash 校验可能临时暂停目标，且该操作的确认 ID 不能用于烧录。
+- 烧录、变量写入和 CubeMX 可记住用户明确选择的工作区授权，期限最长 24 小时。变量写入绑定 ELF 摘要和连接，CubeMX 绑定项目和工具身份。烧录绑定 ELF 路径、目标、探针身份、协议、适配器时钟和 OpenOCD 路径。同一路径重新构建可继续使用烧录授权，执行结果仍报告实际写入镜像的 SHA-256。探针缺少可靠序列号时不能记住相关授权。
+- `remember` 需要有效确认 ID 和用户明确选择。重置权限会清除待确认项及记住的授权，旧的独立弹窗授权记录已停用。
+- 确认后的执行会重新核对 ELF、连接、项目、SVD、寄存器原值和调试停止身份。外设计划列出 SVD 的实际路径、摘要、寄存器地址及写入语义。器件和厂商匹配只提供兼容性线索。
 
-Agent data breakpoints use the sidebar's watchpoint group in the built-in adapter, with the same paused and
-stale-state guards (session, stop epoch, inspection epoch, ELF generation) and the adapter's own snapshot
-generation check. They arm hardware watchpoints only and write no target memory, so, like other breakpoint
-changes, they need no confirmation.
+支持 elicitation 的 MCP 客户端通过表单完成确认。表单只提供 Bridge 返回的 `choices` 及 `deny`，默认拒绝，确认 ID 留在服务器内部。客户端可自动应答，Bridge 因此仍校验计划绑定和一次性约束。客户端不支持表单时，返回计划和 ID，在会话中完成同一授权流程。MCP 服务器不会从初始请求推断 `remember`，也不会自行接受确认。
 
-During extension shutdown the Agent Bridge stops first, calls already in flight are refused
-with `EXTENSION_SHUTTING_DOWN`, and no new probe operation can start, so an Agent call cannot
-start OpenOCD after sampling and debugging have been stopped.
+## 固件一致性
 
-Confirmation responses describe the actual bounded snapshot/plan. ELF, connection, project,
-SVD, register values and debug-stop identity are recomputed when the confirmed request
-arrives. Flash verification is included because it can temporarily halt the target, and its
-operation-bound ID cannot program Flash. Custom SVDs remain supported: their actual path,
-digest, register addresses and write semantics appear in peripheral approval. Device/vendor
-matching is compatibility evidence rather than proof of provenance.
+EmberProbe 记录工作区中最近一次由自身烧录的镜像摘要。Agent 读取、采样和写入返回 `firmwareConsistency`（`match`、`mismatch` 或 `unknown`），不匹配时附 `ELF_TARGET_MISMATCH`，且记住的变量写入权限不适用。外部工具烧录不可见，旧记录只反映 EmberProbe 观察到的操作。
 
-Installed skills are hashed before Bridge calls. A workspace copy that is only outdated or
-partial is reinstalled from the extension (as at startup) and the call is rejected with the
-retryable `SKILLS_UPDATED`, because the running script is still the old copy; the retry runs
-the new scripts. Modified workspace contents, the legacy global copy and copies outside both
-roots require a decision for the current content; another change invalidates approval. Skill scripts send
-`X-EmberProbe-Channel: skill` and `X-EmberProbe-Skill-Root` with each request, and the check
-applies to the copy that issued the call: the workspace copy, the legacy global copy, or a
-copy outside both roots, which always needs approval and shows its real path. Approval is
-cached per root and that root's fingerprint, so approving one copy never approves another.
-Requests without these headers (older scripts) keep the previous merged-view check. MCP
-requests (`X-EmberProbe-Channel: mcp`) skip the skill hash because the MCP server ships inside
-the extension. These headers locate and audit callers only; they are not authentication, and
-a process under the same OS account can forge them. This check does not sandbox arbitrary
-scripts already running under the user's OS account.
+内置调试器用默认 ELF 完成下载时也更新记录。只有 ELF 的大小和修改时间在 GDB 读取前到计算摘要时保持一致，才写入记录。启动使用自定义 `loadFiles` 或 ELF 在启动中变化时，清除记录以返回 `unknown`。
 
-The Bridge starts only in a trusted workspace whose Agent access is on: either the
-workspace-scoped `emberprobe.agentAccess` switch is `enabled`, or it is unset and workspace
-skills are installed (the previous behaviour). An explicit `disabled` wins over installed
-skills until the skills are reinstalled. The switch lives in VS Code workspace state, not in
-a workspace file. A legacy global copy under `~/.agents/skills` never starts the Bridge; the
-sidebar offers to remove it.
+## RTT 与调试控制
 
-OpenOCD Tcl has no authentication. Random loopback ports reduce accidental collisions; they
-do not authenticate clients. Automatic allocation failures now fail explicitly instead of
-using 6666. Explicit user port settings remain supported. File permissions for the Bridge
-descriptor reduce cross-account exposure; they do not isolate hostile processes under the
-same account. Scripts/tool roots configured in the process environment belong to this local
-trust boundary.
+RTT 状态与读取只返回宿主缓存。Agent 启动通过共享服务传递来源，配置含通道模式覆盖时，扩展在取得探针前拒绝 Agent 启动。模式覆盖会写目标 RAM，需要用户从 VS Code 启动。单次手动启动冻结通道和轮询设置，并绑定已核验连接、探针、目标、ELF 和控制块地址。自动重新挂载重用该意图，身份变化时需要用户重新启动。
 
-Each extension window registers itself in `<globalStorage>/agent-bridges/<instanceId>.json`
-(mode `0o600`). A running Bridge entry holds its loopback port and token; a stopped window
-keeps only a token-free marker so clients can report that Agent access is off. Clients find
-a Bridge by the longest workspace folder that contains their directory, refuse to choose
-when two windows tie (`BRIDGE_AMBIGUOUS`; select one with `EMBERPROBE_BRIDGE_INSTANCE`), and
-fall back to the token-free workspace pointer for older extensions. The registry lives in the
-same per-user storage as the earlier descriptor, so token exposure is unchanged.
+`rtt.write` 是敏感操作。未启用完全访问且没有适用授权时，确认计划描述文本、行尾、字节数、SHA-256、通道和固件身份。单次计划绑定精确字节、下行通道、缓冲代次和控制块地址，重新挂载或改变字节须重新规划。24 小时授权绑定通道、ELF 路径和摘要、探针及目标配置。无可读 ELF 摘要时仅提供 `once`。Agent 发送的文本在终端以 `[Agent]` 标识并转义控制字符，原始字节不回显。`written: true` 说明写入送达套接字，无法证明固件已处理。
 
-After physical disconnect, sampling and writes are disabled immediately. The UI reports
-closing until exit is confirmed. Unconfirmed exit retains the process and lease and permits
-a stop retry. Software mocks validate this ordering; actual USB removal and board support
-require separate hardware validation.
+Agent 数据断点使用内置适配器的侧栏监视点组。请求受调试会话、暂停代次、检查代次、ELF 代次和适配器快照校验约束。操作只启用硬件监视点，不写目标内存，沿用其他断点变更的授权规则。
+
+## Skills 副本与调用来源
+
+调用 Bridge 前核对已安装 Skills 的内容指纹。仅过时或安装不完整的工作区副本会自动重装，当前调用以可重试的 `SKILLS_UPDATED` 结束，以便下一次从新脚本启动。手动改动的工作区副本、旧版全局副本和根目录以外的副本均需要按当前内容审核。内容再次变化后，旧审核失效。
+
+脚本通过 `X-EmberProbe-Channel: skill` 和 `X-EmberProbe-Skill-Root` 标识实际副本。根目录之外的副本始终需要审核，并显示其真实路径。审核按根目录和指纹缓存。缺少标头的旧脚本沿用原有的合并视图检查。随扩展分发的 MCP 服务器声明 `X-EmberProbe-Channel: mcp`，跳过 Skills 指纹检查。标头只用于定位和审计调用者，同一 OS 账户下的进程可伪造这些标头。
+
+## 本地连接与退出
+
+每个扩展窗口登记到 `<globalStorage>/agent-bridges/<instanceId>.json`，文件权限为 `0o600`。Bridge 运行时登记端口和令牌，关闭时只保留无令牌标记。客户端按包含工作目录的最长工作区路径选择实例，同长度歧义返回 `BRIDGE_AMBIGUOUS`，可用 `EMBERPROBE_BRIDGE_INSTANCE` 指定。旧版本通过无令牌工作区指针回退。详见 [MCP 工作区定位](mcp-server.md#工作区定位)。
+
+OpenOCD 的 Tcl 端口没有认证。随机回环端口可减少冲突，自动分配失败会明确报错，显式端口仍受支持。Bridge 描述文件的权限用于减少跨账户暴露，无法隔离同一账户下的其他进程。进程环境配置的脚本和工具目录属于该信任边界。
+
+每次调用的来源通道、客户端、方法和结果码记录在「EmberProbe Agent Bridge」输出面板。日志不包含参数值。
+
+扩展关闭时先停止 Bridge，在途调用收到 `EXTENSION_SHUTTING_DOWN`，避免采样或调试停止后再启动新的探针操作。物理探针断开后立即禁用采样和写入。界面在确认 OpenOCD 退出前显示正在关闭，退出未确认时保留进程和租约，允许重试停止。软件测试验证这一顺序，实际 USB 断开与板卡兼容性须单独验收。

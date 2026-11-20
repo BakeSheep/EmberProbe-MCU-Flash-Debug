@@ -212,7 +212,7 @@ EmberProbe 在 Windows x64 和 Linux x64 上内置 OpenOCD，`emberprobe.openocd
 
 ### STM32C5（实验性）
 
-使用 `stm32c5x.cfg`，支持 C531/C532/C542、C551/C552/C562、C591/C593/C5A3。这一支持**尚未经过实板验证**。
+使用 `stm32c5x.cfg`，配置涵盖 C531/C532/C542、C551/C552/C562、C591/C593/C5A3。实板烧录和校验已在 Windows 上的 STM32C593 与 WCH-LinkW 组合中验证，其他型号和探针组合仍需单独验证。
 
 - 调试器脚本用 `interface/stlink.cfg`、J-Link 或 CMSIS-DAP。`interface/stlink-hla.cfg` 不支持此目标，会在启动前被拒绝。
 - 只能擦除、编程和读取 Flash，不能操作选项字节和 RDP。

@@ -1,49 +1,48 @@
-# Webview UI design
+# Webview 界面设计
 
-User behavior is in [Waveform panels](../guide/waveform.md#波形窗口) and [Webview wheel zoom](../guide/settings.md#页面滚轮缩放).
+用户操作见[波形窗口](../guide/waveform.md#波形窗口)和[页面滚轮缩放](../guide/settings.md#页面滚轮缩放)。编写插件界面文本时遵循[界面文案规范](../development/ui-copy.md)。
 
-## Waveform panel persistence
+## 波形面板的持久化
 
+每个波形窗口有一个显示编号和独立的稳定观察列表键。恢复窗口时重新分配显示编号，只改变标签。变量、曲线可见性、运行时展开状态以及采样和历史范围继续使用同一个存储身份。
 
-Each waveform has a display number and a separate stable watch-list storage key. Renumbering a restored tab never selects another chart's variables, curve visibility, runtime expansions, or sampling/history scope.
+VS Code 首次显示隐藏 Webview 时才恢复该页面。分配编号时同时检查已注册面板与 `window.tabGroups` 内的 EmberProbe 标签，包括尚未反序列化的标签。识别中英文标题，跳过其他扩展的标签。
 
-VS Code restores hidden Webviews when they first become visible. Panel allocation therefore checks both registered panels and all EmberProbe Webview tabs in `window.tabGroups`, including tabs that have not been deserialized. It recognizes Chinese and English titles, and ignores other extensions' tabs.
+渲染器在启动和状态变化时通过 `setState()` 保存 `panelId` 与 `watchKey`。`liveWatch.panelBindings` 在工作区状态中保留隐藏标签的存储身份。面板处理消息前等待绑定写入完成，扩展关闭时等待待写记录落盘。
 
-The renderer saves `panelId` and `watchKey` through `setState()` at startup and on subsequent UI changes. `liveWatch.panelBindings` in workspace state reserves the storage identities of hidden tabs across restarts. Registry writes finish before a panel handles its messages and are flushed during extension shutdown.
+### 兼容性
 
-### Compatibility
+- 保留 `mcu.watchList` 与 `mcu.watchList.N`。旧序列化状态有面板编号时按该编号恢复存储身份，缺少编号时尝试从本地化标题识别。
+- 显示编号冲突只改变标签。原存储身份已被另一标签占用时，恢复的面板创建以 UUID 为后缀的独立观察列表，复制变量、曲线可见性和运行时展开状态。两者的采样与历史独立。
+- 无可用身份且标题无法识别的旧标签打开独立空列表，旧工作区列表保留。
+- 关闭标签释放显示编号。已销毁 Webview 的迟到消息不能修改复用该编号的新面板。
 
+回归入口为 `test/chart-host.test.js` 的面板身份用例。Extension Host 测试使用真实的隐藏、未注册 Webview 标签验证编号分配。
 
-- Existing `mcu.watchList` and `mcu.watchList.N` keys remain valid. No workspace-wide migration is required.
-- Older serialized tabs with a panel number recover their original storage identity. Without a saved number, the localized tab title identifies the legacy chart.
-- A display-number conflict only changes the label. If the original storage identity is already owned by another tab, the restored chart gets an independent copy of its watches, curve visibility, and runtime expansions under a UUID-suffixed watch key. Samples and history remain independent.
-- A legacy tab with neither a usable saved identity nor a recognizable title opens with an empty independent list. Its old workspace lists are preserved.
-- Closing a tab releases its display number. Late messages from the disposed Webview cannot modify a replacement tab.
+## 曲线样式分配
 
-The regression cases are in the panel identity section of `test/chart-host.test.js`. The Extension Host smoke test also uses a real hidden, unregistered Webview tab to verify allocation against VS Code's tab inventory.
+自动样式在各面板内分配，恢复时重新计算。标量曲线首次启用时才分配样式，加载观察列表不会抢占样式。手动设置保存在工作区，在相应变量已启用的面板中保留其组合，包括之后隐藏的曲线。旧记录没有区分自动和手动设置，因此保持原样。
 
-## Curve style allocation
+## 视口与交互
 
-Automatic allocation is local to each panel and reconstructed on restore. Styles are allocated when a scalar curve is first enabled, never eagerly from saved watch lists. Manual overrides are saved in the workspace and reserve automatic combinations in panels where that variable's curve has been enabled, including while hidden. Existing saved styles are retained because older records do not distinguish manual and automatic selections.
+`chartViewportController.js` 管理画布手势、适配操作和每面板最多 20 个视口快照。快照保存 X/Y 范围、适配与跟随模式、精确整数轴原点及时间窗口，坐标转换和时钟由环境传入。250 ms 内的同次滚轮操作合并为一步撤销。原始值和归一化模式互换，或快照生命周期变化时，清理不兼容的撤销项。
 
-## Waveform viewports
+图表跟随的边缘容差为画布 8 像素所对应的时间，时间轴把手则用整个会话时间轴的 8 像素。指针移动小于 3 像素时保持视口不变，水平手势保持 Y 轴自动状态。页面缩放的组合键手势先于图表手势处理。
 
-`chartViewportController.js` owns canvas gestures, fit actions and a panel-local stack of at most 20 viewport snapshots. It receives the clock and coordinate conversion from its environment. Snapshots retain X/Y ranges, fit/follow modes, exact-integer axis origin and time-window selection; they never retain samples. Wheel bursts within 250 ms form one undo step. Raw/normalized mode switches and snapshot lifecycle changes clear incompatible undo entries.
+`viewport.visibleRange` 在视口边缘裁剪相邻连续线段，保留显式的 `null` 断点和原始采样点数。稀疏点之间仍可显示穿过视口的线段，视口外的极值不参与 Y 轴适配。裁剪前应用精确整数偏移。`chart.js` 根据已提交的可见统计和显示增益计算范围。居中模式的曲线占用率为 40%，适配模式保留 8% 数据边距。自动适配立即扩张，显著收缩延迟 1 秒，由绘图时钟驱动，等待期间无新样本也继续绘图。显式适配立即生效。归一化与原始值各自保存 Y 轴状态，归一化使用 0–1 范围。
 
-Plot following uses eight plot pixels of the visible time span as its edge tolerance. Timeline handles use eight timeline pixels of the full session instead. Pointer motion below three pixels does not mutate the viewport; horizontal gestures preserve automatic Y. Page zoom captures its own modifier gestures before chart handlers.
+时间轴右侧的纵轴适配按钮按鼠标左右键选择单次或自动，按短按或长按选择居中或全屏适配。注入的浏览器时钟控制 500 ms 长按门槛。长按触发后释放或随后兼容性点击不会重复操作。指针取消、捕获丢失、移动、失焦、页面隐藏或数据丢失都会取消长按。键盘和辅助技术点击执行单次居中，独立的向上箭头可用键盘打开四种操作的菜单。按压状态保存在当前面板的图表状态中。每种语言内部的四个菜单标签保持相同字符数。
 
-`viewport.visibleRange` clips continuous neighbouring segments at viewport edges, preserving explicit null gaps and the raw sample count. This prevents empty charts between sparse samples and excludes offscreen extremes from Y fitting. Exact integer offsets are applied before clipping. `chart.js` fits committed display statistics, including display gain, with either 40% centered occupancy or the existing 8% data padding. Automatic fitting expands immediately and delays substantial contraction for one second using the frame clock; explicit fits apply immediately. Pending contraction keeps drawing without requiring new samples. Original and normalized Y state remain separate, and normalized fitting uses its 0–1 scale.
+软件回归使用 `test/chart-webview.test.js` 的模拟历史和注入时钟。
 
-Regression coverage is in `test/chart-webview.test.js`; simulated histories and injected clocks require no probe.
+## 页面缩放
 
-The timeline's right-hand split button replaces the separate Auto Y toggle. The main surface maps left/right to one-shot/automatic and short/long to centered/filled fitting. An injected browser clock schedules the 500 ms threshold; a fired hold cannot emit a second action on release or the following compatibility click. Pointer cancellation, capture loss, movement, window blur, hidden documents and lost display data cancel pending holds. Keyboard/assistive clicks center once, and a separate upward arrow keeps all four actions keyboard-accessible in a menu anchored above the timeline. Press state lives on the panel's chart state. Chinese and English option labels have equal character counts within each language.
+`src/webview/pageZoom.js` 管理共享缩放状态及视口、布局坐标换算。宿主通过共享消息路由提供并广播设置，页面获得焦点时重新请求。波形命中检测、面板大小调整、弹层定位、卡片排序和导出区间选择共用坐标换算。画布同步调整绘图分辨率，CSS 变量和容器查询按缩放后的有效宽度排版。
 
-## Page zoom
+回归入口为 `test/webview-zoom.test.js` 和相关 Webview 布局测试。浏览器原型检查使用模拟样本。
 
-`src/webview/pageZoom.js` owns shared zoom state and conversion between viewport and layout coordinates. The host returns settings through the shared message routes and broadcasts configuration changes; a focused page requests the current setting again. Waveform hit testing, panel resizing, popup placement, card reordering and export selection use the same coordinate conversions. The waveform canvas also adjusts its backing resolution for page zoom. Viewport CSS variables and container queries keep the layout inside the page and responsive to its effective width.
+## 背景图标
 
-Software validation uses `test/webview-zoom.test.js` and the existing Webview/layout tests. Browser mockup checks use simulated samples and do not establish hardware behavior.
+绘图设置的背景开关和图标由扩展的全局状态保存，并同步到当前窗口的所有波形面板。其他窗口在获得焦点时读取全局状态。导入使用宿主文件选择框，由发起请求的波形面板处理图像。
 
-## Background icon
-
-Only the cropped alpha mask, at most 512 pixels on its longest side, is stored; transparent margins are trimmed first. Background removal treats only regions connected to the image boundary as background.
+只保存裁去透明边距后的透明度蒙版，最长边不超过 512 像素。移除背景时只处理与图像边缘连通的区域。

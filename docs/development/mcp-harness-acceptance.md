@@ -78,7 +78,7 @@ Bridge 输出面板每次调用一行，格式为 `<时间> mcp <客户端>/<版
 Agent 虚报时整轮记为未验证，不采用其余自述结果，只保留能被日志证实的部分。“未执行”不算通过。
 “失败：模型”只对记录的模型版本成立，更换模型后要重测。
 
-把有复用价值的结果按日期与客户端追加到 本地 `docs/records/validation/mcp-harness.md`，再回填 [MCP 服务器设计](../design/mcp-server.md#客户端实测状态)的“客户端实测状态”表。
+把有复用价值的结果按日期与客户端追加到本地 `docs/records/validation/mcp-harness.md`。记录客户端版本、连接方式、观察到的工具与能力、通过的步骤和未覆盖的边界。通用验证边界见 [MCP 服务器设计](../design/mcp-server.md#验收边界)。
 
 ---
 

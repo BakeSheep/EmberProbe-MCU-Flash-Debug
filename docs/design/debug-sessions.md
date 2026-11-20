@@ -62,9 +62,9 @@ _ep_rtos_target configure -rtos <name>
 
 ### 任务与线程绑定
 
-开启感知后，适配器维护一个"GDB 真正确认过"的任务 ID 集合：attach 后由 `-thread-info` 播种，之后由 `=thread-created` / `=thread-exited` 维护。它绝不上报未确认的 ID——没有已确认任务时，`stopped` 事件直接不带 `threadId`，由 VS Code 依据任务列表刷新调用栈。因此在调度器建立任务之前、或刚复位之后，看到的是一个已确认线程，而不是一组臆造的 ID。
+开启感知后，适配器维护由 GDB 确认的任务 ID 集合。Attach 后使用 `-thread-info` 初始化，之后根据 `=thread-created` 和 `=thread-exited` 更新。没有已确认的任务时，`stopped` 事件省略 `threadId`，由 VS Code 查询任务列表并刷新调用栈。
 
-栈帧、局部变量与表达式求值都绑定到所属任务与栈帧（`-var-create --thread N --frame M`），`continue` / `next` / `stepIn` / `stepOut` 则钉住被请求的任务（`-exec-next --thread N`）。因此浏览另一个任务的栈不会导致随后的单步作用在你正在看的那个任务上。请求一个已退出的任务会返回 `DEBUG_TASK_EXITED`，而不是去单步别的任务；ID 非法则返回 `DEBUG_THREAD_INVALID`。Watch／悬停继续使用表达式；原生调试控制台接受 `p counter`、`thread 2`、`frame 1` 等 GDB CLI 命令，无栈帧参数时保留当前 GDB 上下文。命令使旧检查句柄和 RTOS 快照失效，执行期间阻止后台检查、写入和会话切换，完成后按真实运行／暂停状态刷新。详见上文 GDB 控制台一节。
+栈帧、局部变量与表达式求值都绑定到所属任务与栈帧（`-var-create --thread N --frame M`），`continue` / `next` / `stepIn` / `stepOut` 则绑定请求指定的任务（`-exec-next --thread N`）。因此浏览另一个任务的栈不会导致随后的单步作用在你正在看的那个任务上。请求一个已退出的任务会返回 `DEBUG_TASK_EXITED`，而不是去单步别的任务；ID 非法则返回 `DEBUG_THREAD_INVALID`。Watch／悬停继续使用表达式；原生调试控制台接受 `p counter`、`thread 2`、`frame 1` 等 GDB CLI 命令，无栈帧参数时保留当前 GDB 上下文。命令使旧检查句柄和 RTOS 快照失效，执行期间阻止后台检查、写入和会话切换，完成后按真实运行／暂停状态刷新。详见上文 GDB 控制台一节。
 
 侧栏与 Agent 的调试控制在操作已暂停的 RTOS 会话前，会用实时任务列表校准缓存的任务 ID，并优先选择真正停下的那个任务。非 RTOS 会话保持原有的零往返路径。
 

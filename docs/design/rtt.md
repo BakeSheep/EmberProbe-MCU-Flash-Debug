@@ -12,17 +12,17 @@ EmberProbe 用 OpenOCD 内建的 `rtt` 命令读取 SEGGER RTT，J-Link 和 CMSI
 | 目标描述符   | `src/rttTarget.js`                                      | 验证小端 ARM32 控制块，采样环占用，单次 Flags 写入和读回    |
 | 会话控制     | `src/rttControl.js`，`ManagedOpenOcdSession.rttControl` | 在独占锁下发送 `rtt` 命令及有界描述符事务                   |
 | 编排         | `src/services/rttController.js`                         | 宿主选择、跟随、租约、退避重试、停止顺序                    |
-| 终端与日志   | `src/services/rttTerminalService.js`、`rttLogWriter.js` | 通道回滚缓存、down 输入、时间戳、日志轮转、侧栏状态         |
-| Agent        | `rtt.*` 路由、`rtt_*` MCP 工具、`skills/mcu-rtt`        | 状态、游标读取、启动和停止                                  |
+| 终端与日志   | `src/services/rttTerminalService.js`、`rttLogWriter.js` | 通道历史缓存、down 输入、时间戳、日志轮转、侧栏状态         |
+| Agent        | `src/services/rttAgentService.js`、`rtt.*` 路由、MCP 工具与 `skills/mcu-rtt` | 状态、游标读取、启动、停止与经授权的输入 |
 
 ## 不变量
 
 1. **一个探针只有一个 OpenOCD。** RTT 挂在当前持有探针的会话上：调试托管 server 优先，其次实时观察，都没有时以 `rtt` 操作取得租约，起一个自有会话。
 2. **自有会话不对外共享。** Agent 读取、Agent 烧录预检和芯片信息会让它先退出，结束后恢复。后台目标扫描不抢占，遇到 `rtt` 租约时按探针繁忙处理。烧录前 RTT 断开，烧录后重新解析 ELF 地址。
-3. **Tcl 连接不承载 RTT 数据。** `tclTransport` 是单套接字 FIFO，超时会中止整条连接。它只发控制命令，调试模式下经 `sendChecked` 走私有结果文件，不广播给 GDB。数据走 `rtt server` 的 TCP 端口，由扩展主机直连 `127.0.0.1`，不经过采样 Worker。
+3. **Tcl 连接只承载控制命令。** `tclTransport` 是单套接字 FIFO，超时会中止整条连接。托管调试的 `sendChecked` 在无回显自测通过后直接返回响应，否则使用私有结果文件，避免向 GDB 广播控制响应。RTT 数据走 `rtt server` 的 TCP 端口，由扩展主机直连 `127.0.0.1`，不经过采样 Worker。自测与回退见[采样链路设计](sampling-pipeline.md#tcl-响应与合并读取)。
 4. **`rttControl` 需要四处配合。** 会话方法、`SamplingSession` 代理、Worker 白名单和 `OpenOcdDebugController` 透传，与 `peripheralTransaction` 相同。
 5. **只支持单核。** 多核共享调试组关闭了运行时 Tcl（`capabilities.runtimeRead === false`），返回 `RTT_MULTICORE_UNSUPPORTED`。外部 GDB 模式没有 Tcl 通道，不可用。
-6. **时间来自注入的时钟。** 重试、结算间隔和时间戳都由 `FakeClock` 驱动。
+6. **时间来自注入的时钟。** 重试、速率统计和时间戳在生产环境中默认使用 `SYSTEM_CLOCK`，测试用 `FakeClock` 控制时间。
 
 ## 控制块定位
 
@@ -46,7 +46,7 @@ OpenOCD 一次轮询每个通道最多读 1024 B，所以吞吐上限由轮询�
 
 `rtt.channels` 支持整数或 `{ index, mode? }`，mode 可为 skip/trim/block，省略时由固件控制。规范化拒绝重复编号和未知字段。覆盖要求用户从 VS Code 启动、当前写连接可验证，启动意图绑定连接、选择的探针/目标、ELF 和控制块地址。先等指定覆盖通道初始化及 TCP 接收连接就绪，再写模式；未初始化有界退避，不能默默跳过覆盖。
 
-Flags 只改低两位，写前复核描述符身份和旧值，单次自然宽度写后读回。未知结果或部分成功报告具体状态，不自动重发或回滚。后续固件修改 Flags 只更新实际模式和不一致状态，不循环强制覆盖；停止 RTT 不恢复原 Flags，遗留 block 可能堵住固件。
+Flags 只改低两位。写前复核描述符身份和旧值，按自然宽度执行单次写入并回读。结果未知或部分成功时报告具体状态，禁止自动重发或回滚。固件后续修改 Flags 时只更新实际模式和不一致状态。停止 RTT 后，已设置的阻塞模式仍生效，缓冲区满时固件写入可能阻塞。
 
 ## 字节与损失语义
 
@@ -96,6 +96,10 @@ down 输入经通道的 RTT TCP 端口写入。OpenOCD 接收不代表固件已�
 
 ## Agent 边界
 
-Agent 只有 `rtt.status`、`rtt.read`、`rtt.start`、`rtt.stop`，没有 down 通道写入：向目标发送输入属于敏感操作，首版不开放，由测试固定。`rtt.read` 只读扩展主机的缓冲，不访问探针，`rtt.status` 只投影缓存的速率与目标遥测，不暴露本地端口。`rtt.start` 与侧栏共享服务路径，但显式携带 agent 来源；存在 mode 覆盖时，在取得探针前以 `RTT_MODE_REQUIRES_UI_START` 拒绝，要求用户从 VS Code 启动。已经由用户启动的 RTT 可继续被 Agent 读取。
+Agent 可查询状态、读取输出、启停 RTT，也可通过 `rtt.write` 向现有连接的 down 通道发送输入。`rtt.read` 只读取扩展宿主的缓冲，不访问探针。`rtt.status` 只返回缓存的速率与目标遥测，不暴露本地端口。
+
+`rtt.start` 与侧栏共享服务路径，并明确传递 Agent 来源。配置含模式覆盖时，Agent 启动在取得探针前返回 `RTT_MODE_REQUIRES_UI_START`。用户可从 VS Code 启动，Agent 随后可读取输出。通道模式覆盖与输入写入分别授权。
+
+`rtt.write` 的计划绑定精确输入、通道、缓冲代次和控制块地址。扩展宿主按现有授权规则验证后才发送，已送入套接字的结果不能证明固件已处理。确认和工作区授权边界见[Agent 信任边界](agent-trust-boundaries.md#rtt-与调试控制)。
 
 文本读取时，末尾不完整的字符留到下一次读取，`nextCursor` 指向它的第一个字节。通道配置了其他编码时按该编码解码，并返回 `textEncoding`。缓冲按字节上限丢弃旧数据（`droppedBytes`），不反压目标；块模式通道靠扩展主机持续读取来避免阻塞。RTT 输出是固件数据，skill 要求 Agent 不把它当作指令。

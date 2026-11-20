@@ -6,53 +6,63 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
-### MCP
+### 采样与波形 / Sampling and waveforms
 
-- 支持在侧栏安装、升级和移除 WorkBuddy 的 EmberProbe MCP 配置。新增连通性检测，可验证本地 MCP 服务器启动和工具列表。
-- Install, upgrade, and remove the EmberProbe MCP configuration for WorkBuddy from the sidebar. Test the local MCP server's startup and tool listing on demand.
+- 独立 Cortex-M SWD 采样可在启动后自动验证并选择稳定的链路时钟，运行中遇到读取错误时可降速。设有帧率上限时优先选用能满足目标的较低时钟。绘图设置以 MHz 显示当前时钟，停止采样后可切换自适应或手动设置 1–20 MHz。两项时钟设置 `emberprobe.samplingAdapterSpeedKhz` 和 `emberprobe.adapterSpeedKhz` 均为 `0` 时启用自动选频。
+- Standalone Cortex-M SWD sampling can tune the adapter clock at startup and step down after read errors. With a frame-rate cap, it favors lower clocks that meet the target. Waveform settings show the clock in MHz and let you switch to Auto or set 1–20 MHz manually while stopped. Automatic tuning applies when both `emberprobe.samplingAdapterSpeedKhz` and `emberprobe.adapterSpeedKhz` are `0`.
+
+- Agent 在波形窗口关闭时启动持续采样，也会按默认波形窗口的查看列表记录。稍后打开窗口即可查看曲线并导出 CSV。归档已满时，清空某个窗口的历史可回收其占用的空间，保留其他窗口的历史和冻结快照。
+- Agent-started continuous sampling records the default waveform watch list even with the window closed. Open it later to view traces or export CSV. When the archive fills up, clearing an individual chart can reclaim its space while preserving other charts and frozen snapshots.
+
+- 自动纵轴平滑跟随，纵轴按钮显示当前模式。冻结或停止采样时保留坐标范围，仍可缩放和拖动。放大后时间刻度显示到毫秒，绘图点数反映当前视口。
+- Automatic Y-axis tracking is smoother, and the axis control shows the current mode. Freezing or stopping keeps the current axis ranges available for pan and zoom. Close zoom levels show millisecond ticks, and the point count reflects the current viewport.
+
+- 绘图设置可直接导入波形背景 PNG 或切换显示，沿用已保存的图片和显示偏好。CSV 导出时间轴使用历史数据的实际起止时间，切换变量勾选时保留所选时间范围。
+- Import a background PNG and toggle its visibility in waveform settings. Existing images and visibility preferences carry over. The CSV export timeline uses the recorded time bounds and keeps the selected range when variable selections change.
+
+- scatter 采样只合并最多 4 字节的 RAM 间隙，减少无效传输。Agent 有限采样超过目标间隔时立即继续下一次读取。超时诊断包含请求进度和 OpenOCD 日志，有限采样报告已完成点数，持续采样可查询最近断开原因（`sampling.status.lastDisconnect`）。
+- Scatter sampling coalesces RAM gaps of up to 4 bytes to reduce unnecessary transfers. Agent finite sampling continues immediately when a read exceeds the interval. Timeout diagnostics include request progress and OpenOCD logs. Finite captures report completed samples, and continuous sampling exposes the last disconnect via `sampling.status.lastDisconnect`.
+
+### 变量与调试 / Variables and debugging
+
+- 侧栏和 Agent 支持写入指针所指对象、链表节点和受支持容器的可写标量成员。写入前复核目标，写入后回读。侧栏动态卡片绑定添加时的地址和类型，绑定变化或采样失效时禁用卡片并取消待提交值。
+- The sidebar and Agent can write mutable scalar members reached through pointers, linked lists or supported containers. Writes recheck the target and verify it by reading back. Dynamic sidebar cards retain the address and type sampled when added. Binding changes or stale samples disable editing and cancel pending values.
+
+- 可从 ELF 列表单独添加 `std::variant` 的活动值进行查看，后续采样按当前成员解释。侧栏写入反馈区分未写入、已写入但尚未验证，以及回读验证后会话变化。
+- Add a standalone watch for the active value of a `std::variant` from the ELF list. Later samples follow the active member. Sidebar feedback distinguishes skipped writes, writes still awaiting verification, and session changes after a verified write.
+
+- 侧栏数据断点菜单按值变化、读取和访问三种触发方式显示勾选状态及条件编辑入口。取消勾选会禁用断点并保留条件。
+- The sidebar data breakpoint menu shows a checkbox and condition editor for each trigger type: value change, read and access. Unchecking a trigger disables its breakpoint and preserves the condition.
+
+- 首次启动或附加调试时即可将自动发现的 SVD 文件传给外部外设查看器。重复发现时复用已校验文件的元数据。
+- Pass an automatically discovered SVD file to external Peripheral Viewers on the first debug launch or attach. Reuse validated file metadata on subsequent discovery runs.
+
+### Agent 与 MCP / Agent and MCP
+
+- 新增 MCP `probe_select`、Agent Bridge `probe.select` 和 `mcu-config --select-probe`。Agent 可按用户选择切换已连接的探针，工作区侧栏同步更新，后续会话使用新选择。
+- Add MCP `probe_select`, Agent Bridge `probe.select` and `mcu-config --select-probe`. Agents can switch to the connected probe the user selects. The sidebar reflects the selection, which applies to future sessions in the workspace.
+
+- 侧栏支持安装、升级和移除 WorkBuddy 的 EmberProbe MCP 配置。MCP 连通性检测可检查本地服务器启动情况和工具列表。
+- Install, upgrade and remove the EmberProbe MCP configuration for WorkBuddy from the sidebar. The MCP connectivity check verifies local server startup and tool discovery.
 
 ### CubeMX
 
-- CubeMX2 的侧栏固件包检查覆盖工程声明的 pack、所需版本与已安装版本，适用于 C5 及后续系列；缺包时可打开 CubeMX2 管理并重新检查。传统 CubeMX 同样明确显示版本不匹配，补装工程要求的版本。
-- Show CubeMX2 project pack requirements and installed versions in the sidebar across C5 and future families, with actions to open CubeMX2 and refresh. Legacy CubeMX also distinguishes version mismatches and requests the project's required version.
+- CubeMX2 在侧栏列出 `.ioc2` 工程声明的固件包、所需版本和已安装版本。缺包时可打开 CubeMX2，在 Pack Manager 中补装后返回侧栏重新检查。传统 CubeMX 也会提示版本不匹配，并请求安装工程指定版本。
+- The sidebar shows the firmware packs declared by a CubeMX2 `.ioc2` project along with required and installed versions. Open CubeMX2 to install missing packages in Pack Manager, then recheck from the sidebar. Legacy CubeMX also reports mismatches and requests the version specified by the project.
 
-### 采样 / Sampling
+### 烧录与探针诊断 / Flashing and probe diagnostics
 
-- scatter 读取将 RAM 间隙合并范围从 32 字节收紧到 4 字节，减少分散变量的无效扩读；普通读取保留原策略，scatter 能力变化时重新选择缓存计划。
-- Limit RAM gap coalescing to 4 bytes for scatter reads to avoid unnecessary transfers for scattered variables. Keep the ordinary-read policy and select the matching cached plan when scatter capability changes.
+- Agent 烧录和校验使用扩展统一解析的 OpenOCD。Windows/Linux x64 默认使用内置版本及配套脚本，显式配置的外部路径优先。
+- Agent flashing and verification use the extension's OpenOCD resolution. Windows/Linux x64 default to the bundled executable and scripts, with explicitly configured external paths taking precedence.
 
-- Agent 有限采样在读取已超过目标间隔时不再额外等待零毫秒定时器；间隔与 Tcl RPC 超时改用单调时钟。超时诊断保留请求类别、耗时、响应进度与有界 OpenOCD 日志；有限采样失败保留已完成点数，持续采样停止后可通过 `sampling.status.lastDisconnect` 查询最近断开原因。保留超时后丢弃连接、不自动重试的行为。
-- Remove the extra zero-delay timer when an Agent sample read already exceeds its interval, and use monotonic clocks for intervals and Tcl RPC deadlines. Preserve request timing, response progress, bounded OpenOCD logs and completed sample counts in failure diagnostics; expose the last persistent-sampling disconnect through `sampling.status.lastDisconnect`. Keep discarding timed-out connections without automatic retries.
+- 修复 STM32C5 烧录时 Flash loader 的初始化错误，更新 Windows/Linux 内置 OpenOCD 的目标脚本。遇到 Tcl 脚本异常时，保留首个错误并报告 `OPENOCD_SCRIPT_ERROR`。
+- Fix Flash loader initialization when programming STM32C5 and update the target scripts in bundled Windows/Linux OpenOCD. Report the first Tcl script error as `OPENOCD_SCRIPT_ERROR`.
 
-- OpenOCD 的 scatter 读取失败回复会结束本轮读取；即使诊断日志晚于 Tcl 回复，也不会在本轮发起普通读取。收到明确的 CMSIS-DAP 通信错误日志时结束会话并报告 `PROBE_COMMUNICATION_FAILED`。探针初始化时正常的 USB 清空超时不会触发断连。
-- End the current read when OpenOCD reports a scatter memory read failure, even if the diagnostic log arrives after the Tcl reply. An explicit CMSIS-DAP communication failure log closes the session with `PROBE_COMMUNICATION_FAILED`. Expected USB drain timeouts during initialization do not trigger a disconnect.
+- CMSIS-DAP HID 和命令通信故障会报告 `PROBE_COMMUNICATION_FAILED`。明确的通信故障会结束采样会话，scatter 读取失败也会结束当次读取。初始化期间正常的 USB 清空超时仍可继续。
+- Report CMSIS-DAP HID and command failures as `PROBE_COMMUNICATION_FAILED`. Explicit communication failures end the sampling session, and a scatter read failure ends the current read. Expected USB drain timeouts during initialization can continue.
 
-- 当 `emberprobe.samplingAdapterSpeedKhz` 与 `emberprobe.adapterSpeedKhz` 均为 `0` 时，独立 Cortex-M SWD 采样会在启动后自动按探针阶梯校验并选择吞吐最优的稳定链路时钟（检测驱动钳制、平台期与 SWD WAIT 减速，支持中点细化与运行中自动回退），并在波形窗口绘图设置中提供对应的「采样时钟」自适应开关与滑条（1000–20000 kHz，步进 1000 kHz，运行期间锁定灰显，写入工作区 `emberprobe.samplingAdapterSpeedKhz`），不改变调试、烧录、单次读取、RTT 或写入授权绑定。
-- Automatically benchmark and select the fastest verified stable SWD adapter clock for standalone Cortex-M sampling when both `emberprobe.samplingAdapterSpeedKhz` and `emberprobe.adapterSpeedKhz` are `0` (respecting driver clamps, throughput plateaus, SWD WAIT slowdowns, midpoint refinement, and runtime step-down fallback), and add a Sampling Clock option (Auto toggle + 1000–20000 kHz slider in 1000 kHz steps, locked while sampling, persisted to workspace `emberprobe.samplingAdapterSpeedKhz`) in the waveform settings popover, without affecting debug, flashing, one-shot reads, RTT, or write-authorization bindings.
-
-### 调试 / Debug
-
-- 后端变量写入支持有类型的指针成员、链表节点和受支持容器的可变标量元素；按需解析地址并复核目标，写后回读。查看列表中的写入卡片绑定添加时的地址和类型，变化或采样失效后禁用写入并取消待提交值。ELF 全部变量列表只允许添加静态可写成员。
-- Support typed pointer members, linked nodes and mutable scalar elements of supported containers. Resolve and recheck the target before writing, then verify by reading back. Write cards added from the watch list retain the sampled address and type and cancel pending values when the binding changes or the sample goes stale. The ELF variable list only adds static writable members.
-
-- 侧栏使用运行时样本判定成员是否可写，恢复混合类型 `std::variant` 等独立动态查看项。写入提示区分未写入、已写入但未验证、验证后会话变化。
-- Use runtime samples to determine whether sidebar members are writable and restore standalone dynamic watch items such as mixed-type `std::variant` leaves. Report whether a write was skipped, completed without verification, or verified before a session change.
-
-- 自动发现 SVD 后，首次调试即可在外部 Peripheral Viewer 中使用该文件。自动发现复用已校验文件的元数据，减少重复解析。
-- Supply automatically discovered SVD files to external Peripheral Viewers on the first debug session. Reuse metadata from validated files across discovery runs.
-
-### 探针诊断 / Probe diagnostics
-
-- Agent 烧录和校验的预检、授权与执行共用扩展的 OpenOCD 路径解析。Windows/Linux x64 默认使用内置版本及配套脚本，保留显式外部配置。
-- Use the extension's OpenOCD resolution for Agent flash preflight, authorization, programming and verification. Windows/Linux x64 default to the bundled executable and scripts. Explicit external paths still take precedence.
-
-- 探针被采样、RTT、调试等操作占用时禁用 J-Link 驱动下拉。若切换请求被拒绝，侧栏会结束加载；驱动切换期间占用探针，独立 RTT 确认 OpenOCD 退出后才释放探针。
-- Disable the J-Link driver selector while sampling, RTT, debugging or another operation owns the probe. A rejected switch clears the loading state. Driver switching reserves the probe, and standalone RTT releases it only after confirming OpenOCD exit.
-
-- 修复 STM32C5 烧录时目标事件中的 Tcl 变量作用域错误，确保正确初始化 Flash loader；更新 Windows/Linux 内置 OpenOCD 的目标脚本及对应源码。脚本异常保留首个错误上下文，报告为 `OPENOCD_SCRIPT_ERROR`，不再被后续 `shutdown error` 掩盖。
-- Fix Tcl variable scope in STM32C5 target events so flashing initializes the correct Flash loader. Update the target script and corresponding sources in both bundled OpenOCD runtimes. Preserve the first script exception as `OPENOCD_SCRIPT_ERROR` instead of reporting the trailing `shutdown error`.
-- 修复 CMSIS-DAP HID 读写和命令通信错误被误报为 Flash 写入失败：优先报告 `PROBE_COMMUNICATION_FAILED`，提示停止占用会话、确认 OpenOCD 退出及必要时重新连接 USB；通用写入错误需明确 Flash 上下文，不自动重试。
-- Classify CMSIS-DAP HID and command communication failures as `PROBE_COMMUNICATION_FAILED`, with guidance to stop competing sessions, confirm OpenOCD exit and reconnect USB if needed. Require explicit Flash context for generic write failures and do not retry automatically.
+- J-Link 驱动下拉在探针忙碌时禁用，切换期间也会占用该探针。独立 RTT 确认 OpenOCD 退出后才释放探针。侧栏后台只刷新 USB 设备列表，手动刷新才读取并显示目标内核型号。
+- Disable the J-Link driver selector while the probe is busy and reserve the probe during switching. Standalone RTT releases its probe after confirming OpenOCD exit. The sidebar refreshes the USB inventory in the background, and a manual refresh reads and shows target core models.
 
 ## [0.9.2] - 2026-11-11
 

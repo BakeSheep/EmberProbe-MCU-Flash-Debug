@@ -1,8 +1,21 @@
 "use strict";
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
+const { scenario } = require("./helpers/scenario");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const runtime = require("../src/webview/runtime");
+
+scenario("The waveform workspace fills the space below the toolbar", () => {
+    const view = render(getLiveWatchContent({}, "en"));
+    try {
+        const { document } = view;
+        const header = document.querySelector(".top");
+        assert.strictEqual(header.parentElement, document.body);
+        assert.strictEqual(header.nextElementSibling, document.getElementById("layout"));
+    } finally {
+        view.close();
+    }
+});
 
 const view = render(
     getLiveWatchContent({}, "en"),
