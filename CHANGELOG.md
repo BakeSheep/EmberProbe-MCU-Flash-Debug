@@ -6,13 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-20
+
 ### 采样与波形 / Sampling and waveforms
 
 - 独立 Cortex-M SWD 采样可在启动后自动验证并选择稳定的链路时钟，运行中遇到读取错误时可降速。设有帧率上限时优先选用能满足目标的较低时钟。绘图设置以 MHz 显示当前时钟，停止采样后可切换自适应或手动设置 1–20 MHz。两项时钟设置 `emberprobe.samplingAdapterSpeedKhz` 和 `emberprobe.adapterSpeedKhz` 均为 `0` 时启用自动选频。
 - Standalone Cortex-M SWD sampling can tune the adapter clock at startup and step down after read errors. With a frame-rate cap, it favors lower clocks that meet the target. Waveform settings show the clock in MHz and let you switch to Auto or set 1–20 MHz manually while stopped. Automatic tuning applies when both `emberprobe.samplingAdapterSpeedKhz` and `emberprobe.adapterSpeedKhz` are `0`.
-
-- Agent 在波形窗口关闭时启动持续采样，也会按默认波形窗口的查看列表记录。稍后打开窗口即可查看曲线并导出 CSV。归档已满时，清空某个窗口的历史可回收其占用的空间，保留其他窗口的历史和冻结快照。
-- Agent-started continuous sampling records the default waveform watch list even with the window closed. Open it later to view traces or export CSV. When the archive fills up, clearing an individual chart can reclaim its space while preserving other charts and frozen snapshots.
 
 - 自动纵轴平滑跟随，纵轴按钮显示当前模式。冻结或停止采样时保留坐标范围，仍可缩放和拖动。放大后时间刻度显示到毫秒，绘图点数反映当前视口。
 - Automatic Y-axis tracking is smoother, and the axis control shows the current mode. Freezing or stopping keeps the current axis ranges available for pan and zoom. Close zoom levels show millisecond ticks, and the point count reflects the current viewport.
@@ -20,10 +19,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 绘图设置可直接导入波形背景 PNG 或切换显示，沿用已保存的图片和显示偏好。CSV 导出时间轴使用历史数据的实际起止时间，切换变量勾选时保留所选时间范围。
 - Import a background PNG and toggle its visibility in waveform settings. Existing images and visibility preferences carry over. The CSV export timeline uses the recorded time bounds and keeps the selected range when variable selections change.
 
+- 采样归档已满时，清空某个波形窗口的历史可回收其占用的空间，保留其他窗口的历史和冻结快照。
+- When the sampling archive fills up, clearing an individual chart can reclaim its space while preserving other charts and frozen snapshots.
+
 - scatter 采样只合并最多 4 字节的 RAM 间隙，减少无效传输。Agent 有限采样超过目标间隔时立即继续下一次读取。超时诊断包含请求进度和 OpenOCD 日志，有限采样报告已完成点数，持续采样可查询最近断开原因（`sampling.status.lastDisconnect`）。
 - Scatter sampling coalesces RAM gaps of up to 4 bytes to reduce unnecessary transfers. Agent finite sampling continues immediately when a read exceeds the interval. Timeout diagnostics include request progress and OpenOCD logs. Finite captures report completed samples, and continuous sampling exposes the last disconnect via `sampling.status.lastDisconnect`.
 
 ### 变量与调试 / Variables and debugging
+
+- 改进 C++ 引用解析。侧栏查看和动态写入可沿引用定位对象成员，正确区分对象的 `value` 字段与 `std::optional` 等类型的 `.value` 入口。
+- Improve C++ reference resolution. Sidebar watches and dynamic writes follow references to object members and distinguish an object's `value` field from the `.value` accessor for types such as `std::optional`.
 
 - 侧栏和 Agent 支持写入指针所指对象、链表节点和受支持容器的可写标量成员。写入前复核目标，写入后回读。侧栏动态卡片绑定添加时的地址和类型，绑定变化或采样失效时禁用卡片并取消待提交值。
 - The sidebar and Agent can write mutable scalar members reached through pointers, linked lists or supported containers. Writes recheck the target and verify it by reading back. Dynamic sidebar cards retain the address and type sampled when added. Binding changes or stale samples disable editing and cancel pending values.
