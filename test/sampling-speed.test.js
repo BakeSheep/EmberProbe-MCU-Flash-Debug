@@ -1396,14 +1396,14 @@ function stlinkV3Table(requestedKhz) {
                 const value = doc.getElementById("samplingClockValue");
                 const hint = doc.getElementById("samplingClockHint");
                 const hints = {
-                    zh: "提供时钟频率可有效提高采样率",
-                    en: "Setting the clock frequency can improve the sampling rate"
+                    zh: "提供时钟频率可有效提高采样率。关闭“自适应”后，可手动设置采样时钟。",
+                    en: "Setting the clock frequency can improve the sampling rate. Turn off Adaptive to set the sampling clock manually."
                 };
                 assert.strictEqual(hint.textContent, hints[lang]);
+                assert.strictEqual(label.nextElementSibling, value);
                 assert.strictEqual(autoSwitch.getAttribute("aria-label"), lang === "zh" ? "自适应" : "Auto");
-                assert.ok(
-                    !option.textContent.replace(label.textContent, "").includes(autoSwitch.getAttribute("aria-label"))
-                );
+                const controlsText = option.textContent.replace(label.textContent, "").replace(hint.textContent, "");
+                assert.ok(!controlsText.includes(autoSwitch.getAttribute("aria-label")));
                 assert.ok(!option.textContent.includes("1000 kHz") && !option.textContent.includes("MHz"));
                 assert.ok(slider.classList.contains("write-slider"));
                 assert.strictEqual(doc.getElementById("chartSettings").nextElementSibling, null);
@@ -1413,6 +1413,7 @@ function stlinkV3Table(requestedKhz) {
                 assert.strictEqual(autoSwitch.checked, true);
                 assert.strictEqual(autoSwitch.disabled, false);
                 assert.strictEqual(slider.disabled, true);
+                assert.strictEqual(slider.hidden, false);
 
                 assert.strictEqual(value.textContent, lang === "zh" ? "待采样" : "Pending");
 
@@ -1431,7 +1432,7 @@ function stlinkV3Table(requestedKhz) {
                 assert.ok(option.classList.contains("is-locked"));
                 assert.strictEqual(hint.textContent, hints[lang]);
                 assert.strictEqual(slider.value, "12000");
-                assert.strictEqual(value.textContent, "12000 kHz");
+                assert.strictEqual(value.textContent, "12 MHz");
 
                 // Runtime fallback or deferred update via chartValues updates the locked slider readout live.
                 view.send({
@@ -1441,7 +1442,7 @@ function stlinkV3Table(requestedKhz) {
                     adaptiveSpeed: { state: "fallback", effectiveKhz: 8000 }
                 });
                 assert.strictEqual(slider.value, "8000");
-                assert.strictEqual(value.textContent, "8000 kHz");
+                assert.strictEqual(value.textContent, "8 MHz");
                 assert.strictEqual(autoSwitch.disabled, true);
 
                 // Stopping unlocks the adaptive switch while keeping the slider disabled and fixed on 8000 kHz.
@@ -1450,7 +1451,7 @@ function stlinkV3Table(requestedKhz) {
                 assert.strictEqual(slider.disabled, true);
                 assert.ok(!option.classList.contains("is-locked"));
                 assert.strictEqual(slider.value, "8000");
-                assert.strictEqual(value.textContent, "8000 kHz");
+                assert.strictEqual(value.textContent, "8 MHz");
 
                 // Switching adaptive off unlocks the slider starting from 8000 kHz.
                 autoSwitch.checked = false;
@@ -1462,12 +1463,13 @@ function stlinkV3Table(requestedKhz) {
                     panelId: 4
                 });
                 assert.strictEqual(slider.disabled, false);
+                assert.strictEqual(slider.hidden, false);
 
                 // Drag preview updates readout on `input` and commits once on `change`; interaction keeps popup open.
                 const sentBefore = view.messages.length;
                 slider.value = "16000";
                 slider.dispatchEvent(new view.window.Event("input"));
-                assert.strictEqual(value.textContent, "16000 kHz");
+                assert.strictEqual(value.textContent, "16 MHz");
                 assert.strictEqual(view.messages.length, sentBefore);
                 slider.dispatchEvent(new view.window.Event("change"));
                 assert.deepStrictEqual(view.messages.at(-1), {
@@ -1482,6 +1484,7 @@ function stlinkV3Table(requestedKhz) {
                 autoSwitch.checked = true;
                 autoSwitch.dispatchEvent(new view.window.Event("change"));
                 assert.strictEqual(slider.disabled, true);
+                assert.strictEqual(slider.hidden, false);
                 assert.deepStrictEqual(view.messages.at(-1), {
                     type: "setSamplingSpeed",
                     adaptive: true,
@@ -1493,13 +1496,14 @@ function stlinkV3Table(requestedKhz) {
                     type: "samplingSpeedConfig",
                     adaptive: true,
                     samplingAdapterSpeedKhz: 0,
-                    adapterSpeedKhz: 4000,
+                    adapterSpeedKhz: 1800,
                     effectiveKhz: null,
-                    adaptiveEffectiveKhz: 4000,
+                    adaptiveEffectiveKhz: 1800,
                     manualSpeedKhz: 16000,
                     locked: false
                 });
-                assert.strictEqual(value.textContent, "4000 kHz");
+                assert.strictEqual(value.textContent, "1.8 MHz");
+                assert.strictEqual(slider.getAttribute("aria-valuetext"), "1.8 MHz");
                 assert.strictEqual(hint.textContent, hints[lang]);
 
                 // Language switch also relocalizes the fixed description.

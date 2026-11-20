@@ -27,6 +27,8 @@
         var archive = [];
         var archiveLimit = Math.min(20000, Math.max(1, options.archiveLimit || 20000));
         var archiveTruncated = false;
+        var expandedOnly = true;
+        var curveVisibility = {};
         var history = new root.EmberProbeMockHistory.ChartHistoryStore();
         var historyRevision = 0,
             historySignature = "",
@@ -76,20 +78,66 @@
         let backgroundRequest = 0,
             backgroundPending = false;
         const backgroundKey = "emberprobe.mock.chartBackgroundIcon.v1";
-        function backgroundState() {
+        const backgroundEnabledKey = "emberprobe.mock.chartBackgroundIcon.enabled.v1";
+        var mockBackgroundEnabled = true;
+        function backgroundEnabled() {
             try {
-                return iframe.contentWindow.EmberProbeBackgroundIcon.validate(
-                    JSON.parse(root.localStorage.getItem(backgroundKey))
-                );
+                return root.localStorage.getItem(backgroundEnabledKey) !== "0";
             } catch {
-                return null;
+                return mockBackgroundEnabled;
+            }
+        }
+        function backgroundState() {
+            var enabled = backgroundEnabled();
+            try {
+                return {
+                    icon: enabled
+                        ? iframe.contentWindow.EmberProbeBackgroundIcon.validate(
+                              JSON.parse(root.localStorage.getItem(backgroundKey))
+                          )
+                        : null,
+                    enabled: enabled
+                };
+            } catch {
+                return { icon: null, enabled: enabled };
             }
         }
         function sendBackground() {
-            send({ type: "chartBackgroundIcon", icon: backgroundState() });
+            send(Object.assign({ type: "chartBackgroundIcon" }, backgroundState()));
         }
         function backgroundStorage(event) {
-            if (!event.key || event.key === backgroundKey) sendBackground();
+            if (!event.key || event.key === backgroundKey || event.key === backgroundEnabledKey) sendBackground();
+        }
+        // The extension opens a native file dialog; the mock uses a browser file input (or a test hook).
+        function chooseBackgroundPng(done) {
+            if (options.selectBackgroundPng) {
+                options.selectBackgroundPng(done);
+                return;
+            }
+            try {
+                var input = root.document.createElement("input");
+                input.type = "file";
+                input.accept = "image/png";
+                input.style.display = "none";
+                input.addEventListener("change", function () {
+                    var file = input.files && input.files[0];
+                    input.remove();
+                    if (!file) return;
+                    var reader = new root.FileReader();
+                    reader.onload = function () {
+                        done(String(reader.result || "").replace(/^data:[^,]*,/, ""));
+                    };
+                    reader.readAsDataURL(file);
+                });
+                root.document.body.appendChild(input);
+                input.click();
+            } catch {
+                /* file selection is optional in the page preview */
+            }
+        }
+        function requestBackgroundImport(pngBase64) {
+            backgroundPending = true;
+            send({ type: "importChartBackgroundIcon", requestId: ++backgroundRequest, pngBase64 });
         }
 
         function displayName(name) {
@@ -286,7 +334,10 @@
         function sendReady() {
             sendBackground();
             configureHistory();
+            send({ type: "chartHistoryReady", historyRevision: historyRevision });
             send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+            send({ type: "curveVisibility", hidden: curveVisibility });
+            send({ type: "pointerSampling", expandedOnly: expandedOnly });
             send({ type: "seriesStyles", styles: styles });
             send({ type: "watchList", items: watchItems, resetValues: true });
             sendVariableList();
@@ -338,6 +389,20 @@
                 case "ready":
                     initialized = true;
                     sendReady();
+                    break;
+                case "selectChartBackgroundIcon":
+                    chooseBackgroundPng(function (pngBase64) {
+                        if (pngBase64) requestBackgroundImport(pngBase64);
+                    });
+                    break;
+                case "setChartBackgroundEnabled":
+                    mockBackgroundEnabled = message.enabled === true;
+                    try {
+                        root.localStorage.setItem(backgroundEnabledKey, mockBackgroundEnabled ? "1" : "0");
+                    } catch {
+                        /* storage is optional */
+                    }
+                    sendBackground();
                     break;
                 case "chartBackgroundIconImported": {
                     if (message.requestId !== backgroundRequest || !backgroundPending) break;
@@ -407,6 +472,17 @@
                 }
                 case "saveWatch":
                     watchItems = message.items || watchItems;
+                    break;
+                case "setPointerExpandedOnly":
+                    expandedOnly = message.enabled === true;
+                    send({ type: "pointerSampling", expandedOnly: expandedOnly });
+                    break;
+                case "saveCurveVisibility":
+                    if (message.hidden && typeof message.hidden === "object" && !Array.isArray(message.hidden))
+                        curveVisibility = message.hidden;
+                    break;
+                case "saveRuntimeExpansions":
+                    // The mock keeps runtime expansions in the page's saved UI state.
                     break;
                 case "setSeriesStyle":
                     if (message.name && message.style) {
@@ -507,10 +583,7 @@
         return {
             setSampling: setSampling,
             debugSessionChanged: debugSessionChanged,
-            importBackgroundPng(pngBase64) {
-                backgroundPending = true;
-                send({ type: "importChartBackgroundIcon", requestId: ++backgroundRequest, pngBase64 });
-            },
+            importBackgroundPng: requestBackgroundImport,
             removeBackground() {
                 ++backgroundRequest;
                 backgroundPending = false;

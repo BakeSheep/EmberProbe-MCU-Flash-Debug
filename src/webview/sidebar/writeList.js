@@ -223,9 +223,7 @@
             icon.setAttribute("role", "img");
             icon.innerHTML = runtime.warningIconSvg("write-risk-icon");
             icon.dataset.tip = t("sb.writeRisk." + risk, {
-                bits: typeWidth(item) * 8,
-                addr:
-                    "0x" + ((Number(item.writeBinding?.address ?? item.address) || 0) >>> 0).toString(16).toUpperCase()
+                bits: typeWidth(item) * 8
             });
             icon.setAttribute("aria-label", icon.dataset.tip);
             icon.addEventListener("mouseenter", () => showRiskTip(icon));

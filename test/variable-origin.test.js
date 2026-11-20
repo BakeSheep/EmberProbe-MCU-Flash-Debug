@@ -194,7 +194,7 @@ try {
     sidebar.send({ type: "availableVariablesDone", version: "v2" });
     assert.strictEqual(
         sidebar.document.querySelector("#availableVars .empty").textContent,
-        "No user variables; 1 generated variables are hidden"
+        "No user variables found. 1 hidden. Turn off the filter to see them."
     );
     toggle.click();
     assert.deepStrictEqual(rows(), ["uwTick"]);
@@ -296,7 +296,7 @@ try {
     graph.send({ type: "variablesList", symbols: [graphSymbols[1]] });
     assert.strictEqual(
         doc.querySelector("#impList .empty").textContent,
-        "No user variables; 1 generated variables are hidden"
+        "No user variables found. 1 hidden. Turn off the filter to see them."
     );
     assert.strictEqual(doc.getElementById("impCount").textContent, "User variables 0 / all 1");
     toggle.click();

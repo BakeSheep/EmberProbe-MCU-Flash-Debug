@@ -164,9 +164,21 @@ function testSimulatorAndRegisters() {
 function testMockUnlimitedPreset() {
     const env = hostEnvironment();
     const frame = env.frame();
-    const host = env.root.EmberProbeLiveWatchHost.create(frame, {});
+    const host = env.root.EmberProbeLiveWatchHost.create(frame, {
+        selectBackgroundPng: (done) => done("png-base64")
+    });
     try {
         env.deliver(frame, { type: "ready" });
+        assert.equal(latest(frame, "chartBackgroundIcon").enabled, true);
+        env.deliver(frame, { type: "selectChartBackgroundIcon" });
+        assert.equal(latest(frame, "importChartBackgroundIcon").pngBase64, "png-base64");
+        env.deliver(frame, { type: "setChartBackgroundEnabled", enabled: false });
+        assert.deepStrictEqual(
+            { icon: latest(frame, "chartBackgroundIcon").icon, enabled: latest(frame, "chartBackgroundIcon").enabled },
+            { icon: null, enabled: false }
+        );
+        env.deliver(frame, { type: "setChartBackgroundEnabled", enabled: true });
+        assert.equal(latest(frame, "chartBackgroundIcon").enabled, true);
         assert.deepStrictEqual(latest(frame, "liveUnlimited"), { type: "liveUnlimited", enabled: false });
         env.deliver(frame, { type: "setUnlimitedSampling", enabled: true });
         assert.strictEqual(latest(frame, "liveUnlimited").enabled, true);
@@ -280,6 +292,72 @@ function testHostsAndRenderer() {
     } finally {
         host.destroy();
         liveHost.destroy();
+        view.close();
+    }
+}
+
+async function testWatchOriginatedWrites() {
+    const env = hostEnvironment();
+    const view = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
+    const sidebar = env.frame((message) => view.send(message));
+    const simulator = sidebarData.createSimulator();
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, { simulator });
+    const at = { at: 0 };
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    try {
+        env.deliver(sidebar, { type: "initCheck" });
+        pump(env, sidebar, view, at);
+        env.deliver(sidebar, { type: "liveToggle" });
+        env.advance(400);
+        pump(env, sidebar, view, at);
+        const status = latest(sidebar, "liveStatus");
+        const sampled = latest(sidebar, "liveSample").samples.find((sample) => sample.name === "g_motor_rpm");
+        assert.equal(sampled.writeContext, status.writeContext, "sidebar samples carry the write context");
+        assert.equal(sampled.address, 0x20000044);
+        assert.equal(sampled.type, "u16");
+        await settle();
+        const row = view.document.querySelector('[data-breakpoint-path="g_motor_rpm"]');
+        assert.ok(row, "the watch row offers the variable menu");
+        row.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+        const add = view.document.querySelector(".data-breakpoint-menu .watch-write-action");
+        assert.equal(add.disabled, false, "a sampled watch variable can join the write list");
+        add.click();
+        pump(env, sidebar, view, at);
+        const card = view.document.querySelector('#writeValues [data-raw-name="g_motor_rpm"]').closest(".write-row");
+        assert.equal(card.classList.contains("gated"), false, "the card binds to the current sample context");
+        const input = card.querySelector(".write-input");
+        input.value = "2000";
+        input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+        pump(env, sidebar, view, at);
+        assert.equal(latest(sidebar, "writeResult").ok, true);
+        assert.equal(simulator.scalarSamples(["g_motor_rpm"], 1)[0].value, 2000);
+
+        // A typed runtime member is written through its sampled address, like the extension's dynamic writes.
+        const motorWatch = view.document.querySelector('.av-watch[data-selection-name="g_motor"]');
+        assert.ok(motorWatch, "the variable browser lists the runtime object");
+        motorWatch.click();
+        pump(env, sidebar, view, at);
+        env.advance(100);
+        pump(env, sidebar, view, at);
+        await settle();
+        const member = view.document.querySelector('[data-path="g_motor.speed._M_fp"]');
+        assert.ok(member, "the expanded runtime object shows its scalar leaf");
+        member.dispatchEvent(new view.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+        const addMember = view.document.querySelector(".data-breakpoint-menu .watch-write-action");
+        assert.equal(addMember.disabled, false, "the runtime member binds to its sampled address");
+        addMember.click();
+        pump(env, sidebar, view, at);
+        const memberInput = view.document
+            .querySelector('#writeValues [data-raw-name="g_motor.speed._M_fp"]')
+            .closest(".write-row")
+            .querySelector(".write-input");
+        memberInput.value = "1234.5";
+        memberInput.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+        pump(env, sidebar, view, at);
+        assert.equal(latest(sidebar, "writeResult").ok, true);
+        assert.equal(simulator.compositeSample("g_motor", 1).tree.members[3].members[0].value, 1234.5);
+    } finally {
+        host.destroy();
         view.close();
     }
 }
@@ -1327,6 +1405,7 @@ async function testServer() {
     testSimulatorAndRegisters();
     testMockUnlimitedPreset();
     testHostsAndRenderer();
+    await testWatchOriginatedWrites();
     testTypeShowcase();
     testArchive();
     testReadableArchiveHeaders();

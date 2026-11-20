@@ -10,11 +10,8 @@ module.exports = Object.freeze({
     "sb.dataNoSession": "Select an available EmberProbe built-in debug session",
     "sb.dataUnsupported": "Storage cannot be confirmed for this display item; select an addressable scalar or member",
     "sb.dataStale": "The debug session or variable changed; reopen the menu",
-    "sb.dataEnable": "Enable Data Breakpoint",
-    "sb.dataDisable": "Disable Data Breakpoint",
     "sb.dataCondition": "Edit Condition…",
     "sb.dataConditionPrompt": "Data breakpoint condition (leave empty to remove)",
-    "sb.dataRemove": "Delete Data Breakpoint",
     "sb.dataEnabled": "Enabled",
     "sb.dataDisabled": "Disabled",
     "sb.dataFailed": "Could not enable",
@@ -48,8 +45,7 @@ module.exports = Object.freeze({
     "lw.targetFrequency": "Sampling rate",
     "lw.frequencyPresets": "Select sampling rate",
     "lw.unlimited": "Max rate",
-    "lw.unlimitedTitle":
-        "Sample back-to-back at probe throughput without the 200 Hz cap; inactive during debug sessions",
+    "lw.unlimitedTitle": "Available only during standalone sampling",
     "lw.unlimitedByProbe": "Limited by probe throughput",
     "lw.unlimitedByHost": "Limited by extension processing",
     "lw.unlimitedSuppressed": "Max rate is inactive during debug sessions; using the target frequency",
@@ -78,7 +74,7 @@ module.exports = Object.freeze({
     "memory.ambiguous": "Multiple layout files found. Choose the file used by this ELF.",
     "memory.mapMismatch": "The .map does not match this ELF. Rebuild the project or choose its linker script.",
     "memory.scriptMismatch":
-        "The linker script's regions do not hold every section of this ELF. Choose the .ld that linked it.",
+        "The selected linker script does not match the current ELF memory layout. Select the .ld file used to build this ELF.",
     "memory.unknownKind": "Some memory region names could not be classified as Flash or RAM.",
     "rtos.title": "RTOS tasks",
     "rtos.chooseSession": "Choose a debug session / core",
@@ -138,8 +134,6 @@ module.exports = Object.freeze({
         "Choosing the probe automatically and checking the target chip before each operation; click again to keep using the current device",
     "probe.autoPickHint":
         "Choosing the probe automatically and checking the target chip before each operation; pick a device to keep using it",
-    "probe.autoTarget": "Verifying target chip",
-    "probe.autoTargetHint": "Automatic mode checks this chip before every operation and stops if it differs",
     "probe.targetFound": "Target chip: {chip}",
     "probe.targetChanged": "Target chip changed",
     "probe.targetChangedDetail": "Recorded {expected} → found {actual}",
@@ -212,7 +206,7 @@ module.exports = Object.freeze({
         "Use 1–128 ASCII letters, digits, spaces or _.:- for a USB serial number. J-Link requires a decimal integer from 1 to 4294967295.",
     "probe.selectedNotFound": "The selected {label} is not present; no other device will be selected",
     "probe.rememberedNotFound":
-        "The picked {label} ({serial}) is not present; no other device will be selected automatically. Reconnect it, or pick another device or Auto under Connected probes",
+        "The selected {label} ({serial}) is disconnected. Reconnect it or select another device under Connected probes.",
     "probe.staleConnection": "Settings changed — restart before writing",
     "msg.selectDetectedMcu": "Project files name several MCU targets. Select the one to use.",
     "msg.autoMcuUnavailable":
@@ -267,16 +261,21 @@ module.exports = Object.freeze({
     "lw.backgroundCutoutError": "Could not extract a shape. Please use a transparent background PNG.",
     "lw.backgroundInvalidError": "Could not read this PNG. Please choose a valid PNG image.",
     "lw.backgroundSaveError": "Could not save the icon. Your previous background is kept.",
+    "lw.backgroundVisibilityError": "Could not save waveform background visibility.",
+    "lw.backgroundOption": "Waveform background",
+    "lw.backgroundHint": "Displays the imported image faintly across all workspaces.",
+    "lw.backgroundImport": "Import PNG",
     "lw.chartSettings": "Chart settings",
     "lw.jitterBands": "High-frequency rendering",
-    "lw.jitterBandsHint": "Draws rapid jitter as a translucent band and keeps the line on the trend",
+    "lw.jitterBandsHint": "Shading shows the range of rapid fluctuations, while the line shows the overall trend.",
     "lw.pointerExpandedOnly": "Sample expanded pointer parts only",
     "lw.pointerExpandedOnlyHint":
         "Pointer targets and STL containers read only their expanded parts at the target rate; off reads everything parsed. Both are recorded to disk and exportable as CSV",
     "lw.samplingClock": "Sampling clock",
     "lw.samplingClockAuto": "Auto",
     "lw.samplingClockPending": "Pending",
-    "lw.samplingClockHint": "Setting the clock frequency can improve the sampling rate",
+    "lw.samplingClockHint":
+        "Setting the clock frequency can improve the sampling rate. Turn off Adaptive to set the sampling clock manually.",
     "lw.samplingClockLocked": "Stop sampling before changing the sampling clock",
     "lw.runtimeCollapsed": "Sampling starts when expanded",
     "lw.removeWatch": "Remove watch",
@@ -294,7 +293,7 @@ module.exports = Object.freeze({
     "lw.frozenNew": "Variable absent from snapshot; resume live to display",
     "cubemx.firmwareTitle": "CubeMX / Firmware",
     "cubemx2.firmwareTitle": "CubeMX2 / Packs",
-    "cubemx.currentVersion": "Have",
+    "cubemx.currentVersion": "Installed",
     "cubemx.firmwareUnknown": "Firmware unverified",
     "cubemx.firmwareMismatch": "Firmware version mismatch",
     "cubemx.firmwareMismatchVersions": "{name} requires {required}. Installed versions {installed}.",
@@ -400,7 +399,8 @@ module.exports = Object.freeze({
     "rtt.input.invalid": "Invalid input, not sent",
     "rtt.panel.title": "RTT Terminal",
     "rtt.panel.empty": "Start RTT from the sidebar to see each channel's output here",
-    "rtt.panel.rawHint": "Raw input: keys typed in the output area go to the target at once, without local echo",
+    "rtt.panel.rawHint":
+        "Typing in the output area sends keystrokes to the target immediately. Input appears only if the firmware echoes it.",
     "rtt.panel.channelStopped": "This channel stopped; it shows the output from before",
     "rtt.op.download": "flashing",
     "rtt.op.liveWatch": "live watch",
@@ -437,7 +437,7 @@ module.exports = Object.freeze({
     "rtt.channelsTitle": "Choose RTT channels",
     "rtt.channelsPlaceholder": "Check the channels to read; each gets its own terminal",
     "rtt.channelsPlaceholderUnknown":
-        "The firmware's channel list is not known yet; start RTT once to list its channels here",
+        "No firmware channels have been read yet. Start RTT or enter channel numbers manually.",
     "rtt.channelPick": "Channel {n}",
     "rtt.channelNotListed": "not listed by the firmware",
     "rtt.channelSize": "{size} B buffer",
@@ -460,7 +460,7 @@ module.exports = Object.freeze({
     "rtt.modeHint.skip": "When the buffer is full the target drops new data",
     "rtt.modeHint.trim": "When the buffer is full the target truncates new data",
     "rtt.modeHint.block":
-        "Full buffers stall the firmware until the host reads; stopping RTT leaves this mode in place and may stall the firmware",
+        "When the buffer is full, firmware writes wait for the host to read. Blocking mode remains active after RTT stops.",
     "rtt.termHostEnded": "RTT stopped: the debug session ended",
     "rtt.termHostLost": "RTT stopped: the probe connection was lost",
     "rtt.logNoDirectory":
@@ -586,8 +586,8 @@ module.exports = Object.freeze({
     "sb.noImportable": "This ELF has no importable variables",
     "sb.userVarsOnly": "User only",
     "sb.userVarsOnlyTitle":
-        "Show user-defined variables only: hides variables generated by CubeMX/HAL drivers, RTOS kernels, middleware and toolchain libraries, judged from DWARF source paths, types and names (heuristic)",
-    "sb.noUserVars": "No user variables; {count} generated variables are hidden",
+        "Hides variables identified as belonging to drivers, RTOS, middleware, or toolchain libraries.",
+    "sb.noUserVars": "No user variables found. {count} hidden. Turn off the filter to see them.",
     "sb.filteredCount": "User variables {shown} / all {total}",
     "sb.origin.vendor": "Vendor driver / CubeMX generated",
     "sb.origin.rtos": "RTOS",
@@ -608,8 +608,10 @@ module.exports = Object.freeze({
     "sb.writeEmpty": "Right-click a watched variable and choose Add to write list, or click ✎ beside an ELF variable",
     "sb.variableMenu": "Variable actions",
     "sb.writeSampleRequired": "Wait for a valid sample before adding to the write list",
-    "sb.writeBindingMissing": "Remove this card and add it again from a fresh watch sample to bind its address",
-    "sb.writeBindingChanged": "The sampled address or type changed. Wait for the card's original target to return",
+    "sb.writeBindingMissing":
+        "This card is missing information needed to write. Remove it, then add it again after the watch list shows a valid value.",
+    "sb.writeBindingChanged":
+        "The sampled address or type changed. The card can write again once a sample confirms the original address and type.",
     "sb.writeWatchRequired": "Add to the watch list again and wait for a valid sample",
     "sb.writeScalarOnly": "Select a single scalar member",
     "sb.writeReadOnly": "This member is read-only",
@@ -644,11 +646,11 @@ module.exports = Object.freeze({
     "sb.writeVerifyFailedHalted":
         "The value read back still differs while the target was halted; check RAM accessibility, MPU/cache configuration and the debug connection",
     "sb.writeRisk.subword":
-        "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, writes only the variable's own bytes at their width (or read-modify-writes the containing 32-bit word for static targets that drop narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Dynamic targets stop on a read-back mismatch. Not writable while a debug session is running.",
+        "This is a {bits}-bit variable. During standalone sampling, a write briefly halts a running CPU and may affect real-time tasks. If the target is running under a debugger, pause it before writing.",
     "sb.writeRisk.unaligned":
-        "Write risk: this variable's address {addr} is not 4-byte aligned. The write briefly halts the CPU, writes only the variable's own bytes with aligned 8/16-bit accesses (or read-modify-writes the spanned 32-bit words for static targets that drop narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Dynamic targets stop on a read-back mismatch. Not writable while a debug session is running.",
+        "This variable's address is misaligned for 4-byte access. During standalone sampling, a write briefly halts a running CPU and may affect real-time tasks. If the target is running under a debugger, pause it before writing.",
     "sb.writeRisk.wide":
-        "Write risk: this variable is {bits}-bit and needs two 32-bit word writes. To keep firmware from reading a half-written value the write briefly halts the CPU, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+        "This is a {bits}-bit variable. During standalone sampling, a write briefly halts a running CPU and may affect real-time tasks. If the target is running under a debugger, pause it before writing.",
     "sb.invalidWriteValue": "Enter an in-range decimal integer",
     "sb.writeValueOutOfRange": "Not written: {value} is outside the {type} range [{min}, {max}]",
     "sb.writeValueNotInteger": "Not written: {type} accepts integers only, and {value} is not one",
@@ -754,7 +756,7 @@ module.exports = Object.freeze({
     "lw.archiveTruncated": "Sampling history reached its size limit; later samples were not archived",
     "lw.archiveRemaining": "archive {time} left",
     "lw.archiveLow":
-        "At the current rate the sampling archive fills in about {time}, and sampling stops then. Raise emberprobe.samplingArchiveMaxMiB in Settings (applies immediately).",
+        "The sampling archive is expected to reach its limit in {time}. Sampling will then stop. Increase emberprobe.samplingArchiveMaxMiB in Settings. Changes apply immediately.",
     "lw.exportTitle": "Export CSV",
     "lw.exportFileName": "File name",
     "lw.exportSearch": "Search series",
@@ -835,8 +837,7 @@ module.exports = Object.freeze({
     "lw.pointeeMemoryUnavailable": "The pointer target memory could not be read.",
     "lw.pointeeCycle": "The pointer target contains a cycle; further expansion stopped.",
     "lw.pointeeUnavailable": "The pointer target cannot be read right now.",
-    "lw.objectReadBudget":
-        "The object or its expanded members exceed the read budget and were not read: running sampling reads at most 4096 bytes / 32 times per cycle. Collapse some groups, or pause the target to read up to 64 KiB per object.",
+    "lw.objectReadBudget": "Read limit reached. Collapse some members and try again.",
     "lw.objectChanging":
         "The target rewrote this part while it was read; no consistent value this time. It is read again automatically.",
     "lw.pointerLastSampled": "last sampled",
@@ -891,7 +892,9 @@ module.exports = Object.freeze({
     "run.programStart": "Writing firmware",
     "run.wrote": "Wrote {bytes} bytes ({seconds}s, {speed})",
     "run.wroteNoSpeed": "Wrote {bytes} bytes ({seconds}s)",
+    "run.verifyStart": "Verifying firmware",
     "run.verifyOk": "Firmware verified",
+    "run.resetTarget": "Resetting target",
     "run.verified": "Verified {bytes} bytes ({seconds}s, {speed})",
     "run.verifiedNoSpeed": "Verified {bytes} bytes ({seconds}s)",
     "run.downloadSuccess": "Download complete",
@@ -914,8 +917,7 @@ module.exports = Object.freeze({
     "msg.downloadBusy": "A download is already running; please wait for it to finish",
     "msg.agentReadBusy": "A temporary probe read (Agent or peripheral view) is in progress; try again shortly",
     "msg.debugBusy": "A debug session is starting; try again shortly",
-    "msg.liveBusyForDownload":
-        "Live watch is running; stop it before downloading (the probe can only be used by one OpenOCD at a time)",
+    "msg.liveBusyForDownload": "Live sampling is starting. Wait for it to start before flashing.",
     "msg.chipBusyForDownload": "Reading chip info; please download later",
     "msg.debugBusyForDownload": "The debugger is using the probe; end debugging before downloading",
     "msg.probeBusyForDownload": "The probe is busy with another operation; please download later",
@@ -943,7 +945,8 @@ module.exports = Object.freeze({
     "live.debugStartTimeout": "Debug startup timed out; OpenOCD was released",
     "live.debugSharedConnecting": "Connecting to the shared OpenOCD service…",
     "live.debugRuntimeSampling": "Sampling",
-    "live.debugTclDegraded": "Shared OpenOCD Tcl reads are unavailable; waiting for a DAP pause",
+    "live.debugTclDegraded":
+        "Sampling is temporarily unavailable while the target is running under the debugger. Pause it to read current values.",
     "live.runtimeAddressRejected": "Runtime reads are restricted to writable ELF RAM sections",
     "live.runtimeAddressRejectedNames": "Runtime reads rejected outside writable ELF RAM: {names}",
     "live.runtimeBudgetExceeded": "Runtime read exceeds the per-cycle safety budget (4096 bytes / 32 reads)",

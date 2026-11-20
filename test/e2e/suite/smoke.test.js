@@ -5,6 +5,7 @@ const path = require("path");
 const vscode = require("vscode");
 const { scenario } = require("../../helpers/scenario");
 const { checkMcpConnection } = require("../../../src/services/mcpConnectivity");
+const { createLivePanelHandler } = require("../../../src/controllers/livePanelRoutes");
 
 async function waitFor(ready, label) {
     const deadline = Date.now() + 10000;
@@ -72,7 +73,7 @@ async function run() {
     const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
         Object.entries(group.properties)
     );
-    assert.strictEqual(settings.length, 36);
+    assert.strictEqual(settings.length, 35);
     for (const [key, setting] of settings)
         assert.deepStrictEqual(
             vscode.workspace.getConfiguration().inspect(key)?.defaultValue,
@@ -85,6 +86,7 @@ async function run() {
         "maxSamples",
         "enablePrettyPrinting",
         "prettyPrinterPath",
+        "chartBackgroundIcon.enabled",
         "memory.regionKinds",
         "mcp.toolsets"
     ])
@@ -254,15 +256,15 @@ async function run() {
     );
     await vscode.commands.executeCommand("mcu-vscode.openLiveWatch");
     await waitFor(() => extension.exports.viewState().graph, "graph renderer");
-    const backgroundSetting = config.inspect("chartBackgroundIcon.enabled");
-    assert.equal(backgroundSetting.defaultValue, true);
     assert.ok(commands.has("mcu-vscode.selectChartBackgroundIcon"));
     assert.ok(commands.has("mcu-vscode.removeChartBackgroundIcon"));
     const graph = Array.from(provider._livePanels.values())[0];
     await waitFor(() => graph.ready, "waveform ready message");
-    const previousIcon = provider._chartBackgroundState().icon;
     const icon = { version: 1, width: 2, height: 1, alphaBase64: "/4A=" };
     const controller = provider.chartBackground();
+    const previousIcon = controller.store.read();
+    const previousVisibility = controller.store.enabled();
+    const sendGraph = createLivePanelHandler(provider, graph, vscode);
     const originalVscode = controller.vscode;
     const directory = fs.mkdtempSync(path.join(require("os").tmpdir(), "emberprobe-background-"));
     const png = path.join(directory, "background.png");
@@ -286,21 +288,20 @@ async function run() {
         }
     };
     try {
-        await vscode.commands.executeCommand("mcu-vscode.selectChartBackgroundIcon");
+        await sendGraph({ type: "setChartBackgroundEnabled", enabled: true });
+        await sendGraph({ type: "selectChartBackgroundIcon" });
         assert.deepStrictEqual(provider._chartBackgroundState().icon, icon);
-        await config.update("chartBackgroundIcon.enabled", false, vscode.ConfigurationTarget.Global);
+        await sendGraph({ type: "setChartBackgroundEnabled", enabled: false });
+        assert.equal(provider._chartBackgroundState().enabled, false);
         assert.equal(provider._chartBackgroundState().icon, null);
         assert.deepStrictEqual(controller.store.read(), icon, "disabling keeps the imported shape");
-        await config.update("chartBackgroundIcon.enabled", true, vscode.ConfigurationTarget.Global);
+        await sendGraph({ type: "setChartBackgroundEnabled", enabled: true });
+        assert.deepStrictEqual(provider._chartBackgroundState().icon, icon);
         await vscode.commands.executeCommand("mcu-vscode.removeChartBackgroundIcon");
         assert.equal(provider._chartBackgroundState().icon, null);
     } finally {
         controller.vscode = originalVscode;
-        await config.update(
-            "chartBackgroundIcon.enabled",
-            backgroundSetting.globalValue,
-            vscode.ConfigurationTarget.Global
-        );
+        await controller.store.setEnabled(previousVisibility);
         await controller.store.update(previousIcon);
         controller.broadcast();
         fs.rmSync(directory, { recursive: true, force: true });

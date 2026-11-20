@@ -39,8 +39,8 @@ try {
 
     assert.strictEqual(card("speed_ref").querySelector(".write-risk"), null, "aligned 32-bit variables have no marker");
     assert.match(tip("mode"), /8-bit/);
-    assert.match(tip("mode"), /halts the CPU/);
-    assert.match(tip("packed_gain"), /0x20000006/);
+    assert.match(tip("mode"), /During standalone sampling, a write briefly halts a running CPU/);
+    assert.match(tip("packed_gain"), /misaligned for 4-byte access/);
     assert.match(tip("position"), /64-bit/);
     assert.strictEqual(icon("position").getAttribute("aria-label"), tip("position"));
     // Same triangle as warning notices, no native title (unbounded width, help cursor) on the icon or around it.
@@ -116,7 +116,7 @@ try {
         [{ mode: "debug-paused-writing" }, /writing/],
         [{ pauseReason: "archive_backpressure" }, /storage is busy/],
         [{ connectionStale: true }, /settings changed/],
-        [{ key: "live.debugTclDegraded" }, /Tcl/],
+        [{ key: "live.debugTclDegraded" }, /Pause it to read current values/],
         [{ key: "live.needVar" }, /Add a variable/],
         [{ mode: "debug-running-waiting" }, /temporarily unavailable/],
         [{ intentEnabled: false }, /Start sampling/]

@@ -94,7 +94,7 @@
         return { ...node, name, address, type: node.watchType, size };
     }
 
-    function create({ state, canRead, canAddStatic = () => false, has, toggle }) {
+    function create({ state, canRead, canAddStatic = (_entry) => false, has, toggle }) {
         state.writeWatch = {
             samples: new Map(),
             blocked: new Set(),

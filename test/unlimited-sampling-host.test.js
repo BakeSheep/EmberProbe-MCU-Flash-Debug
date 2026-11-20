@@ -153,6 +153,7 @@ function createProvider() {
         assert.strictEqual(rate.textContent, "32.0kb/s | 640.0Hz");
         assert.ok(rate.title.includes("Target: unlimited"));
         assert.ok(!/Infinity|NaN/.test(rate.title), "a zero interval must not render as an infinite rate");
+        assert.ok(field.title.startsWith("Available only during standalone sampling"));
         assert.ok(field.title.includes("Limited by probe throughput"));
 
         graph.send({
@@ -211,16 +212,16 @@ function createProvider() {
         assert.strictEqual(archive(), null);
         values(590);
         assert.ok(archive().classList.contains("notice--warning"));
-        assert.ok(archive().textContent.includes("fills in about 09:50"), archive().textContent);
+        assert.ok(archive().textContent.includes("reach its limit in 09:50"), archive().textContent);
         assert.ok(archive().textContent.includes("samplingArchiveMaxMiB"));
         const first = archive();
         values(500);
         assert.strictEqual(archive(), first, "each threshold warns once");
         values(45);
-        assert.ok(archive().textContent.includes("fills in about 00:45"));
+        assert.ok(archive().textContent.includes("reach its limit in 00:45"));
         values(5000);
         values(400);
-        assert.ok(archive().textContent.includes("fills in about 06:40"), "raising the limit re-arms the warnings");
+        assert.ok(archive().textContent.includes("reach its limit in 06:40"), "raising the limit re-arms the warnings");
         graph.send({ type: "liveStatus", running: false, actualHz: 0, bytesPerSecond: 0 });
         assert.strictEqual(rate.textContent, "0.0kb/s | 0.0Hz", "stopped sampling shows no archive estimate");
         graph.assertHealthy();

@@ -238,6 +238,9 @@ function serviceFixture() {
             assert.strictEqual(menu.style.left, "28px", "leave 12px before the page's scrollbar");
             assert.strictEqual(menu.style.getPropertyValue("--data-breakpoint-menu-width"), "244px");
             assert.strictEqual(menu.querySelectorAll('[role="menuitemradio"]').length, 3);
+            const initialConditionButtons = [...menu.querySelectorAll(".data-breakpoint-tool")];
+            assert.strictEqual(initialConditionButtons.length, 3);
+            assert.ok(initialConditionButtons.every((button) => button.disabled));
             assert.strictEqual(menu.querySelector(".data-breakpoint-choice svg"), null);
             assert.strictEqual(menu.querySelectorAll("button:not(:disabled)").length, 3);
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -279,15 +282,20 @@ function serviceFixture() {
                 [true, false, true]
             );
             assert.deepStrictEqual(
-                [...options[1].parentElement.querySelectorAll(".data-breakpoint-tool")].map(
-                    (button) => button.textContent
-                ),
-                ["禁用数据断点", "编辑条件…", "删除数据断点"]
+                options.map((option) => {
+                    const actions = [...option.parentElement.querySelectorAll(".data-breakpoint-tool")];
+                    assert.deepStrictEqual(
+                        actions.map((button) => button.textContent),
+                        ["编辑条件…"]
+                    );
+                    return actions[0].disabled;
+                }),
+                [true, false, true]
             );
             assert.strictEqual(menu.querySelectorAll(".data-breakpoint-tool").length, 3);
             assert.strictEqual(menu.querySelector(".data-breakpoint-note:not(.watch-write-note)"), null);
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
-            assert.strictEqual(view.document.activeElement.textContent, "删除数据断点");
+            assert.strictEqual(view.document.activeElement.textContent, "编辑条件…");
             menu.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
             assert.strictEqual(view.document.activeElement, row);
             const openWith = (entry) => {
@@ -309,6 +317,15 @@ function serviceFixture() {
             unchecked.click();
             assert.strictEqual(view.messages.at(-1).action, "enable");
             assert.strictEqual(view.messages.at(-1).enabled, true);
+            const failed = openWith({ ...entry, verified: false });
+            assert.strictEqual(failed.getAttribute("aria-checked"), "true");
+            assert.ok(failed.closest(".data-breakpoint-access").querySelector(".data-breakpoint-detail.failed"));
+            failed.click();
+            assert.strictEqual(view.messages.at(-1).enabled, false);
+            const oldAddress = openWith({ ...entry, dataId: "former-storage" });
+            oldAddress.click();
+            assert.strictEqual(view.messages.at(-1).id, entry.id);
+            assert.strictEqual(view.messages.at(-1).enabled, false);
             open();
             const late = view.messages.at(-1);
             view.send({ ...status, sessionId: "two", epoch: 2, entries: [] });
@@ -355,8 +372,13 @@ function serviceFixture() {
             assert.strictEqual(choice.getAttribute("aria-checked"), "false");
             assert.strictEqual(choice.querySelector(".data-breakpoint-choice svg"), null);
             assert.match(choice.parentElement.parentElement.textContent, /Disabled · counter > 5/);
-            assert.strictEqual(choice.nextElementSibling.firstElementChild.textContent, "Enable Data Breakpoint");
-            choice.nextElementSibling.firstElementChild.click();
+            assert.strictEqual(choice.nextElementSibling.textContent, "Edit Condition…");
+            choice.nextElementSibling.click();
+            assert.strictEqual(view.messages.at(-1).action, "condition");
+            assert.strictEqual(view.messages.at(-1).id, "1");
+            assert.strictEqual(view.messages.at(-1).condition, "counter > 5");
+            view.send({ ...status, requestId: open(), info });
+            menu().querySelector('[role="menuitemradio"]').click();
             assert.deepStrictEqual(
                 {
                     action: view.messages.at(-1).action,

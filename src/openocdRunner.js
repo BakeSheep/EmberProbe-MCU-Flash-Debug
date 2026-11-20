@@ -52,8 +52,10 @@ function parseLine(line) {
         };
     if (["program", "program_boost", "verify", "verify_boost"].includes(phase) && /EP_FLASH_STAGE=/.test(clean))
         return null;
-    if (phase && (/EP_FLASH_STAGE=/.test(clean) || /verify started|resetting target/i.test(clean)))
-        return { stage: phase, level: "info", message: clean };
+    if (phase && /EP_FLASH_STAGE=/.test(clean)) return { stage: phase, level: "info", message: clean };
+    if (phase === "verify") return { stage: phase, level: "info", message: "开始校验固件", key: "run.verifyStart" };
+    if (phase === "reset_run")
+        return { stage: phase, level: "info", message: "正在复位目标芯片", key: "run.resetTarget" };
     if (/open on-chip debugger/i.test(clean)) return { stage: "start", level: "info", message: clean };
     if (/CMSIS-DAP|ST-?LINK|J-?Link|DAPLink/i.test(clean) && /Info\s*:/i.test(clean))
         return { stage: "probe", level: "info", message: clean.replace(/^.*?Info\s*:\s*/i, "") || clean };
@@ -206,6 +208,9 @@ function runOpenOcd(vscode, options, onProgress) {
         const { terminal, writeEmitter, created } = acquireTerminal(vscode);
         terminal.show(true);
         const elfPath = options.elf.replace(/\\/g, "/");
+        const displayElfPath = (options.originalElf || elfPath)
+            .replace(/\\/g, "/")
+            .replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
         // ELF paths containing spaces must be quoted, or OpenOCD's Tcl parser splits them into several arguments
         let programCmd;
         try {
@@ -238,7 +243,7 @@ function runOpenOcd(vscode, options, onProgress) {
             print(`${icon} ${event.message}`, color);
         };
         print("\x1b[1;36mEmberProbe 固件下载\x1b[0m");
-        print(`固件 ${elfPath}`);
+        print(`固件 ${displayElfPath}`);
         print(`探针 ${options.probe} · 目标 ${options.target}\r\n`);
         onProgress({ stage: "start", level: "info", key: "run.starting", message: "正在启动 OpenOCD" });
         let child;
@@ -424,7 +429,7 @@ function runOpenOcd(vscode, options, onProgress) {
                 return;
             }
             if (code === 0) {
-                const elfName = elfPath.split("/").pop() || elfPath;
+                const elfName = displayElfPath.split("/").pop() || displayElfPath;
                 print("\r\n\x1b[1;32m✓ 固件下载并校验成功\x1b[0m");
                 print(`  固件 ${elfName}`);
                 const chipLine = [stats.chip, stats.deviceId].filter(Boolean).join(" · ");

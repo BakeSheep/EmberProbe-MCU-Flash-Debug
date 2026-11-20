@@ -433,7 +433,7 @@ try {
     );
     assert.strictEqual(auto.getAttribute("aria-pressed"), "true", "Auto stays pressed until the extension confirms");
 
-    // Automatic mode shows the chip it checks before each operation and the chip found behind each probe.
+    // A known target adds no status card. The chip behind each probe still appears with the device.
     const f4 = "STM32F4x · Cortex-M4 · UID …53534C32";
     const h7 = "STM32H7x · Cortex-M7 · UID …32363235";
     const byChip = {
@@ -446,11 +446,7 @@ try {
         ]
     };
     jlinkSidebar.send(list(byChip));
-    assert.deepStrictEqual(cardTexts(), [
-        "J-Link | 1234 · Cortex-M7",
-        "J-Link | 5678 · Cortex-M4",
-        `校验目标芯片 | ${f4}`
-    ]);
+    assert.deepStrictEqual(cardTexts(), ["J-Link | 1234 · Cortex-M7", "J-Link | 5678 · Cortex-M4"]);
     assert(cardFor(winusb).title.includes("按目标芯片选择"));
     assert(cardFor(segger).title.includes(`目标芯片：${h7}`), "the full chip is in the tooltip");
     assert.deepStrictEqual(checks(), [cardFor(winusb)]);
@@ -459,7 +455,7 @@ try {
     jlinkSidebar.send(list({ ...byChip, targetMismatch: { expected: f4, actual: h7 } }));
     const changed = doc.querySelector("#connectedProbeList .probe-card.warn");
     assert.strictEqual(changed.querySelector("small").textContent, `记录 ${f4} → 当前 ${h7}`);
-    assert(!cardTexts().some((text) => text.startsWith("校验目标芯片")), "the changed chip replaces the checked one");
+    assert.strictEqual(cardTexts().length, 3, "only a mismatch adds a status card");
     const accept = changed.querySelector("button.probe-target-accept");
     assert.strictEqual(accept.textContent, "改用当前芯片");
     accept.click();

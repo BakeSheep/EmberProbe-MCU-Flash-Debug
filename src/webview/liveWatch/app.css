@@ -3093,8 +3093,9 @@ input[type="number"]::-webkit-outer-spin-button {
 .chart-settings-toggle svg {
     width: 16px;
     height: 16px;
-    fill: currentColor;
-    stroke: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.1;
 }
 .chart-settings-popup {
     position: absolute;
@@ -3192,23 +3193,25 @@ input[type="number"]::-webkit-outer-spin-button {
     opacity: 0.45;
     cursor: not-allowed;
 }
-.toolbar .chart-settings-option.chart-settings-clock {
+.toolbar .chart-settings-option:is(.chart-settings-clock, .chart-settings-background) {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px 14px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px 8px;
+    padding: 6px 8px;
     cursor: default;
+}
+.toolbar .chart-settings-option.chart-settings-clock {
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+.chart-settings-clock .chart-settings-text {
+    line-height: 1.3;
 }
 .chart-settings-clock.is-locked {
     opacity: 0.72;
 }
-.chart-settings-clock .switch {
-    grid-column: 2;
-    grid-row: 1 / 3;
-}
-.chart-settings-clock-slider-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+.chart-settings-clock .write-slider {
+    grid-column: 1 / -1;
+    width: 100%;
 }
 .chart-settings-clock .write-slider:focus-visible {
     outline: 1px solid var(--vscode-focusBorder);
@@ -3218,11 +3221,10 @@ input[type="number"]::-webkit-outer-spin-button {
     opacity: 0.45;
 }
 .chart-settings-clock-value {
-    flex: none;
-    min-width: 68px;
-    text-align: right;
+    margin-inline-start: 4px;
     font-family: var(--vscode-editor-font-family);
     font-size: 11px;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
     color: var(--vscode-foreground);
     white-space: nowrap;
@@ -3230,6 +3232,20 @@ input[type="number"]::-webkit-outer-spin-button {
 .chart-settings-clock.is-auto .chart-settings-clock-value,
 .chart-settings-clock.is-locked .chart-settings-clock-value {
     color: var(--vscode-descriptionForeground);
+}
+.chart-settings-background button {
+    width: auto;
+    min-width: 0;
+    padding-inline: 6px;
+    font-size: 11px;
+}
+.toolbar .chart-settings-background label {
+    display: block;
+    line-height: 1.3;
+    white-space: normal;
+}
+:is(.chart-settings-clock, .chart-settings-background) small {
+    margin-top: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
     .chart-settings-option,

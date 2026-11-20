@@ -416,7 +416,6 @@ function renderConnectedProbes(m) {
     const notes = [...new Set([m.state === "absent" ? "" : error, locked ? source : "", status])].filter(Boolean);
     cards.unshift(...notes.map((note) => probeCard({ title: note, info: true })));
     connectedProbeAutomatic = !locked && m.source !== "remembered";
-    // Automatic mode checks every operation's target chip against the one it recorded.
     if (connectedProbeAutomatic && m.targetMismatch) {
         const card = probeCard({
             title: t("probe.targetChanged"),
@@ -432,15 +431,7 @@ function renderConnectedProbes(m) {
         accept.disabled = probeDriverBusy;
         card.append(accept);
         cards.push(card);
-    } else if (connectedProbeAutomatic && m.autoTarget)
-        cards.push(
-            probeCard({
-                title: t("probe.autoTarget"),
-                detail: m.autoTarget,
-                tooltip: t("probe.autoTargetHint"),
-                info: true
-            })
-        );
+    }
     connectedProbeList.replaceChildren(...cards);
     // Only a device the extension can save by its serial can be kept.
     connectedProbeKeepId =

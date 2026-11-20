@@ -25,6 +25,8 @@
         // One sampling session per window: this host owns its state and the waveform panel follows it.
         var samplingPhase = "stopped";
         var samplingIntent = false;
+        // One id per probe/target context; write cards sampled in an older context stop writing (src/services/writeExecution.js).
+        var writeContext = 1;
         var liveTimer = null;
         var phaseTimer = null;
         var watchItems = data.sidebarWatchList();
@@ -170,6 +172,7 @@
                 if (stopped) return;
                 setDebugPending(false);
                 if (kind !== "attach") simulator.reset();
+                writeContext += 1;
                 dataBreakpoints.session += 1;
                 notify({ action: "debugSessionChanged" });
                 send({ type: "commandSuccess", cmd: cmd });
@@ -201,6 +204,7 @@
                 status.frequencyHz = 20;
                 status.actualHz = data.samplingActive(phase) ? 20 : 0;
             }
+            status.writeContext = writeContext;
             return status;
         }
 
@@ -236,6 +240,7 @@
 
         function startSampling() {
             if (samplingIntent) return;
+            writeContext += 1;
             samplingIntent = true;
             if (debugStarting) setPhase("debug-waiting");
             else if (debugState === "paused") readSnapshot();
@@ -263,12 +268,19 @@
         function sendSamples() {
             var t = Date.now();
             var names = Array.from(new Set(watchNames.concat(writeNames)));
-            send({ type: "liveSample", samples: simulator.scalarSamples(names, t), t: t });
+            send({
+                type: "liveSample",
+                samples: simulator.scalarSamples(names, t, { writeContext: writeContext }),
+                t: t
+            });
             var composite = watchNames
                 .map(function (name) {
                     return simulator.compositeSample(name, t);
                 })
                 .filter(Boolean);
+            composite.forEach(function (sample) {
+                sample.writeContext = writeContext;
+            });
             if (composite.length) send({ type: "liveCompositeSample", samples: composite, t: t });
         }
 
@@ -315,7 +327,9 @@
         // settings.ended: the session is over and the target keeps running.
         function setTargetState(next, settings) {
             settings = settings || {};
+            var previousState = chipState;
             chipState = next;
+            if (previousState !== next || next === "halted" || settings.ended) writeContext += 1;
             if (next === "halted") stopEpoch += 1;
             if (Number.isInteger(settings.line)) targetLine = settings.line;
             debugState = settings.ended ? "none" : next === "halted" ? "paused" : "running";
@@ -419,7 +433,7 @@
                         "Wrote 917504 bytes (6.201542s, 144.480 KiB/s)"
                     )
                 },
-                { at: 7820, message: "** Verify Started **" },
+                { at: 7820, key: "run.verifyStart", message: say("开始校验固件", "Verifying firmware") },
                 {
                     at: 8730,
                     done: true,
@@ -431,7 +445,7 @@
                     )
                 },
                 { at: 8760, done: true, key: "run.verifyOk", message: say("固件校验通过", "Firmware verified") },
-                { at: 8860, message: "** Resetting Target **" }
+                { at: 8860, key: "run.resetTarget", message: say("正在复位目标芯片", "Resetting target") }
             ];
             steps.forEach(function (step) {
                 setTimeout(function () {
@@ -599,6 +613,10 @@
                         send({ type: "writeResult", ok: false, name: name, seq: seq, key: "sb.writeNeedSampling" });
                         break;
                     }
+                    if (message.fromWatch && message.writeContext !== writeContext) {
+                        send({ type: "writeResult", ok: false, name: name, seq: seq, key: "sb.writeBindingChanged" });
+                        break;
+                    }
                     if (writeNames.indexOf(name) >= 0 && simulator.write(name, value)) {
                         send({ type: "writeResult", ok: true, name: name, value: value, valueText: null, seq: seq });
                         sendSamples();
@@ -734,6 +752,9 @@
                         return item.name;
                     });
                     if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
+                    break;
+                case "cancelSidebarWrite":
+                    // Writes are immediate in the mock, so there is no queued value left to cancel.
                     break;
                 case "setLang":
                     notify({ action: "setLang", lang: message.lang, page: "sidebar" });
@@ -1364,6 +1385,10 @@
                         svd: { path: data.SVD_PATH, sha256: "mock-svd-sha256" },
                         peripherals: data.peripheralCatalog().peripherals
                     });
+                    break;
+                case "mcu-vscode.refreshCubeMxFirmware":
+                    // src/mainViewProvider.js re-renders the card; the mock's firmware state is already installed.
+                    send({ type: "commandSuccess", cmd: cmd });
                     break;
                 case "mcu-vscode.autoDetect":
                     // src/mainViewProvider.js reports everything it found in one notice.

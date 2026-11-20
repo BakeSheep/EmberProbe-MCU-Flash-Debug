@@ -358,13 +358,16 @@ const graph = { root: 4, types };
             assert.strictEqual(view.messages.filter((message) => message.type === "writeVariable").length, 0);
             assert.strictEqual(input.value, "1");
             assert.strictEqual(rows[1].querySelector(".write-risk"), null);
+            const gainInput = rows[1].querySelector(".write-input");
             sample(0x20000402);
             await clock.advance(100);
-            assert(rows[1].querySelector(".write-input").disabled);
+            assert(gainInput.disabled);
+            assert.match(gainInput.title, /once a sample confirms the original address and type/);
             assert.strictEqual(rows[1].querySelector(".write-risk"), null);
             sample(0x20000400);
             await clock.advance(100);
-            assert.strictEqual(rows[1].querySelector(".write-input").disabled, false);
+            assert.strictEqual(gainInput.disabled, false);
+            assert.strictEqual(gainInput.title, "");
             assert.strictEqual(rows[1].querySelector(".write-risk"), null);
             view.assertHealthy();
         } finally {
@@ -415,9 +418,17 @@ const graph = { root: 4, types };
             const input = () => view.document.querySelector(".write-input");
             status(1);
             sample([{ value: 2 }]);
-            assert(input().disabled && /add/i.test(input().title), "old cards require a newly pinned add");
+            assert(
+                input().disabled && /Remove it, then add it again/.test(input().title),
+                "old cards require a new binding"
+            );
             view.send({ type: "sidebarWriteList", items: [{ ...stored, writeBinding: binding }] });
             assert.strictEqual(input().disabled, false, input().title);
+            const nameLabel = view.document.querySelector(".write-row .value-name");
+            sample([{ address: address + 4, value: 3 }]);
+            assert.ok(nameLabel.closest(".write-row.gated"), "the variable name is in the greyed state");
+            sample([{ value: 2 }]);
+            assert.equal(nameLabel.closest(".write-row.gated"), null, "the original address restores the name");
             const slider = view.document.querySelector(".write-row input[type=range]");
             slider.value = "6";
             slider.dispatchEvent(new view.window.Event("input"));

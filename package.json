@@ -384,14 +384,6 @@
             "maximum": 102400,
             "description": "当前扩展会话的采样历史磁盘占用上限（MiB）。修改立即生效；调高后可重新开始因写满停止的采样。退出时自动删除归档。 / Sampling history disk limit (MiB) for the current extension session. Changes apply immediately; raising the limit allows sampling stopped by a full archive to restart. Archives are deleted on exit.",
             "order": 4
-          },
-          "emberprobe.chartBackgroundIcon.enabled": {
-            "type": "boolean",
-            "default": true,
-            "scope": "application",
-            "ignoreSync": true,
-            "markdownDescription": "在波形背景居中显示淡色图标。[导入/更换 PNG](command:mcu-vscode.selectChartBackgroundIcon) · [移除图标](command:mcu-vscode.removeChartBackgroundIcon)。支持透明底或纯色底 PNG；仅在本地处理，所有项目共享，不保存原图颜色和路径。 / Show a faint centered waveform background icon. [Import/replace PNG](command:mcu-vscode.selectChartBackgroundIcon) · [Remove icon](command:mcu-vscode.removeChartBackgroundIcon). Supports transparent or solid PNG backgrounds; processed locally and shared across projects. Original colors and source paths are not stored.",
-            "order": 5
           }
         }
       },
@@ -492,7 +484,7 @@
                 "description": "搜索范围大小（字节，十进制或 0x 十六进制，最大 16 MiB） / Search range size in bytes, decimal or 0x hexadecimal, 16 MiB at most"
               }
             },
-            "markdownDescription": "RTT 控制块搜索范围 `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`，按 32 KiB 分片搜索，片间释放会话。优先级低于 ELF `_SEGGER_RTT` 符号，高于自动扫描。 / RTT control block search range `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`, searched in 32 KiB slices that release the session between them. Ranks below the ELF `_SEGGER_RTT` symbol and above automatic scanning.",
+            "markdownDescription": "RTT 控制块搜索范围，例如 `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`。未指定控制块地址且 ELF 中没有 `_SEGGER_RTT` 符号时，使用此范围代替自动扫描。 / RTT control block search range, for example `{ \"address\": \"0x20000000\", \"size\": \"0x20000\" }`. This range replaces automatic scanning when no control block address or ELF `_SEGGER_RTT` symbol is available.",
             "order": 4
           },
           "emberprobe.rtt.pollingIntervalMs": {

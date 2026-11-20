@@ -10,10 +10,7 @@
     const ICONS = {
         check: "M3.5 8.4l3 3 6-6.6",
         pause: "M6 4v8M10 4v8",
-        disable: "M8 3.5a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9M4.8 11.2l6.4-6.4",
-        enable: "M8 3.5a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9M5.9 8.1l1.4 1.4 2.8-2.9",
-        condition: "M10.2 3.3l2.5 2.5-6.6 6.6-3 .5.5-3z",
-        remove: "M3.5 5h9M6.5 5V3.5h3V5M4.8 5l.6 7.5h5.2L11.2 5"
+        condition: "M10.2 3.3l2.5 2.5-6.6 6.6-3 .5.5-3z"
     };
     const stateOf = (entry) => (!entry.enabled ? "disabled" : entry.verified ? "enabled" : "failed");
     function create({ state, box, api, t, setNotice, writeMenu }, displayName) {
@@ -133,20 +130,21 @@
             parent.appendChild(control);
             return control;
         }
-        function tool(parent, label, glyph, action, args, danger = false) {
-            const control = element("button", "data-breakpoint-tool" + (danger ? " danger" : ""));
+        function conditionButton(entry) {
+            const label = t("sb.dataCondition");
+            const control = element("button", "data-breakpoint-tool");
             control.type = "button";
+            control.disabled = !entry;
             control.setAttribute("role", "menuitem");
             control.title = label;
-            control.appendChild(icon(glyph));
-            // The visually hidden label keeps the accessible name and textContent equal to the action.
+            control.appendChild(icon("condition"));
             control.appendChild(element("span", "data-breakpoint-sr", label));
-            control.onclick = () => {
-                const context = get().target;
-                send(action, args, context);
-                close(true);
-            };
-            parent.appendChild(control);
+            if (entry)
+                control.onclick = () => {
+                    send("condition", { id: entry.id, condition: entry.condition }, get().target);
+                    close(true);
+                };
+            return control;
         }
         function menuCard(menu, title, showTitle = true) {
             const card = element("div", "data-breakpoint-menu-card");
@@ -164,22 +162,6 @@
             if (!info?.dataId || !info.address) return "";
             return t("sb.dataStorage", { address: info.address, bytes: info.bytes });
         }
-        function entryTools(entry) {
-            const tools = element("span", "data-breakpoint-tools");
-            tool(
-                tools,
-                t(entry.enabled ? "sb.dataDisable" : "sb.dataEnable"),
-                entry.enabled ? "disable" : "enable",
-                "enable",
-                {
-                    id: entry.id,
-                    enabled: !entry.enabled
-                }
-            );
-            tool(tools, t("sb.dataCondition"), "condition", "condition", { id: entry.id, condition: entry.condition });
-            tool(tools, t("sb.dataRemove"), "remove", "remove", { id: entry.id }, true);
-            return tools;
-        }
         function drawAccess(menu, s, accessType) {
             const { dataId, accessTypes } = s.info || {};
             const entries = s.entries.filter(
@@ -188,28 +170,29 @@
                     (entry.name === s.target.name || (dataId && entry.dataId === dataId))
             );
             const current = dataId && entries.find((entry) => entry.dataId === dataId);
-            const primary = current || entries[0];
-            const checked = Boolean(current?.enabled && current.verified);
+            const primary = current || entries.find((entry) => entry.enabled) || entries[0];
+            const checked = Boolean(primary?.enabled);
+            const toggleEntry = current || (checked ? primary : null);
             const group = element("div", "data-breakpoint-access");
             const row = element("div", "data-breakpoint-option");
             group.appendChild(row);
             button(
                 row,
                 accessLabel(accessType),
-                current ? "enable" : "add",
-                current ? { id: current.id, enabled: !checked } : { name: s.target.name, dataId, accessType },
+                toggleEntry ? "enable" : "add",
+                toggleEntry ? { id: toggleEntry.id, enabled: !checked } : { name: s.target.name, dataId, accessType },
                 {
-                    disabled: !dataId || (!checked && !accessTypes?.includes(accessType)),
+                    disabled: !s.info || (!checked && (!dataId || !accessTypes?.includes(accessType))),
                     glyph: checked ? "check" : null,
                     checked
                 }
             );
+            row.appendChild(conditionButton(s.info && primary));
             if (primary) {
                 row.title = entryTitle(primary);
-                row.appendChild(entryTools(primary));
                 const status = stateOf(primary);
                 const detail = [
-                    dataId && !current ? primary.description : "",
+                    !current ? primary.description : "",
                     status !== "enabled" ? statusLabel(primary) : "",
                     primary.condition
                 ]
@@ -218,13 +201,25 @@
                 if (detail) group.appendChild(element("div", "data-breakpoint-detail " + status, detail));
             }
             // A pointer can resolve to a new address, and a failed edit can leave a prior watchpoint.
-            // Keep every retained entry manageable under its access type.
+            // Keep each retained condition accessible under its access type.
             for (const entry of entries) {
                 if (entry === primary) continue;
                 const extra = element("div", "data-breakpoint-option");
                 extra.title = entryTitle(entry);
                 const detail = [entry.description, entry.condition, statusLabel(entry)].filter(Boolean).join(" · ");
-                extra.append(element("span", "data-breakpoint-detail " + stateOf(entry), detail), entryTools(entry));
+                button(
+                    extra,
+                    detail,
+                    "enable",
+                    { id: entry.id, enabled: !entry.enabled },
+                    {
+                        disabled: !s.info,
+                        glyph: entry.enabled ? "check" : null,
+                        checked: entry.enabled,
+                        className: "data-breakpoint-retained"
+                    }
+                );
+                extra.appendChild(conditionButton(s.info && entry));
                 group.appendChild(extra);
             }
             menu.appendChild(group);

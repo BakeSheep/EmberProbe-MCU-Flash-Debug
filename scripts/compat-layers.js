@@ -28,6 +28,12 @@ const COMPAT_LAYERS = Object.freeze([
         sites: [{ file: "src/services/mcpConfigEdits.js", marker: "STALE_BINDING" }]
     },
     {
+        id: "chart-background-visibility-migration",
+        purpose: "Retains the user-level waveform background visibility after its control moves into the waveform",
+        removeIn: "1.0.0",
+        sites: [{ file: "src/services/chartBackgroundController.js", marker: "legacyEnabled" }]
+    },
+    {
         id: "write-trust-fail-closed",
         purpose: "Treats a write trust stored by older releases as a boolean or timestamp as untrusted",
         removeIn: null,

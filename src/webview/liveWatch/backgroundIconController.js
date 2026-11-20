@@ -7,12 +7,22 @@
         let icon = null,
             cache = null,
             latestRequest = 0;
+        const visibility = document.getElementById("chartBackgroundEnabled");
+        const importButton = document.getElementById("chartBackgroundImport");
+        visibility?.addEventListener("change", () =>
+            post({ type: "setChartBackgroundEnabled", enabled: visibility.checked })
+        );
+        importButton?.addEventListener("click", () => post({ type: "selectChartBackgroundIcon" }));
         return {
             receive(message) {
                 try {
                     icon = message.icon === null ? null : Icon.validate(message.icon);
                 } catch {
                     return;
+                }
+                if (visibility && typeof message.enabled === "boolean") {
+                    visibility.checked = message.enabled;
+                    visibility.disabled = false;
                 }
                 cache = null;
                 changed();

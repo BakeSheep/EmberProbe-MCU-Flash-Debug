@@ -2,7 +2,7 @@
 const Icon = require("../webview/liveWatch/backgroundIcon");
 const { ChartBackgroundStore } = require("./chartBackgroundStore");
 
-// Native Settings owns image selection. A waveform Webview only decodes a host-authorized PNG.
+// The host owns the file picker. A waveform Webview only decodes a host-authorized PNG.
 class ChartBackgroundController {
     constructor({ vscode, state, entries, open, t }) {
         this.vscode = vscode;
@@ -13,18 +13,33 @@ class ChartBackgroundController {
         this.generation = 0;
         this.pending = null;
         this.selecting = null;
+        this.legacyEnabled = vscode.workspace
+            .getConfiguration("emberprobe")
+            .inspect?.("chartBackgroundIcon.enabled")?.globalValue;
+        if (this.legacyEnabled === false && this.store.enabled() === undefined)
+            this.store.setEnabled(false).catch(console.error);
     }
     state() {
-        const enabled = this.vscode.workspace.getConfiguration("emberprobe").get?.("chartBackgroundIcon.enabled", true);
-        return { type: "chartBackgroundIcon", icon: enabled === false ? null : this.store.read() };
+        const enabled = (this.store.enabled() ?? this.legacyEnabled) !== false;
+        return { type: "chartBackgroundIcon", enabled, icon: enabled ? this.store.read() : null };
     }
     broadcast() {
         const message = this.state();
         for (const entry of this.entries()) entry.post(message);
     }
-    select() {
+    async setEnabled(enabled) {
+        if (typeof enabled !== "boolean") return;
+        try {
+            await this.store.setEnabled(enabled);
+        } catch {
+            this.vscode.window.showErrorMessage(this.t("lw.backgroundVisibilityError"));
+        } finally {
+            this.broadcast();
+        }
+    }
+    select(entry) {
         if (this.selecting) return this.selecting;
-        this.selecting = this.selectFile()
+        this.selecting = this.selectFile(entry)
             .catch((error) => {
                 if (error.code === "cancelled") return;
                 const keys = {
@@ -40,7 +55,7 @@ class ChartBackgroundController {
             });
         return this.selecting;
     }
-    async selectFile() {
+    async selectFile(preferredEntry) {
         const generation = ++this.generation;
         const selected = await this.vscode.window.showOpenDialog({
             title: this.t("lw.backgroundSelectTitle"),
@@ -63,7 +78,10 @@ class ChartBackgroundController {
                 if (bytes.length > Icon.MAX_FILE_BYTES) throw Object.assign(new Error("size"), { code: "size" });
                 Icon.pngSize(bytes);
                 if (generation !== this.generation) return;
-                let entry = Array.from(this.entries()).sort((a, b) => b.focusOrder - a.focusOrder)[0];
+                const entries = Array.from(this.entries());
+                let entry = entries.includes(preferredEntry)
+                    ? preferredEntry
+                    : entries.sort((a, b) => b.focusOrder - a.focusOrder)[0];
                 if (!entry) {
                     this.open();
                     entry = Array.from(this.entries()).sort((a, b) => b.focusOrder - a.focusOrder)[0];

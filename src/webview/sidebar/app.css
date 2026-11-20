@@ -562,6 +562,10 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     font: inherit;
 }
 
+.write-row.gated .write-name-wrap .value-name {
+    color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+}
+
 .write-name-wrap > .write-name-line {
     grid-column: 2;
     grid-row: 2;
@@ -836,7 +840,7 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 }
 .data-breakpoint-item:hover:not(:disabled),
 .data-breakpoint-item:focus-visible,
-.data-breakpoint-tool:hover,
+.data-breakpoint-tool:hover:not(:disabled),
 .data-breakpoint-tool:focus-visible {
     outline: none;
     border-color: var(--vscode-menu-selectionBorder, transparent);
@@ -890,13 +894,15 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .data-breakpoint-detail.failed {
     color: var(--vscode-editorWarning-foreground, #cca700);
 }
-.data-breakpoint-tools {
-    display: inline-flex;
-    flex: none;
-    gap: 1px;
+.data-breakpoint-retained .data-breakpoint-label {
+    overflow: hidden;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .data-breakpoint-tool {
     display: inline-flex;
+    flex: none;
     align-items: center;
     justify-content: center;
     width: 22px;
@@ -908,10 +914,9 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     background: transparent;
     cursor: pointer;
 }
-.data-breakpoint-tool.danger:hover,
-.data-breakpoint-tool.danger:focus-visible {
-    color: var(--vscode-errorForeground, #f48771);
-    background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+.data-breakpoint-tool:disabled {
+    color: var(--vscode-disabledForeground, #8888);
+    cursor: default;
 }
 .data-breakpoint-sr {
     position: absolute;

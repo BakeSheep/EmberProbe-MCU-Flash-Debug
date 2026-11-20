@@ -125,7 +125,7 @@ async function normalRun() {
             "EP_FLASH_STAGE=reset_init",
             "** Programming Started **",
             "EP_FLASH_STAGE=program",
-            "wrote 1024 bytes from file /fw.elf in 0.100s (10.000 KiB/s)",
+            "wrote 1024 bytes from file /snapshot/firmware.elf in 0.100s (10.000 KiB/s)",
             "** Programming Finished **",
             "** Verify Started **",
             "** Verified OK **",
@@ -134,12 +134,34 @@ async function normalRun() {
         0
     );
     const events = [];
-    const result = await runner.run(runner.vscode, options, (event) => events.push(event));
+    const result = await runner.run(
+        runner.vscode,
+        { ...options, elf: "/snapshot/firmware.elf", originalElf: "C:\\build\\测试固件 v2.elf" },
+        (event) => events.push(event)
+    );
     assert.strictEqual(result.unchanged, false);
     assert(runner.spawned[0].some((arg) => arg.includes("set ::_ep_flash_khz 24000;")));
+    const program = runner.spawned[0].find((arg) => arg.includes("_ep_flash_program"));
+    assert(program.endsWith('"/snapshot/firmware.elf"'));
+    assert(!program.includes("测试固件"));
     assert(events.some((event) => event.stage === "program" && event.bytes === 1024));
+    assert.deepStrictEqual(
+        events
+            .filter((event) => ["run.verifyStart", "run.verifyOk", "run.resetTarget"].includes(event.key))
+            .map(({ stage, key }) => [stage, key]),
+        [
+            ["verify", "run.verifyStart"],
+            ["verify", "run.verifyOk"],
+            ["reset_run", "run.resetTarget"]
+        ]
+    );
     assert.strictEqual(events.at(-1).key, "run.downloadSuccess");
-    assert(runner.written.some((text) => text.includes("固件下载并校验成功")));
+    const output = runner.written.join("");
+    assert.match(output, /→ 开始校验固件[^\r\n]*\r\n[^\r\n]*✓ 固件校验通过[^\r\n]*\r\n→ 正在复位目标芯片/);
+    assert.doesNotMatch(output, /Verify Started|Resetting Target|\*\*/);
+    assert.match(output, /固件 C:\/build\/测试固件 v2\.elf/);
+    assert.match(output, /固件下载并校验成功[^\r\n]*\r\n {2}固件 测试固件 v2\.elf/);
+    assert(!output.includes("/snapshot/firmware.elf"));
 }
 
 async function fallbackRun() {
@@ -173,6 +195,7 @@ async function fallbackRun() {
     );
     assert.strictEqual(events.at(-1).key, "run.downloadSuccess");
     assert(runner.written.some((text) => text.includes("已降速重烧")));
+    assert(runner.written.some((text) => text.includes("  固件 fw.elf")));
 }
 
 async function failedFallbackRun() {

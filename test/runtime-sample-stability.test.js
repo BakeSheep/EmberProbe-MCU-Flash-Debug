@@ -235,7 +235,7 @@ const sample = (item, read) =>
         view.send({ type: "liveCompositeSample", samples: [{ name: "g", tree: unread, t: 3 }] });
         const card = view.document.querySelector(".value-row.composite");
         const notices = [...card.querySelectorAll(".notice")].filter((node) =>
-            node.textContent.includes("exceed the read budget")
+            node.textContent.includes("Read limit reached")
         );
         assert.strictEqual(notices.length, 1, "one read-budget notice per card");
         assert.ok(card.textContent.includes("marker"), "an unread scalar keeps its row");

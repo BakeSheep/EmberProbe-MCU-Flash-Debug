@@ -97,7 +97,7 @@
 
             const displayKhz = state.adaptive ? resolveAdaptiveDisplayKhz() : resolveManualDisplayKhz();
             slider.value = String(snapManualKhz(displayKhz ?? state.manualSpeedKhz));
-            const text = displayKhz === null ? t("lw.samplingClockPending") : Math.round(displayKhz) + " kHz";
+            const text = displayKhz === null ? t("lw.samplingClockPending") : `${Math.round(displayKhz) / 1000} MHz`;
             valueLabel.textContent = text;
             slider.setAttribute("aria-valuetext", text);
         }

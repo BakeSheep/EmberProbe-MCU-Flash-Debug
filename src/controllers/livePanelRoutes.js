@@ -191,6 +191,8 @@ const LIVE_PANEL_ROUTES = {
     clearSamplingHistory,
     ...Object.fromEntries([...CHART_HISTORY_REQUESTS].map((type) => [type, chartHistoryRequest])),
     exportCsv,
+    selectChartBackgroundIcon: ({ host, entry }) => host.chartBackground().select(entry),
+    setChartBackgroundEnabled: ({ host }, message) => host.chartBackground().setEnabled(message.enabled),
     chartBackgroundIconImported: ({ host, entry }, message) => host.chartBackground().imported(entry, message),
     saveCurveVisibility: ({ host, watchKey }, message) => host._saveCurveVisibility(watchKey, message.hidden),
     setPointerExpandedOnly: async ({ host, post }, message) => {

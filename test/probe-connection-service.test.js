@@ -144,7 +144,7 @@ async function main() {
     assert.deepStrictEqual(saved, picked("1234", "usb-1"), "the missing pick is kept");
     assert.strictEqual(
         i18n.t("zh", "probe.rememberedNotFound", { label: "J-Link", serial: "1234" }),
-        "已选择的 J-Link（1234）未连接，不会自动改用其他设备。请重新连接它，或在“已连接调试器”中改选其他设备或点击“自动”"
+        "所选 J-Link（1234）未连接。请重新连接该设备，或在“已连接调试器”中选择其他设备。"
     );
     // An explicitly configured serial stays strict and is changed in settings, not in the list.
     config = { ...config, probeSerial: "9999" };

@@ -150,7 +150,7 @@ async function storageAndHost() {
         entries = [];
     let fail = false,
         selected = [{}],
-        enabled = true,
+        legacyVisibility,
         fileBytes = header(5, 5),
         statSize = 33,
         dialogs = 0;
@@ -176,7 +176,7 @@ async function storageAndHost() {
     const vscode = {
         ProgressLocation: { Notification: 15 },
         workspace: {
-            getConfiguration: () => ({ get: () => enabled }),
+            getConfiguration: () => ({ inspect: () => ({ globalValue: legacyVisibility, workspaceValue: false }) }),
             fs: { stat: async () => ({ size: statSize }), readFile: async () => fileBytes }
         },
         window: {
@@ -190,7 +190,7 @@ async function storageAndHost() {
             withProgress: async (_opts, task) => task()
         }
     };
-    const controller = new NativeController({
+    const options = {
         vscode,
         state,
         entries: () => entries,
@@ -205,7 +205,16 @@ async function storageAndHost() {
                 }
             });
         }
-    });
+    };
+    const controller = new NativeController(options);
+    assert.equal(controller.state().enabled, true, "ignores workspace settings");
+    legacyVisibility = false;
+    const upgraded = new NativeController(options);
+    assert.equal(upgraded.state().enabled, false, "preserves the old user preference");
+    await upgraded.store.pending;
+    legacyVisibility = undefined;
+    assert.equal(new NativeController(options).state().enabled, false, "persists the migrated preference");
+    await controller.setEnabled(true);
     async function waitPending() {
         for (let i = 0; i < 20 && !controller.pending; i++) await new Promise(setImmediate);
         assert.ok(controller.pending);
@@ -233,12 +242,12 @@ async function storageAndHost() {
     await importing;
     assert.deepStrictEqual(store.read(), sample);
     assert.equal(entry.messages.at(-1).type, "chartBackgroundIcon");
-    enabled = false;
-    controller.broadcast();
+    await controller.setEnabled(false);
+    assert.equal(entry.messages.at(-1).enabled, false);
     assert.equal(entry.messages.at(-1).icon, null);
     assert.deepStrictEqual(store.read(), sample, "hide keeps the mask");
-    enabled = true;
-    controller.broadcast();
+    await controller.setEnabled(true);
+    assert.equal(entry.messages.at(-1).enabled, true);
     assert.deepStrictEqual(entry.messages.at(-1).icon, sample);
     for (const errorCode of ["background", "empty", "invalid", "size"]) {
         const task = controller.select(),
@@ -358,6 +367,13 @@ async function storageAndHost() {
     assert.deepStrictEqual(panels[1].messages.at(-1).icon, sample);
     await panels[1].receive({ type: "ready" });
     assert.ok(panels[1].messages.some((m) => m.type === "chartBackgroundIcon" && m.icon));
+    await panels[1].receive({ type: "setChartBackgroundEnabled", enabled: false });
+    for (const panel of panels)
+        assert.deepStrictEqual(panel.messages.at(-1), { type: "chartBackgroundIcon", enabled: false, icon: null });
+    await panels[0].receive({ type: "setChartBackgroundEnabled", enabled: "true" });
+    assert.equal(provider._chartBackgroundState().enabled, false);
+    await panels[0].receive({ type: "setChartBackgroundEnabled", enabled: true });
+    assert.deepStrictEqual(panels[1].messages.at(-1).icon, sample);
     await panels[0].receive({ type: "chartBackgroundIconImported", requestId: 99, icon: null });
     assert.deepStrictEqual(
         provider._chartBackgroundState().icon,
@@ -375,9 +391,7 @@ async function storageAndHost() {
         {},
         ...require("../package.json").contributes.configuration.map((group) => group.properties)
     )["emberprobe.chartBackgroundIcon.enabled"];
-    assert.equal(setting.scope, "application");
-    assert.equal(setting.ignoreSync, true);
-    assert.ok(setting.markdownDescription.includes("command:mcu-vscode.selectChartBackgroundIcon"));
+    assert.equal(setting, undefined, "the preference moved out of VS Code Settings");
 }
 
 async function controllerAndPainting() {
@@ -459,9 +473,21 @@ async function controllerAndPainting() {
     assert.equal(changes, 2);
     dom.window.close();
     const view = render(getLiveWatchContent({}, "zh"));
-    view.send({ type: "chartBackgroundIcon", icon: null });
-    assert.equal(view.document.getElementById("backgroundIconUpload"), null);
-    assert.equal(view.document.getElementById("backgroundIconFile"), null);
+    const toggle = view.document.getElementById("chartBackgroundEnabled");
+    const importButton = view.document.getElementById("chartBackgroundImport");
+    const backgroundHint = view.document.getElementById(toggle.getAttribute("aria-describedby"));
+    assert.equal(backgroundHint.textContent, "导入的图片会以淡色显示，所有工作区共享。");
+    assert.equal(toggle.disabled, true);
+    view.send({ type: "chartBackgroundIcon", enabled: true, icon: null });
+    assert.equal(toggle.disabled, false);
+    assert.equal(toggle.checked, true);
+    toggle.click();
+    assert.equal(view.messages.at(-1).type, "setChartBackgroundEnabled");
+    assert.equal(view.messages.at(-1).enabled, false);
+    view.send({ type: "chartBackgroundIcon", enabled: false, icon: null });
+    assert.equal(toggle.checked, false);
+    importButton.click();
+    assert.equal(view.messages.at(-1).type, "selectChartBackgroundIcon");
     view.assertHealthy();
     view.close();
 

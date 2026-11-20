@@ -58,7 +58,6 @@ function activate(context) {
             if (["gdbPath", "armToolchainPath", "armToolchainPrefix", "objdumpPath"].some(
                 key => event.affectsConfiguration("emberprobe." + key)
             )) provider.debugLaunch.scheduleGdbWarmup();
-            if (event.affectsConfiguration("emberprobe.chartBackgroundIcon.enabled")) provider.chartBackground().broadcast();
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.debugLaunch.externalSettingsChanged().catch(console.error);
             const connectionChanged = ["openocdPath", "transport", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
             const samplingSpeedChanged = event.affectsConfiguration("emberprobe.samplingAdapterSpeedKhz");

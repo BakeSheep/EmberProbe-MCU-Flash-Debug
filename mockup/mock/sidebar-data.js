@@ -245,6 +245,38 @@
         })
     ];
 
+    function symbolFor(name) {
+        return (
+            SYMBOLS.find(function (symbol) {
+                return symbol.name === name;
+            }) || null
+        );
+    }
+
+    // Scalar member paths the mock accepts from the write list: the host resolves a path's type before storing it.
+    var MEMBER_TYPES = {};
+    function collectLayoutTypes(layout, path) {
+        if (!layout) return;
+        (layout.members || []).forEach(function (member) {
+            var memberPath = member.name ? path + "." + member.name : path;
+            if (member.compositeLayout) collectLayoutTypes(member.compositeLayout, memberPath);
+            else if (member.watchType) MEMBER_TYPES[memberPath] = member.watchType;
+        });
+        if (layout.kind === "array" && layout.elementType) {
+            for (var index = 0; index < (layout.totalElements || 0); index++) {
+                var elementPath = path + "[" + index + "]";
+                if (layout.elementType.compositeLayout)
+                    collectLayoutTypes(layout.elementType.compositeLayout, elementPath);
+                else if (layout.elementType.watchType) MEMBER_TYPES[elementPath] = layout.elementType.watchType;
+            }
+        }
+    }
+    SYMBOLS.forEach(function (symbol) {
+        if (symbol.compositeLayout) collectLayoutTypes(symbol.compositeLayout, symbol.name);
+    });
+    // A runtime object's visible scalar leaf; the extension sends its address with the sample.
+    MEMBER_TYPES["g_motor.speed._M_fp"] = "f32";
+
     // The type phase the extension posts for both pages (src/services/elfViewController.js).
     function variableTypes() {
         return SYMBOLS.map(function (symbol) {
@@ -1059,7 +1091,8 @@
             state.imu.temp = round(state.temp + noise(0.05), 3);
             state.imu.timestamp = state.now >>> 0;
         }
-        function scalarSamples(names, t) {
+        function scalarSamples(names, t, options) {
+            var writeContext = options && Number.isSafeInteger(options.writeContext) ? options.writeContext : null;
             var values = {
                 g_sensor_temp: state.temp,
                 g_motor_rpm: state.rpm,
@@ -1118,21 +1151,36 @@
             };
             return (names || [])
                 .map(function (name) {
-                    if (display[name]) return Object.assign({ name: name, valueText: null, t: t }, display[name]);
-                    return { name: name, value: overrides.has(name) ? overrides.get(name) : values[name], t: t };
+                    var sample = display[name]
+                        ? Object.assign({ name: name, valueText: null, t: t }, display[name])
+                        : { name: name, value: overrides.has(name) ? overrides.get(name) : values[name], t: t };
+                    var symbol = symbolFor(name);
+                    if (writeContext !== null && symbol && !symbol.isComposite) {
+                        sample.writeContext = writeContext;
+                        sample.address = symbol.address;
+                        sample.type = symbol.watchType;
+                        sample.typeName = symbol.typeName;
+                        if (symbol.isConst) sample.writeRestriction = "readOnly";
+                        else if (symbol.isPointer) sample.writeRestriction = "pointer";
+                        else if (!symbol.hasDwarfWriteType) sample.writeRestriction = "type";
+                    }
+                    return sample;
                 })
                 .filter(function (sample) {
                     return sample.value !== undefined;
                 });
         }
         function write(name, value) {
-            var symbol = SYMBOLS.find(function (item) {
-                return item.name === name;
-            });
-            if (!symbol || symbol.isConst || symbol.isComposite || !Number.isFinite(value)) return false;
-            var type = symbol.watchType;
+            var symbol = symbolFor(name);
+            var type = symbol && !symbol.isComposite ? symbol.watchType : MEMBER_TYPES[name];
+            if (
+                !type ||
+                (symbol && (symbol.isConst || symbol.isComposite)) ||
+                !Number.isFinite(value) ||
+                (symbol && symbol.isBoolean && value !== 0 && value !== 1)
+            )
+                return false;
             var bits = Number(type.slice(1));
-            if (symbol.isBoolean && value !== 0 && value !== 1) return false;
             if (
                 type[0] !== "f" &&
                 (!Number.isInteger(value) ||
@@ -1145,9 +1193,28 @@
             overrides.set(name, stored);
             return true;
         }
+        // Member writes stay overrides too, so the next simulated sample shows the written value.
+        function applyOverrides(node, path) {
+            if (!node) return node;
+            if (node.value !== undefined && overrides.has(path)) {
+                node.value = overrides.get(path);
+                node.valueText = null;
+            }
+            (node.members || []).forEach(function (member) {
+                applyOverrides(member, member.name ? path + "." + member.name : path);
+            });
+            (node.elements || []).forEach(function (element) {
+                applyOverrides(element, path + "[" + element.index + "]");
+            });
+            return node;
+        }
+        function treeResult(result) {
+            result.tree = applyOverrides(result.tree, result.name);
+            return result;
+        }
         function compositeSample(name, t) {
             if (name === "g_imu") {
-                return {
+                return treeResult({
                     name: name,
                     t: t,
                     tree: {
@@ -1204,10 +1271,10 @@
                             }
                         ]
                     }
-                };
+                });
             }
             if (name === "g_adc_samples") {
-                return {
+                return treeResult({
                     name: name,
                     t: t,
                     tree: {
@@ -1220,10 +1287,10 @@
                             return { index: index, offset: index * 2, value: value, valueText: null, type: "u16" };
                         })
                     }
-                };
+                });
             }
             if (name === "g_sensors") {
-                return {
+                return treeResult({
                     name: name,
                     t: t,
                     tree: {
@@ -1235,11 +1302,15 @@
                             return { index: index, offset: index * 12, kind: "struct", members: sensorMembers(index) };
                         })
                     }
-                };
+                });
             }
             if (name === "g_active_sensor.value")
-                return { name: name, t: t, tree: { kind: "class", typeName: "sensor_t", members: sensorMembers(1) } };
-            if (name === "g_motor") return { name: name, t: t, tree: motorTree() };
+                return treeResult({
+                    name: name,
+                    t: t,
+                    tree: { kind: "class", typeName: "sensor_t", members: sensorMembers(1) }
+                });
+            if (name === "g_motor") return treeResult({ name: name, t: t, tree: motorTree() });
             return null;
         }
         // The sensors the firmware polls; sensor 1 is the one g_active_sensor points to.
@@ -1268,6 +1339,8 @@
                         name: "_vptr.Motor",
                         kind: "scalar",
                         type: "u32",
+                        address: 0x20000300,
+                        writeRestriction: "pointer",
                         memberRole: "artificial",
                         isPointer: true,
                         typeName: "void (**)(void)",
@@ -1278,6 +1351,8 @@
                         name: "name",
                         kind: "scalar",
                         type: "u32",
+                        address: 0x20000304,
+                        writeRestriction: "pointer",
                         isPointer: true,
                         typeName: "const char *",
                         value: 0x080c2f40,
@@ -1287,6 +1362,8 @@
                         name: "state",
                         kind: "scalar",
                         type: "u8",
+                        address: 0x20000308,
+                        writeRestriction: "type",
                         typeName: "app::State",
                         value: 3,
                         enumText: ".Active / .Ready(3)"
@@ -1301,6 +1378,9 @@
                                 name: "_M_fp",
                                 kind: "scalar",
                                 type: "f32",
+                                typeName: "float",
+                                address: 0x2000030c,
+                                writeRestriction: "",
                                 memberRole: "internal",
                                 value: state.rpm
                             }
@@ -1316,6 +1396,8 @@
                                 name: "_M_head_impl",
                                 kind: "scalar",
                                 type: "u32",
+                                address: 0x20000310,
+                                writeRestriction: "pointer",
                                 memberRole: "internal",
                                 isPointer: true,
                                 typeName: "Driver *",
@@ -1334,6 +1416,8 @@
                                 name: "_M_invoker",
                                 kind: "scalar",
                                 type: "u32",
+                                address: 0x20000314,
+                                writeRestriction: "pointer",
                                 memberRole: "internal",
                                 isPointer: true,
                                 typeName: "void (*)(void)",
@@ -1344,6 +1428,8 @@
                                 name: "_M_manager",
                                 kind: "scalar",
                                 type: "u32",
+                                address: 0x20000318,
+                                writeRestriction: "unsupported",
                                 memberRole: "internal",
                                 isPointer: true,
                                 typeName: "void (*)(void)",
