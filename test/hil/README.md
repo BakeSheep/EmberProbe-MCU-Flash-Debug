@@ -48,7 +48,7 @@ For every failed installation, query `probe.list` before another attempt. If the
 
 Use a dedicated H750 board and one J-Link with exclusive access. Keep the same USB cable, SWD wiring, target power, xPack OpenOCD executable, `jlink.cfg`, `stm32h7x.cfg`, SWD transport and adapter speed throughout. Close VS Code debugging and other J-Link clients before each series. This procedure only invokes OpenOCD `init; shutdown`; it does not flash firmware, request a target reset, change adapter speed between runs or retry a failed run. Do not use the flashing HIL runner for this comparison.
 
-Run `scripts/measure-jlink-swd.js` from the repository root with Node.js 20+. It selects the exact J-Link serial and instance ID, checks the instance is bound to WinUSB before every run, and records each complete OpenOCD `-d3` stdout/stderr stream, exit code, elapsed time, VTarget and SWD error/ack text. Choose a fresh output directory and preserve it for all phases. For example, on the documented H750 setup:
+Run `scripts/measure-jlink-swd.js` from the repository root with Node.js 24 LTS. It selects the exact J-Link serial and instance ID, checks the instance is bound to WinUSB before every run, and records each complete OpenOCD `-d3` stdout/stderr stream, exit code, elapsed time, VTarget and SWD error/ack text. Choose a fresh output directory and preserve it for all phases. For example, on the documented H750 setup:
 
 ```powershell
 $openocd = 'D:\software\openOCD\xpack-openocd-0.12.0-7\bin\openocd.exe'
@@ -158,10 +158,10 @@ Run `node scripts/hil-matrix.js --doctor` first. It checks the executables and E
 ### One-time Windows/WSL setup
 
 1. As administrator: `winget install --exact dorssel.usbipd-win`, then for each probe `usbipd bind --hardware-id <VID:PID>` (or `--busid`). Binding is persistent and does not change the Windows driver until the probe is attached to WSL.
-2. In the WSL distribution: install Linux Node.js 20+ (nvm or NodeSource; Windows `node`/`npm` reached through interop are rejected), plus `rsync xvfb xauth usbutils` and the VS Code runtime libraries (`libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2t64`).
+2. In the WSL distribution, install Linux Node.js 24 LTS with nvm or NodeSource. Also install `rsync xvfb xauth usbutils` and the VS Code runtime libraries (`libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2t64`).
 3. Install a Linux OpenOCD (xPack recommended, same version as Windows) and the ARM GNU toolchain, and point the profile's `linux` paths at them.
 4. Install OpenOCD's udev rules (`60-openocd.rules` from the OpenOCD package's `contrib/`) into `/etc/udev/rules.d/`, then `sudo udevadm control --reload && sudo udevadm trigger`, so a non-root OpenOCD can open attached probes.
-5. If Windows uses a localhost proxy, set `networkingMode=mirrored` in `%UserProfile%\.wslconfig` (or configure a proxy inside WSL); the first WSL run downloads npm packages and the VS Code test build. When WSL downloads stay slow, download the Linux test build on Windows instead (for example `curl.exe -L -o .vscode-test/vscode-linux-x64-1.136.1.tar.gz https://update.code.visualstudio.com/1.136.1/linux-x64/stable`); the matrix seeds the WSL cache from that archive.
+5. If Windows uses a localhost proxy, set `networkingMode=mirrored` in `%UserProfile%\.wslconfig` (or configure a proxy inside WSL); the first WSL run downloads npm packages and the VS Code test build. When WSL downloads stay slow, download the Linux test build on Windows instead (for example `curl.exe -L -o .vscode-test/vscode-linux-x64-1.147.0.tar.gz https://update.code.visualstudio.com/1.147.0/linux-x64/stable`); the matrix seeds the WSL cache from that archive.
 
 ### Running
 

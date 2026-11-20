@@ -13,16 +13,24 @@ source_dir=${2:?source directory}
 if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh" >/dev/null; fi
 
 require_linux_node() {
-    local tool found
+    local tool found version
     for tool in node npm; do
         found=$(command -v "$tool" || true)
         case "$found" in
             "" | /mnt/*)
-                echo "Install Linux Node.js 20+ inside WSL ($tool: ${found:-none}); Windows tools through interop cannot be used." >&2
+                echo "Install Linux Node.js 24 inside WSL ($tool: ${found:-none})." >&2
                 exit 2
                 ;;
         esac
     done
+    version=$(node --version)
+    case "$version" in
+        v24.*) ;;
+        *)
+            echo "Linux Node.js 24 is required inside WSL (found $version)." >&2
+            exit 2
+            ;;
+    esac
 }
 
 check_work_dir() {
@@ -47,11 +55,6 @@ case "$mode" in
             fi
         done
         require_linux_node
-        node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' ||
-            {
-                echo "MISS linux node >= 20 (found $(node --version))"
-                status=1
-            }
         if ls /etc/udev/rules.d/ 2>/dev/null | grep -qi 'openocd\|jlink\|cmsis\|probe'; then
             echo "ok   udev rules present"
         else

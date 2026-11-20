@@ -5,6 +5,9 @@ const fs = require("fs");
 const path = require("path");
 const { isOfficialRelease } = require("./src/buildInfo");
 
+// All bundles run on the editor's Node.js runtime. VS Code 1.85 uses Node.js 18.
+const editorTarget = "node18";
+
 const extensionBuild = esbuild.build({
     absWorkingDir: __dirname,
     entryPoints: [path.join(__dirname, "src", "extension.js")],
@@ -12,7 +15,7 @@ const extensionBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "extension.js"),
     platform: "node",
     format: "cjs",
-    target: "node18",
+    target: editorTarget,
     // jsonc-parser's UMD entry passes require into a factory, hiding relative imports from esbuild.
     alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
     external: ["vscode", "koffi"],
@@ -28,7 +31,7 @@ const samplingBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "samplingWorker.js"),
     platform: "node",
     format: "cjs",
-    target: "node20",
+    target: editorTarget,
     external: ["koffi"]
 });
 const elfBuild = esbuild.build({
@@ -38,7 +41,7 @@ const elfBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "elfWorker.js"),
     platform: "node",
     format: "cjs",
-    target: "node20"
+    target: editorTarget
 });
 const chartHistoryBuild = esbuild.build({
     absWorkingDir: __dirname,
@@ -47,7 +50,7 @@ const chartHistoryBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "chartHistoryWorker.js"),
     platform: "node",
     format: "cjs",
-    target: "node20"
+    target: editorTarget
 });
 const svdBuild = esbuild.build({
     absWorkingDir: __dirname,
@@ -56,7 +59,7 @@ const svdBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "svdWorker.js"),
     platform: "node",
     format: "cjs",
-    target: "node20"
+    target: editorTarget
 });
 const debugBuild = esbuild.build({
     absWorkingDir: __dirname,
@@ -65,7 +68,7 @@ const debugBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "debugAdapter.js"),
     platform: "node",
     format: "cjs",
-    target: "node20",
+    target: editorTarget,
     legalComments: "eof"
 });
 
@@ -77,7 +80,7 @@ const mcpBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "mcp-server.js"),
     platform: "node",
     format: "cjs",
-    target: "node18",
+    target: editorTarget,
     // Most of its size is the SDK's zod/ajv dependencies; a separate process needs no readable bundle.
     minify: true,
     legalComments: "eof"

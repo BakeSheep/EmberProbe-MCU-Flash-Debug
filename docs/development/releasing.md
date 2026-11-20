@@ -31,7 +31,7 @@ gh run watch
 
 工作流依次执行：
 
-1. 复用 CI：Windows、Ubuntu、macOS 的 Node 20 普通检查和 bundle、Windows libwdi/helper 原生构建、Ubuntu Node 24 质量检查及 Extension Host 冒烟测试。
+1. 复用 CI。Windows、Ubuntu、macOS 在 Node.js 24 上执行常规检查和 bundle，Ubuntu 执行质量检查及 Extension Host 冒烟测试，Windows 构建 libwdi/helper。
 2. 在 Windows 构建 libwdi 与 helper，验证 WDK 二进制的 Microsoft 签名，将 libwdi 的 SHA-256 编入 helper，并生成两个未签名原生文件的 SHA-256 清单。
 3. 校验标签与发布元数据，将原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与清单一致。
 4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。

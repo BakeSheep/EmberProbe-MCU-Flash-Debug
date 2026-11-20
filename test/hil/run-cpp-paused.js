@@ -16,7 +16,7 @@ const { runTests } = require("@vscode/test-electron");
     await fs.mkdir(workspace, { recursive: true });
     try {
         await runTests({
-            version: "1.136.1",
+            version: "1.147.0",
             extensionDevelopmentPath: root,
             extensionTestsPath: path.resolve(__dirname, "cpp-paused.test.js"),
             extensionTestsEnv: { EMBERPROBE_E2E: "1" },

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-EmberProbe is an ES2022 CommonJS VS Code extension targeting Node.js 20 and VS Code 1.85+. CI uses Node 20 for cross-platform checks and Node 24 for quality and Extension Host tests.
+EmberProbe is an ES2022 CommonJS extension for VS Code 1.85+. Use Node.js 24 LTS for local development, CI, and packaging. The shipped bundles target the Node.js 18 runtime included in VS Code 1.85.
 
 - `src/` contains extension entry points, the composition root (`composition.js`), shared validation, ELF/DWARF parsing, and Workers for sampling, ELF, SVD, and chart history.
 - `src/services/`: orchestration, feature controllers, hardware operations, session routing, and runtime object reads.

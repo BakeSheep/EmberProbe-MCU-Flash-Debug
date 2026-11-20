@@ -4,6 +4,8 @@
 
 ## 本地预览与校验
 
+使用 Node.js 24 LTS。
+
 ```sh
 npm ci
 npm run site:build

@@ -21,7 +21,7 @@ const { runTests } = require("@vscode/test-electron");
     await fs.mkdir(path.join(temporary, "tmp"), { recursive: true });
     try {
         await runTests({
-            version: "1.136.1",
+            version: "1.147.0",
             extensionDevelopmentPath: extensionRoot,
             extensionTestsPath: path.resolve(__dirname, "runtime-write.test.js"),
             extensionTestsEnv: {

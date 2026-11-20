@@ -9,7 +9,7 @@ const path = require("path");
 const { loadConfig, parseArgs, profileNames, resolveProfile } = require("./smoke-profile");
 
 const root = path.resolve(__dirname, "../..");
-const VSCODE_VERSION = "1.136.1";
+const VSCODE_VERSION = "1.147.0";
 const SUITES = { smoke: "smoke.test.js", rtt: "rtt-smoke.test.js" };
 
 function configPath(options) {

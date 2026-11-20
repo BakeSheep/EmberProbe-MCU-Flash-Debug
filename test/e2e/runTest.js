@@ -9,7 +9,7 @@ const { runTests } = require("@vscode/test-electron");
     const extensions = path.join(root, ".vscode-test", "e2e-extensions-" + process.pid);
     try {
         await runTests({
-            version: "1.136.1",
+            version: "1.147.0",
             extensionDevelopmentPath: root,
             extensionTestsPath: path.resolve(__dirname, "suite"),
             launchArgs: [

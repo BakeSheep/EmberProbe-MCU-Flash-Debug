@@ -39,21 +39,23 @@ jobs:
 
     steps:
       - name: Check out release source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Include Windows sampling timer binary
-        run: npm install --no-save --package-lock=false --ignore-scripts --force @koromix/koffi-win32-x64@3.3.1
+        run: |
+          koffi_version=$(node -p 'require("./package-lock.json").packages["node_modules/koffi"].version')
+          npm install --no-save --package-lock=false --ignore-scripts --force "@koromix/koffi-win32-x64@$koffi_version"
 
       - name: Validate tag and release metadata
         run: node scripts/validate-release.js "$RELEASE_TAG"
@@ -62,7 +64,7 @@ jobs:
         run: npm run check:release
 
       - name: Download native driver helper
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: native-driver-helper
           path: resources/driver-helper/win32-x64
@@ -83,7 +85,7 @@ jobs:
         run: node scripts/verify-sampling-timer-vsix.js dist/emberprobe.vsix
 
       - name: Upload verified VSIX
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: emberprobe-vsix
           path: dist/emberprobe.vsix
@@ -91,7 +93,7 @@ jobs:
           retention-days: 7
 
       - name: Upload verified corresponding sources
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: emberprobe-openocd-source
           path: native/openocd/emberprobe-openocd-source.tar.gz
@@ -112,20 +114,20 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Download verified VSIX
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: emberprobe-vsix
           path: dist
 
       - name: Download verified corresponding sources
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: emberprobe-openocd-source
           path: native/openocd
@@ -140,17 +142,17 @@ jobs:
     name: Build Windows driver helper
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
-      - uses: microsoft/setup-msbuild@v2
+      - uses: microsoft/setup-msbuild@v3
       - name: Build libwdi and helper
         shell: pwsh
         run: ./scripts/build-driver-helper.ps1
       - name: Verify native helper hashes
         run: node scripts/verify-driver-helper.js
       - name: Upload native helper
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-driver-helper
           path: resources/driver-helper/win32-x64/

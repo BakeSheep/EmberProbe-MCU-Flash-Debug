@@ -46,7 +46,7 @@ const { runTests } = require("@vscode/test-electron");
         await runTests({
             ...(process.env.DATA_BP_VSCODE
                 ? { vscodeExecutablePath: process.env.DATA_BP_VSCODE }
-                : { version: "1.136.1" }),
+                : { version: "1.147.0" }),
             extensionDevelopmentPath: root,
             extensionTestsPath: path.join(__dirname, "data-breakpoints.test.js"),
             extensionTestsEnv: {

@@ -31,12 +31,12 @@ assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-op
 assert.ok(ci.jobs.check.steps.some((s) => s.run === "npm run check:openocd-bundle"));
 assert.ok(
     release.jobs.build.steps.some(
-        (s) => s.with?.name === "emberprobe-openocd-source" && s.uses === "actions/upload-artifact@v4"
+        (s) => s.with?.name === "emberprobe-openocd-source" && s.uses === "actions/upload-artifact@v7"
     )
 );
 assert.ok(
     release.jobs.publish.steps.some(
-        (s) => s.with?.name === "emberprobe-openocd-source" && s.uses === "actions/download-artifact@v4"
+        (s) => s.with?.name === "emberprobe-openocd-source" && s.uses === "actions/download-artifact@v8"
     )
 );
 assert.strictEqual(release.jobs.publish.needs, "build");
@@ -48,7 +48,7 @@ const releaseSource = "${{ inputs.rebuild && github.sha || inputs.tag || github.
 assert.strictEqual(release.jobs.gates.with.ref, releaseSource);
 for (const name of ["build", "driver-helper", "publish"]) {
     assert.strictEqual(
-        release.jobs[name].steps.find((step) => step.uses === "actions/checkout@v5").with.ref,
+        release.jobs[name].steps.find((step) => step.uses === "actions/checkout@v7").with.ref,
         releaseSource
     );
 }

@@ -159,7 +159,7 @@ async function composites() {
 
     const buf = dwarfElf(debugInfo, abbrev);
 
-    // ELFCOMPRESS_ZSTD (type=2) must decompress directly on Node.js 20, which the extension supports. The payload is the
+    // ELFCOMPRESS_ZSTD (type=2) must decompress on hosts without native Zstandard support. The payload is the
     // zstd CLI's single-frame output for ASCII "DWARF-zstd-test"; the test needs no system zstd.
     const zstdPayload = Buffer.from("28b52ffd045879000044574152462d7a7374642d746573741a9e4eec", "hex");
     const zstdSection = Buffer.alloc(12 + zstdPayload.length);

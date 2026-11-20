@@ -14,7 +14,8 @@
   },
   "license": "MIT",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": "24.x"
   },
   "categories": [
     "Other",
@@ -1297,7 +1298,7 @@
     "release:prepare": "node scripts/release.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
-    "package": "npx --yes @vscode/vsce@3.9.1 package --allow-unused-files-pattern --out dist/emberprobe.vsix",
+    "package": "npx --yes @vscode/vsce@4.1.1 package --allow-unused-files-pattern --out dist/emberprobe.vsix",
     "mockup": "node mockup/build.js",
     "mockup:serve": "node mockup/serve.js",
     "mockup:smoke": "node mockup/smoke.js",
@@ -1312,27 +1313,35 @@
     "check:openocd-bundle": "node scripts/check-openocd-bundle.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@vscode/debugadapter": "1.68.0",
     "fast-xml-parser": "^5.11.0",
     "fzstd": "^0.1.1",
     "jsonc-parser": "3.3.1",
-    "koffi": "3.3.1",
+    "koffi": "3.3.8",
     "tar": "^7.5.22",
-    "toml-eslint-parser": "0.10.0",
-    "yaml": "2.9.0",
+    "toml-eslint-parser": "1.0.3",
+    "yaml": "2.9.1",
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^24.19.2",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^3.1.0",
-    "c8": "^9.1.0",
+    "c8": "^12.0.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
-    "jsdom": "26.1.0",
+    "jsdom": "29.1.1",
     "prettier": "^3.9.6",
     "typescript": "^7.0.2",
     "yazl": "^3.3.1"
+  },
+  "overrides": {
+    "c8": {
+      "test-exclude": {
+        "glob": "^14.0.6",
+        "minimatch": "^11.0.9"
+      }
+    }
   }
 }
