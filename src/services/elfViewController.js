@@ -1,7 +1,8 @@
 "use strict";
 const elfSymbols = require("../elfSymbols");
 const validation = require("../validation");
-const { variableScope } = require("../webview/runtime");
+const { runtimeWatchEntry, variableScope } = require("../webview/runtime");
+const { toUiError } = require("./errorEnvelope");
 const { displayWarnings } = require("../webview/elfDiagnostics");
 const { CACHE_KEYS } = require("../cacheKeys");
 const { writableRamSectionRanges } = require("./liveWatchService");
@@ -76,6 +77,67 @@ class ElfViewController {
             }
         }
         return result;
+    }
+    async resolveLiveVariable(message, post) {
+        const service = this.host._elfService;
+        const result = await service.ready();
+        const version = this.version(result);
+        if (message.version && message.version !== version) return;
+        const generation = service.generation;
+        const reply = { version, requestId: message.requestId, requestedName: message.name };
+        const resolve = elfSymbols.createSymbolResolver(result.symbols);
+        let found;
+        let path;
+        const notFound = () =>
+            post({
+                type: "liveError",
+                ...reply,
+                key: "live.varNotFound",
+                params: { name: message.name }
+            });
+        try {
+            try {
+                found = resolve(message.name);
+            } catch (error) {
+                if (error.code !== "VARIABLE_NOT_FOUND") throw error;
+                path = elfSymbols.parseMemberPath(message.name);
+                if (!path?.segments.length) throw error;
+                found = resolve(path.base);
+            }
+        } catch (error) {
+            if (error.code !== "VARIABLE_AMBIGUOUS") return notFound();
+            const suffix = path ? message.name.trim().slice(path.base.length) : "";
+            const candidates = error.details.candidates.map((item) => ({
+                ...item,
+                name: item.name + suffix,
+                displayName: item.displayName + suffix
+            }));
+            if (candidates.length > 1) post({ type: "variableChoices", ...reply, candidates });
+            else
+                post({
+                    type: "liveError",
+                    ...reply,
+                    key: "live.varIdentityAmbiguous",
+                    params: { name: candidates[0]?.displayName || message.name }
+                });
+            return;
+        }
+        if (found.isComposite || found.isReference || (path && found.hasRuntimeLayout)) {
+            try {
+                await service.layout(found.name);
+            } catch (error) {
+                if (generation === service.generation) post({ type: "liveError", ...reply, ...toUiError(error) });
+                return;
+            }
+        }
+        if (generation !== service.generation || version !== this.version(service.cache)) return;
+        if (path) {
+            const name = found.name + message.name.trim().slice(path.base.length);
+            const entry = runtimeWatchEntry(name, found, path.segments);
+            if (!entry) return notFound();
+            found = entry;
+        }
+        post({ type: "addResolved", ...reply, symbol: found });
     }
     version(result) {
         const sha256 = result?.elf?.sha256 || "";

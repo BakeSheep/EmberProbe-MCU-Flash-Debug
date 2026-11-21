@@ -226,7 +226,7 @@
             return node ? fmtExact(node.value, node.valueText, node.enumText, radix(name)) : "—";
         }
         function resolveDisplayInfo(item) {
-            if (item.isPointer) return item;
+            if (item.isPointer || item.isReference) return item;
             const direct = state.symbols.get(item.name);
             if (direct?.isPointer) return direct;
             const symbol = layoutSymbol(item.name);
@@ -748,14 +748,21 @@
                 showRaw: showRawMembers,
                 includePointers: true
             });
-            if (!runtimeSelected) return statics;
+            if (!runtimeSelected) return statics.filter((leaf) => !leaf.isReference);
             const visible = runtime.displayRuntimeSelection(
                 symbol,
                 state.latest[symbol.name],
                 showRawMembers,
                 page.sampleOpenTreesOnly === true
             );
-            return (visible?.entries || []).concat(statics.filter((leaf) => leaf.layoutExpanded));
+            const entries = visible?.entries || [];
+            const listed = new Set(entries.map((leaf) => leaf.path));
+            const references = runtime.runtimeContainsReference(runtime.runtimeGraph(symbol));
+            return entries.concat(
+                statics.filter(
+                    (leaf) => !leaf.isReference && !listed.has(leaf.path) && (leaf.layoutExpanded || references)
+                )
+            );
         }
         // A stand-alone pointee card that is folded, or a watch drawn inside a closed root's tree.
         function closedEntry(item) {

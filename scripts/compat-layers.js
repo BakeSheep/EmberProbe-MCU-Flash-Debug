@@ -34,6 +34,12 @@ const COMPAT_LAYERS = Object.freeze([
         sites: [{ file: "src/services/chartBackgroundController.js", marker: "legacyEnabled" }]
     },
     {
+        id: "runtime-watch-path-migration",
+        purpose: "Restores saved C++ reference expansions and flat runtime array indices using current watch paths",
+        removeIn: "1.0.0",
+        sites: [{ file: "src/services/runtimeWatch.js", marker: "migrateLegacyRuntimePath" }]
+    },
+    {
         id: "write-trust-fail-closed",
         purpose: "Treats a write trust stored by older releases as a boolean or timestamp as untrusted",
         removeIn: null,

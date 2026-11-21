@@ -101,7 +101,7 @@ class LiveWatchController {
         const cache = this._runtimeRamSections(this.host.readElfSymbols());
         const result = filterRuntimeRamPlan(items, cache.sections, cache.regions);
         if (strict && result.denied.length) {
-            throw Object.assign(new Error("Runtime reads are restricted to writable allocated ELF RAM sections"), {
+            throw Object.assign(new Error("Runtime watch root is outside verified ELF storage"), {
                 code: "LIVE_ADDRESS_NOT_RAM",
                 details: {
                     variables: result.denied.map((item) => ({
@@ -276,7 +276,11 @@ class LiveWatchController {
                 if (item?.name)
                     m.set(
                         item.name,
-                        includeAddress || Number.isInteger(item.bitSize) || item.enumInfo || item.isPointer
+                        includeAddress ||
+                            Number.isInteger(item.bitSize) ||
+                            item.enumInfo ||
+                            item.isPointer ||
+                            item.runtimeSeparateRead
                             ? item
                             : item.type
                     );

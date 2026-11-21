@@ -13,7 +13,6 @@ const liveWatch = require("./liveWatch");
 const { withWriteAccessStatus } = require("./writeAccess");
 const liveWatchView = require("./liveWatchView");
 const { configuredFrequencyHz, intervalMsFromHz } = require("./samplingFrequency");
-const elfSymbols = require("./elfSymbols");
 const chipInfo = require("./chipInfo");
 const validation = require("./validation");
 const { variableDisplayName } = require("./webview/runtime");
@@ -846,6 +845,7 @@ class MainViewProvider {
             return {
                 name: item.name,
                 type: item.type,
+                ...(item.runtimePathVersion === 1 ? { runtimePathVersion: 1 } : {}),
                 ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {}),
                 ...(item.layoutExpanded ? { layoutExpanded: true } : {}),
                 ...(item.fromWatch ? { fromWatch: true } : {}),
@@ -892,44 +892,8 @@ class MainViewProvider {
         this._symbolNameIndexes.set(symbols, { length: symbols.length, index });
         return index;
     }
-    // Return structured choices to the combobox; never select a default for an ambiguous name.
-    async _resolveLiveVariable(message, post) {
-        const result = await this._elfService.ready();
-        const version = this._elfView.version(result);
-        if (message.version && message.version !== version) return;
-        const generation = this._elfService.generation;
-        const reply = { version, requestId: message.requestId, requestedName: message.name };
-        let found;
-        try {
-            found = elfSymbols.createSymbolResolver(result.symbols)(message.name);
-        } catch (error) {
-            if (error.code === "VARIABLE_AMBIGUOUS") {
-                const candidates = error.details.candidates;
-                if (candidates.length > 1) post({ type: "variableChoices", ...reply, candidates });
-                else
-                    post({
-                        type: "liveError",
-                        ...reply,
-                        key: "live.varIdentityAmbiguous",
-                        params: { name: candidates[0]?.displayName || message.name }
-                    });
-            } else {
-                post({ type: "liveError", ...reply, key: "live.varNotFound", params: { name: message.name } });
-            }
-            return;
-        }
-        if (found.isComposite) {
-            try {
-                await this._elfService.layout(found.name);
-            } catch (error) {
-                if (generation === this._elfService.generation)
-                    post({ type: "liveError", ...reply, ...toUiError(error) });
-                return;
-            }
-        }
-        if (generation !== this._elfService.generation || version !== this._elfView.version(this._elfService.cache))
-            return;
-        post({ type: "addResolved", ...reply, symbol: found });
+    _resolveLiveVariable(message, post) {
+        return this._elfView.resolveLiveVariable(message, post);
     }
     // Chart and sidebar keep separate selections; one probe connection samples the union of both enabled lists.
     _postLive(message) {

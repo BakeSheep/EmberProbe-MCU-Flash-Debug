@@ -124,11 +124,12 @@ class ElfService {
                       /\[\]$/.test(symbol.typeName) ||
                       unresolvedCpp ||
                       (!info && ![1, 2, 4, 8].includes(Number(symbol.size))));
-            symbol.watchType = symbol.isComposite
-                ? ""
-                : info?.isEnum
-                  ? info.watchType
-                  : info?.watchType || this.elfSymbols.defaultType(symbol.size);
+            symbol.watchType =
+                symbol.isComposite || info?.isReference
+                    ? ""
+                    : info?.isEnum
+                      ? info.watchType
+                      : info?.watchType || this.elfSymbols.defaultType(symbol.size);
             symbol.hasDwarfWriteType =
                 !symbol.isComposite &&
                 !!info?.watchType &&

@@ -738,7 +738,7 @@ function sbRenderScalarRow(item) {
     const ty = document.createElement("span");
     ty.className = "value-type";
     const info = valueTree.displayInfo(item);
-    ty.textContent = (info.isPointer ? info.typeName : item.type) || (item.runtimeLeaf ? t("lw.unknownType") : "u32");
+    ty.textContent = (info.isPointer || info.isReference ? info.typeName : item.type) || t("lw.unknownType");
     ty.title = ty.textContent;
     const nameWrap = document.createElement("span");
     nameWrap.className = "value-name-wrap";
@@ -819,18 +819,24 @@ function renderAvailable() {
     availableBox.scrollTop = scrollTop;
     availableBox.scrollLeft = scrollLeft;
 }
-// The watch entry that adds a composite symbol as a whole.
-function sbCompositeEntry(sym) {
-    return {
-        name: sym.name,
-        displayName: sbDisplayName(sym),
-        address: Number(sym.address) || 0,
-        size: Number(sym.size) || 4,
-        type: "",
-        isComposite: true,
-        compositeLayout: sym.compositeLayout || null,
-        ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
-    };
+function sbAvailableEntry(sym) {
+    return (
+        EmberProbeRuntime.runtimeWatchEntry(sym.name, sym) ||
+        EmberProbeRuntime.symbolWatchEntry(sym, sbDisplayName(sym))
+    );
+}
+function sbToggleAvailable(sym, entry = sbAvailableEntry(sym)) {
+    if (
+        state.watch.some((item) => item.name === sym.name) ||
+        (sym.isReference
+            ? entry.runtimeLayout
+            : !sym.isComposite || EmberProbeRuntime.runtimeGraph(sym) || sym.compositeLayout)
+    )
+        return sbToggle(entry);
+    availableAddPending.add(sym.name);
+    if (availableLayoutPending.has(sym.name)) return;
+    availableLayoutPending.add(sym.name);
+    api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: state.version });
 }
 // The watch and write entry of one member row.
 function sbLeafEntry(lf) {
@@ -846,7 +852,7 @@ function sbLeafEntry(lf) {
         ...(lf.isBoolean ? { isBoolean: true } : {}),
         ...(Number.isInteger(lf.bitSize) ? { bitSize: lf.bitSize, bitOffset: lf.bitOffset } : {}),
         ...(lf.isConst ? { isConst: true } : {}),
-        ...(lf.isReference ? { isReference: true } : {}),
+        ...(lf.isReference ? { isReference: true, typeName: lf.typeName } : {}),
         ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
         ...(lf.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
         ...(runtimeLayout
@@ -872,18 +878,7 @@ function sbCompositeRow(sym, open, toggle, on) {
             sym.name,
             !availableTypesReady || !!sym.layoutError,
             sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
-            () => {
-                if (state.watch.some((item) => item.name === sym.name) || sym.compositeLayout || sym.runtimeLayout) {
-                    sbToggle(sbCompositeEntry(sym));
-                } else {
-                    // The add waits for the layout, also when expanding the row already asked for it.
-                    availableAddPending.add(sym.name);
-                    if (!availableLayoutPending.has(sym.name)) {
-                        availableLayoutPending.add(sym.name);
-                        api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: state.version });
-                    }
-                }
-            }
+            () => sbToggleAvailable(sym)
         ),
         nm
     );
@@ -894,7 +889,7 @@ function sbCompositeRow(sym, open, toggle, on) {
     arrow.onclick = toggle;
     nm.onclick = (event) => {
         if (!sym.compositeLayout && !sym.runtimeLayout) return toggle(event);
-        sbToggle(sbCompositeEntry(sym));
+        sbToggleAvailable(sym);
     };
     return { row, arrow };
 }
@@ -913,27 +908,21 @@ function sbLeafRow(lf) {
     cell.appendChild(ln);
     const lty = document.createElement("span");
     lty.className = "available-type";
-    lty.textContent = (lf.isPointer ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "");
+    lty.textContent =
+        (lf.isPointer || lf.isReference ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "");
     lb.append(cell, lty);
     lb.onclick = () => sbToggle(leafEntry);
     return lb;
 }
 function sbScalarRow(sym, already) {
-    const noLayout = sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout;
+    const noLayout =
+        (sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout) || (sym.isReference && sym.layoutError);
     const b = document.createElement("div");
     b.className = "available-row" + (noLayout ? " off" : "");
     b.title = noLayout ? sym.unsupportedReason || t("sb.compositeUnsupported") : already ? t("sb.removeFromWatch") : "";
     const cell = document.createElement("span");
     cell.className = "av-name-cell";
-    const entry = {
-        name: sym.name,
-        displayName: sbDisplayName(sym),
-        address: Number(sym.address) || 0,
-        size: Number(sym.size) || 4,
-        type: sym.watchType,
-        ...(sym.isPointer ? { isPointer: true, typeName: sym.typeName, pointerTarget: sym.pointerTarget } : {}),
-        ...(sym.isBoolean ? { isBoolean: true } : {})
-    };
+    const entry = sbAvailableEntry(sym);
     cell.appendChild(
         mkWriteBtn(
             entry,
@@ -946,7 +935,7 @@ function sbScalarRow(sym, already) {
             sym.name,
             !availableTypesReady || noLayout,
             sym.unsupportedReason || t("sb.compositeUnsupported"),
-            () => sbToggle(entry)
+            () => sbToggleAvailable(sym, entry)
         )
     );
     const n = document.createElement("span");
@@ -958,7 +947,7 @@ function sbScalarRow(sym, already) {
     ty.className = "available-type";
     ty.textContent = sym.typeName || sym.watchType || t("sb.composite");
     b.append(cell, ty);
-    if (!noLayout) b.onclick = () => sbToggle(entry);
+    if (!noLayout) b.onclick = () => sbToggleAvailable(sym, entry);
     return b;
 }
 function renderAvailableContents(content) {
@@ -1614,16 +1603,13 @@ window.EmberProbeMessages.connect(window, {
             symbol.layoutError = m.error || t("lw.compositeNoLayout");
             symbol.unsupportedReason = symbol.layoutError;
         }
-        if (availableAddPending.delete(m.name) && m.layout && !state.watch.some((item) => item.name === m.name))
-            sbToggle({
-                name: symbol.name,
-                address: Number(symbol.address) || 0,
-                size: Number(symbol.size) || 4,
-                type: "",
-                isComposite: true,
-                compositeLayout: m.layout,
-                ...(m.layout.runtimeLayout ? { runtimeLayout: m.layout.runtimeLayout } : {})
-            });
+        if (symbol.isReference && !symbol.runtimeLayout) symbol.layoutError ||= t("lw.compositeNoLayout");
+        if (
+            availableAddPending.delete(m.name) &&
+            !symbol.layoutError &&
+            !state.watch.some((item) => item.name === m.name)
+        )
+            sbToggle(sbAvailableEntry(symbol));
         renderAvailable();
     },
     debugSessionChanged: function () {

@@ -9,7 +9,12 @@ const {
 } = require("./layoutLimits");
 const EXPANSION_TYPE_REF = Symbol("layoutExpansionType");
 const typeInfoHeights = new WeakMap();
-const { createTypeComparer, declarationMatchesDefinition, isTypeDeclaration } = require("./typeIdentity");
+const {
+    createTypeComparer,
+    chooseEquivalentType,
+    declarationMatchesDefinition,
+    isTypeDeclaration
+} = require("./typeIdentity");
 const { memberRole, stdSummary } = require("./memberRoles");
 const {
     DW_TAG_array_type,
@@ -218,22 +223,12 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0, active = 
                 };
                 break;
             }
-            case DW_TAG_reference_type: {
-                const inner = d.typeRef !== undefined ? resolveInner(d.typeRef) : { typeName: "void" };
-                result = {
-                    kind: "scalar",
-                    typeName: (inner.typeName || "void") + " &",
-                    watchType: "u32",
-                    byteSize: d.byteSize || 4,
-                    isReference: true
-                };
-                break;
-            }
+            case DW_TAG_reference_type:
             case DW_TAG_rvalue_reference_type: {
                 const inner = d.typeRef !== undefined ? resolveInner(d.typeRef) : { typeName: "void" };
                 result = {
                     kind: "scalar",
-                    typeName: (inner.typeName || "void") + " &&",
+                    typeName: (inner.typeName || "void") + (d.tag === DW_TAG_reference_type ? " &" : " &&"),
                     watchType: "u32",
                     byteSize: d.byteSize || 4,
                     isReference: true
@@ -359,7 +354,6 @@ function createVariableTypeIndex(parsed) {
         candidates = new Map(),
         ambiguousNames = new Set();
     const equivalent = createTypeComparer(parsed);
-    const comparisons = new Map();
     for (const variable of variables) {
         const key = variable.linkageName || variable.name;
         if (!key) continue;
@@ -370,7 +364,7 @@ function createVariableTypeIndex(parsed) {
             continue;
         }
         // Same-named statics in different CUs have different addresses; only differing types are ambiguous.
-        if (previous.typeRef === variable.typeRef || ambiguousNames.has(key)) continue;
+        if (candidates.get(key).has(variable.typeRef) || ambiguousNames.has(key)) continue;
         const prevInfo = _resolveTypeInfo(previous.typeRef, dies, childrenMap, typeCache);
         const curInfo = _resolveTypeInfo(variable.typeRef, dies, childrenMap, typeCache);
         const sameFlags = JSON.stringify(typeFlags(prevInfo)) === JSON.stringify(typeFlags(curInfo));
@@ -386,23 +380,21 @@ function createVariableTypeIndex(parsed) {
             continue;
         }
         candidates.get(key).add(variable.typeRef);
-        const comparisonKey = previous.typeRef + ":" + variable.typeRef;
-        const storageMatches = () => {
-            if (!comparisons.has(comparisonKey)) {
-                if (comparisons.size >= 64) comparisons.delete(comparisons.keys().next().value);
-                comparisons.set(comparisonKey, equivalent(previous.typeRef, variable.typeRef));
-            }
-            return comparisons.get(comparisonKey);
-        };
         if (
             prevInfo.kind !== curInfo.kind ||
             prevInfo.typeName !== curInfo.typeName ||
             prevInfo.byteSize !== curInfo.byteSize ||
             prevInfo.watchType !== curInfo.watchType ||
-            !sameFlags ||
-            !storageMatches()
+            !sameFlags
         )
             ambiguousNames.add(key);
+    }
+    for (const [key, group] of candidates) {
+        if (group.size < 2 || ambiguousNames.has(key)) continue;
+        const selected = chooseEquivalentType([...group], equivalent);
+        const first = byName.get(key);
+        if (selected === undefined) ambiguousNames.add(key);
+        else if (selected !== first.typeRef) byName.set(key, { ...first, typeRef: selected });
     }
     return { byName, candidates, ambiguousNames, typeCache };
 }

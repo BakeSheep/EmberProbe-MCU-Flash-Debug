@@ -87,16 +87,18 @@ async function shapesAndOpaqueTargets() {
     for (const kind of ["pointer", "reference"]) {
         const typeName = kind === "pointer" ? "int *" : "int &";
         const h = harness([scalar, pointer(0, "data", typeName, kind)], 1);
-        assert.deepStrictEqual(await h.reader().sample(), leaf(typeName, "data", base, 0));
+        if (kind === "reference") await assert.rejects(h.reader().sample(), { code: "LIVE_NULL_POINTER" });
+        else assert.deepStrictEqual(await h.reader().sample(), leaf(typeName, "data", base, 0));
         h.word(base, base + 128);
         h.word(base + 128, 42);
-        assert.deepStrictEqual(
-            await h.reader({ runtimeStaticPointers: true }).sample(),
-            leaf(typeName, "data", base, base + 128)
-        );
+        const storageOnly = await h.reader({ runtimeStaticPointers: true }).sample();
         const followed = await h.reader().sample();
-        if (kind === "reference") assert.strictEqual(followed.value, 42, "readable references remain transparent");
-        else {
+        if (kind === "reference") {
+            assert.deepStrictEqual(storageOnly, followed, "the pointer expansion setting must not hide a referent");
+            assert.strictEqual(followed.value, 42);
+            assert.strictEqual(followed.writeRestriction, "pointer");
+        } else {
+            assert.deepStrictEqual(storageOnly, leaf(typeName, "data", base, base + 128));
             assert.deepStrictEqual(followed, {
                 kind: "class",
                 typeName,
@@ -122,7 +124,8 @@ async function shapesAndOpaqueTargets() {
         }
         h.reads.length = 0;
         h.word(base, 0x40000000);
-        assert.deepStrictEqual(await h.reader().sample(), leaf(typeName, "data", base, 0x40000000, "not-ram"));
+        if (kind === "reference") await assert.rejects(h.reader().sample(), { code: "LIVE_ADDRESS_NOT_RAM" });
+        else assert.deepStrictEqual(await h.reader().sample(), leaf(typeName, "data", base, 0x40000000, "not-ram"));
         assert(
             h.reads.every((read) => read.address === base),
             "MMIO pointers must not trigger a target read"
@@ -350,19 +353,18 @@ async function localErrorsAndGuards() {
             const typeName = kind === "pointer" ? "int *" : "int &";
             const h = harness([pointer(1, "data", typeName, kind), scalar]);
             h.word(base, base + 128);
-            assert.deepStrictEqual(
-                await h
-                    .reader({}, async (address, size) => {
-                        if (address === base + 128) throw Object.assign(new Error("pointee failed"), { code });
-                        return h.read(address, size);
-                    })
-                    .sample(),
-                {
+            const sample = h
+                .reader({}, async (address, size) => {
+                    if (address === base + 128) throw Object.assign(new Error("pointee failed"), { code });
+                    return h.read(address, size);
+                })
+                .sample();
+            if (kind === "reference") await assert.rejects(sample, { code });
+            else
+                assert.deepStrictEqual(await sample, {
                     ...leaf(typeName, "data", base, base + 128, reason),
-                    // Read-budget leaves keep their code so views name the budget.
                     ...(code === "LIVE_READ_BUDGET_EXCEEDED" ? { unavailableCode: code } : {})
-                }
-            );
+                });
         }
     }
 

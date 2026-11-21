@@ -802,6 +802,7 @@ module.exports = Object.freeze({
     "lw.layoutTypeCycle": "Invalid by-value type cycle; this branch is unavailable and read-only",
     "lw.layoutVirtualBase": "Virtual base requires a verified runtime location",
     "lw.layoutLocationUnavailable": "DWARF member location is unavailable",
+    "lw.layoutTemplateArguments": "The ELF debug information is missing template arguments for this container",
     "lw.layoutPartial": "Partial layout; some branches are unavailable",
     "lw.layoutStaticStorage": "Expanded static storage; runtime writes remain unavailable",
     "lw.layoutLoadMore": "Load more members",
@@ -947,8 +948,8 @@ module.exports = Object.freeze({
     "live.debugRuntimeSampling": "Sampling",
     "live.debugTclDegraded":
         "Sampling is temporarily unavailable while the target is running under the debugger. Pause it to read current values.",
-    "live.runtimeAddressRejected": "Runtime reads are restricted to writable ELF RAM sections",
-    "live.runtimeAddressRejectedNames": "Runtime reads rejected outside writable ELF RAM: {names}",
+    "live.runtimeAddressRejected": "Runtime watch storage must be in a verified ELF memory range",
+    "live.runtimeAddressRejectedNames": "Runtime watch storage is outside verified ELF memory: {names}",
     "live.runtimeBudgetExceeded": "Runtime read exceeds the per-cycle safety budget (4096 bytes / 32 reads)",
     "live.runtimeBudgetExceededNames":
         "Running sampling skipped items over the per-cycle budget (4096 bytes / 32 reads); pause the target to read them: {names}",
@@ -1221,7 +1222,7 @@ module.exports = Object.freeze({
     "err.INVALID_WRITE_VALUE": "The write value is invalid.",
     "err.LAYOUT_EXPANSION_LIMIT": "The layout expansion limit was reached.",
     "err.LICENSE_DECLINED": "The CMSIS-Pack license was not accepted.",
-    "err.LIVE_ADDRESS_NOT_RAM": "Runtime reads and writes are limited to writable ELF RAM sections.",
+    "err.LIVE_ADDRESS_NOT_RAM": "The requested address is outside the verified ELF ranges for this operation.",
     "err.LIVE_MEMORY_UNSUPPORTED": "This chip does not support memory access while the CPU is running.",
     "err.LIVE_PANEL_NOT_OPEN": "Open a Live Watch chart panel first.",
     "err.LIVE_READ_BUDGET_EXCEEDED": "The runtime read exceeds the per-cycle budget; watch fewer items.",

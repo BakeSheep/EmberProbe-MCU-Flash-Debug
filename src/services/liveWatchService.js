@@ -1,6 +1,12 @@
 "use strict";
 
-const { formatPointer, isPointeeEntry, runtimeMemberRoute } = require("../webview/runtime");
+const {
+    formatPointer,
+    isPointeeEntry,
+    runtimeContainsReference,
+    runtimeMemberRoute,
+    runtimeReferenceRoot
+} = require("../webview/runtime");
 const { MAX_RUNTIME_HISTORY_LEAVES, runtimeTreeLeaves } = require("./runtimeExpansion");
 const { runtimeFailureReason } = require("./runtimeObjectReader");
 
@@ -84,22 +90,16 @@ function runtimeTreeOwner(name, names) {
 function runtimeTreeLeaf(tree, route) {
     let node = tree;
     for (const name of route) {
-        node = (node?.members || []).find((member) => member.name === name);
-        if (!node) return null;
+        if (!node || node.stale) return node;
+        if (node.unavailableCode)
+            return { unavailableCode: node.unavailableCode, unavailableDetail: node.unavailableDetail };
+        node = node.members?.find((member) => member.name === name);
     }
     return node;
 }
 
-// True when the tree, or a node on `route`, is a held (stale) copy of an earlier sample.
-function runtimeRouteStale(tree, route) {
-    let node = tree;
-    if (node?.stale) return true;
-    for (const name of route) {
-        node = (node?.members || []).find((member) => member.name === name);
-        if (!node) return false;
-        if (node.stale) return true;
-    }
-    return false;
+function canDeriveRuntimeMember(item) {
+    return item?.runtimeLayout && !item.isComposite && !item.runtimeLeaf && !item.runtimeSeparateRead;
 }
 
 // Paths of `item` that one list opens: its view's expansions, the root of an expanded pointee,
@@ -109,7 +109,12 @@ function runtimeOpenPaths(item, list, expansions) {
     if (isPointeeEntry(item)) paths.add("");
     const parents = list.filter((entry) => entry?.runtimeLayout && entry.isComposite).map((entry) => entry.name);
     for (const member of list) {
-        if (!member?.runtimeLayout || member.isComposite || runtimeTreeOwner(member.name, parents) !== item.name)
+        if (
+            !member?.runtimeLayout ||
+            member.isComposite ||
+            member.runtimeSeparateRead ||
+            runtimeTreeOwner(member.name, parents) !== item.name
+        )
             continue;
         let path = "";
         paths.add(path);
@@ -171,15 +176,13 @@ function buildActiveReadPlan(watchLists, elfSymbols, runtimeExpansions = []) {
     // its value comes from the parent's tree (see decodeConsumerSamples).
     const derived = new Set();
     const lists = (watchLists || []).map((list) => list || []);
-    for (const list of lists)
-        for (const item of list)
-            if (item?.runtimeLayout && !item.isComposite && !item.runtimeLeaf) derived.add(item.name);
+    for (const list of lists) for (const item of list) if (canDeriveRuntimeMember(item)) derived.add(item.name);
     for (const name of derived)
         for (const list of lists) {
             const leaf = list.find((item) => item?.name === name);
             if (!leaf) continue;
             const parents = list.filter((item) => item?.runtimeLayout && item.isComposite).map((item) => item.name);
-            if (leaf.runtimeLeaf || !runtimeTreeOwner(name, parents)) derived.delete(name);
+            if (!canDeriveRuntimeMember(leaf) || !runtimeTreeOwner(name, parents)) derived.delete(name);
         }
     lists.forEach((list, index) => {
         const expansions = runtimeExpansions[index];
@@ -272,8 +275,8 @@ function writableRamSectionRanges(sections) {
 }
 
 // Memory a runtime object's pointers may lead to: every allocated ELF section plus the linker-script
-// heap/stack region (`memory.runtimeRegions`, see parseElfSections). Watched objects themselves must
-// still lie in writable sections.
+// heap/stack region (`memory.runtimeRegions`, see parseElfSections). The managed sampler separately
+// verifies root storage before admitting a watch.
 function runtimePointerRanges(sections, regions = []) {
     const SHF_ALLOC = 2;
     const valid = (start, end) => Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 0 && end > start;
@@ -309,12 +312,17 @@ function filterRuntimeRamPlan(items, sections, regions = []) {
     const ranges = writableRamSectionRanges(sections);
     const runtimeRanges = runtimePointerRanges(sections, regions);
     const runtimeWriteRanges = runtimeWritableRanges({ sections, runtimeRegions: regions });
+    // Only initialized, allocated, read-only data can contain a flash-backed reference slot.
+    const referenceStorage = runtimePointerRanges(
+        (sections || []).filter((section) => section.type === 1 && (section.flags & 7) === 2)
+    );
     const allowed = [];
     const denied = [];
     for (const item of Array.isArray(items) ? items : []) {
         const address = Number(item?.address);
         const size = Number(item?.size);
         const end = address + size;
+        const referenceRoot = runtimeReferenceRoot(item?.runtimeLayout);
         const valid =
             Number.isInteger(address) &&
             Number.isInteger(size) &&
@@ -322,7 +330,11 @@ function filterRuntimeRamPlan(items, sections, regions = []) {
             size > 0 &&
             Number.isSafeInteger(end) &&
             end <= 0x100000000 &&
-            ranges.some((range) => address >= range.start && end <= range.end);
+            (ranges.some((range) => address >= range.start && end <= range.end) ||
+                (referenceStorage.some((range) => address >= range.start && end <= range.end) &&
+                    (referenceRoot
+                        ? size === 4 && referenceRoot.byteSize === size
+                        : item.runtimeReferencePath && runtimeContainsReference(item.runtimeLayout))));
         (valid ? allowed : denied).push(item.runtimeLayout ? { ...item, runtimeRanges, runtimeWriteRanges } : item);
     }
     return { allowed, denied, ranges };
@@ -562,15 +574,16 @@ class LiveWatchService {
         const decodedNames = new Set(scalarSamples.map((sample) => sample.name));
         for (const sample of samples || []) decodedNames.add(sample.name);
         for (const [name, spec] of typeMap) {
-            if (decodedNames.has(name)) continue;
+            if (decodedNames.has(name) || spec?.runtimeSeparateRead) continue;
             const ownerName = runtimeTreeOwner(name, owners.keys());
             if (!ownerName) continue;
             const owner = owners.get(ownerName);
             const sampleTime = Number.isFinite(owner.t) ? owner.t : time;
             const route = runtimeMemberRoute(name, ownerName);
             const scope = writeContext === undefined ? {} : { writeContext, sampleOwner: ownerName };
+            const node = owner.runtimeTree && runtimeTreeLeaf(owner.runtimeTree, route);
             // A held value is not new data: the member keeps what it showed and records no point.
-            if (owner.runtimeTree && runtimeRouteStale(owner.runtimeTree, route)) {
+            if (node?.stale) {
                 if (writeContext !== undefined) {
                     const held = { name, ...latest.get(name), ...scope, t: sampleTime, stale: true };
                     scalarSamples.push(held);
@@ -578,13 +591,13 @@ class LiveWatchService {
                 }
                 continue;
             }
-            const node = owner.runtimeTree && runtimeTreeLeaf(owner.runtimeTree, route);
-            const value = node ? (node.pointerValue ?? node.value) : undefined;
+            const value = node?.pointerValue ?? node?.value;
             let decoded;
-            if (value === undefined || node.kind === "unavailable") {
+            if (value === undefined || node?.kind === "unavailable" || (value === null && node?.unavailableCode)) {
                 const diagnostic = owner.diagnostic || {
-                    code: "LIVE_MEMBER_MISSING",
-                    message: "Runtime member unavailable: " + name.slice(ownerName.length + 1)
+                    code: node?.unavailableCode || "LIVE_MEMBER_MISSING",
+                    message:
+                        node?.unavailableDetail || "Runtime member unavailable: " + name.slice(ownerName.length + 1)
                 };
                 decoded = {
                     name,

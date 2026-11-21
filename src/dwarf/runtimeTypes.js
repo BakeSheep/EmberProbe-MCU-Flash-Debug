@@ -10,8 +10,125 @@ const MAX_RUNTIME_TYPES = 4096;
 
 const COMPOSITES = new Set([c.DW_TAG_structure_type, c.DW_TAG_class_type, c.DW_TAG_union_type]);
 const WRAPPERS = new Set([c.DW_TAG_typedef, c.DW_TAG_const_type, c.DW_TAG_volatile_type, c.DW_TAG_restrict_type]);
+const INDIRECT_SUFFIXES = {
+    [c.DW_TAG_pointer_type]: " *",
+    [c.DW_TAG_reference_type]: " &",
+    [c.DW_TAG_rvalue_reference_type]: " &&"
+};
 const STL =
     /^(?:std::(?:__cxx11::)?)(basic_string|vector|array|pair|tuple|map|multimap|set|multiset|unordered_map|unordered_multimap|unordered_set|unordered_multiset|list|forward_list|deque|unique_ptr|shared_ptr|weak_ptr|optional|variant)</;
+
+function markMissingStlArguments(types) {
+    for (const type of types) {
+        if (!type.stl || (type.stl === "tuple" && /^std::tuple<\s*>$/.test(type.typeName))) continue;
+        const required = type.stl === "pair" || type.stl.endsWith("map") ? 2 : 1;
+        if (type.args.length < required) type.unobservable = "template-arguments";
+    }
+}
+
+// Recover an omitted tuple parameter pack from the concrete _Head_base<N>::_M_head_impl DIEs.
+function recoverTupleArguments(types) {
+    const collect = (id, result, seen = new Set(), depth = 0) => {
+        if (seen.has(id) || depth > 32) return;
+        seen.add(id);
+        const node = types[id];
+        if (node?.kind === "alias") return collect(node.target, result, seen, depth + 1);
+        const index = node?.typeName.match(/(?:^|::)_Head_base<(\d+),/);
+        for (const field of node?.fields || []) {
+            if (index && field.name === "_M_head_impl") result[Number(index[1])] = field.type;
+            else if (field.isBase) collect(field.type, result, seen, depth + 1);
+        }
+    };
+    for (const [id, type] of types.entries()) {
+        if (type.stl !== "tuple" || type.args.length) continue;
+        const args = [];
+        collect(id, args);
+        if (args.length <= 256 && Array.from(args).every((arg) => arg !== undefined)) type.args = args;
+    }
+}
+
+function indirectTargetName(types, id, showConst) {
+    let isConst = false;
+    for (let depth = 0; depth < MAX_TYPE_ALIASES && types[id]; depth++) {
+        const type = types[id];
+        isConst ||= showConst && !!type.isConst;
+        if (type.typeName) return (isConst && !type.typeName.startsWith("const ") ? "const " : "") + type.typeName;
+        if (type.kind !== "alias") break;
+        id = type.target;
+    }
+    return "";
+}
+
+function withDeclarator(name, declarator) {
+    const array = /^(.*?)(?: \(([*&]+)\))?((?:\[\d+\])+)$/.exec(name);
+    const dimensions = declarator.startsWith("[");
+    if (!array) return dimensions ? name + declarator : name + " " + declarator;
+    const [, base, indirect, existing] = array;
+    return dimensions && !indirect
+        ? base + declarator + existing
+        : `${base} (${indirect || ""}${declarator})${existing}`;
+}
+
+function indirectTypeName(types, node, tag) {
+    const name =
+        indirectTargetName(types, node.target, node.kind === "reference") ||
+        (node.pointerTarget === "function" ? "function" : "void");
+    return withDeclarator(name, INDIRECT_SUFFIXES[tag].trim());
+}
+
+function runtimePointerTarget(dies, ref) {
+    if (ref === undefined) return "void";
+    const pointee = unwrapAliases(ref, dies);
+    if (pointee.unobservable) return "data";
+    if (pointee.ref === undefined) return "void";
+    const target = dies.get(pointee.ref);
+    if (target?.tag === c.DW_TAG_subroutine_type) return "function";
+    return COMPOSITES.has(target?.tag) && target.isDecl ? "incomplete" : "data";
+}
+
+// Each subrange is a type node, so both selection and sampling use the same per-dimension stride.
+function runtimeArrayTypes(node, dimensions, element, types, reserve) {
+    const name = indirectTargetName(types, element, true);
+    const layers = [];
+    let count = 1;
+    let byteSize = types[element].byteSize;
+    let suffix = "";
+    const truncated = types[element].unobservable || types[element].truncated;
+    for (const dimension of dimensions.slice().reverse()) {
+        count *= dimension;
+        byteSize *= dimension;
+        if (!Number.isSafeInteger(count) || !Number.isSafeInteger(byteSize))
+            throw Object.assign(new Error("Runtime array dimension exceeds its integer budget"), {
+                code: "DWARF_BUDGET_EXCEEDED"
+            });
+        suffix = `[${dimension}]` + suffix;
+        layers.push({
+            kind: "array",
+            byteSize,
+            count: dimension,
+            typeName: name ? withDeclarator(name, suffix) : "",
+            ...(truncated ? { truncated: true } : {})
+        });
+    }
+    const outer = layers.pop();
+    if (dimensions.length > 1) outer.dimensions = dimensions;
+    const bytes = layers.reduce(
+        (sum, layer) => sum + Buffer.byteLength(JSON.stringify(layer)) + 256,
+        Buffer.byteLength(JSON.stringify(outer))
+    );
+    if (!reserve(layers.length, bytes)) return false;
+    let target = element;
+    for (const layer of layers) {
+        types.push({ ...layer, target });
+        target = types.length - 1;
+    }
+    Object.assign(node, outer, {
+        byteSize: node.byteSize || outer.byteSize,
+        typeName: node.typeName || outer.typeName,
+        target
+    });
+    return true;
+}
 
 function runtimeScalarType(node, die, ref, parsed, scalarCache, chargeBytes, pointerTarget) {
     node.kind = "scalar";
@@ -95,24 +212,7 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
             return limitedIds.get(code);
         };
         const partial = (id) => !!types[id]?.unobservable || !!types[id]?.truncated;
-        // Pointer DIEs are unnamed; name them after the first named type behind the aliases.
-        const nameOf = (id) => {
-            for (let step = 0; step < MAX_TYPE_ALIASES && types[id]; step++) {
-                if (types[id].typeName) return types[id].typeName;
-                if (types[id].kind !== "alias") return "";
-                id = types[id].target;
-            }
-            return "";
-        };
-        const pointerTarget = (ref) => {
-            if (ref === undefined) return "void";
-            const pointee = unwrapAliases(ref, parsed.dies);
-            if (pointee.unobservable) return "data";
-            const target = parsed.dies.get(pointee.ref);
-            if (pointee.ref === undefined) return "void";
-            if (target?.tag === c.DW_TAG_subroutine_type) return "function";
-            return COMPOSITES.has(target?.tag) && target.isDecl ? "incomplete" : "data";
-        };
+        const pointerTarget = (ref) => runtimePointerTarget(parsed.dies, ref);
         const fullBudget = {
             maxTypes: MAX_RUNTIME_TYPES - 3,
             maxWork: MAX_COMPOSITE_NODES,
@@ -167,16 +267,12 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                         node.byteSize ||= types[node.target].byteSize;
                         if (partial(node.target)) node.truncated = true;
                     }
-                } else if (
-                    [c.DW_TAG_pointer_type, c.DW_TAG_reference_type, c.DW_TAG_rvalue_reference_type].includes(die.tag)
-                ) {
+                } else if (Object.hasOwn(INDIRECT_SUFFIXES, die.tag)) {
                     node.kind = die.tag === c.DW_TAG_pointer_type ? "pointer" : "reference";
-                    node.byteSize = 4;
+                    node.byteSize = node.kind === "reference" ? die.byteSize || die.unit?.addrSize || 4 : 4;
                     node.target = visit(die.typeRef, depth + 1, false, budget);
                     node.pointerTarget = pointerTarget(die.typeRef);
-                    node.typeName ||=
-                        (nameOf(node.target) || (node.pointerTarget === "function" ? "function" : "void")) +
-                        (node.kind === "pointer" ? " *" : " &");
+                    node.typeName ||= indirectTypeName(types, node, die.tag);
                     dynamic = true;
                     if (partial(node.target)) node.truncated = true;
                 } else if (
@@ -184,17 +280,24 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                 ) {
                     runtimeScalarType(node, die, ref, parsed, scalarCache, chargeBytes, pointerTarget);
                 } else if (die.tag === c.DW_TAG_array_type) {
-                    node.kind = "array";
-                    node.target = visit(die.typeRef, depth + 1, true, budget);
                     const dimensions = arrayDimensions(ref, parsed.dies, parsed.childrenMap);
-                    node.count = dimensions.length ? dimensions.reduce((count, dimension) => count * dimension, 1) : 0;
-                    // Recipes do not enumerate elements. Runtime readers retain their own caps.
-                    if (!Number.isSafeInteger(node.count))
-                        throw Object.assign(new Error("Runtime array dimension exceeds its integer budget"), {
-                            code: "DWARF_BUDGET_EXCEEDED"
-                        });
-                    node.byteSize = die.byteSize || node.count * types[node.target].byteSize;
-                    if (partial(node.target)) node.truncated = true;
+                    if (!dimensions.length) dimensions.push(0);
+                    if (depth + dimensions.length > MAX_RUNTIME_DEPTH) {
+                        node.unobservable = "depth-limit";
+                        limit(node.unobservable);
+                        return id;
+                    }
+                    const element = visit(die.typeRef, depth + dimensions.length, true, budget);
+                    const reserve = (count, bytes) => {
+                        if (types.length + count > budget.maxTypes || work + count > budget.maxWork) return false;
+                        if (!chargeBytes(bytes)) return false;
+                        work += count;
+                        return true;
+                    };
+                    if (!runtimeArrayTypes(node, dimensions, element, types, reserve)) {
+                        node.unobservable = "expansion-budget";
+                        limit(node.unobservable);
+                    }
                 } else if (COMPOSITES.has(die.tag) && !die.isDecl) {
                     const offsets = parsed.childrenMap.get(ref) || [];
                     if (work + offsets.length > budget.maxWork) {
@@ -315,7 +418,7 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                         if (partial(target)) node.truncated = true;
                     }
                     const stl = node.typeName.match(STL);
-                    if (stl) {
+                    if (stl && (die.name === node.typeName || die.name?.startsWith(stl[1] + "<"))) {
                         node.stl = stl[1];
                         dynamic = true;
                     }
@@ -378,25 +481,8 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                 atomicDynamic = false;
             }
         }
-        // GCC can omit the children of a tuple's template parameter pack. Recover
-        // them only from its concrete _Head_base<N>::_M_head_impl DIEs.
-        const tupleArgs = (id, result, seen = new Set(), depth = 0) => {
-            if (seen.has(id) || depth > 32) return;
-            seen.add(id);
-            const node = types[id];
-            if (node?.kind === "alias") return tupleArgs(node.target, result, seen, depth + 1);
-            const index = node?.typeName.match(/(?:^|::)_Head_base<(\d+),/);
-            for (const field of node?.fields || []) {
-                if (index && field.name === "_M_head_impl") result[Number(index[1])] = field.type;
-                else if (field.isBase) tupleArgs(field.type, result, seen, depth + 1);
-            }
-        };
-        for (let id = 0; id < types.length; id++) {
-            if (types[id].stl !== "tuple" || types[id].args.length) continue;
-            const args = [];
-            tupleArgs(id, args);
-            if (args.length <= 256 && Array.from(args).every((arg) => arg !== undefined)) types[id].args = args;
-        }
+        recoverTupleArguments(types);
+        markMissingStlArguments(types);
         return { root, types, dynamicTypes, ...(truncated ? { truncated: true } : {}) };
     };
 }

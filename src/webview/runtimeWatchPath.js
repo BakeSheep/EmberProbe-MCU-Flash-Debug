@@ -2,8 +2,15 @@
 (function (root, create) {
     if (typeof module === "object" && module.exports) module.exports = create;
     else root.EmberProbeRuntimeWatchPath = create;
-})(globalThis, function ({ MAX_TYPE_ALIASES, runtimeContainsContainer, runtimeFieldType, variableDisplayName }) {
-    return function runtimeWatchEntry(name, symbol, segments = [], allowDynamicLeaf = false) {
+})(globalThis, function (runtime) {
+    const {
+        MAX_TYPE_ALIASES,
+        runtimeContainsContainer,
+        runtimeContainsReference,
+        runtimeFieldType,
+        variableDisplayName
+    } = runtime;
+    return function runtimeWatchEntry(name, symbol, segments = [], allowDynamicLeaf = false, legacySteps) {
         const graph = symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout;
         if (!graph) return null;
         const unwrap = (id) => {
@@ -38,7 +45,10 @@
                 .map((entry) => field(entry, name))
                 .filter(Boolean);
         };
+        let runtimeSeparateRead = false;
         const member = (type, name) => {
+            // Implicit base and anonymous members do not occupy this literal path in a sampled tree.
+            runtimeSeparateRead ||= !type?.fields?.some((entry) => entry.name === name && !entry.unobservable);
             const known = field(type, name);
             if (known) return known;
             const candidates = dynamicMembers(type, name);
@@ -54,10 +64,17 @@
                 : null;
         };
         let visits = 0;
-        function resolve(type, start, enteredContainer, followed, runtimeLeaf = false) {
+        const referent = (type) => {
+            while (type?.kind === "reference") {
+                if (++visits > 4096 || (type.pointerTarget && type.pointerTarget !== "data")) return null;
+                type = unwrap(type.target);
+            }
+            return type;
+        };
+        function resolve(type, start, enteredContainer, followed, reference = false, runtimeLeaf = false) {
             const branch = (options, next) => {
                 for (const candidate of new Set(options)) {
-                    const found = resolve(candidate, next, enteredContainer, followed, true);
+                    const found = resolve(candidate, next, enteredContainer, followed, reference, true);
                     if (found) return found;
                 }
                 return null;
@@ -66,14 +83,15 @@
                 if (++visits > 4096) return null;
                 const segment = segments[index];
                 if (!type) return null;
-                if (allowDynamicLeaf && type.kind === "reference") {
-                    while (type?.kind === "reference") {
-                        if (++visits > 4096) return null;
-                        if (type.pointerTarget && type.pointerTarget !== "data") return null;
-                        type = unwrap(type.target);
-                    }
+                if (type.kind === "reference") {
+                    type = referent(type);
                     if (!type) return null;
-                    followed = true;
+                    reference = true;
+                    // Older saved paths consumed one synthetic ".value" to step through a reference.
+                    if (legacySteps && !enteredContainer && segment.kind === "member" && segment.name === "value") {
+                        legacySteps.set(index, []);
+                        continue;
+                    }
                     if (
                         type.kind !== "pointer" &&
                         (segment.kind === "dereference" ||
@@ -81,7 +99,7 @@
                     )
                         continue;
                 }
-                if (["pointer", "reference"].includes(type.kind) && !enteredContainer) {
+                if (type.kind === "pointer" && !enteredContainer) {
                     const explicit =
                         segment.kind === "dereference" || (segment.kind === "member" && segment.name === "value");
                     if (!explicit || (type.pointerTarget && type.pointerTarget !== "data")) return null;
@@ -89,8 +107,7 @@
                     type = unwrap(type.target);
                     continue;
                 }
-                if (type?.kind === "reference") type = unwrap(type.target);
-                if (type?.kind === "pointer") {
+                if (type.kind === "pointer") {
                     type = unwrap(type.target);
                     if (segment.kind === "dereference" || (segment.kind === "member" && segment.name === "value"))
                         continue;
@@ -134,6 +151,19 @@
                         type = unwrap(type.args[segment.name === "first" ? 0 : 1]);
                     else return null;
                 } else if (segment.kind === "index" && type?.kind === "array") {
+                    if (legacySteps && type.dimensions?.length > 1) {
+                        const coordinates = [];
+                        let flat = segment.index;
+                        for (const dimension of type.dimensions.slice().reverse()) {
+                            if (!dimension) return null;
+                            coordinates.unshift({ kind: "index", index: flat % dimension });
+                            flat = Math.floor(flat / dimension);
+                        }
+                        if (flat !== 0) return null;
+                        for (const _coordinate of coordinates) type = unwrap(type?.target);
+                        legacySteps.set(index, coordinates);
+                        continue;
+                    }
                     if (!Number.isSafeInteger(segment.index) || segment.index < 0 || segment.index >= type.count)
                         return null;
                     type = unwrap(type.target);
@@ -149,32 +179,37 @@
                     type = member(type, segment.name);
                 } else return null;
             }
-            if (!type || (runtimeLeaf && (type.kind !== "scalar" || !type.watchType || type.unobservable))) return null;
-            return { type, enteredContainer, followed, runtimeLeaf };
+            const declaredReference = type?.kind === "reference" ? type : null;
+            type = referent(type);
+            if (!type && !declaredReference) return null;
+            if (runtimeLeaf && (type?.kind !== "scalar" || !type.watchType || type.unobservable)) return null;
+            return { type, declaredReference, enteredContainer, followed, reference, runtimeLeaf };
         }
         const selection = resolve(rootType, 0, !!rootType.stl, false);
         if (!selection) return null;
-        let { type, enteredContainer, followed, runtimeLeaf } = selection;
-        if (!followed && hasPointerTypes && !hasContainers) return null;
-        if (!followed && segments.some((segment) => segment?.kind === "dereference")) return null;
+        let { type, declaredReference, enteredContainer, followed, reference, runtimeLeaf } = selection;
+        reference ||= !!declaredReference;
+        const ownsReferences = !!type && runtimeContainsReference(graph, graph.types.indexOf(type));
+        if (!followed && !reference && !ownsReferences && hasPointerTypes && !hasContainers) return null;
+        if (!followed && !reference && segments.some((segment) => segment?.kind === "dereference")) return null;
         if (type?.stl) enteredContainer = true;
-        const rawPointer = !enteredContainer && ["pointer", "reference"].includes(type?.kind);
-        if (type?.kind === "reference" && !rawPointer) type = unwrap(type.target);
-        if (!type || type.unobservable || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType))
-            return null;
+        const rawPointer = type?.kind === "pointer" && (!enteredContainer || reference);
+        const unavailable =
+            !type || type.unobservable || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType);
+        if (unavailable && !declaredReference) return null;
+        const typeName = (rawPointer ? type.typeName : declaredReference?.typeName) || type?.typeName;
         const named = variableDisplayName({ name }, [symbol]);
         const displayName = followed && /\.value$/.test(named) ? "*" + named.slice(0, -".value".length) : named;
         return {
             name,
             address: symbol.address,
             size: symbol.size,
-            type: runtimeLeaf ? "" : rawPointer ? "u32" : type.watchType || "",
+            type: runtimeLeaf || unavailable ? "" : rawPointer ? "u32" : type.watchType || "",
             ...(runtimeLeaf ? { runtimeLeaf: true } : {}),
-            ...(!runtimeLeaf && segments.length && type.typeName ? { typeName: type.typeName } : {}),
-            ...(rawPointer && type.kind === "pointer"
-                ? { isPointer: true, pointerTarget: type.pointerTarget || "data" }
-                : {}),
-            isComposite: !rawPointer && type.kind !== "scalar",
+            ...(typeName && !runtimeLeaf && (segments.length || declaredReference) ? { typeName } : {}),
+            ...(declaredReference ? { isReference: true } : {}),
+            ...(rawPointer ? { isPointer: true, pointerTarget: type.pointerTarget || "data" } : {}),
+            isComposite: !unavailable && !rawPointer && type.kind !== "scalar",
             compositeLayout: symbol.compositeLayout || null,
             ...(symbol.layoutExpansions
                 ? {
@@ -184,7 +219,11 @@
                 : {}),
             runtimeLayout: graph,
             runtimeSegments: segments,
-            ...(followed || (hasContainers && !enteredContainer) ? { runtimeStaticPointers: true } : {}),
+            ...(reference || ownsReferences ? { runtimeReferencePath: true } : {}),
+            ...(runtimeSeparateRead ? { runtimeSeparateRead: true } : {}),
+            ...(rawPointer || followed || ((reference || ownsReferences || hasContainers) && !enteredContainer)
+                ? { runtimeStaticPointers: true }
+                : {}),
             ...(followed ? { derefPath: true } : {}),
             ...(displayName !== name ? { displayName } : {})
         };

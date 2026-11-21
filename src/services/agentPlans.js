@@ -48,19 +48,22 @@ function readPlan(params, readElf, layoutErrors = null) {
         const layoutError = !symbol.compositeLayout && layoutErrors?.get(symbol.name);
         if (layoutError) throw layoutError;
         const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
+        const expandedReference = expanded.some((leaf) => leaf.isReference);
         if (
+            !expandedReference &&
             expanded.length === 1 &&
             elfSymbols.resolveLayoutPath(symbol, symbol.compositeLayout, parsed)?.node.watchType
         ) {
             expandedScalars.push({ ...expanded[0], name: expanded[0].path, requestedName: req.name });
             return;
         }
-        const runtime = !expanded.length && runtimeWatchEntry(req.name, symbol, parsed?.segments || []);
+        const runtime =
+            (!expanded.length || expandedReference) && runtimeWatchEntry(req.name, symbol, parsed?.segments || []);
         if (runtime) {
             compositePlan.push({ ...runtime, requestedName: req.name });
             return;
         }
-        if (!expanded.length && requiresRuntimePath(symbol, parsed?.segments || []))
+        if (expandedReference || (!expanded.length && requiresRuntimePath(symbol, parsed?.segments || [])))
             throw Object.assign(new Error(`Invalid runtime member path: ${req.name}`), {
                 code: "INVALID_VARIABLE_PATH"
             });
@@ -73,11 +76,10 @@ function readPlan(params, readElf, layoutErrors = null) {
                     details: { base: symbol.name, reason: symbol.unsupportedReason }
                 });
             }
-            if (
-                parsed &&
-                parsed.segments.length &&
-                !elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed).length
-            ) {
+            const leaves = parsed?.segments.length
+                ? elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed)
+                : null;
+            if (leaves && (!leaves.length || leaves.some((leaf) => leaf.isReference))) {
                 throw Object.assign(new Error(`Invalid composite member path: ${req.name}`), {
                     code: "INVALID_VARIABLE_PATH"
                 });

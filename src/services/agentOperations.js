@@ -246,7 +246,8 @@ class AgentOperations {
             // display names, so a requested `ep7` must be stored as `_ZL3ep7`.
             const rawPath = parsed ? symbol.name + rawName.trim().slice(baseName.length) : symbol.name;
             const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
-            if (expanded.length) {
+            const expandedReference = expanded.some((leaf) => leaf.isReference);
+            if (expanded.length && !expandedReference) {
                 for (const leaf of expanded) appendResolved({ ...leaf, name: leaf.path });
                 continue;
             }
@@ -260,7 +261,7 @@ class AgentOperations {
                 appendResolved(runtime);
                 continue;
             }
-            if (require("../webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
+            if (expandedReference || require("../webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
                 throw Object.assign(new Error(`Invalid runtime member path: ${rawName}`), {
                     code: "INVALID_VARIABLE_PATH"
                 });
@@ -271,7 +272,7 @@ class AgentOperations {
                     });
                 if (parsed && parsed.segments.length) {
                     const leaves = elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed);
-                    if (!leaves.length)
+                    if (!leaves.length || leaves.some((leaf) => leaf.isReference))
                         throw Object.assign(new Error(`Invalid composite member path: ${rawName}`), {
                             code: "INVALID_VARIABLE_PATH"
                         });

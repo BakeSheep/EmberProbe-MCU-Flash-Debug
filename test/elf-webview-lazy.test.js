@@ -30,6 +30,121 @@ for (const listType of ["availableVariables", "variablesList"]) {
     );
 }
 
+scenario("Resolve a reference before adding it in either picker", () => {
+    const symbol = { name: "reference", address: 0x08010000, size: 4, typeName: "int &", isReference: true };
+    const runtimeLayout = {
+        root: 1,
+        types: [
+            { kind: "scalar", typeName: "int", byteSize: 4, watchType: "i32" },
+            { kind: "reference", typeName: "int &", byteSize: 4, target: 0 }
+        ]
+    };
+    const layout = { kind: "class", members: [], runtimeLayout };
+    const version = "reference";
+    for (const side of [true, false]) {
+        const view = render(side ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+        try {
+            const listType = side ? "availableVariables" : "variablesList";
+            view.send({ type: listType + "Reset", version });
+            view.send({ type: listType + "Chunk", version, symbols: [{ ...symbol }] });
+            view.send({ type: side ? "availableTypesDone" : "variableTypesDone", version });
+            if (side) {
+                view.document.querySelector("#availableVars .av-watch").click();
+                assert.strictEqual(view.messages.at(-1).type, "resolveCompositeLayout");
+                view.send({ type: "compositeLayoutResult", version, name: symbol.name, layout });
+            } else {
+                const input = view.document.getElementById("addName");
+                input.value = symbol.name;
+                input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+                assert.strictEqual(view.messages.at(-1).type, "resolveVariable");
+                view.send({ type: "addResolved", version, symbol: { ...symbol, compositeLayout: layout } });
+            }
+            const saved = view.messages.findLast(
+                (message) => message.type === (side ? "saveSidebarWatch" : "saveWatch")
+            );
+            assert.strictEqual(saved.items[0].name, symbol.name);
+            assert.strictEqual(saved.items[0].type, "i32");
+            assert.strictEqual(saved.items[0].isPointer, undefined);
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    }
+});
+
+scenario("Restore an expanded nested reference before the first waveform sample", () => {
+    const { normalizeWatchList } = require("../src/validation");
+    const name = "holder";
+    const referencePath = "holder.motor.axis";
+    const symbol = {
+        name,
+        address: 0x20000100,
+        size: 4,
+        isComposite: true,
+        runtimeLayout: {
+            root: 4,
+            types: [
+                { kind: "scalar", typeName: "int", watchType: "i32", byteSize: 4 },
+                { kind: "class", typeName: "Axis", byteSize: 4, fields: [{ name: "speed", type: 0, offset: 0 }] },
+                { kind: "reference", typeName: "Axis &", byteSize: 4, target: 1 },
+                { kind: "class", typeName: "Motors", byteSize: 4, fields: [{ name: "axis", type: 2, offset: 0 }] },
+                { kind: "class", typeName: "Holder", byteSize: 4, fields: [{ name: "motor", type: 3, offset: 0 }] }
+            ]
+        }
+    };
+    const items = normalizeWatchList([{ name }], [symbol], { migrateLegacyRuntimePaths: true });
+    assert.ok(items[0].runtimeLayout);
+    const heading = (view) =>
+        [...view.document.querySelectorAll(".comp-nest > .comp-head")].find(
+            (head) => head.querySelector(".comp-name")?.title === referencePath
+        );
+    const initial = render(getLiveWatchContent({}, "en"), { expanded: { holder: true, "holder.motor": true } });
+    let persisted;
+    try {
+        initial.send({ type: "watchList", items });
+        assert.ok(heading(initial), "a reference with a known target type can be expanded before sampling");
+        heading(initial).click();
+        persisted = initial.getState();
+    } finally {
+        initial.close();
+    }
+    const restored = render(getLiveWatchContent({}, "en"), persisted);
+    try {
+        restored.send({ type: "watchList", items });
+        assert.ok(heading(restored).querySelector(".comp-arrow").classList.contains("open"));
+        const { expansions } = restored.messages.findLast((message) => message.type === "saveRuntimeExpansions");
+        assert.ok(expansions.holder.includes(".motor.axis"));
+        restored.send({
+            type: "liveCompositeSample",
+            samples: [
+                {
+                    name,
+                    tree: {
+                        kind: "class",
+                        members: [
+                            {
+                                name: "motor",
+                                kind: "class",
+                                members: [
+                                    {
+                                        name: "axis",
+                                        kind: "class",
+                                        typeName: "Axis &",
+                                        members: [{ name: "speed", kind: "scalar", type: "i32", value: 42 }]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+        assert.match(restored.document.querySelector('[data-path="holder.motor.axis.speed"]').textContent, /42/);
+    } finally {
+        restored.close();
+    }
+});
+
 const sidebar = render(getModernWebviewContent({}, "en"));
 try {
     const symbols = Array.from({ length: 600 }, (_, index) => ({

@@ -812,11 +812,22 @@ function addSymbol(sym, resolved = false) {
     if (
         !resolved &&
         state.version &&
-        (!impTypesReady || (sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout))
+        (!impTypesReady ||
+            (sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout) ||
+            (sym.isReference && !EmberProbeRuntime.runtimeGraph(sym)))
     ) {
         post({ type: "resolveVariable", name: sym.name, version: state.version });
         return;
     }
+    if (sym.isReference && !sym.runtimeSegments) {
+        const entry = EmberProbeRuntime.runtimeWatchEntry(sym.name, sym);
+        if (!entry) {
+            setStatusMsg({ message: sym.unsupportedReason || t("lw.compositeNoLayout") }, "error", "layout");
+            return;
+        }
+        sym = { ...sym, ...entry };
+    }
+    const entry = EmberProbeRuntime.symbolWatchEntry(sym, displayNameFor(sym));
     if (sym.isComposite) {
         if (!sym.compositeLayout && !sym.runtimeLayout) {
             setStatusMsg({ message: sym.unsupportedReason || t("lw.compositeNoLayout") }, "error", "layout");
@@ -826,19 +837,7 @@ function addSymbol(sym, resolved = false) {
         var addComp = function (disp) {
             if (disp) state.dispSpec[sym.name] = disp;
             else delete state.dispSpec[sym.name];
-            state.watch.push({
-                name: sym.name,
-                displayName: displayNameFor(sym),
-                address: Number(sym.address) || 0,
-                size: Number(sym.size) || 4,
-                type: "",
-                isComposite: true,
-                compositeLayout: sym.compositeLayout || null,
-                ...(sym.runtimeSegments ? { runtimeSegments: sym.runtimeSegments } : {}),
-                ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
-                ...(sym.derefPath ? { derefPath: true, typeName: sym.typeName } : {}),
-                ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
-            });
+            state.watch.push(entry);
             state.expanded[sym.name] = true;
             renderVars();
             saveWatch();
@@ -850,22 +849,7 @@ function addSymbol(sym, resolved = false) {
         else addComp(null);
         return;
     }
-    state.watch.push({
-        name: sym.name,
-        displayName: displayNameFor(sym),
-        address: Number(sym.address) || 0,
-        size: Number(sym.size) || 4,
-        type: sym.type || sym.watchType || defType(sym.size || 4),
-        ...(sym.isPointer ? { isPointer: true, typeName: sym.typeName, pointerTarget: sym.pointerTarget } : {}),
-        ...(EmberProbeRuntime.runtimeGraph(sym)
-            ? {
-                  runtimeLayout: EmberProbeRuntime.runtimeGraph(sym),
-                  runtimeSegments: sym.runtimeSegments || [],
-                  ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
-                  ...(sym.derefPath ? { derefPath: true, typeName: sym.typeName } : {})
-              }
-            : {})
-    });
+    state.watch.push(entry);
     hidePointerCurve(sym);
     renderVars();
     saveWatch();
@@ -1117,7 +1101,7 @@ function renderScalarCard(item) {
     valueCells[item.name] = val;
     main.append(name);
     const info = valueTree.displayInfo(item);
-    if (info.isPointer) {
+    if (info.isPointer || info.isReference) {
         const type = document.createElement("span");
         type.className = "member-type";
         type.textContent = info.typeName || item.type;
@@ -1478,7 +1462,10 @@ function importLeafRow(lf, checked) {
     lr.append(
         lcb,
         ln,
-        importCell("ty", (lf.isPointer ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "")),
+        importCell(
+            "ty",
+            (lf.isPointer || lf.isReference ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "")
+        ),
         importCell("address", fmtAddr(lf.address)),
         importCell("size", "")
     );

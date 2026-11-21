@@ -375,6 +375,143 @@ scenario("Preserve cross-CU ambiguity and independent type comparison budgets", 
     scenario("Independent type comparison budgets", comparisonBudgetTests);
 });
 
+const vt13Address = 0x20000000;
+function vt13Fixture(definitions, version = 4) {
+    const c = require("../src/dwarf/constants");
+    const {
+        attr,
+        base,
+        composite,
+        declaration,
+        fixture,
+        member,
+        nameAttr,
+        node,
+        typeAttr,
+        variable
+    } = require("./helpers/dwarf-tree");
+    const units = definitions.map(({ parameters = "full", memberOffset = 60, baseOffset = 0 }, index) => {
+        const id = (name) => index + ":" + name;
+        const vectorParameters =
+            parameters === "missing"
+                ? []
+                : [
+                      node(id("Tp"), 0x2f, [
+                          nameAttr("_Tp"),
+                          typeAttr(id(parameters === "conflict" ? "float" : "int"))
+                      ]),
+                      ...(parameters === "partial"
+                          ? []
+                          : [node(id("Alloc"), 0x2f, [nameAttr("_Alloc"), typeAttr(id("allocator"))])])
+                  ];
+        return [
+            base(id("int")),
+            base(id("bool"), "bool", 1, c.DW_ATE_boolean),
+            base(id("float"), "float", 4, c.DW_ATE_float),
+            node(
+                id("std"),
+                c.DW_TAG_namespace,
+                [nameAttr("std")],
+                [
+                    composite(id("allocator"), "allocator<int>", 1),
+                    composite(id("vectorBase"), "_Vector_base<int>", 12),
+                    composite(id("vector"), "vector<int, std::allocator<int> >", 12, [
+                        node(id("inheritance"), c.DW_TAG_inheritance, [
+                            typeAttr(id("vectorBase")),
+                            attr(c.DW_AT_data_member_location, 6, baseOffset)
+                        ]),
+                        ...vectorParameters
+                    ])
+                ]
+            ),
+            composite(id("VT13"), "VT13", 368, [
+                member(id("connect"), "is_connect", id("bool"), 56),
+                member(id("enable"), "is_enable", id("bool"), 57),
+                member(id("vx"), "vx", id("float"), memberOffset),
+                member(id("vy"), "vy", id("float"), 64),
+                member(id("callbacks"), "callbacks", id("vector"), 188)
+            ]),
+            { ...variable("vt13", id("VT13"), vt13Address), id: id("vt13") }
+        ];
+    });
+    units.push([declaration("forward-type", "VT13"), variable("forward", "forward-type", vt13Address + 368)]);
+    return fixture(units, {
+        version,
+        sections: [{ name: ".bss", addr: vt13Address, flags: 3, type: 8, size: 368 }],
+        symbols: [{ name: "vt13", value: vt13Address, size: 368, section: 3 }]
+    }).buffer;
+}
+
+scenario("Bind inline template layouts across CUs and prefer the complete metadata in either order", () => {
+    const missing = { parameters: "missing" };
+    for (const [version, definitions] of [
+        [4, [missing, {}]],
+        [5, [{}, missing]]
+    ]) {
+        const buffer = vt13Fixture(definitions, version);
+        const { symbols } = require("../src/elfSymbols").parseElfSymbols(buffer);
+        assert.deepStrictEqual(symbols, [{ name: "vt13", address: vt13Address, size: 368 }]);
+        const result = parseDwarf(buffer, { runtime: true });
+        for (const name of ["vt13", "forward"]) {
+            assert.strictEqual(result.types.get(name).typeName, "class VT13");
+            const layout = result.layouts.get(name);
+            assert.strictEqual(layout.byteSize, 368);
+            assert.deepStrictEqual(
+                layout.members.map(({ name, offset }) => [name, offset]),
+                [
+                    ["is_connect", 56],
+                    ["is_enable", 57],
+                    ["vx", 60],
+                    ["vy", 64],
+                    ["callbacks", 188]
+                ]
+            );
+            const graph = layout.runtimeLayout;
+            const vector = graph.types.find((type) => type.stl === "vector");
+            assert.deepStrictEqual(
+                vector.args.map((id) => graph.types[id].typeName),
+                ["int", "std::allocator<int>"]
+            );
+        }
+    }
+});
+
+scenario("Reject missing-template candidates with conflicting layouts or known arguments", () => {
+    const missing = { parameters: "missing" };
+    for (const definitions of [
+        [missing, {}, { parameters: "conflict" }],
+        [{}, missing, { parameters: "conflict" }],
+        [missing, {}, { parameters: "partial" }],
+        [missing, { memberOffset: 68 }],
+        [missing, { baseOffset: 4 }],
+        [missing, ...Array.from({ length: 64 }, () => ({}))]
+    ]) {
+        const result = parseDwarf(vt13Fixture(definitions), { runtime: true });
+        assert.strictEqual(result.types.get("vt13").ambiguous, true);
+        assert.strictEqual(result.layouts.has("vt13"), false);
+        assert.strictEqual(result.layouts.has("forward"), false);
+    }
+});
+
+scenario("Keep ordinary members readable when a container has no template arguments", async () => {
+    const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");
+    const result = parseDwarf(vt13Fixture([{ parameters: "missing" }]), { runtime: true });
+    const { runtimeLayout } = result.layouts.get("vt13");
+    const memory = Buffer.alloc(368);
+    memory.writeFloatLE(1.5, 60);
+    const reader = new RuntimeObjectReader(
+        {
+            address: vt13Address,
+            runtimeLayout,
+            runtimeRanges: [{ start: vt13Address, end: vt13Address + memory.length }]
+        },
+        async (address, size) => memory.subarray(address - vt13Address, address - vt13Address + size)
+    );
+    const { members } = await reader.sample();
+    assert.strictEqual(members.find((member) => member.name === "vx").value, 1.5);
+    assert.strictEqual(members.find((member) => member.name === "callbacks").unobservable, "template-arguments");
+});
+
 scenario("Reject conflicting CU layouts and unknown member addresses", () => {
     const c = require("../src/dwarf/constants");
     const elf = require("../src/elfSymbols");

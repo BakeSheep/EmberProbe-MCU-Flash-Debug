@@ -363,6 +363,8 @@ class RuntimeObjectReader {
     async dereference(object, dynamic = true) {
         const type = this.type(object.type);
         if (!["pointer", "reference"].includes(type.kind)) return object;
+        if (type.kind === "reference" && type.byteSize !== 4)
+            throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime reference storage must be 32 bits");
         const address = await this.pointer(object);
         if (!address) throw failure("LIVE_NULL_POINTER", "Runtime pointer is null");
         object = { address, type: type.target, writeForbidden: object.writeForbidden };
@@ -725,7 +727,7 @@ class RuntimeObjectReader {
             if (reference && segment.kind === "dereference") continue;
             if (reference && segment.name === "value" && !type.stl) {
                 if (type.kind === "scalar" || type.kind === "array") continue;
-                if (type.kind === "class") {
+                if (type.kind === "class" || (type.kind === "union" && !writing)) {
                     try {
                         object = await this.field(object, "value");
                     } catch (error) {
@@ -798,7 +800,23 @@ class RuntimeObjectReader {
                 typeName: type.typeName,
                 unobservable: "expansion-budget"
             });
-            if (["pointer", "reference"].includes(type.kind)) {
+            if (type.kind === "reference") {
+                if (type.pointerTarget && type.pointerTarget !== "data")
+                    throw failure("LIVE_LAYOUT_UNSUPPORTED", "Reference target type is unavailable");
+                const target = await this.dereference(object, open);
+                const value = await this.tree(target, depth + 1, next, followPointers, maxNodes, path, open);
+                if (value.unavailableCode || (depth === 0 && value.unobservable))
+                    throw failure(
+                        value.unavailableCode || "LIVE_LAYOUT_UNSUPPORTED",
+                        "Reference target is unavailable"
+                    );
+                return {
+                    ...value,
+                    ...(value.isPointer ? {} : { typeName: type.typeName || value.typeName }),
+                    ...(value.kind === "scalar" ? { writeRestriction: "pointer" } : {})
+                };
+            }
+            if (type.kind === "pointer") {
                 const pointerValue = await this.pointer(object);
                 const identity = {
                     typeName: type.typeName || type.kind,
@@ -835,14 +853,12 @@ class RuntimeObjectReader {
                         next,
                         followPointers,
                         maxNodes,
-                        type.kind === "reference" ? path : path + ".value",
+                        path + ".value",
                         true
                     );
                     if (value.kind === "unavailable") return leaf(value.unobservable || "opaque-pointee");
                     // An unreadable target keeps the pointer row with its address and reason.
                     if (value.unavailableCode) return leaf(value.unavailable, value.unavailableCode);
-                    if (type.kind === "reference")
-                        return value.kind === "scalar" ? { ...value, writeRestriction: "pointer" } : value;
                     return {
                         kind: "class",
                         ...identity,
@@ -952,7 +968,7 @@ class RuntimeObjectReader {
                     if (field.unobservable || fieldType.unobservable) continue;
                     const member = await this.member(object, field);
                     objects.set(field, member);
-                    if (["pointer", "reference"].includes(fieldType.kind)) {
+                    if (fieldType.kind === "pointer") {
                         this.ownerPath = memberPath(path, field.name);
                         await this.pointer(member);
                         this.ownerPath = path;
@@ -1029,6 +1045,14 @@ class RuntimeObjectReader {
                     // The type itself may be what failed.
                 }
                 const mark = { unavailable: runtimeFailureReason(error.code), unavailableCode: error.code };
+                if (type?.kind === "reference")
+                    return {
+                        kind: "scalar",
+                        typeName: type.typeName,
+                        value: null,
+                        ...mark,
+                        unavailableDetail: error.message
+                    };
                 // A scalar past the read budget keeps its row, without a value.
                 if (error.code === "LIVE_READ_BUDGET_EXCEEDED" && type?.kind === "scalar" && type.watchType)
                     return {
@@ -1184,7 +1208,7 @@ class RuntimeObjectReader {
     async verifyDescriptorsAtOnce(spans) {
         if (!this.readMany || !spans.length) return null;
         this.guard();
-        if (Date.now() > this.budget.deadline) throw deadlineFailure();
+        if (this.now() > this.budget.deadline) throw deadlineFailure();
         const actual = await this.readMany(spans.map(({ address, size }) => ({ address, size })));
         this.guard();
         if (!actual) return null;
@@ -1228,9 +1252,11 @@ class RuntimeObjectReader {
             await this.dynamic({ address: this.item.address, type: this.graph.root }),
             this.item.runtimeSegments || []
         );
-        if (this.item.runtimeLeaf && this.type(object.type).kind !== "scalar")
+        if (this.item.runtimeLeaf && !["scalar", "reference"].includes(this.type(object.type).kind))
             throw failure("LIVE_MEMBER_MISSING", "Active runtime member is not a scalar");
         const tree = (this.item.derefPath && (await this.stringPreview(object))) || (await this.root(object));
+        if (this.item.runtimeLeaf && (tree.kind !== "scalar" || tree.isPointer))
+            throw failure("LIVE_MEMBER_MISSING", "Active runtime member is not a scalar");
         // With nothing read at all, the object fails as one budget error rather than a card of empty rows.
         const children = tree.members || tree.elements;
         if (children?.length && children.every((child) => child.unavailableCode === "LIVE_READ_BUDGET_EXCEEDED"))

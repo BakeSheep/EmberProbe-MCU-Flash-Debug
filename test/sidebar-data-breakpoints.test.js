@@ -81,6 +81,29 @@ function serviceFixture() {
         f.session.type = "cppdbg";
         await assert.rejects(f.request({ action: "list" }), /dataNoSession/);
     });
+    await scenario("Keep declared references addressable in paused GDB without accepting synthetic paths", async () => {
+        const f = serviceFixture();
+        f.host.readElfSymbols = () => ({
+            symbols: [
+                {
+                    name: "reference",
+                    address: 0x20000000,
+                    size: 4,
+                    isReference: true,
+                    runtimeLayout: {
+                        root: 1,
+                        types: [
+                            { kind: "scalar", watchType: "i32", byteSize: 4 },
+                            { kind: "reference", target: 0, byteSize: 4 }
+                        ]
+                    }
+                }
+            ]
+        });
+        await f.request({ action: "info", name: "reference" });
+        assert.strictEqual(f.calls[0].args.name, "reference");
+        await assert.rejects(f.request({ action: "info", name: "reference.value" }), /dataUnsupported/);
+    });
     await scenario("condition cancellation and state changes never send stale mutations", async () => {
         const f = serviceFixture();
         await f.request({ action: "condition", id: "1" });

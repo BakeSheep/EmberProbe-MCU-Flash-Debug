@@ -364,7 +364,9 @@ class WriteExecution {
                 });
             this.assertGroupedReadElf();
             this.host._sampling.runtimeRamPlan(
-                items.filter((item) => !item.runtimeWrite).map((item) => ({ ...item, size: item.bytes.length })),
+                items
+                    .filter((item) => !item.runtimeWrite)
+                    .map(({ name, address, bytes }) => ({ name, address, size: bytes.length })),
                 true
             );
         }

@@ -186,12 +186,13 @@ function createSamplingServices(host, context, vscode) {
     const watchLists = new WatchListStore({
         state: context.workspaceState,
         serialize: (items) => host._watchIdentities(items),
-        normalize: (items, symbols, key) => {
+        normalize: (items, symbols, key, fromStorage = false) => {
             // Current name -> persisted name, for items whose CU-qualified identity changed.
             const renamed = new Map();
             const changes = host._elfView.watchNameChanges;
             const normalized = validation.normalizeWatchList(items, symbols, {
                 allowDynamicLeaf: key === CACHE_KEYS.sidebarWatchList || key === CACHE_KEYS.sidebarWriteList,
+                migrateLegacyRuntimePaths: fromStorage && key !== CACHE_KEYS.sidebarWriteList,
                 onRename: (from, to) => {
                     renamed.set(to, from);
                     changes?.renamed.set(from, to);

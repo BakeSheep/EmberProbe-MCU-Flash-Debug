@@ -15,7 +15,12 @@
         return !symbol.origin || symbol.origin === "user";
     }
     function needsLayout(symbol) {
-        return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
+        return (
+            (symbol.isComposite || symbol.isReference) &&
+            !runtime.runtimeGraph(symbol) &&
+            !symbol.compositeLayout &&
+            !symbol.layoutError
+        );
     }
 
     // page: { t, state, valueTree, layoutExpansion(), displayName(item), symbols() for all ELF symbols, userOnly(),
@@ -75,7 +80,7 @@
                     page.displayName(symbol).toLowerCase().includes(query)
                 )
                     return true;
-                if (!symbol.isComposite) return false;
+                if (!symbol.isComposite && !symbol.isReference) return false;
                 const selection = runtime.runtimeSelection(symbol, state.latest[symbol.name]);
                 const matches = valueTree
                     .selectionLeaves(symbol, selection)
@@ -170,7 +175,11 @@
                 content.appendChild(kids);
             }
             list.forEach((symbol) => {
-                if (symbol.isComposite) composite(symbol);
+                if (
+                    symbol.isComposite ||
+                    (symbol.isReference && runtime.runtimeWatchEntry(symbol.name, symbol)?.isComposite)
+                )
+                    composite(symbol);
                 else content.appendChild(rows.scalar(symbol));
             });
             if (!list.length) {

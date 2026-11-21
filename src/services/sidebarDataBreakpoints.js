@@ -2,6 +2,7 @@
 
 const { CACHE_KEYS } = require("../cacheKeys");
 const { normalizeWatchList } = require("../validation");
+const { parseMemberPath, resolveLayoutPath } = require("../elfSymbols");
 
 class SidebarDataBreakpoints {
     constructor({ host, bridge, vscode }) {
@@ -41,12 +42,20 @@ class SidebarDataBreakpoints {
             this.post(message.body);
     }
     validateName(name) {
-        const entries = normalizeWatchList([{ name }], this.host.readElfSymbols().symbols);
-        const entry = entries[0];
-        // Runtime display paths can contain synthetic .value or STL summaries. They must
-        // never be reinterpreted as similarly named C++ members by GDB.
-        if (!entry || entry.isComposite || entry.runtimeLayout || entry.bitSize !== undefined)
-            throw new Error(this.host._t("sb.dataUnsupported"));
+        const { symbols } = this.host.readElfSymbols();
+        const [entry] = normalizeWatchList([{ name }], symbols);
+        const unsupported = () => new Error(this.host._t("sb.dataUnsupported"));
+        if (!entry || entry.isComposite || entry.bitSize !== undefined) throw unsupported();
+        // GDB can address a declared reference directly. Synthetic .value paths and STL summaries
+        // require a real C++ path before they can be used as data breakpoints.
+        if (entry.runtimeLayout) {
+            const path = parseMemberPath(entry.name);
+            const symbol = symbols.find((item) => item.name === (path?.base || entry.name));
+            const declaredReference = !path?.segments.length
+                ? symbol?.isReference
+                : resolveLayoutPath(symbol, symbol?.compositeLayout, path)?.node?.isReference;
+            if (!entry.isReference || !declaredReference) throw unsupported();
+        }
         return entry.name;
     }
     // Bridge requests run one at a time in arrival order. A busy flag rejected the automatic

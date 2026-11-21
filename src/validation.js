@@ -8,7 +8,7 @@ const {
     createSymbolResolver
 } = require("./elfSymbols");
 const { variableDisplayName, requiresRuntimePath, variableScope } = require("./webview/runtime");
-const { runtimeWatchEntry } = require("./services/runtimeWatch");
+const { runtimeWatchEntry, migrateLegacyRuntimePath } = require("./services/runtimeWatch");
 
 function validateLayoutExpansionRequest(handle, generation) {
     const { LAYOUT_HANDLE_PATTERN } = require("./dwarf/layoutExpansion");
@@ -60,7 +60,7 @@ function resolveLeafPath(name, byName, supported) {
     const leaves = expandCompositeLeaves(base, base.compositeLayout, parsed);
     if (leaves.length !== 1) return null; // only a single scalar leaf may join the watch list
     const leaf = leaves[0];
-    if (!supported.has(leaf.type)) return null;
+    if (leaf.isReference || !supported.has(leaf.type)) return null;
     return {
         name,
         address: leaf.address >>> 0,
@@ -115,11 +115,19 @@ function normalizeWatchList(items, symbols, options = {}) {
     for (const original of items) {
         if (!original || typeof original.name !== "string") continue;
         const name = currentWatchName(original.name, byName, resolve, options);
-        const item = name === original.name ? original : { ...original, name };
+        let item = name === original.name ? original : { ...original, name };
+        let path = parseMemberPath(item.name);
+        const runtimeSymbol = byName.get(item.name) || (path && byName.get(path.base));
+        if (options.migrateLegacyRuntimePaths && runtimeSymbol && path?.segments.length) {
+            const migrated = migrateLegacyRuntimePath(item, runtimeSymbol, path);
+            if (migrated !== item.name) {
+                options.onRename?.(original.name, migrated);
+                item = { ...item, name: migrated };
+                path = parseMemberPath(migrated);
+            }
+        }
         if (seen.has(item.name)) continue;
         const symbol = byName.get(item.name);
-        const path = parseMemberPath(item.name);
-        const runtimeSymbol = symbol || (path && byName.get(path.base));
         const expanded = runtimeSymbol?.layoutExpansions && resolveLeafPath(item.name, byName, supported);
         if (expanded?.layoutExpanded) {
             seen.add(item.name);
@@ -134,6 +142,11 @@ function normalizeWatchList(items, symbols, options = {}) {
             seen.add(item.name);
             result.push({
                 ...runtime,
+                ...(path?.segments.some(
+                    (part) => part.kind === "index" || (runtime.runtimeReferencePath && part.name === "value")
+                )
+                    ? { runtimePathVersion: 1 }
+                    : {}),
                 ...(symbol?.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {})
             });
             continue;

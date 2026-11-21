@@ -27,7 +27,7 @@ class WatchListStore {
     read(key) {
         if (this.cache.has(key)) return this.cache.get(key);
         try {
-            const items = this.normalize(this.state.get(key) || [], this.symbols(), key);
+            const items = this.normalize(this.state.get(key) || [], this.symbols(), key, true);
             this.cache.set(key, items);
             return items;
         } catch (error) {
@@ -44,7 +44,7 @@ class WatchListStore {
         const result = new Map();
         for (const key of new Set(keys)) {
             const previous = this.state.get(key) || [];
-            const items = this.normalize(previous, symbols, key);
+            const items = this.normalize(previous, symbols, key, true);
             const persisted = this.serialize(items);
             if (JSON.stringify(persisted) !== JSON.stringify(previous)) await this.state.update(key, persisted);
             this.cache.set(key, items);

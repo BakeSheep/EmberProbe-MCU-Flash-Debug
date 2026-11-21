@@ -204,6 +204,25 @@ for (const lang of ["en", "zh"]) {
     await provider._resolveLiveVariable({ name: composite.name, version: "elf1", requestId: 5 }, post);
     assert.strictEqual(messages.length, 0, "ELF invalidation during layout resolution cannot add an old variable");
 
+    const reference = { name: "reference", address: 0x20000000, size: 4, isReference: true };
+    result.symbols = [reference];
+    provider._elfService.layout = async () => {
+        reference.runtimeLayout = {
+            root: 2,
+            types: [
+                { kind: "scalar", typeName: "int", watchType: "i32", byteSize: 4 },
+                { kind: "class", typeName: "Holder", byteSize: 4, fields: [{ name: "value", type: 0, offset: 0 }] },
+                { kind: "reference", typeName: "Holder &", target: 1, byteSize: 4 }
+            ]
+        };
+    };
+    await provider._resolveLiveVariable({ name: "reference.value", version: "elf1", requestId: 6 }, post);
+    assert.strictEqual(messages[0].type, "addResolved");
+    assert.strictEqual(messages[0].symbol.name, "reference.value");
+    assert.strictEqual(messages[0].symbol.type, "i32");
+    assert.deepStrictEqual(messages[0].symbol.runtimeSegments, [{ kind: "member", name: "value" }]);
+    messages.length = 0;
+
     provider.readElfSymbols = () => ({ symbols });
     provider._livePanels = new Map();
     provider._context = { workspaceState: { get: () => [] } };

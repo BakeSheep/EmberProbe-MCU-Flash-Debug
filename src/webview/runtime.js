@@ -701,7 +701,7 @@
                 displayPath: path,
                 displayName: variableDisplayName({ name: path }, [symbol]),
                 typeName: summary.node.typeName || entry.type,
-                ...(summary.node.isPointer || ["pointer", "reference"].includes(summary.node.kind)
+                ...(summary.node.isPointer || summary.node.kind === "pointer"
                     ? { isPointer: true, pointerTarget: summary.node.pointerTarget }
                     : {})
             });
@@ -747,7 +747,7 @@
             if (!type || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
             metadata.set(path, {
                 memberRole: role,
-                isPointer: ["pointer", "reference"].includes(type.kind),
+                isPointer: type.kind === "pointer",
                 typeName: type.typeName
             });
             if (type.stdSummary) {
@@ -948,7 +948,8 @@
                 "type-cycle": "lw.layoutTypeCycle",
                 "virtual-base": "lw.layoutVirtualBase",
                 "base-location": "lw.layoutLocationUnavailable",
-                "member-location": "lw.layoutLocationUnavailable"
+                "member-location": "lw.layoutLocationUnavailable",
+                "template-arguments": "lw.layoutTemplateArguments"
             }[code] || "lw.compositeNoLayout";
         return t(key);
     }
@@ -990,6 +991,7 @@
     const runtimeWatchEntry = createRuntimeWatchEntry({
         MAX_TYPE_ALIASES,
         runtimeContainsContainer,
+        runtimeContainsReference,
         runtimeFieldType,
         variableDisplayName
     });
@@ -1079,6 +1081,32 @@
         row.prepend(button);
         return button;
     }
+    function symbolWatchEntry(symbol, displayName) {
+        const runtimeLayout = runtimeGraph(symbol);
+        const size = Number(symbol.size) || 4;
+        return {
+            name: symbol.name,
+            displayName,
+            address: Number(symbol.address) || 0,
+            size,
+            type: symbol.isComposite ? "" : (symbol.type ?? (symbol.watchType || defaultType(size))),
+            ...(symbol.isComposite ? { isComposite: true, compositeLayout: symbol.compositeLayout || null } : {}),
+            ...(symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {}),
+            ...(symbol.isReference ? { isReference: true } : {}),
+            ...(symbol.isBoolean ? { isBoolean: true } : {}),
+            ...(symbol.derefPath ? { derefPath: true } : {}),
+            ...(symbol.typeName && (symbol.isPointer || symbol.isReference || symbol.derefPath)
+                ? { typeName: symbol.typeName }
+                : {}),
+            ...(runtimeLayout
+                ? {
+                      runtimeLayout,
+                      runtimeSegments: symbol.runtimeSegments || [],
+                      runtimeStaticPointers: symbol.runtimeStaticPointers
+                  }
+                : {})
+        };
+    }
     function runtimeGraph(symbol) {
         return symbol?.runtimeLayout || symbol?.compositeLayout?.runtimeLayout || null;
     }
@@ -1090,17 +1118,27 @@
         }
         return null;
     }
-    function runtimeContainsContainer(graph, id, seen = new Set(), depth = 0) {
+    function runtimeContains(graph, id, matches, seen = new Set(), depth = 0) {
         const type = runtimeType(graph, id);
-        if (!type || type.unobservable || seen.has(type) || depth > MAX_COMPOSITE_DEPTH) return false;
-        if (type.stl) return true;
+        if (!type || seen.has(type) || depth > MAX_COMPOSITE_DEPTH) return false;
+        if (matches(type)) return true;
+        if (type.unobservable) return false;
         seen.add(type);
-        if (type.kind === "array") return runtimeContainsContainer(graph, type.target, seen, depth + 1);
-        // Pointers are storage values here, not owned nested objects.
+        if (type.kind === "array") return runtimeContains(graph, type.target, matches, seen, depth + 1);
         return (
             ["class", "union"].includes(type.kind) &&
-            (type.fields || []).some((field) => runtimeContainsContainer(graph, field.type, seen, depth + 1))
+            (type.fields || []).some((field) => runtimeContains(graph, field.type, matches, seen, depth + 1))
         );
+    }
+    function runtimeContainsContainer(graph, id) {
+        return runtimeContains(graph, id, (type) => !!type.stl);
+    }
+    function runtimeContainsReference(graph, id = graph?.root) {
+        return runtimeContains(graph, id, (type) => type.kind === "reference");
+    }
+    function runtimeReferenceRoot(graph) {
+        const type = runtimeType(graph, graph?.root);
+        return type?.kind === "reference" ? type : null;
     }
     function runtimeFieldId(graph, type, name, seen = new Set(), depth = 0) {
         if (!type || type.unobservable || seen.has(type) || depth > MAX_COMPOSITE_DEPTH) return null;
@@ -1117,18 +1155,21 @@
         const id = runtimeFieldId(graph, type, name);
         return id == null ? null : runtimeType(graph, id);
     }
-    // A rejected semantic path must never become a raw STL storage watch.
+    // Rejected semantic paths cannot fall through to raw STL or reference storage.
     function requiresRuntimePath(symbol, segments = []) {
+        if (symbol?.isReference) return true;
         const graph = runtimeGraph(symbol);
         let type = runtimeType(graph, graph?.root);
         for (const segment of segments) {
-            if (type?.stl) return true;
+            if (type?.stl || type?.kind === "reference") return true;
             if (segment.kind === "member") type = runtimeFieldType(graph, type, segment.name);
             else if (["index", "range", "all"].includes(segment.kind) && type?.kind === "array")
                 type = runtimeType(graph, type.target);
             else return false;
         }
-        return !!type && runtimeContainsContainer(graph, graph.types.indexOf(type));
+        if (!type) return false;
+        const id = graph.types.indexOf(type);
+        return runtimeContainsContainer(graph, id) || runtimeContainsReference(graph, id);
     }
     // Pointer annotations of a sampled tree, keyed by watch path, so a reopened view can show
     // the last known targets until sampling runs again. Display hints only.
@@ -1160,9 +1201,22 @@
         if (!graph?.types) return null;
         let id = graph.root;
         for (const segment of symbol.runtimeSegments || []) {
-            const type = runtimeType(graph, id);
+            let type = runtimeType(graph, id);
+            const reference = type?.kind === "reference";
+            for (let depth = 0; type?.kind === "reference"; depth++) {
+                if (depth >= MAX_COMPOSITE_DEPTH || (type.pointerTarget && type.pointerTarget !== "data")) return null;
+                id = type.target;
+                type = runtimeType(graph, id);
+            }
             if (!type || type.unobservable || type.stl) return null;
-            if (["pointer", "reference"].includes(type.kind)) {
+            if (
+                reference &&
+                type.kind !== "pointer" &&
+                (segment.kind === "dereference" ||
+                    (segment.name === "value" && !runtimeFieldType(graph, type, "value")))
+            )
+                continue;
+            if (type.kind === "pointer") {
                 if (segment.kind !== "dereference" && !(segment.kind === "member" && segment.name === "value"))
                     return null;
                 id = type.target;
@@ -1185,7 +1239,13 @@
             if (type.unobservable)
                 return { kind: "unavailable", typeName: type.typeName, unobservable: type.unobservable };
             const identity = { typeName: type.typeName, placeholder: true };
-            if (["pointer", "reference"].includes(type.kind))
+            if (type.kind === "reference") {
+                if (type.pointerTarget && type.pointerTarget !== "data")
+                    return { ...identity, kind: "unavailable", unavailable: "opaque-pointee" };
+                const target = build(type.target, path, depth + 1);
+                return target.isPointer ? target : { ...target, typeName: type.typeName || target.typeName };
+            }
+            if (type.kind === "pointer")
                 return {
                     kind: "scalar",
                     type: "u32",
@@ -1236,13 +1296,14 @@
     }
     function runtimeSelection(symbol, tree, allowDynamicLeaf = false) {
         const graph = runtimeGraph(symbol);
-        if (!runtimeContainsContainer(graph, graph?.root)) return null;
+        if (runtimeReferenceRoot(graph) && !runtimeWatchEntry(symbol.name, symbol)?.isComposite) return null;
+        if (!runtimeContainsContainer(graph, graph?.root) && !runtimeContainsReference(graph)) return null;
         const entries = [];
         const add = (segments) => {
             const suffix = segments.map((s) => (s.kind === "index" ? `[${s.index}]` : `.${s.name}`)).join("");
             const entry = runtimeWatchEntry(symbol.name + suffix, symbol, segments, allowDynamicLeaf);
             if (entry && suffix && !entries.some((item) => item.path === entry.name))
-                entries.push({ ...entry, path: entry.name, label: suffix, typeName: entry.type });
+                entries.push({ ...entry, path: entry.name, label: suffix, typeName: entry.typeName || entry.type });
         };
         const walkTree = (node, segments, depth = 0) => {
             if (!node || node.unavailable || node.unobservable || depth > MAX_COMPOSITE_DEPTH || entries.length >= 200)
@@ -1266,7 +1327,12 @@
             const type = runtimeType(graph, id);
             if (!type || type.unobservable || depth > MAX_COMPOSITE_DEPTH || entries.length >= 200) return;
             if (type.stl && segments.length) add(segments);
-            if (["scalar", "pointer", "reference"].includes(type.kind)) return add(segments);
+            if (type.kind === "reference") {
+                add(segments);
+                if (!type.pointerTarget || type.pointerTarget === "data") walkType(type.target, segments, depth + 1);
+                return;
+            }
+            if (["scalar", "pointer"].includes(type.kind)) return add(segments);
             if (["unique_ptr", "shared_ptr", "weak_ptr", "optional"].includes(type.stl)) {
                 const path = [...segments, { kind: "member", name: "value" }];
                 add(path);
@@ -1467,6 +1533,9 @@
         renderPointerToggle,
         runtimeGraph,
         requiresRuntimePath,
+        runtimeContainsReference,
+        runtimeReferenceRoot,
+        symbolWatchEntry,
         runtimeSelection,
         placeholderRuntimeTree,
         pointerSnapshots,

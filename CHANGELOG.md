@@ -6,6 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 变量与调试 / Variables and debugging
+
+- 修复跨编译单元的 DWARF 描述仅缺少模板参数记录时，同一 C++ 对象被判为类型歧义、成员无法展开的问题。实际布局或已知实参冲突仍会停用绑定。
+- Fix rejected C++ member expansion when one DWARF description omits template parameter records for the same object across compilation units. Conflicting layouts or known arguments still block binding.
+
+- 侧栏、波形和 Agent 按引用目标读取 C++ 引用，支持引用成员展开、只读段中的引用槽和多维数组引用。旧观察路径和展开状态会随观察列表恢复。
+- Follow C++ references to their targets in the sidebar, waveforms and Agent, including nested references, reference slots in read-only ELF data, and multidimensional array references. Saved watch paths and expansion state carry over.
+
 ## [0.9.3] - 2026-11-20
 
 ### 采样与波形 / Sampling and waveforms

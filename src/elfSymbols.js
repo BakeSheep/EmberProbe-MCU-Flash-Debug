@@ -1096,6 +1096,13 @@ function decodeComposite(bytes, layout, symbol = {}) {
                         ...(m.memberRole ? { memberRole: m.memberRole } : {}),
                         ...(m.expansionRoot ? { expansionRoot: true } : {})
                     });
+                } else if (m.isReference) {
+                    members.push({
+                        name: m.name,
+                        kind: "unavailable",
+                        typeName: m.typeName,
+                        unavailable: "opaque-pointee"
+                    });
                 } else if (m.watchType) {
                     const width = typeByteLength(m.watchType);
                     const raw = mOff >= 0 && mOff + width <= src.length ? src.subarray(mOff, mOff + width) : null;
