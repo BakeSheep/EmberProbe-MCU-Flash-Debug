@@ -53,7 +53,34 @@ const STM32_IDCODE_BASE = {
 };
 // Geehy APM32F4 exposes DBGMCU_IDCODE at the classic address. Keep UID and
 // flash-size reads disabled until their addresses are verified for APM32F4.
-const APM32_IDCODE_BASE = { apm32f4x: 0xe0042000 };
+const VENDOR_IDCODE_BASE = {
+    apm32f4x: 0xe0042000,
+    apm32e030: 0x40015800,
+    apm32e103: 0xe0042000,
+    at32f4x: 0xe0042000,
+    at32f43x: 0xe0042000,
+    ch32f103: 0xe0042000,
+    gd32f1x0: 0xe0042000,
+    gd32f3x0: 0xe0042000,
+    gd32f10x: 0xe0042000,
+    gd32f30x: 0xe0042000
+};
+const VENDOR_UID_BASE = {
+    gd32f1x0: 0x1ffff7ac,
+    gd32f3x0: 0x1ffff7ac,
+    gd32f10x: 0x1ffff7e8,
+    gd32f30x: 0x1ffff7e8,
+    "at32f4x-1024": 0x1ffff7e8,
+    "at32f43x-1024": 0x1ffff7e8
+};
+const VENDOR_FLASH_SIZE_BASE = {
+    gd32f1x0: 0x1ffff7e0,
+    gd32f3x0: 0x1ffff7e0,
+    gd32f10x: 0x1ffff7e0,
+    gd32f30x: 0x1ffff7e0,
+    apm32e103: 0x1ffff7e0,
+    ch32f103: 0x1ffff7e0
+};
 const STM32_FLASHSIZE_BASE = {
     stm32f0x: 0x1ffff7cc,
     stm32f1x: 0x1ffff7e0,
@@ -357,6 +384,7 @@ function seriesFromTarget(target) {
         .split(/[\\/]/)
         .pop()
         .replace(/\.cfg$/i, "")
+        .replace(/^(at32f4x|at32f43x|gd32f(?:[13]x0|[13]0x)|apm32e103|ch32f103)-\d+$/i, "$1")
         .split("_")[0];
     if (!n) return "";
     if (/^stm32/i.test(n)) return n.replace(/^stm32([a-z])/i, (m, p1) => "STM32" + p1.toUpperCase());
@@ -379,14 +407,21 @@ function lookupStmBase(map, target) {
     }
     return 0;
 }
+function isArteryTarget(target) {
+    return ["AT32F4X", "AT32F43X"].includes(seriesFromTarget(target));
+}
+function usesFullIdcode(target) {
+    const series = seriesFromTarget(target).toLowerCase();
+    return series !== "apm32f4x" && Object.hasOwn(VENDOR_IDCODE_BASE, series);
+}
 function uidBaseForTarget(target) {
-    return lookupStmBase(STM32_UID_BASE, target);
+    return lookupStmBase(STM32_UID_BASE, target) || lookupStmBase(VENDOR_UID_BASE, target);
 }
 function idcodeBaseForTarget(target) {
-    return lookupStmBase(STM32_IDCODE_BASE, target) || lookupStmBase(APM32_IDCODE_BASE, target);
+    return lookupStmBase(STM32_IDCODE_BASE, target) || lookupStmBase(VENDOR_IDCODE_BASE, target);
 }
 function flashSizeBaseForTarget(target) {
-    return lookupStmBase(STM32_FLASHSIZE_BASE, target);
+    return lookupStmBase(STM32_FLASHSIZE_BASE, target) || lookupStmBase(VENDOR_FLASH_SIZE_BASE, target);
 }
 function formatUid(words) {
     if (!Array.isArray(words) || !words.length) return "";
@@ -396,7 +431,7 @@ function buildChipInfoCommands(target) {
     const uidBase = uidBaseForTarget(target);
     const idcodeBase = idcodeBaseForTarget(target);
     const flashSizeBase = flashSizeBaseForTarget(target);
-    const preferredReads = [];
+    const preferredReads = isArteryTarget(target) ? ["catch { flash probe 0 }"] : [];
     if (idcodeBase) preferredReads.push("catch { echo [mdw 0x" + idcodeBase.toString(16) + "] }");
     if (flashSizeBase) preferredReads.push("catch { echo [mdw 0x" + flashSizeBase.toString(16) + "] }");
     if (uidBase) preferredReads.push("catch { echo [mdw 0x" + uidBase.toString(16) + " 3] }");
@@ -477,6 +512,8 @@ module.exports = {
     lookupStmBase,
     uidBaseForTarget,
     idcodeBaseForTarget,
+    isArteryTarget,
+    usesFullIdcode,
     flashSizeBaseForTarget,
     formatUid,
     buildChipInfoCommands,

@@ -64,6 +64,7 @@ const TEST_GROUPS = Object.freeze({
         "external-debug-host.test.js",
         "extracted-services.test.js",
         "fault-service.test.js",
+        "flash-image-bounds.test.js",
         "flash-refresh.test.js",
         "flash-safety.test.js",
         "flash-service.test.js",

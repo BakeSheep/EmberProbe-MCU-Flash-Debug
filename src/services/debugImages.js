@@ -1,10 +1,17 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const { pipeline } = require("stream/promises");
 const { quote } = require("../debug/mi");
-const { readElf32Header } = require("../elfFormat");
-const { buildDownloadBoostCommand, DOWNLOAD_CLOCK_RESTORE } = require("../../skills/_emberprobe/openocd-flash");
+const {
+    buildDownloadBoostCommand,
+    buildFlashBoundsCommand,
+    DOWNLOAD_CLOCK_RESTORE
+} = require("../../skills/_emberprobe/openocd-flash");
+const { imageRanges, validateLoadImage } = require("./flashImageBounds");
+const { inspectElf, MAX_ELF_BYTES } = require("../../skills/_emberprobe/elf-file");
 
 const HOOKS = [
     "preLaunchCommands",
@@ -37,64 +44,6 @@ function imageFile(value, cwd) {
     const file = path.resolve(cwd, value);
     if (!fs.statSync(file).isFile()) throw new Error(`Image is not a file: ${file}`);
     return fs.realpathSync(file);
-}
-function loadRange(start, length, offset) {
-    const base =
-        BigInt(start) + (String(offset).startsWith("-") ? -BigInt(String(offset).slice(1)) : BigInt(offset || 0));
-    if (base < 0n || base + BigInt(length) > 0x100000000n)
-        throw new Error("Load image relocation exceeds the ARM32 address range");
-}
-function validateLoadImage(image) {
-    if (image.format === "bin") return;
-    const size = fs.statSync(image.file).size;
-    if (image.format === "elf") {
-        const fd = fs.openSync(image.file, "r");
-        try {
-            const headerBytes = Buffer.alloc(52);
-            if (fs.readSync(fd, headerBytes, 0, 52, 0) !== 52) throw new Error("Truncated ELF load image");
-            const header = readElf32Header(headerBytes);
-            if (header.machine !== 0x28) throw new Error("ELF load image must target ARM");
-            if (header.phnum > 4096 || header.phentsize < 32 || header.phoff + header.phnum * header.phentsize > size)
-                throw new Error("Invalid ELF load segment table");
-            const segment = Buffer.alloc(32);
-            for (let index = 0; index < header.phnum; index++) {
-                if (fs.readSync(fd, segment, 0, 32, header.phoff + index * header.phentsize) !== 32)
-                    throw new Error("Truncated ELF load segment");
-                if (segment.readUInt32LE(0) !== 1) continue;
-                const length = segment.readUInt32LE(16);
-                if (segment.readUInt32LE(4) + length > size) throw new Error("ELF load segment exceeds the file");
-                if (length) loadRange(segment.readUInt32LE(12), length, image.offset);
-            }
-        } finally {
-            fs.closeSync(fd);
-        }
-        return;
-    }
-    if (size > 64 * 1024 * 1024) throw new Error("HEX validation file budget exceeded (64 MiB)");
-    let base = 0,
-        ended = false;
-    for (const line of fs.readFileSync(image.file, "utf8").split(/\r?\n/)) {
-        const text = line.trim();
-        if (!text) continue;
-        if (ended || !/^:[\da-f]+$/i.test(text) || text.length > 521 || text.length % 2 !== 1)
-            throw new Error("Invalid Intel HEX record");
-        const record = Buffer.from(text.slice(1), "hex");
-        if (record.length < 5) throw new Error("Truncated Intel HEX record");
-        const count = record[0],
-            address = record.readUInt16BE(1),
-            type = record[3];
-        if (record.length !== count + 5 || record.reduce((sum, byte) => sum + byte, 0) % 256)
-            throw new Error("Invalid Intel HEX length or checksum");
-        if (type === 0) {
-            if (count) loadRange(base + address, count, image.offset);
-        } else if (type === 1 && count === 0 && address === 0) ended = true;
-        else if ((type === 2 || type === 4) && count === 2 && address === 0)
-            base = record.readUInt16BE(4) * (type === 2 ? 16 : 65536);
-        else if ((type === 3 || type === 5) && count === 4 && address === 0) {
-            /* Entry point record, not a transfer. */
-        } else throw new Error("Unsupported Intel HEX record type or length");
-    }
-    if (!ended) throw new Error("Intel HEX end-of-file record is missing");
 }
 function normalizeDebugImages(config, cwd = config.cwd || process.cwd()) {
     const result = {};
@@ -278,11 +227,82 @@ class DebugImages {
             if (this.session.mi.closed) throw error;
         }
     }
-    /** @returns {Promise<{firmware: "none" | "programmed", downloadClockKhz?: number, speedFallback?: boolean}>} */
-    async download() {
+    async checkedDownload(executableStamp) {
         const { config, mi } = this.session;
+        const sources = config.loadFiles ?? [
+            { file: path.resolve(config.cwd || "", config.executable), format: "elf" }
+        ];
+        if (!sources.length) return { firmware: /** @type {const} */ ("none") };
+        const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "emberprobe-debug-flash-"));
+        try {
+            const snapshots = [];
+            const ranges = [];
+            for (const [index, image] of sources.entries()) {
+                const file = path.join(directory, `image-${index}.${image.format}`);
+                if (image.format === "elf") {
+                    const snapshot = await inspectElf(image.file, { snapshot: file });
+                    if (
+                        config.loadFiles === undefined &&
+                        executableStamp &&
+                        (snapshot.size !== executableStamp.size || snapshot.mtimeMs !== executableStamp.mtimeMs)
+                    )
+                        throw new Error("The ELF changed after GDB opened it. Restart debugging with the current ELF");
+                } else {
+                    // The inclusive limit captures at most one extra byte to detect a growing file.
+                    await pipeline(
+                        fs.createReadStream(image.file, { end: MAX_ELF_BYTES }),
+                        fs.createWriteStream(file, { flags: "wx", mode: 0o600 })
+                    );
+                }
+                const snapshot = { ...image, file };
+                const imageIntervals = imageRanges(snapshot, true);
+                if (!imageIntervals.length) throw new Error("Image has no loadable data");
+                if (ranges.length + imageIntervals.length > 16384)
+                    throw new Error(`Load interval limit exceeded at ${path.basename(image.file)}`);
+                ranges.push(...imageIntervals);
+                snapshots.push(snapshot);
+            }
+            const check = buildFlashBoundsCommand(ranges);
+            let failed;
+            const output = await this.session.captureConsole(async () => {
+                try {
+                    await mi.command(`-interpreter-exec console ${quote(`monitor ${check}`)}`);
+                } catch (error) {
+                    failed = error;
+                }
+            });
+            if (!/^EP_FLASH_BOUNDS_OK\s*$/m.test(output))
+                throw new Error(
+                    output.match(/^EP_FLASH_BOUNDS_ERROR (.+)$/m)?.[1] ||
+                        failed?.message ||
+                        "Unable to verify the Flash ranges"
+                );
+            if (failed) throw failed;
+            if (config.loadFiles !== undefined) return await this.downloadPrepared(snapshots);
+
+            // Keep GDB's symbols on the user's file and load the exact bytes used by the bounds check.
+            await mi.command(`-file-exec-file ${quote(gdbPath(snapshots[0].file))}`);
+            try {
+                return await this.downloadPrepared();
+            } finally {
+                if (!mi.closed) await mi.command(`-file-exec-file ${quote(gdbPath(config.executable))}`);
+            }
+        } finally {
+            await fs.promises.rm(directory, { recursive: true, force: true });
+        }
+    }
+    /** @returns {Promise<{firmware: "none" | "programmed", downloadClockKhz?: number, speedFallback?: boolean}>} */
+    async download(executableStamp = undefined) {
+        const { config } = this.session;
         if (config.attach) return { firmware: "none" };
-        if (config.loadFiles === undefined) {
+        return config.__emberprobeFlashBounds
+            ? this.checkedDownload(executableStamp)
+            : this.downloadPrepared(config.loadFiles);
+    }
+    /** @returns {Promise<{firmware: "none" | "programmed", downloadClockKhz?: number, speedFallback?: boolean}>} */
+    async downloadPrepared(images = undefined) {
+        const { mi } = this.session;
+        if (images === undefined) {
             const clockKhz = await this.raiseDownloadClock();
             let speedFallback = false;
             try {
@@ -304,7 +324,7 @@ class DebugImages {
                 ...(clockKhz ? { downloadClockKhz: clockKhz, speedFallback } : {})
             };
         }
-        for (const image of config.loadFiles) {
+        for (const image of images) {
             const binary = image.format === "bin";
             if (binary) await mi.command("-gdb-set gnutarget binary");
             try {
@@ -315,8 +335,8 @@ class DebugImages {
             }
         }
         // GDB load can alter its symbol tables; restore the configured identities before breakpoints.
-        if (config.loadFiles.length) await this.symbols();
-        return { firmware: config.loadFiles.length ? "programmed" : "none" };
+        if (images.length) await this.symbols();
+        return { firmware: images.length ? "programmed" : "none" };
     }
 }
 

@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("assert");
 const { EventEmitter } = require("events");
+const { scenario } = require("./helpers/scenario");
 const {
     normalizeTargetIdentity,
     targetCheckCommand,
@@ -104,6 +105,33 @@ async function main() {
     assert.strictEqual(targetMatchesModel(H750, "stm32f4x.cfg"), false);
     assert.strictEqual(targetMatchesModel({ cpuid: "411FC271" }, "stm32h7x.cfg"), true, "core decides without IDCODE");
     assert.strictEqual(targetMatchesModel(F407, "nordic/nrf52.cfg"), null);
+    await scenario("Use full Artery PID and distinguish GD32 variants with the same DEV_ID", () => {
+        const gd32f1 = "gigadevice/gd32f1x0.cfg";
+        const gd32f3 = "gigadevice/gd32f3x0-128.cfg";
+        const pid = { idcode: "70030410" };
+        for (const artery of ["artery/at32f4x.cfg", "artery/at32f4x-1024.cfg", "artery/at32f43x-1024.cfg"]) {
+            assert(!sameTarget(pid, { idcode: "70080410" }, artery));
+            assert(!sameTarget({ ...pid, cpuid: F407.cpuid }, { cpuid: F407.cpuid }, artery));
+            assert.match(targetCheckCommand(artery, pid), /\$_ep_field eq "idcode" && \$_ep_read eq ""/);
+            assert.strictEqual(describeTargetIdentity(pid, artery), "AT32 PID 0x70030410");
+            assert.match(targetCheckCommand(artery, pid), /idcode 70030410/);
+            assert(!targetCheckCommand(artery, pid).includes("& 0xfff"));
+        }
+        for (const artery of ["artery/at32f4x-1024.cfg", "artery/at32f43x-1024.cfg"]) {
+            assert.match(targetCheckCommand(artery, pid), /uid \[_ep_target_word 0x1ffff7e8 3\]/);
+            assert(
+                !sameTarget(
+                    { ...pid, uid: "00112233445566778899AABB" },
+                    { ...pid, uid: "00112233445566778899CCDD" },
+                    artery
+                )
+            );
+        }
+        assert.strictEqual(targetMatchesModel({ idcode: "13030410" }, gd32f1), true);
+        assert.strictEqual(targetMatchesModel({ idcode: "17040410" }, gd32f1), false);
+        assert.strictEqual(targetMatchesModel({ idcode: "17040410" }, gd32f3), true);
+        assert.match(targetCheckCommand(gd32f3), /0x1ffff7ac 3/);
+    });
     // C0 shares the G0 DBGMCU address; C5 is read through its CPU-side DBGMCU.
     const c0 = targetCheckCommand("stm32c0x.cfg");
     assert(c0.includes("idcode [_ep_target_word 0x40015800 1]") && c0.includes("uid [_ep_target_word 0x1fff7550 3]"));

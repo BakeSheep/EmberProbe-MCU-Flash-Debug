@@ -12,9 +12,11 @@ const { probeOpenOcdCompatibility } = require("../../skills/_emberprobe/flash-co
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
 const {
     buildFlashProgramCommand,
+    requiresFlashBounds,
     flashClockTracker,
     flashSpeedKhz
 } = require("../../skills/_emberprobe/openocd-flash");
+const { imageRanges } = require("./flashImageBounds");
 
 class AgentFlashService {
     constructor(options) {
@@ -181,7 +183,11 @@ class AgentFlashService {
                 ? ["set _ep_target [target current]; $_ep_target configure -work-area-size 0", "init", verifyCommand]
                 : [
                       "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }",
-                      buildFlashProgramCommand(word, flashSpeedKhz(connection))
+                      buildFlashProgramCommand(
+                          word,
+                          flashSpeedKhz(connection),
+                          requiresFlashBounds(request.target) ? imageRanges({ file: snapshot }) : undefined
+                      )
                   ];
             let verifyResult;
             const programming = { unchanged: false, flashClockKhz: 0, speedFallback: false };

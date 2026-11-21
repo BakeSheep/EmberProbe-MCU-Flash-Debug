@@ -1138,8 +1138,7 @@ class MainViewProvider {
     }
     shutdown() {
         this._chartBackground?.cancel();
-        if (this.debugLaunch.gdbWarmupTimer) clearTimeout(this.debugLaunch.gdbWarmupTimer);
-        this.debugLaunch.gdbWarmupTimer = null;
+        this.debugLaunch.cancelGdbWarmup();
         this.debugLaunch.gdbWarmup?.dispose();
         this._connectedProbes.stopMonitor();
         this._memoryAnalysisController?.dispose();

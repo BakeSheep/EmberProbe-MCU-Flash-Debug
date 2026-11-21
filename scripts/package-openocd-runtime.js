@@ -180,6 +180,7 @@ async function packageRuntime(input, root = ROOT, options = {}) {
                 binarySha256: archive.binarySha256,
                 originalPayloadSha256: archive.originalPayloadSha256,
                 targets: manifest.targets,
+                ...(manifest.targetHelpers ? { targetHelpers: manifest.targetHelpers } : {}),
                 ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {}),
                 ...(manifest.scriptOverrides ? { scriptOverrides: manifest.scriptOverrides } : {})
             };

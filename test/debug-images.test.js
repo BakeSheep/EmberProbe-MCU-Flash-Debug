@@ -11,6 +11,7 @@ const { EmberDebugSession } = require("../src/debug/session");
 const { quote } = require("../src/debug/mi");
 const { buildDownloadBoostCommand, DOWNLOAD_CLOCK_RESTORE } = require("../skills/_emberprobe/openocd-flash");
 const { scenario } = require("./helpers/scenario");
+const { buildElf32 } = require("./helpers/elf-fixture");
 
 const SECTION_REPORTS = {
     unchanged: [
@@ -55,6 +56,8 @@ class ImageMi extends EventEmitter {
         // OpenOCD forwards echo output of a monitor command to GDB's target stream.
         if (command.includes("_ep_download_base [_ep_flash_boost"))
             for (const line of this.boostReply || []) this.emit("output", line + "\n", "@");
+        if (command.includes("proc _ep_flash_check") && this.boundsReply)
+            this.emit("output", this.boundsReply + "\n", "@");
         if (command === "-thread-info") return { threads: [{ id: "1" }], "current-thread-id": "1" };
         return {};
     }
@@ -531,6 +534,40 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
         await assert.rejects(rtosImages.adapter.debugImages.verifyRtosPrimary(), /missing an unambiguous/);
         rtosImages.adapter.config.rtos = "auto";
         await rtosImages.adapter.debugImages.verifyRtosPrimary();
+
+        await scenario("Check all download ranges before GDB sends a write", async () => {
+            const file = path.join(root, "checked.elf");
+            const start = 0x08000000;
+            fs.writeFileSync(
+                file,
+                buildElf32({
+                    sections: [{ name: ".text", flags: 6, offset: 96, addr: start, size: 4 }],
+                    programHeaders: [{ offset: 96, vaddr: start, paddr: start, filesz: 4 }]
+                })
+            );
+            const denied = session({
+                executable: file,
+                __emberprobeFlashBounds: true,
+                loadFiles: [
+                    { file, format: "elf" },
+                    { file: bin, format: "bin", address: "0x08010000" }
+                ]
+            });
+            denied.mi.boundsReply =
+                "EP_FLASH_BOUNDS_ERROR Image address 0x08010000 is outside the configured Flash banks";
+            await assert.rejects(denied.adapter.debugImages.download(), /08010000/);
+            assert.strictEqual(denied.mi.commands.length, 1);
+            assert.match(denied.mi.commands[0].command, /134283264 134283271/);
+
+            const allowed = session({ executable: file, __emberprobeFlashBounds: true });
+            allowed.mi.boundsReply = "EP_FLASH_BOUNDS_OK";
+            assert.deepStrictEqual(await allowed.adapter.debugImages.download(), { firmware: "programmed" });
+            const commands = allowed.mi.commands.map(({ command }) => command);
+            assert.match(commands[0], /proc _ep_flash_check/);
+            assert.match(commands[1], /-file-exec-file.*image-0\.elf/);
+            assert.strictEqual(commands[2], "-target-download");
+            assert.match(commands[3], /-file-exec-file.*checked\.elf/);
+        });
 
         const failed = session({});
         failed.mi.fail = "bad-hook";

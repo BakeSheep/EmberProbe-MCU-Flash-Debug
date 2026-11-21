@@ -29,13 +29,52 @@ const SLOW_PROC =
     "proc _ep_flash_slow {} { echo EP_FLASH_STAGE=speed_fallback; adapter speed $::_ep_flash_base; " +
     "set ::_ep_flash_base 0; set ::_ep_flash_khz 0; reset init }; ";
 
-// The file word is already quoted by quoteTclWord. Delegate to OpenOCD's program/reset implementations,
-// retaining target events, verification, RAM backup and final reset-run. Its flash write_image call is
-// wrapped to raise the programming clock while always erasing and writing the image. A write or the final
-// verification at the raised clock that fails is repeated once at the previous clock after reset-init,
-// so a successful fast write is still checked only once, by OpenOCD's own verify_image.
-function buildFlashProgramCommand(fileWord, speedKhz = 0) {
+function requiresFlashBounds(target) {
+    return /^(?:artery\/at32f4(?:x(?:-1024)?|3x-1024)|gigadevice\/gd32f[13](?:x0|0x)(?:-\d+)?|geehy\/apm32(?:e103(?:-512)?|e030)|wch\/ch32f103(?:-32)?)\.cfg$/i.test(
+        target
+    );
+}
+
+function buildFlashBoundsCommand(ranges) {
+    const merged = [];
+    for (const [start, end] of [...ranges].sort((a, b) => a[0] - b[0])) {
+        if (
+            !Number.isSafeInteger(start) ||
+            !Number.isSafeInteger(end) ||
+            start < 0 ||
+            end <= start ||
+            end > 0x100000000
+        )
+            throw new Error("Invalid Flash image address interval");
+        const last = merged.at(-1);
+        if (last && last[1] >= start) last[1] = Math.max(last[1], end);
+        else merged.push([start, end]);
+    }
+    // Keep the command within both Windows argv and the GDB monitor packet budget.
+    if (!merged.length || merged.length > 128) throw new Error("Expected 1 to 128 nonoverlapping Flash image ranges");
+    const intervals = merged.map(([start, end]) => `{${start} ${end}}`).join(" ");
+    return (
+        "proc _ep_flash_check {ranges} { " +
+        "set target [target current]; set banks {}; foreach bank [flash list] { " +
+        "if {[dict get $bank target] eq $target} { flash probe [dict get $bank name] } }; " +
+        "foreach bank [flash list] { if {[dict get $bank target] eq $target} { " +
+        "set base [dict get $bank base]; set size [dict get $bank size]; " +
+        "if {$size > 0} { lappend banks [list $base [expr {$base + $size}]] } } }; " +
+        'if {![llength $banks]} { set msg "No Flash banks could be verified for the current target"; echo "EP_FLASH_BOUNDS_ERROR $msg"; error $msg }; ' +
+        "set banks [lsort -integer -index 0 $banks]; foreach range $ranges { " +
+        "lassign $range next end; foreach bank $banks { lassign $bank low high; " +
+        "if {$next >= $low && $next < $high} { set next $high }; if {$next >= $end} { break } }; " +
+        'if {$next < $end} { set msg [format "Image address 0x%08x is outside the configured Flash banks" $next]; echo "EP_FLASH_BOUNDS_ERROR $msg"; error $msg } } }; ' +
+        `_ep_flash_check {${intervals}}; ` +
+        "echo EP_FLASH_BOUNDS_OK"
+    );
+}
+
+// The file word is already quoted by quoteTclWord. OpenOCD owns reset, writes, verification and
+// target events. Validate Flash bounds before the first write and optionally raise the clock.
+function buildFlashProgramCommand(fileWord, speedKhz = 0, ranges = undefined) {
     const khz = normalizeAdapterSpeed(speedKhz);
+    const bounds = ranges ? `${buildFlashBoundsCommand(ranges)}; ` : "";
     return (
         BOOST_PROC +
         SLOW_PROC +
@@ -44,6 +83,7 @@ function buildFlashProgramCommand(fileWord, speedKhz = 0) {
         "local proc flash {args} { " +
         'if {[llength $args] != 3 || [lindex $args 0] ne "write_image" || [lindex $args 1] ne "erase"} { ' +
         "return [upcall flash {*}$args] }; " +
+        bounds +
         "set ::_ep_flash_base [_ep_flash_boost $::_ep_flash_khz]; " +
         "if {!$::_ep_flash_base} { echo EP_FLASH_STAGE=program; return [upcall flash {*}$args] }; " +
         "echo EP_FLASH_STAGE=program_boost; if {![catch {upcall flash {*}$args}]} { return }; " +
@@ -102,6 +142,8 @@ module.exports = {
     FLASH_SPEED_KHZ,
     flashSpeedKhz,
     buildFlashProgramCommand,
+    requiresFlashBounds,
+    buildFlashBoundsCommand,
     buildDownloadBoostCommand,
     DOWNLOAD_CLOCK_RESTORE,
     flashClockTracker,

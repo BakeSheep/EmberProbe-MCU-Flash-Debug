@@ -6,6 +6,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { FakeClock } = require("./helpers/fake-clock");
 const { loadProvider } = require("./helpers/load-provider");
 const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
+const { scenario } = require("./helpers/scenario");
 
 const folder = { uri: { toString: () => "file:///group", fsPath: "C:/group" } };
 const options = {
@@ -18,14 +19,14 @@ const options = {
     targetName: "chip.cpu0",
     serverGroup: "dual"
 };
-function makeGroup(onFailure) {
+function makeGroup(onFailure, groupOptions = options) {
     const clock = new FakeClock();
     const coordinator = new ProbeCoordinator();
     const lease = coordinator.acquire("debugStart").transition("debugServer");
     let stops = 0;
     let stopFailure = false;
     const controller = {
-        options,
+        options: groupOptions,
         ready: true,
         setSamplingEnabled() {},
         async stop() {
@@ -175,6 +176,25 @@ function bind(group, member) {
     await failedAttach.group.release(main.token);
 
     const Provider = loadProvider();
+    await scenario("Shared launch enables Flash bounds checks for guarded targets", async () => {
+        const target = "gigadevice/gd32f30x.cfg";
+        const guarded = makeGroup(undefined, { ...options, target });
+        const guardedHost = Object.create(Provider.prototype);
+        guardedHost._probeConnectionService = { assertCurrent() {} };
+        guardedHost.debugLaunch.managedGroup = guarded.group;
+        const config = await guardedHost.debugLaunch.prepareGroupedConfiguration({
+            folder,
+            executable: options.executable,
+            probe: options.probe,
+            target,
+            cfg: { get: () => "auto" },
+            rtos: options.rtos,
+            serverOptions: { serverGroup: "dual", numberOfProcessors: 2, targetProcessor: 0 },
+            debugConfig: { request: "launch", executable: "core0.elf" }
+        });
+        assert.strictEqual(config.__emberprobeFlashBounds, true);
+        await guarded.group.release(config.__emberprobeManagedToken);
+    });
     const hostState = makeGroup();
     const host = Object.create(Provider.prototype);
     let prepared = 0,

@@ -31,8 +31,8 @@ function targetKey(device) {
     return `${device.id}|${device.attachmentId || ""}`;
 }
 
-function mergedIdentity(previous, identity) {
-    if (!previous || !sameTarget(previous, identity)) return identity;
+function mergedIdentity(previous, identity, target) {
+    if (!previous || !sameTarget(previous, identity, target)) return identity;
     return {
         cpuid: identity.cpuid || previous.cpuid,
         idcode: identity.idcode || previous.idcode,
@@ -148,7 +148,7 @@ class ProbeConnectionService {
         const choose = (readings) => {
             const matches = candidates.filter((_device, index) =>
                 expected
-                    ? sameTarget(readings[index], expected)
+                    ? sameTarget(readings[index], expected, request.target)
                     : targetMatchesModel(readings[index], request.target) === true
             );
             return matches.length === 1 ? matches[0] : null;
@@ -264,12 +264,12 @@ class ProbeConnectionService {
         const selection = this.getSuccessfulConnection();
         const expected = this.isAutomatic(this.getConfig(), selection) ? this.expectedTarget(target, selection) : null;
         return {
-            autoTarget: describeTargetIdentity(expected),
+            autoTarget: describeTargetIdentity(expected, target),
             targetMismatch:
                 this.targetMismatch && this.targetMismatch.target === target
                     ? {
-                          expected: describeTargetIdentity(this.targetMismatch.expected),
-                          actual: describeTargetIdentity(this.targetMismatch.observed)
+                          expected: describeTargetIdentity(this.targetMismatch.expected, this.targetMismatch.target),
+                          actual: describeTargetIdentity(this.targetMismatch.observed, this.targetMismatch.target)
                       }
                     : null
         };
@@ -497,7 +497,7 @@ class ProbeConnectionService {
         // A probe picked while the operation ran ends automatic mode.
         if (!this.isAutomatic(this.getConfig(), current)) return;
         const previous = this.expectedTarget(check.target, current);
-        const chip = mergedIdentity(previous, identity);
+        const chip = mergedIdentity(previous, identity, check.target);
         if (current?.probe === check.probe && JSON.stringify(previous) === JSON.stringify(chip)) return;
         await this.saveTarget(check.probe, check.target, chip);
         this.onTargetStateChanged();

@@ -12,7 +12,7 @@ const { normalizeDebugImages } = require("./debugImages");
 const { resolveExternalSettings } = require("./externalDebugService");
 const path = require("path");
 const { assertWriteIdentity } = require("../../skills/_emberprobe/probe-connection");
-const { flashSpeedKhz } = require("../../skills/_emberprobe/openocd-flash");
+const { flashSpeedKhz, requiresFlashBounds } = require("../../skills/_emberprobe/openocd-flash");
 const { serializeError, toUiError } = require("./errorEnvelope");
 const { COMMAND_FAILURE_TITLES } = require("./noticeService");
 const { debugReadPlanKey } = require("./liveWatchService");
@@ -22,6 +22,7 @@ const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("./debugLifecycle")
 const { GdbWarmup } = require("./gdbWarmup");
 const { cleanWindowsPath } = require("../validation");
 const { CACHE_KEYS } = require("../cacheKeys");
+const { SYSTEM_CLOCK } = require("../samplingClock");
 
 // Debug sessions on the managed probe: the debug and attach commands, the managed OpenOCD debug server, shared debug
 // groups, the startup watchdog and its failure cleanup, external GDB attach, the VS Code debug session and adapter
@@ -32,13 +33,15 @@ class DebugLaunch {
      * @param {{ vscode: any, ensureDebugTools: Function, findWarmupDebugTools: Function, openocdScripts: any,
      *     OpenOcdDebugController: any, allocateDebugPorts: Function }} modules Taken from the provider module, so
      *     tests can replace them through loadProvider.
+     * @param {Pick<typeof SYSTEM_CLOCK, "schedule" | "cancel">} clock
      */
-    constructor(host, { vscode, ...modules }) {
+    constructor(host, { vscode, ...modules }, clock = SYSTEM_CLOCK) {
         this.host = host;
         this._vscode = vscode;
         this._modules = modules;
         this.lifecycle = new DebugLifecycle();
         this.gdbWarmup = new GdbWarmup();
+        this.clock = clock;
         this.managedServer = null;
         this.managedGroup = null;
         this.managedToken = "";
@@ -201,8 +204,10 @@ class DebugLaunch {
             Object.assign(debugConfig, pretty);
             Object.assign(debugConfig, images);
             // Debug downloads use the sidebar's programming clock (see docs/design/flash-and-debug.md).
-            if (debugConfig.request === "launch" && this.managedServer?.options)
+            if (debugConfig.request === "launch" && this.managedServer?.options) {
                 debugConfig.__emberprobeDownloadSpeedKhz = flashSpeedKhz(this.managedServer.options);
+                if (requiresFlashBounds(mcuCore)) debugConfig.__emberprobeFlashBounds = true;
+            }
             if (startup)
                 debugConfig.__emberprobeStartupTrace = startup.finish(this.gdbWarmup?.snapshot?.(cortexTools.gdbPath));
             const startupGate = this.armStartupWatchdog();
@@ -492,7 +497,10 @@ class DebugLaunch {
                 ...serverOptions,
                 gdbTarget: member.connection,
                 targetName: member.target,
-                __emberprobeManagedToken: member.token
+                __emberprobeManagedToken: member.token,
+                ...(debugConfig.request !== "attach" && requiresFlashBounds(target)
+                    ? { __emberprobeFlashBounds: true }
+                    : {})
             };
         } catch (error) {
             if (created) {
@@ -990,9 +998,14 @@ class DebugLaunch {
         }
     }
     // Background GDB start for a workspace that has already chosen firmware; see services/gdbWarmup.js.
+    cancelGdbWarmup() {
+        if (this.gdbWarmupTimer !== null) this.clock.cancel(this.gdbWarmupTimer);
+        this.gdbWarmupTimer = null;
+    }
+
     scheduleGdbWarmup(delayMs = 0) {
-        if (this.gdbWarmupTimer) clearTimeout(this.gdbWarmupTimer);
-        this.gdbWarmupTimer = setTimeout(async () => {
+        this.cancelGdbWarmup();
+        this.gdbWarmupTimer = this.clock.schedule(async () => {
             this.gdbWarmupTimer = null;
             // Workspace settings choose the executable, so an untrusted workspace never runs it.
             if (this.host._shutdownPromise || !this._vscode.workspace.isTrusted) return;

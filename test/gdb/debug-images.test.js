@@ -215,6 +215,26 @@ const { RspMemory } = require("./rsp-memory");
             17,
             "ELF load offset relocates transfer addresses"
         );
+        const checked = path.join(root, "checked.elf");
+        execFileSync(objcopy, ["--only-section=.text", primary, checked], { windowsHide: true });
+        adapter.config.executable = checked;
+        adapter.config.loadFiles = undefined;
+        adapter.config.__emberprobeFlashBounds = true;
+        let guardReply = "EP_FLASH_BOUNDS_ERROR Image address 0x08010000 is outside the configured Flash banks\n";
+        memory.monitor = (command) => {
+            assert.match(command, /proc _ep_flash_check/);
+            assert.match(command, /\{134217728 \d+\}/);
+            return guardReply;
+        };
+        const writesBeforeGuard = memory.writes.length;
+        await assert.rejects(adapter.debugImages.download(), /0x08010000/);
+        assert.strictEqual(memory.writes.length, writesBeforeGuard, "a rejected monitor preflight sends no writes");
+        guardReply = "EP_FLASH_BOUNDS_OK\n";
+        assert.strictEqual((await adapter.debugImages.download()).firmware, "programmed");
+        assert(
+            memory.writes.length > writesBeforeGuard,
+            "GDB downloads the verified snapshot after preflight succeeds"
+        );
         const count = memory.writes.length;
         adapter.config.attach = true;
         await adapter.debugImages.download();

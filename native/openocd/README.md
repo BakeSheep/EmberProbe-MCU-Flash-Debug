@@ -2,12 +2,13 @@
 
 The Windows x64 and Linux x64 VSIX resources contain an EmberProbe build based on
 upstream OpenOCD revision `e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3`, the source
-used by xPack 0.12.0-7, plus four patches applied in order: the scatter patch
+used by xPack 0.12.0-7, plus six patches applied in order: the scatter patch
 (`0001`), STMicroelectronics' `stldr` flash driver and `stm32c5x.cfg` from pending
 upstream reviews 9697/9699 (`0002`, `0003`, pinned by commit and hash in
 `build-lock.json`), and the EmberProbe change that loads bundled STM32C5 flash loaders
-instead of downloading them (`0004`; see
-[`docs/design/openocd-build.md`](../../docs/design/openocd-build.md#stm32c0-and-stm32c5)). When
+from the local runtime (`0004`), the GD32F30x dual-bank Flash driver (`0005`),
+and the AT32F403A/F407 and F435/F437 dual-bank Flash driver (`0006`).
+See [the OpenOCD build design](../../docs/design/openocd-build.md). When
 the reviews merge upstream, replace `0002`/`0003` with the merged revision or drop them on
 a base update. These are modified builds, not official xPack binaries. Default `openocd` configuration uses the bundled runtime
 on both platforms. Explicit paths, including older manually installed paths,

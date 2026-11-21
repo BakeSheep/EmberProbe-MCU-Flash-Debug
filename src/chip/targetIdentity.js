@@ -6,6 +6,8 @@ const {
     STM32_SERIES_CORES,
     idcodeBaseForTarget,
     uidBaseForTarget,
+    isArteryTarget,
+    usesFullIdcode,
     seriesFromTarget
 } = require("./rules");
 
@@ -35,8 +37,8 @@ function normalizeTargetIdentity(value) {
 // number, the DEV_ID (bits 11:0) and the whole UID are compared.
 const FIELD_MASKS = { cpuid: 0xff0ffff0, idcode: 0x00000fff };
 
-function fieldKey(field, text) {
-    if (!text || !FIELD_MASKS[field]) return text;
+function fieldKey(field, text, target = "") {
+    if (!text || !FIELD_MASKS[field] || (field === "idcode" && usesFullIdcode(target))) return text;
     return ((parseInt(text, 16) & FIELD_MASKS[field]) >>> 0).toString(16).toUpperCase().padStart(8, "0");
 }
 
@@ -61,6 +63,7 @@ function targetCheckCommand(target, expected = null) {
         "set text {}; foreach value $words { append text [format %08X $value] }; return $text }; " +
         "proc _ep_target_key {field text} { " +
         Object.entries(FIELD_MASKS)
+            .filter(([field]) => field !== "idcode" || !usesFullIdcode(target))
             .map(
                 ([field, mask]) =>
                     `if {$field eq "${field}"} { return [format %08X [expr {[scan $text %x] & 0x${mask.toString(16)}}]] }; `
@@ -72,13 +75,15 @@ function targetCheckCommand(target, expected = null) {
         .join(" ");
     const echo = reads.map(([field]) => `${field}=[dict get $_ep_target_id ${field}]`).join(" ");
     const expectedPairs = known
-        ? reads.filter(([field]) => known[field]).map(([field]) => `${field} ${fieldKey(field, known[field])}`)
+        ? reads.filter(([field]) => known[field]).map(([field]) => `${field} ${fieldKey(field, known[field], target)}`)
         : [];
+    const requiredIdcode = usesFullIdcode(target) && Boolean(known?.idcode);
+    const missingIdcode = requiredIdcode ? '($_ep_field eq "idcode" && $_ep_read eq "") || ' : "";
     const check = expectedPairs.length
         ? `; foreach {_ep_field _ep_value} {${expectedPairs.join(" ")}} { ` +
           "set _ep_read [dict get $_ep_target_id $_ep_field]; " +
-          'if {$_ep_read ne ""} { if {[_ep_target_key $_ep_field $_ep_read] ne $_ep_value} { ' +
-          'echo "EP_TARGET_MISMATCH $_ep_field"; shutdown error } } }'
+          `if {${missingIdcode}($_ep_read ne "" && [_ep_target_key $_ep_field $_ep_read] ne $_ep_value)} { ` +
+          'echo "EP_TARGET_MISMATCH $_ep_field"; shutdown error } }'
         : "";
     return `${word}set _ep_target_id [list ${read}]; echo "EP_TARGET_ID ${echo}"${check}`;
 }
@@ -118,11 +123,15 @@ function targetCore(identity) {
 }
 
 // "STM32F4x · Cortex-M4 · UID …53534C32": enough to tell two boards of one model apart.
-function describeTargetIdentity(identity) {
+function describeTargetIdentity(identity, target = "") {
     const known = normalizeTargetIdentity(identity);
     if (!known) return "";
     const idcode = hexValue(known.idcode);
-    const model = targetSeries(known) || (idcode === null ? "" : `DEV_ID 0x${(idcode & 0xfff).toString(16)}`);
+    const pid = known.idcode && isArteryTarget(target) ? `AT32 PID 0x${known.idcode}` : "";
+    const model =
+        pid ||
+        (usesFullIdcode(target) && known.idcode ? `ID 0x${known.idcode}` : targetSeries(known)) ||
+        (idcode === null ? "" : `DEV_ID 0x${(idcode & 0xfff).toString(16)}`);
     return [model, targetCore(known), known.uid ? `UID …${known.uid.slice(-8)}` : ""].filter(Boolean).join(" · ");
 }
 
@@ -133,19 +142,30 @@ function describeTargetCore(identity) {
 
 // Two readings are the same chip when every field read both times agrees, revision bits aside, and at least one
 // was compared.
-function sameTarget(a, b) {
+function sameTarget(a, b, target = "") {
     const left = normalizeTargetIdentity(a);
     const right = normalizeTargetIdentity(b);
-    if (!left || !right) return false;
+    if (!left || !right || (usesFullIdcode(target) && (!left.idcode || !right.idcode))) return false;
     const compared = FIELDS.filter((field) => left[field] && right[field]);
     return (
-        compared.length > 0 && compared.every((field) => fieldKey(field, left[field]) === fieldKey(field, right[field]))
+        compared.length > 0 &&
+        compared.every((field) => fieldKey(field, left[field], target) === fieldKey(field, right[field], target))
     );
 }
 
-// Whether a chip is of the STM32 series the target configuration names: true, false, or null when unknown.
+// Whether a chip matches the named family: true, false, or null when the reading cannot decide.
 function targetMatchesModel(identity, target) {
     const named = seriesFromTarget(target).toUpperCase();
+    const vendorIds = { APM32E030: 0x00100440, APM32E103: 0x000a0414, CH32F103: 0x20000410 };
+    if (Object.hasOwn(vendorIds, named)) {
+        const idcode = hexValue(identity?.idcode);
+        return idcode === null ? null : (idcode & 0xffff0fff) >>> 0 === vendorIds[named];
+    }
+    const gd32Revision = named === "GD32F1X0" ? 0x1303 : named === "GD32F3X0" ? 0x1704 : 0;
+    if (gd32Revision) {
+        const idcode = hexValue(identity?.idcode);
+        return idcode === null ? null : idcode >>> 16 === gd32Revision && (idcode & 0xfff) === 0x410;
+    }
     const series = Object.keys(STM32_SERIES_CORES).find((name) => name.toUpperCase() === named);
     if (!series) return null;
     const found = targetSeries(identity);
@@ -157,8 +177,8 @@ function targetMatchesModel(identity, target) {
 function targetMismatchError(targetCheck, observed, field) {
     const expected = normalizeTargetIdentity(targetCheck?.expected);
     const params = {
-        expected: describeTargetIdentity(expected) || "-",
-        actual: describeTargetIdentity(observed) || "-"
+        expected: describeTargetIdentity(expected, targetCheck?.target) || "-",
+        actual: describeTargetIdentity(observed, targetCheck?.target) || "-"
     };
     return Object.assign(
         new Error(

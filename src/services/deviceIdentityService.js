@@ -9,6 +9,7 @@ const VENDOR_HINTS = Object.freeze([
     [/^STM32/i, "STMicroelectronics"],
     [/^GD32/i, "GigaDevice"],
     [/^APM32/i, "Geehy"],
+    [/^AT32(?:F|WB)/i, "Artery"],
     [/^AT(?:SAM|SAME|SAMD|SAMC|SAMG|SAML|SAMV)/i, "Microchip"],
     [/^NRF/i, "NordicSemiconductor"],
     [/^(?:LPC|MIMXRT|MK[LEV]?|KE\d)/i, "NXP"],
@@ -36,6 +37,7 @@ function targetIdentity(target) {
     const stem = path
         .basename(String(target || ""), path.extname(String(target || "")))
         .replace(/(?:_dual_bank|[-_]core\d+)$/i, "")
+        .replace(/^(at32f4x|at32f43x|gd32f(?:[13]x0|[13]0x)|apm32e103|ch32f103)-\d+$/i, "$1")
         .toUpperCase();
     /** @type {Array<[RegExp, string]>} */
     const aliases = [
@@ -58,7 +60,7 @@ function extractProjectParts(text) {
     const patterns = [
         /^Mcu\.(?:Name|Cpn)\s*=\s*([^\s,]+)/gim,
         /\b(?:device|deviceName|Dname|mcu|processor)\s*[:=]\s*["']?([A-Z][A-Z0-9_.-]{4,})/gim,
-        /\b(STM32[A-Z0-9]{5,}|GD32[A-Z0-9]{5,}|APM32[A-Z0-9]{4,}|ATSAM[A-Z0-9]{4,}|NRF\d{5,}|LPC\d{4,}[A-Z0-9]*)\b/gim
+        /\b(STM32[A-Z0-9]{5,}|GD32[A-Z0-9]{5,}|APM32[A-Z0-9]{4,}|CH32F[A-Z0-9]{4,}|AT32(?:F|WB)[A-Z0-9]{5,}|ATSAM[A-Z0-9]{4,}|NRF\d{5,}|LPC\d{4,}[A-Z0-9]*)\b/gim
     ];
     for (const pattern of patterns) {
         let match;

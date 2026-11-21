@@ -74,6 +74,18 @@ function prepare(assets, cache) {
           # New files must be tracked so the corresponding-source export (git ls-files) includes them.
           git add --intent-to-add src/flash/nor/stldr.c tcl/target/stm32c5x.cfg)
       fi
+      # EmberProbe GD32F30x dual-bank driver
+      if ! grep -q 'const struct flash_driver gd32f30x_flash =' "\${XBB_SOURCES_FOLDER_PATH}/\${openocd_src_folder_name}/src/flash/nor/stm32f1x.c"; then
+        (cd "\${XBB_SOURCES_FOLDER_PATH}/\${openocd_src_folder_name}";
+          git apply --check "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-gd32f30x.git.patch"
+          git apply "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-gd32f30x.git.patch")
+      fi
+      # EmberProbe Artery dual-bank driver
+      if ! grep -q 'const struct flash_driver artery_dual_flash =' "\${XBB_SOURCES_FOLDER_PATH}/\${openocd_src_folder_name}/src/flash/nor/artery.c"; then
+        (cd "\${XBB_SOURCES_FOLDER_PATH}/\${openocd_src_folder_name}";
+          git apply --check "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-artery-dual.git.patch"
+          git apply "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-artery-dual.git.patch")
+      fi
 `
         );
     recipe = recipe.replace(

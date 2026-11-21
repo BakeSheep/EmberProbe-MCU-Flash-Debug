@@ -134,6 +134,7 @@ function validateDebugConfiguration(config, folder) {
     delete result.__emberprobeManagedToken;
     delete result.__emberprobeStartupTrace;
     delete result.__emberprobeDownloadSpeedKhz;
+    delete result.__emberprobeFlashBounds;
     return result;
 }
 

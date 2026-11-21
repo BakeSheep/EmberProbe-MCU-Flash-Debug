@@ -110,7 +110,7 @@ class ConnectedProbes {
             readings.get(device.id)
                 ? {
                       ...device,
-                      targetLabel: describeTargetIdentity(readings.get(device.id)),
+                      targetLabel: describeTargetIdentity(readings.get(device.id), mcuCore),
                       targetCore: describeTargetCore(readings.get(device.id))
                   }
                 : device
@@ -122,7 +122,9 @@ class ConnectedProbes {
             const matches = candidates.filter((device) => {
                 const reading = readings.get(device.id);
                 if (!reading) return false;
-                return expected ? sameTarget(reading, expected) : targetMatchesModel(reading, mcuCore) === true;
+                return expected
+                    ? sameTarget(reading, expected, mcuCore)
+                    : targetMatchesModel(reading, mcuCore) === true;
             });
             if (matches.length === 1)
                 Object.assign(view, {

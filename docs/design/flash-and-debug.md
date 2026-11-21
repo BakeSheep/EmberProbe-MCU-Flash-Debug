@@ -8,6 +8,8 @@
 
 每次下载都正常执行擦除、写入、校验和复位运行，即使镜像与目标 Flash 完全一致也会重新烧录。烧录前不再通过 CRC 比较跳过擦写，Agent 结果为 `programming.unchanged: false`。
 
+新增 GD32、APM32、CH32 和 AT32 目标写入前检查整份镜像。侧栏与 Agent 从授权或下载快照读取 ELF 的文件段和加载地址。托管 GDB 在首个下载命令之前检查全部镜像，并从已检查的快照下载。ELF 使用文件内容的加载地址，HEX 和 BIN 同时考虑配置中的偏移或基址。检查只采用当前 OpenOCD 目标探测到的 Flash Bank。区间落入空洞、超出 Flash 边界或 Bank 无法探测时停止该批下载，首个擦除或写入尚未开始。
+
 ## 烧录时钟
 
 target 脚本的速度偏保守（例如 STM32F1 为 1 MHz，STM32H7 在 reset-init 后为 4 MHz）。`reset init` 完成目标时钟配置后，EmberProbe 为写入提高 SWD 时钟：

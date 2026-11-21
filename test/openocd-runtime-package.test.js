@@ -64,6 +64,8 @@ async function main() {
         });
         for (const name of [
             "openocd/src/target/arm_adi_v5.c",
+            "openocd/src/flash/nor/artery.c",
+            "openocd/src/flash/nor/stm32f1x.c",
             "openocd/src/flash/nor/stldr.c",
             "openocd/tcl/target/stm32c5x.cfg",
             "openocd/jimtcl/jim.c",

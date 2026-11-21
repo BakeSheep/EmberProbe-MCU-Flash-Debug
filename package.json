@@ -1274,6 +1274,8 @@
     "native/openocd/0002-stldr-flash-driver.patch",
     "native/openocd/0003-stm32c5x-target.patch",
     "native/openocd/0004-emberprobe-c5-local-loaders.patch",
+    "native/openocd/0005-gd32f30x-dual-bank.patch",
+    "native/openocd/0006-artery-dual-bank.patch",
     "native/openocd/build-lock.json",
     "native/openocd/build.sh",
     "native/openocd/prepare-build.js",

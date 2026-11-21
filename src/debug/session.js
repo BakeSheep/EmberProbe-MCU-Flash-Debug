@@ -728,7 +728,7 @@ class EmberDebugSession extends DebugSession {
         } else if (!external) {
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
             trace?.phase("reset");
-            const download = await this.debugImages.download();
+            const download = await this.debugImages.download(executableStamp);
             trace?.phase("download", download);
             // Reload the reset vector after downloading the firmware.
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);

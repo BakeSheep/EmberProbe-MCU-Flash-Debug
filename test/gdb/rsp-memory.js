@@ -64,12 +64,17 @@ class RspMemory {
                         decoded.push(payload[i] === 125 ? payload[++i] ^ 32 : payload[i]);
                     const packet = Buffer.from(decoded).toString("latin1");
                     this.packets.push(packet.slice(0, 200));
-                    const response = this.reply(packet);
-                    const encoded = Buffer.from(response, "latin1");
-                    const sum = encoded.reduce((value, byte) => (value + byte) & 255, 0);
-                    socket.write(
-                        Buffer.concat([Buffer.from("$"), encoded, Buffer.from(`#${sum.toString(16).padStart(2, "0")}`)])
-                    );
+                    for (const response of [this.reply(packet)].flat()) {
+                        const encoded = Buffer.from(response, "latin1");
+                        const sum = encoded.reduce((value, byte) => (value + byte) & 255, 0);
+                        socket.write(
+                            Buffer.concat([
+                                Buffer.from("$"),
+                                encoded,
+                                Buffer.from(`#${sum.toString(16).padStart(2, "0")}`)
+                            ])
+                        );
+                    }
                 }
             });
         });
@@ -130,6 +135,10 @@ class RspMemory {
             return `C${crc32(this.read(parseInt(crc[1], 16), parseInt(crc[2], 16)))
                 .toString(16)
                 .padStart(8, "0")}`;
+        if (this.monitor && packet.startsWith("qRcmd,")) {
+            const message = this.monitor(Buffer.from(packet.slice(6), "hex").toString("utf8"));
+            if (message) return ["O" + Buffer.from(message).toString("hex"), "OK"];
+        }
         if (/^(?:H|T|!|D|k|qRcmd,)/.test(packet)) return "OK";
         return "";
     }

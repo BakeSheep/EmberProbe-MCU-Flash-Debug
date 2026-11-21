@@ -15,9 +15,11 @@ const PATCHES = [
     "0001-emberprobe-read-scatter.patch",
     "0002-stldr-flash-driver.patch",
     "0003-stm32c5x-target.patch",
-    "0004-emberprobe-c5-local-loaders.patch"
+    "0004-emberprobe-c5-local-loaders.patch",
+    "0005-gd32f30x-dual-bank.patch",
+    "0006-artery-dual-bank.patch"
 ];
-const DISTRIBUTION = "EmberProbe OpenOCD 0.12.0-7 + scatter v1 + stldr/STM32C5";
+const DISTRIBUTION = "EmberProbe OpenOCD 0.12.0-7 + scatter v1 + stldr/STM32C5 + GD32F30x + AT32 dual-bank";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 
@@ -103,6 +105,8 @@ async function verifySources(file, identity, scriptOverrides) {
     }
     for (const name of [
         "openocd/src/target/arm_adi_v5.c",
+        "openocd/src/flash/nor/artery.c",
+        "openocd/src/flash/nor/stm32f1x.c",
         "openocd/src/flash/nor/stldr.c",
         "openocd/tcl/target/stm32c5x.cfg",
         "openocd/jimtcl/jim.c",
@@ -176,6 +180,8 @@ async function verifyBundle(root = ROOT) {
             assert.strictEqual(entries.get(`${archive.scriptsRoot}/${target.path}`)?.sha256, target.sha256);
             assert.ok(entries.has(`${archive.scriptsRoot}/${target.canonical}`));
         }
+        for (const helper of manifest.targetHelpers || [])
+            assert.strictEqual(entries.get(`${archive.scriptsRoot}/${helper.path}`)?.sha256, helper.sha256);
         for (const loader of manifest.flashLoaders || [])
             assert.strictEqual(entries.get(`${archive.scriptsRoot}/${loader.path}`)?.sha256, loader.sha256);
         for (const override of manifest.scriptOverrides || [])
@@ -193,6 +199,7 @@ async function verifyBundle(root = ROOT) {
             binarySha256: archive.binarySha256,
             originalPayloadSha256: archive.originalPayloadSha256,
             targets: manifest.targets,
+            ...(manifest.targetHelpers ? { targetHelpers: manifest.targetHelpers } : {}),
             ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {}),
             ...(manifest.scriptOverrides ? { scriptOverrides: manifest.scriptOverrides } : {})
         });

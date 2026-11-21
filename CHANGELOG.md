@@ -14,6 +14,20 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 侧栏、波形和 Agent 按引用目标读取 C++ 引用，支持引用成员展开、只读段中的引用槽和多维数组引用。旧观察路径和展开状态会随观察列表恢复。
 - Follow C++ references to their targets in the sidebar, waveforms and Agent, including nested references, reference slots in read-only ELF data, and multidimensional array references. Saved watch paths and expansion state carry over.
 
+### 目标芯片 / MCU targets
+
+- 增加 GD32F130/F150、F310/F330/F350 的目标配置、容量校验和自动识别。增加驱动已覆盖的 AT32 单 Bank 型号自动识别和完整 PID 显示。
+- Add target configs, Flash capacity checks, and auto-detection for GD32F130/F150 and F310/F330/F350. Add auto-detection and full PID display for supported single-bank AT32 parts.
+
+- 增加 GD32F101/F103、GD32F303 单 Bank 型号、APM32E103/E030 和 CH32F103 的目标配置与自动识别。新接入的单 Bank 目标在普通烧录和 GDB 下载前检查整份镜像的加载地址。
+- Add target configs and auto-detection for single-bank GD32F101/F103 and GD32F303, APM32E103/E030, and CH32F103. The newly supported single-bank targets check every image load address before standalone programming or GDB download.
+
+- 增加 GD32F303 1、2、3 MiB 双 Bank 目标和工程识别。普通烧录和 GDB 下载在擦除前校验两个 Bank 的镜像加载范围。
+- Add target configs and project detection for dual-bank GD32F303 with 1, 2, or 3 MiB of Flash. Standalone programming and GDB downloads validate image ranges across both banks before erasing.
+
+- 增加 1 MiB 版 AT32F403A/F407/F407A 和 F435/F437 的双 Bank 配置、工程识别和整镜像预检。
+- Add dual-bank target configurations, project detection, and complete image validation for supported 1 MiB AT32F403A/F407/F407A and F435/F437 parts.
+
 ## [0.9.3] - 2026-11-20
 
 ### 采样与波形 / Sampling and waveforms

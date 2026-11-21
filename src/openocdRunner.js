@@ -4,12 +4,14 @@ const { createLineDecoder } = require("../skills/_emberprobe/tool-output");
 const { buildOpenOcdConfigArgs, isSafeCfgPath, openOcdEnvironment, resolveOpenOcdLaunch } = require("./openocdScripts");
 const {
     buildFlashProgramCommand,
+    requiresFlashBounds,
     flashClockTracker,
     flashPhaseFromLine,
     flashSpeedKhz,
     isTentativeFlashPhase
 } = require("../skills/_emberprobe/openocd-flash");
 const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
+const { imageRanges } = require("./services/flashImageBounds");
 
 // Configuration path allowlist: safe relative paths inside scripts, such as geehy/apm32f4x.cfg.
 function isSafeCfg(name) {
@@ -85,14 +87,15 @@ function parseLine(line) {
         };
     }
     // Chip/device identity: "Info : device id = 0x10076413" / "Info : Device: STM32F40x"
-    if ((match = clean.match(/device id\s*=\s*(0x[0-9a-f]+)/i)))
+    if ((match = clean.match(/device id\s*=\s*(0x[0-9a-f]+)(?:\s*\((AT32[^)]+)\))?/i)))
         return {
             stage: "chip",
             level: "info",
-            message: `器件 ID ${match[1]}`,
+            message: match[2] ? `器件 ID ${match[1]}（${match[2]}）` : `器件 ID ${match[1]}`,
             key: "run.deviceId",
             params: { id: match[1] },
-            deviceId: match[1]
+            deviceId: match[1],
+            chip: match[2] || ""
         };
     if ((match = clean.match(/\bDevice:\s*(.+)$/i)))
         return {
@@ -103,8 +106,8 @@ function parseLine(line) {
             params: { chip: match[1].trim() },
             chip: match[1].trim()
         };
-    // Flash size: "Info : flash size = 1024 kbytes"
-    if ((match = clean.match(/flash size\s*=\s*([\d.]+\s*k?bytes?)/i)))
+    // Flash size: "Info : flash size = 1024 kbytes" / "Info : Flash size = 1024 KiB"
+    if ((match = clean.match(/flash size\s*=\s*([\d.]+\s*(?:k?bytes?|kib))/i)))
         return {
             stage: "flash",
             level: "info",
@@ -144,10 +147,13 @@ function parseLine(line) {
     // OpenOCD prints "shutdown command invoked" on failure too, so completion is judged only by the exit code. "Info :
     // Unable to ..." may just be a normal hint such as a speed reduction; non-Info lines still match common failure
     // patterns.
+    if ((match = clean.match(/^EP_FLASH_BOUNDS_ERROR\s+(.+)$/)))
+        return { stage: "error", level: "error", message: match[1] };
     const isInfo = /\bInfo\s*:/i.test(clean);
     if (
         /\bError\s*:/i.test(clean) ||
-        (!isInfo && /failed|unable to|no device found|libusb_open|timed out|can't find|cannot find/i.test(clean))
+        (!isInfo &&
+            /failed|unable to|no device found|libusb_open|timed out|can't find|cannot find|\bflash bank:/i.test(clean))
     ) {
         return { stage: "error", level: "error", message: clean.replace(/^.*?Error\s*:\s*/i, "") || clean };
     }
@@ -198,27 +204,21 @@ function runOpenOcd(vscode, options, onProgress) {
     if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
         return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
     }
+    const elfPath = options.elf.replace(/\\/g, "/");
+    const displayElfPath = (options.originalElf || elfPath).replace(/\\/g, "/").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+    // ELF paths containing spaces must be quoted, or OpenOCD's Tcl parser splits them into several arguments
     let launch;
+    let programCmd;
     try {
         launch = resolveOpenOcdLaunch(options.executable, options.probe, options.target, options.transport);
+        const ranges = requiresFlashBounds(options.target) ? imageRanges({ file: elfPath }) : undefined;
+        programCmd = buildFlashProgramCommand(quoteTclWord(elfPath), flashSpeedKhz(options), ranges);
     } catch (error) {
         return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
         const { terminal, writeEmitter, created } = acquireTerminal(vscode);
         terminal.show(true);
-        const elfPath = options.elf.replace(/\\/g, "/");
-        const displayElfPath = (options.originalElf || elfPath)
-            .replace(/\\/g, "/")
-            .replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-        // ELF paths containing spaces must be quoted, or OpenOCD's Tcl parser splits them into several arguments
-        let programCmd;
-        try {
-            programCmd = buildFlashProgramCommand(quoteTclWord(elfPath), flashSpeedKhz(options));
-        } catch (error) {
-            reject(error);
-            return;
-        }
         const preserveWorkArea = "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }";
         const args = [
             ...buildOpenOcdConfigArgs(launch, options.transport, options),

@@ -135,7 +135,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
         esp32h2: "esp32h2.cfg",
         "Host Link": "",
         xrp2040: "",
-        GD32F303RC: ""
+        GD32F303RC: "gigadevice/gd32f30x.cfg"
     };
     for (const [text, expected] of Object.entries(samples))
         assert.strictEqual(targets.targetFromText(text), expected, text);
@@ -153,7 +153,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     for (const [text, expected] of Object.entries(fields)) assert.strictEqual(targets.deviceField(text), expected);
 
     // An explicit but unknown device never falls back to incidental text.
-    assert.strictEqual(targets.targetFromText("<Device>GD32F303RC</Device>\n<!-- ported from stm32f103 -->"), "");
+    assert.strictEqual(targets.targetFromText("<Device>GD32F403RG</Device>\n<!-- ported from stm32f103 -->"), "");
     // A file naming two families is ambiguous; filenames win over content.
     assert.strictEqual(targets.targetFromText("/* migrated from stm32f103 */ for STM32F407"), "");
     assert.strictEqual(
@@ -254,6 +254,59 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
 
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "auto-detect-")));
     try {
+        await scenario("Resolve only supported Artery parts and use capacity-specific GD32 targets", () => {
+            const cases = {
+                AT32F421C8T7: "artery/at32f4x.cfg",
+                AT32F403ACGU7: "artery/at32f4x-1024.cfg",
+                AT32F407RGT7: "artery/at32f4x-1024.cfg",
+                AT32F407AVGT7: "artery/at32f4x-1024.cfg",
+                AT32F435VCT7: "artery/at32f4x.cfg",
+                "AT32WB415CCU7-7": "artery/at32f4x.cfg",
+                AT32F435VGT7: "artery/at32f43x-1024.cfg",
+                AT32F435CGU7: "artery/at32f43x-1024.cfg",
+                AT32F437ZGT7: "artery/at32f43x-1024.cfg",
+                AT32F435VGH7: "",
+                AT32F437ZMT7: "",
+                AT32F4212: "",
+                GD32F130C8T6: "gigadevice/gd32f1x0.cfg",
+                GD32F150G6U6: "gigadevice/gd32f1x0-32.cfg",
+                GD32F130F4P6: "gigadevice/gd32f1x0-16.cfg",
+                GD32F350C8T6: "gigadevice/gd32f3x0.cfg",
+                GD32F350CBT6: "gigadevice/gd32f3x0-128.cfg",
+                GD32F310CBT6: "",
+                GD32F303CCT6: "gigadevice/gd32f30x.cfg",
+                GD32F303ZET6: "gigadevice/gd32f30x-512.cfg",
+                GD32F303CG: "gigadevice/gd32f30x-1024.cfg",
+                GD32F303ZGT6: "gigadevice/gd32f30x-1024.cfg",
+                GD32F303VIT6: "gigadevice/gd32f30x-2048.cfg",
+                GD32F303RKT6: "gigadevice/gd32f30x-3072.cfg",
+                GD32F303CIT6: "",
+                GD32F403VGT6: "",
+                GD32F103C8T6: "gigadevice/gd32f10x.cfg",
+                GD32F103CBT6: "gigadevice/gd32f10x-128.cfg",
+                APM32E103CCT6: "geehy/apm32e103.cfg",
+                APM32E103VET6: "geehy/apm32e103-512.cfg",
+                APM32E103VET6S: "geehy/apm32e103-512.cfg",
+                APM32E030F8P6: "geehy/apm32e030.cfg",
+                APM32F003F6U7: "",
+                CH32F103C8T6: "wch/ch32f103.cfg",
+                CH32F103C6T6: "wch/ch32f103-32.cfg",
+                CH32V103C8T6: ""
+            };
+            for (const [device, config] of Object.entries(cases)) {
+                assert.strictEqual(targets.targetFromText(device), config, device);
+                assert.strictEqual(
+                    targets.resolveTarget([{ file: "demo.uvprojx", text: `<Device>${device}</Device> STM32F103` }])
+                        .target,
+                    config,
+                    device
+                );
+                if (config) assert.strictEqual(targets.targetArch(config), "arm");
+            }
+            assert.strictEqual(targets.targetFromText("GD32F350C8T6 GD32F350CBT6"), "");
+            assert.deepStrictEqual(extractProjectParts("target AT32F421C8T7"), ["AT32F421C8T7"]);
+        });
+
         await scenario("Infer CubeMX2 devices and pair their ELF in extension and shared skill detection", async () => {
             const cubeRoot = path.join(root, "cube2");
             const content = fs.readFileSync(path.join(__dirname, "fixtures/cubemx2/c593.ioc2"), "utf8");

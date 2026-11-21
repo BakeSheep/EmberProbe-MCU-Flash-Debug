@@ -28,6 +28,8 @@ const {
     lookupStmBase,
     uidBaseForTarget,
     idcodeBaseForTarget,
+    isArteryTarget,
+    usesFullIdcode,
     flashSizeBaseForTarget,
     formatUid,
     normalizeFlashSize
@@ -213,6 +215,9 @@ function createChipParser(target) {
             const fp = clean.match(/flash size probed value\s+(\d+)/i);
             if (fp) info.flashSize = fp[1] + " KiB";
         }
+        if (isArteryTarget(target) && (m = clean.match(/device id\s*=\s*0x[0-9a-f]+\s*\((AT32[^)]+)\)/i))) {
+            info.chip = m[1];
+        }
         // Reuse the firmware download log parser: probe, adapter, voltage, chip and flash
         const event = parseLine(clean);
         if (!event) return;
@@ -240,14 +245,17 @@ function createChipParser(target) {
             // IDCODE: first take a known DEV_ID at any candidate address (this works even with the wrong target), then
             // trust OpenOCD's own value. Without either, an unknown DEV_ID may only come from the target family's
             // IDCODE address.
-            const knownIdcode = chooseIdcode(idcReads);
+            const artery = isArteryTarget(target);
+            const pid = idcReads[idcodeBase];
+            const knownIdcode = artery ? (pid && pid !== 0xffffffff ? pid : null) : chooseIdcode(idcReads);
             if (knownIdcode != null) info.idcode = "0x" + (knownIdcode >>> 0).toString(16).toUpperCase();
             else if (idcodeLog && idcodeBase) info.idcode = idcodeLog;
             else {
                 const targetIdcode = chooseIdcode(idcReads, idcodeBase);
                 if (targetIdcode != null) info.idcode = "0x" + (targetIdcode >>> 0).toString(16).toUpperCase();
             }
-            if (info.idcode) {
+            if (info.idcode && artery) info.deviceId = info.idcode;
+            else if (info.idcode) {
                 const split = splitIdcode(info.idcode);
                 if (split) {
                     info.deviceId = split.deviceId;
@@ -269,7 +277,7 @@ function createChipParser(target) {
             }
             // A flash driver name measured on hardware overrides the target configuration when correcting the series
             const hwSeries = seriesFromFlashDriver(info.flashDriver);
-            if (hwSeries && hwSeries !== info.series && !devFamily) info.series = hwSeries;
+            if (hwSeries && !usesFullIdcode(target) && hwSeries !== info.series && !devFamily) info.series = hwSeries;
             if (!info.coreMismatch && coreMatchesSeries(info.core, info.series) === false)
                 info.coreMismatch = `${info.core} ≠ ${info.series}`;
             // Flash size: prefer the register at the corrected family's address (authoritative, overriding log-derived

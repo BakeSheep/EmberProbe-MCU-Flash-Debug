@@ -1,5 +1,6 @@
 "use strict";
 const { USB_PROFILES, matchesUsbIds } = require("./probe-profile");
+const { targetArch } = require("./target-detection");
 
 function connectionError(code, message, details = {}) {
     const key = {
@@ -303,6 +304,7 @@ function windowsHidOnly(device) {
 
 // Only targets already recognized by autoDetect; do not infer architecture from a probe's name.
 function isKnownCortexM(target) {
+    if (/^(?:artery|gigadevice|geehy|wch)\//.test(target)) return targetArch(target) === "arm";
     return /^(?:stm32(?:c[05]|f[012347]|g[04]|h7|l[0145]|u[05]|wba?|wl)x?|geehy\/apm32f[014]x|gd32e23x|nordic\/nrf5[12]|rp2040)\.cfg$/.test(
         target
     );

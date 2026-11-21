@@ -303,6 +303,28 @@ const l5 = parseChip("stm32l5x.cfg", ["0xe000ed00: 410fd214", "0xe0042000: 10006
 assert.strictEqual(l5.series, "STM32L5x");
 assert.strictEqual(l5.flashSize, "");
 
+scenario("Report Artery PID and keep GD32 family, capacity and UID with the STM32 Flash driver", () => {
+    const artery = "artery/at32f4x.cfg";
+    const at32 = createChipParser(artery);
+    at32.handleLine("0xe0042000: 70030410");
+    at32.handleLine("Info : Device ID = 0x70030410 (AT32F421C8T7)");
+    at32.handleLine("Info : Flash size = 64 KiB");
+    assert.strictEqual(at32.finish(0).chip, "AT32F421C8T7");
+    assert.strictEqual(at32.finish(0).deviceId, "0x70030410");
+    assert.strictEqual(at32.finish(0).flashSize, "64 KiB");
+    assert.match(buildChipInfoCommands(artery).join("\n"), /flash probe 0/);
+    const cfg = "gigadevice/gd32f3x0-128.cfg";
+    const gd32 = createChipParser(cfg);
+    gd32.handleLine("0xe0042000: 17040410");
+    gd32.handleLine("0x1ffff7e0: 00100080");
+    gd32.handleLine("0x1ffff7ac: 00112233 44556677 8899aabb");
+    gd32.handleLine("Info : flash \'stm32f1x\' found at 0x08000000");
+    const info = gd32.finish(0);
+    assert.strictEqual(info.series, "GD32F3X0");
+    assert.strictEqual(info.flashSize, "128 KiB");
+    assert.strictEqual(info.uid, "0x00112233445566778899AABB");
+});
+
 scenario("Report fresh unknown H7 target state and polling diagnostics", () => {
     const parser = createChipParser("stm32h7x.cfg");
     parser.handleLine("0xe000ed00: 411fc271");

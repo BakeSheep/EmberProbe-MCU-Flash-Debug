@@ -57,8 +57,49 @@ C5 脚本替换从事件目标推导芯片名，并把加载器表声明为全�
 
 2026 年 11 月 12 日，Windows 上的 STM32C593 与 WCH-LinkW 组合完成五次实板烧录、校验和复位。详细连接与结果见本地 `docs/records/audits/2026-11-13-c593-wchlinkw.md`。该记录限于测试配置，其他 C5 型号、探针、系统及长期无线稳定性仍须分别验收。
 
+## GD32F1x0、GD32F3x0 与 AT32 单 Bank 型号
+
+GD32F130/F150、GD32F310/F330/F350 通过 `gigadevice/` 下的目标配置复用 `stm32f1x` 驱动。配置显式声明 Flash Bank 大小，避免驱动根据 Cortex-M4 读 STM32F3 的容量地址。两个 GD32 系列均以 32 位读 ESIG `0x1FFFF7E0`，取低半字的容量。启动后的初始化钩子先核对 DBG_ID 的修订号和器件 ID，再核对实际容量。读取失败或不匹配时结束 OpenOCD 会话，阻止普通烧录和 GDB Flash 请求。
+
+AT32 复用锁定构建内的 `artery/at32f4x.cfg` 和 `artery` 驱动。自动识别限于该版本驱动表列出的单 Bank 型号。芯片信息和自动探针身份检查使用完整 32 位 PID。GD32 目标保留修订号参与身份比较，以区分共用 STM32 DEV_ID 的器件。已记录器件的 ID 读取失败会终止该次连接检查。
+
+离线验证使用 `noinit` 加载目标脚本，也以寄存器替身检查不同容量的配置和拒绝路径。两平台运行时沿用原二进制。厂商寄存器依据见 [GD32F1x0 用户手册](https://www.gd32mcu.com/download/down/document_id/151/path_type/1) 与 [GD32F3x0 用户手册](https://www.gd32mcu.com/data/documents/userManual/GD32F3x0_User_Manual_Rev3.3.pdf)。
+
+## GD32F10x/F303、APM32E103/E030 与 CH32F103
+
+单 Bank 目标使用 `target/emberprobe/f1-compat.tcl` 统一加载 `stm32f1x`。初始化检查 CPUID 和厂商器件 ID。GD32F101/F103 和 F303 还核对 CoreSight 设计者及 32 位 ESIG 容量。APM32E103 和 CH32F103 核对晶圆版本及容量。APM32E030 的手册标明 `0x00100440` 对应 x8，使用固定 64 KiB。检查失败时在擦写前结束 OpenOCD。
+
+APM32F003 的主 Flash 基址、FMC 接口和选项字节与 `stm32f1x` 不同，工程识别先阻止选到通用 APM32F0 配置。GD32F105/F107、F20x、F403、E1x 和 C1x3 需进一步核对器件标识以及页布局或驱动流程。
+
+`targetHelpers` 在清单中登记共享 Tcl 文件，打包时随两个运行时更新。离线测试在真实 OpenOCD 中用 `noinit` 和寄存器替身覆盖 ID、容量和设计者不匹配以及正常路径。
+
+## GD32F303 双 Bank
+
+`0005-gd32f30x-dual-bank.patch` 注册 `gd32f30x` 主 Flash 驱动，复用 `stm32f1x` 的半字编程和擦除实现。Bank 0 从 `0x08000000` 开始，固定 512 KiB，擦除页为 2 KiB。Bank 1 从 `0x08080000` 开始，擦除页为 4 KiB，控制寄存器从 `0x40022040` 开始。两个 Bank 分别探测，均要求 Cortex-M4、DEV_ID `0x430`、GigaDevice 的 CoreSight 设计者及与所选配置一致的 32 位 ESIG 容量。WP[31] 保护两个 Bank 中从 124 KiB 起的区域。驱动可查询保护状态，Flash 选项字节与解除保护操作不对外提供。页布局与寄存器见 [GD32F30x 用户手册](https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf)。
+
+普通烧录和 GDB 下载共用整镜像预检。OpenOCD 先探测当前目标的两个 Bank，再检查所有镜像加载区间。区间可穿过相邻 Bank。超过物理 Flash 的区间在首次擦除前被拒绝。
+
+## AT32 双 Bank
+
+`0006-artery-dual-bank.patch` 在 `artery` 的读、擦除和编程流程上增加 `artery_dual`。AT32F403A/F407/F407A 的已知 1024 KiB PID 通过 `artery/at32f4x-1024.cfg` 使用两个 512 KiB Bank，每个 Bank 有 256 个 2 KiB 扇区。第二 Bank 基址为 `0x08080000`，解锁、状态、控制和地址寄存器相对第一 Bank 偏移 `0x40`。探测在首次写入前验证 Cortex-M4、完整 PID 和实际容量。主 Flash 操作保留 USD 和 FAP。普通烧录和 GDB 下载在擦除前核对两个 Bank 的整镜像范围。布局依据见 [AT32F403A/F407 参考手册](https://static.chipdip.ru/lib/639/DOC046639644.pdf)。
+
+`artery/at32f43x-1024.cfg` 面向参考手册中列出完整 PID 的 8 个 F435/F437 型号。两 Bank 均为 512 KiB 和 2 KiB 扇区，Flash 控制器基址为 `0x40023C00`。探测同时核对 UID 系列字节。保护映射的前 128 KiB 每 4 KiB 一块，之后每 128 KiB 一块，第二 Bank 从 `FLASH_EPPS1` 的位 3 开始。见 [AT32F435/F437 参考手册](https://www.arterychip.com/download/RM/RM_AT32F435_437_EN_V2.06.pdf)。
+
+两种双 Bank 配置在自动探针模式读取完整 PID 及 `0x1FFFF7E8` 的 96 位 UID，可以区分 PID 相同但 UID 不同的板卡。
+
+### 待接入的 Arm 系列
+
+| 系列 | 接入所需的驱动工作 |
+| --- | --- |
+| GD32F20x、GD32F403 | 双 Bank 容量档在 512 KiB 处分 Bank。两份厂商设备包的 SVD 将 `DBG_ID` 复位值填为零，实际器件值仍需确认。见 [GD32F20x 用户手册](https://www.gd32mcu.com/data/documents/userManual/GD32F20x_User_Manual_Rev3.3.pdf)、[GD32F403 用户手册](https://www.gd32mcu.com/data/documents/userManual/GD32F403_User_Manual_Rev2.6.pdf)。 |
+| GD32F405/F407/F425/F427/F450/F470 | 3 MiB 布局包含 256 KiB 扇区，F425/F427/F470 还支持 4 KiB 页擦除。需要按器件和容量建表，并核对 Bank 切换、扇区编号和保护位。见 [GD32F4xx 用户手册](https://www.gd32mcu.com/data/documents/userManual/GD32F4xx_User_Manual_Rev2.7.pdf)。 |
+| CH32F203/F205/F207 | CH32F203C8 的 224 KiB 包含 64 KiB 零等待区，同系列还有 480 KiB 布局。需要确认每个 Arm 型号的常规编程、快速区和扩展区的地址及擦除状态。见 [WCH 型号资料](https://www.wch.cn/products/CH32F203.html)、[CH32F203 下载说明](https://www.wch.cn/uploads/file/20230404/1680573065146901.pdf)。 |
+| AT32F435/F437 960、1984、4032 KiB | 三档均使用 4 KiB 扇区，第二 Bank 分别从 `0x08080000`、`0x08100000`、`0x08200000` 开始。960 和 1984 KiB 需补齐 PID。4032 KiB 需澄清手册中 EPP6 的保留位与实际覆盖范围。见 [AT32F435/F437 参考手册](https://www.arterychip.com/download/RM/RM_AT32F435_437_V2.07_EN.pdf)。 |
+| APM32F003 | 主 Flash 起址为 `0x00000000`，16/32 KiB 容量从 `0x000203E0` 读取，FMC 控制器从 `0x40011000` 开始。还需验证可区分其他 Cortex-M0+ 的器件身份。见 [APM32F003 用户手册](https://global.geehy.com/uploads/tool/APM32F003x4x6%20User%20Manual%20V1.5.pdf)。 |
+| APM32F035、M3514 及遗漏的 F4 | F035/M3514 的主 Flash 从 `0x08000000` 开始，容量为 64 KiB，页大小为 1 KiB。手册的 `DBGMCU_IDCODE` 复位值与器件和修订字段的描述不一致。遗漏的 F4 需按器件确认扇区和保护方式。见 [APM32F035/M3514 用户手册](https://www.geehy.com/uploads/tool/APM32F035x8_M3514x8%C2%A0%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C%C2%A0V1.2.pdf)。 |
+
 ## 兼容性与验证边界
 
-GD32 E23x 和 VF103 沿用上游配置。需要额外驱动的 WCH、HPMicro、部分 APM32/AT32、STM32H5、Espressif 和 TI 厂商配置未加入内置包。Nuvoton 厂商脚本使用过时的 DAP API，现有 `numicro` 驱动也无法据此确认 M23 支持。
+GD32 E23x 和 VF103 沿用上游配置。CH32F20x、HPMicro、部分 APM32/AT32、STM32H5、Espressif 和 TI 系列仍需额外驱动。Nuvoton 厂商脚本使用过时的 DAP API，现有 `numicro` 驱动也无法据此确认 M23 支持。
 
-`npm run check:openocd-bundle`、`test/openocd-target-bundle.test.js` 和 `test/openocd-installer.test.js` 检查包清单、源码摘要、原始内容、目标目录、安装发现和配置加载。Windows x64 与 WSL Ubuntu 26.04 下的 Linux x64 均已完成配置加载检查，六个别名保留原始目标、Flash bank 和选定传输协议。检查以 `shutdown` 退出，不执行 `init`。真机支持须按 [HIL 流程](../../test/hil/README.md)单独验证。
+`npm run check:openocd-bundle`、`test/openocd-target-bundle.test.js` 和 `test/openocd-installer.test.js` 检查包清单、源码摘要、原始内容、目标目录、安装发现和配置加载。Windows x64 与 WSL Ubuntu 26.04 下的 Linux x64 均已完成配置加载检查，配置加载检查覆盖目标、Flash Bank 和选定传输协议。检查以 `shutdown` 退出，不执行 `init`。真机支持须按 [HIL 流程](../../test/hil/README.md)单独验证。

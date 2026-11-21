@@ -1,0 +1,197 @@
+diff --git a/src/flash/nor/driver.h b/src/flash/nor/driver.h
+index 598394c..2b01ebc 100644
+--- a/src/flash/nor/driver.h
++++ b/src/flash/nor/driver.h
+@@ -262,6 +262,7 @@ extern const struct flash_driver em357_flash;
+ extern const struct flash_driver eneispif_flash;
+ extern const struct flash_driver esirisc_flash;
+ extern const struct flash_driver faux_flash;
++extern const struct flash_driver gd32f30x_flash;
+ extern const struct flash_driver fespi_flash;
+ extern const struct flash_driver fm3_flash;
+ extern const struct flash_driver fm4_flash;
+diff --git a/src/flash/nor/drivers.c b/src/flash/nor/drivers.c
+index 6e68a00..9ba6da4 100644
+--- a/src/flash/nor/drivers.c
++++ b/src/flash/nor/drivers.c
+@@ -41,6 +41,7 @@ static const struct flash_driver * const flash_drivers[] = {
+ 	&eneispif_flash,
+ 	&esirisc_flash,
+ 	&faux_flash,
++	&gd32f30x_flash,
+ 	&fespi_flash,
+ 	&fm3_flash,
+ 	&fm4_flash,
+diff --git a/src/flash/nor/stm32f1x.c b/src/flash/nor/stm32f1x.c
+index f512a26..bacd665 100644
+--- a/src/flash/nor/stm32f1x.c
++++ b/src/flash/nor/stm32f1x.c
+@@ -119,6 +119,10 @@ struct stm32x_flash_bank {
+ 	uint32_t user_bank_size;
+ };
+ 
++#define GD32F30X_BANK0_BASE 0x08000000
++#define GD32F30X_BANK1_BASE 0x08080000
++#define GD32F30X_BANK0_SIZE (512 * 1024)
++
+ static int stm32x_mass_erase(struct flash_bank *bank);
+ static int stm32x_write_block(struct flash_bank *bank, const uint8_t *buffer,
+ 		uint32_t address, uint32_t hwords_count);
+@@ -1741,3 +1745,157 @@ const struct flash_driver stm32f1x_flash = {
+ 	.info = get_stm32x_info,
+ 	.free_driver_priv = default_flash_free_driver_priv,
+ };
++
++/* GD32F30x uses the F1 programming interface with different bank geometry.
++ * This profile is for GD32F303 XD parts and exposes only main flash.
++ */
++static bool gd32f30x_flash_size_valid(uint32_t kib)
++{
++	return kib == 1024 || kib == 2048 || kib == 3072;
++}
++
++FLASH_BANK_COMMAND_HANDLER(gd32f30x_flash_bank_command)
++{
++	if (CMD_ARGC != 7)
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	uint32_t kib;
++	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[6], kib);
++	if (!gd32f30x_flash_size_valid(kib))
++		return ERROR_COMMAND_ARGUMENT_INVALID;
++
++	uint32_t size;
++	switch (bank->base) {
++	case GD32F30X_BANK0_BASE:
++		size = GD32F30X_BANK0_SIZE;
++		break;
++	case GD32F30X_BANK1_BASE:
++		size = kib * 1024 - GD32F30X_BANK0_SIZE;
++		break;
++	default:
++		return ERROR_COMMAND_ARGUMENT_INVALID;
++	}
++	if (bank->size != size)
++		return ERROR_COMMAND_ARGUMENT_INVALID;
++
++	struct stm32x_flash_bank *info = calloc(1, sizeof(*info));
++	if (!info)
++		return ERROR_FAIL;
++
++	/* Store the expected ESIG density, including both banks. */
++	info->user_bank_size = kib * 1024;
++	info->register_base = bank->base == GD32F30X_BANK0_BASE ? FLASH_REG_BASE_B0 : FLASH_REG_BASE_B1;
++	bank->driver_priv = info;
++	bank->write_start_alignment = bank->write_end_alignment = 2;
++	return ERROR_OK;
++}
++
++static int gd32f30x_identify(struct flash_bank *bank)
++{
++	struct target *target = bank->target;
++	const struct stm32x_flash_bank *info = bank->driver_priv;
++	uint32_t id, pid1, pid2, pid4, esig;
++	if (!target_was_examined(target))
++		return ERROR_TARGET_NOT_EXAMINED;
++	if (cortex_m_get_impl_part(target) != CORTEX_M4_PARTNO)
++		return ERROR_FLASH_OPERATION_FAILED;
++
++	int retval = target_read_u32(target, 0xe0042000, &id);
++	if (retval != ERROR_OK)
++		return retval;
++	if ((id & 0xfff) != 0x430) {
++		LOG_ERROR("Unsupported GD32F30x XD device ID 0x%08" PRIx32, id);
++		return ERROR_FLASH_OPERATION_FAILED;
++	}
++
++	retval = target_read_u32(target, 0xe00fffe4, &pid1);
++	if (retval != ERROR_OK)
++		return retval;
++	retval = target_read_u32(target, 0xe00fffe8, &pid2);
++	if (retval != ERROR_OK)
++		return retval;
++	retval = target_read_u32(target, 0xe00fffd0, &pid4);
++	if (retval != ERROR_OK)
++		return retval;
++
++	uint32_t designer = ((pid2 & 7) << 4) | ((pid1 >> 4) & 15);
++	uint32_t continuation = pid4 & 15;
++	if (!(pid2 & 8) || !((continuation == 6 && designer == 0x48) ||
++			(continuation == 7 && designer == 0x51))) {
++		LOG_ERROR("CoreSight ROM table does not identify GigaDevice");
++		return ERROR_FLASH_OPERATION_FAILED;
++	}
++
++	retval = target_read_u32(target, 0x1ffff7e0, &esig);
++	if (retval != ERROR_OK)
++		return retval;
++	if ((esig & 0xffff) * 1024 != info->user_bank_size) {
++		LOG_ERROR("GD32F30x Flash capacity does not match the selected configuration");
++		return ERROR_FLASH_OPERATION_FAILED;
++	}
++	return ERROR_OK;
++}
++
++static int gd32f30x_probe(struct flash_bank *bank)
++{
++	struct stm32x_flash_bank *info = bank->driver_priv;
++	info->probed = false;
++	int retval = gd32f30x_identify(bank);
++	if (retval != ERROR_OK)
++		return retval;
++
++	bool first_bank = bank->base == GD32F30X_BANK0_BASE;
++	unsigned int page_size = first_bank ? 2048 : 4096;
++	unsigned int num_sectors = bank->size / page_size;
++	unsigned int num_blocks = first_bank ? 32 : 1;
++	struct flash_sector *sectors = alloc_block_array(0, page_size, num_sectors);
++	struct flash_sector *blocks = alloc_block_array(0, 4096, num_blocks);
++	if (!sectors || !blocks) {
++		free(sectors);
++		free(blocks);
++		return ERROR_FAIL;
++	}
++
++	/* WP[31] covers everything after the first 31 protection blocks. */
++	blocks[num_blocks - 1].size = bank->size - blocks[num_blocks - 1].offset;
++	free(bank->sectors);
++	free(bank->prot_blocks);
++	bank->sectors = sectors;
++	bank->num_sectors = num_sectors;
++	bank->prot_blocks = blocks;
++	bank->num_prot_blocks = num_blocks;
++	info->probed = true;
++	return ERROR_OK;
++}
++
++static int gd32f30x_auto_probe(struct flash_bank *bank)
++{
++	const struct stm32x_flash_bank *info = bank->driver_priv;
++	return info->probed ? ERROR_OK : gd32f30x_probe(bank);
++}
++
++static int gd32f30x_protect_check(struct flash_bank *bank)
++{
++	uint32_t wp;
++	int retval = target_read_u32(bank->target, STM32_FLASH_WRPR_B0, &wp);
++	if (retval != ERROR_OK)
++		return retval;
++
++	unsigned int bit = bank->base == GD32F30X_BANK0_BASE ? 0 : 31;
++	for (unsigned int i = 0; i < bank->num_prot_blocks; i++, bit++)
++		bank->prot_blocks[i].is_protected = !(wp & (UINT32_C(1) << bit));
++	return ERROR_OK;
++}
++
++const struct flash_driver gd32f30x_flash = {
++	.name = "gd32f30x",
++	.flash_bank_command = gd32f30x_flash_bank_command,
++	.erase = stm32x_erase,
++	.write = stm32x_write,
++	.read = default_flash_read,
++	.probe = gd32f30x_probe,
++	.auto_probe = gd32f30x_auto_probe,
++	.erase_check = default_flash_blank_check,
++	.protect_check = gd32f30x_protect_check,
++	.free_driver_priv = default_flash_free_driver_priv,
++};

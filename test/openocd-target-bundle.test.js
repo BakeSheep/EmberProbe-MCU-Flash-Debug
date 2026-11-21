@@ -15,8 +15,8 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 (async () => {
     assert.strictEqual(manifest.schemaVersion, 2);
     await verifyBundle();
-    assert.strictEqual(manifest.targets.length, 6);
-    assert.strictEqual(new Set(manifest.targets.map((target) => target.path)).size, 6);
+    assert.strictEqual(manifest.targets.length, 33);
+    assert.strictEqual(new Set(manifest.targets.map((target) => target.path)).size, manifest.targets.length);
     assert.deepStrictEqual(manifest.archives.map((archive) => archive.platform).sort(), ["linux-x64", "win32-x64"]);
     const c5Patch = fs.readFileSync(path.join(root, "native/openocd/0004-emberprobe-c5-local-loaders.patch"), "utf8");
     const loaders = manifest.flashLoaders.filter((loader) => loader.devId);
@@ -41,6 +41,13 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
             assert.strictEqual(sha256(bytes), target.sha256);
             assert.strictEqual(entries.get(`${archive.scriptsRoot}/${target.path}`).sha256, target.sha256);
             assert.ok(entries.has(`${archive.scriptsRoot}/${target.canonical}`), target.canonical);
+        }
+        for (const helper of manifest.targetHelpers) {
+            assert.strictEqual(
+                sha256(fs.readFileSync(path.join(root, "resources", "openocd-targets", helper.path))),
+                helper.sha256
+            );
+            assert.strictEqual(entries.get(`${archive.scriptsRoot}/${helper.path}`).sha256, helper.sha256);
         }
         // STM32C5 needs the stldr build and one bundled loader per DEV_ID named by the patched script.
         assert.ok(entries.has(`${archive.scriptsRoot}/target/stm32c5x.cfg`));

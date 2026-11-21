@@ -42,6 +42,8 @@ cp "$repo/native/openocd/0001-emberprobe-read-scatter.patch" patches/emberprobe-
 cp "$repo/native/openocd/0002-stldr-flash-driver.patch" patches/emberprobe-stldr.git.patch
 cp "$repo/native/openocd/0003-stm32c5x-target.patch" patches/emberprobe-stm32c5x.git.patch
 cp "$repo/native/openocd/0004-emberprobe-c5-local-loaders.patch" patches/emberprobe-c5-loaders.git.patch
+cp "$repo/native/openocd/0005-gd32f30x-dual-bank.patch" patches/emberprobe-gd32f30x.git.patch
+cp "$repo/native/openocd/0006-artery-dual-bank.patch" patches/emberprobe-artery-dual.git.patch
 node "$repo/native/openocd/prepare-build.js" prepare "$assets" "$cache"
 for platform in win32-x64 linux-x64; do
     "$xpm" run build --config "$platform"

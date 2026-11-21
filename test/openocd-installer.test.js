@@ -17,6 +17,7 @@ const { createAgentRoutes } = require("../src/services/agentRoutes");
 const { resolveExecutablePath, resolveOpenOcdLaunch } = require("../src/openocdScripts");
 const { runOpenOcdOnce } = require("../src/services/openocdExec");
 const { preflight } = require("../skills/_emberprobe/flash-common");
+const { buildFlashProgramCommand } = require("../skills/_emberprobe/openocd-flash");
 const { minimalElf } = require("./helpers/elf-fixture");
 const {
     platformKey,
@@ -346,7 +347,227 @@ const {
                 `${name} must retain canonical target/bank declarations and adapter/transport`
             );
             if (name === "rp2040-core0.cfg") assert.match(output, /EP_TARGETS=rp2040\.core0\s*$/m);
+            if (/^artery\/at32f43?x-1024\.cfg$/.test(name)) {
+                assert.match(
+                    output,
+                    /name\s+at32f4x\.flash0\s+driver\s+artery_dual\s+base\s+0x0*8000000\s+size\s+0x80000\b/i
+                );
+                assert.match(
+                    output,
+                    /name\s+at32f4x\.flash1\s+driver\s+artery_dual\s+base\s+0x0*8080000\s+size\s+0x80000\b/i
+                );
+            }
+            if (target.options?.FLASH_KIB) {
+                assert.match(
+                    output,
+                    /name\s+gd32f30x\.flash0\s+driver\s+gd32f30x\s+base\s+0x0*8000000\s+size\s+0x80000\b/i
+                );
+                assert.match(
+                    output,
+                    new RegExp(
+                        `name\\s+gd32f30x\\.flash1\\s+driver\\s+gd32f30x\\s+base\\s+0x0*8080000\\s+size\\s+0x${(
+                            (target.options.FLASH_KIB - 512) *
+                            1024
+                        ).toString(16)}\\b`,
+                        "i"
+                    )
+                );
+            }
         }
+        await scenario("GD32 checks identity and actual capacity before opening the programming session", () => {
+            const runGuard = (target, idcode, kib) => {
+                const mockRead = `proc mrw {address} {if {$address == 0xe0042000} {return ${idcode}}; if {$address == 0x1ffff7e0} {return ${kib}}; error {unexpected address}}`;
+                const loaded = spawnSync(
+                    runtime,
+                    [
+                        "-c",
+                        "noinit",
+                        "-f",
+                        "interface/cmsis-dap.cfg",
+                        "-c",
+                        "transport select swd",
+                        "-f",
+                        target,
+                        "-c",
+                        mockRead,
+                        "-c",
+                        "_run_post_init_commands",
+                        "-c",
+                        "echo EP_READY=1",
+                        "-c",
+                        "shutdown"
+                    ],
+                    { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+                );
+                assert.ifError(loaded.error);
+                return { status: loaded.status, log: `${loaded.stdout || ""}\n${loaded.stderr || ""}` };
+            };
+            for (const { path, options } of targetManifest.targets.filter(({ path }) =>
+                /target\/gigadevice\/gd32f[13]x0/.test(path)
+            )) {
+                const idcode = options.CHIPNAME === "gd32f1x0" ? "0x13030410" : "0x17040410";
+                const kib = options.FLASH_SIZE / 1024;
+                const accepted = runGuard(path, idcode, kib + 0x00100000);
+                assert.strictEqual(accepted.status, 0, accepted.log);
+                assert.match(accepted.log, /EP_READY=1/);
+                for (const [wrongId, wrongKib] of [
+                    ["0x10000410", kib],
+                    [idcode, 0xffff],
+                    [idcode, kib === 16 ? 32 : 16]
+                ]) {
+                    const denied = runGuard(path, wrongId, wrongKib);
+                    assert.notStrictEqual(denied.status, 0, denied.log);
+                    assert.match(denied.log, /GD32 Flash bank/);
+                    assert.doesNotMatch(denied.log, /EP_READY=1/);
+                }
+            }
+        });
+        await scenario("Check phase 2 part IDs, documented capacities and GigaDevice designer", () => {
+            const readings = {
+                gd32f10x: [0x410fc231, 0x10000410],
+                gd32f30x: [0x410fc241, 0x10000414],
+                apm32e103: [0x410fc231, 0x000a0414],
+                apm32e030: [0x410cc601, 0x00100440],
+                ch32f103: [0x410fc231, 0x20000410]
+            };
+            for (const { path, options } of targetManifest.targets.filter(
+                ({ options }) => readings[options?.CHIPNAME]
+            )) {
+                const [core, defaultId] = readings[options.CHIPNAME];
+                const id = options.CHIPNAME === "gd32f10x" && options.FLASH_SIZE > 131072 ? 0x10000414 : defaultId;
+                const run = (idcode, size, designer) => {
+                    const mrw = `proc mrw {address} { if {$address == 0xe000ed00} {return ${core}}; if {$address == 0xe00fffe4} {return 0x80}; if {$address == 0xe00fffe8} {return ${designer}}; if {$address == 0xe00fffd0} {return 6}; return ${idcode} }`;
+                    const loaded = spawnSync(
+                        runtime,
+                        [
+                            "-c",
+                            "noinit",
+                            "-f",
+                            "interface/cmsis-dap.cfg",
+                            "-c",
+                            "transport select swd",
+                            "-f",
+                            path,
+                            "-c",
+                            mrw,
+                            "-c",
+                            `proc read_memory {args} { return ${size} }`,
+                            "-c",
+                            "_run_post_init_commands",
+                            "-c",
+                            "echo EP_READY=1",
+                            "-c",
+                            "shutdown"
+                        ],
+                        { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+                    );
+                    assert.ifError(loaded.error);
+                    return { status: loaded.status, log: `${loaded.stdout || ""}\n${loaded.stderr || ""}` };
+                };
+                const kib = options.FLASH_SIZE / 1024;
+                const accepted = run(id, kib, 0x0c);
+                assert.strictEqual(accepted.status, 0, accepted.log);
+                assert.match(accepted.log, /EP_READY=1/);
+                const denied = run(0, kib, 0x0c);
+                assert.notStrictEqual(denied.status, 0, denied.log);
+                assert.doesNotMatch(denied.log, /EP_READY=1/);
+                if (options.CHIPNAME !== "apm32e030") assert.notStrictEqual(run(id, 0xffff, 0x0c).status, 0);
+                if (options.CHIPNAME.startsWith("gd32")) assert.notStrictEqual(run(id, kib, 0x08).status, 0);
+            }
+        });
+
+        await scenario("Require both selected banks to pass probing before the session starts", () => {
+            for (const name of [
+                "gigadevice/gd32f30x-3072.cfg",
+                "artery/at32f4x-1024.cfg",
+                "artery/at32f43x-1024.cfg"
+            ]) {
+                for (const rejectSecondBank of [false, true]) {
+                    const loaded = spawnSync(
+                        runtime,
+                        [
+                            "-c",
+                            "noinit",
+                            "-f",
+                            "interface/cmsis-dap.cfg",
+                            "-c",
+                            "transport select swd",
+                            "-f",
+                            `target/${name}`,
+                            "-c",
+                            `proc flash {op bank} { if {$op ne "probe"} { error "Unexpected operation $op" }; echo "EP_PROBE=$bank"; if {${Number(rejectSecondBank)} && [string match *.flash1 $bank]} { error "Bank 1 unavailable" } }`,
+                            "-c",
+                            "_run_post_init_commands",
+                            "-c",
+                            "echo EP_READY=1",
+                            "-c",
+                            "shutdown"
+                        ],
+                        { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+                    );
+                    assert.ifError(loaded.error);
+                    const log = `${loaded.stdout || ""}\n${loaded.stderr || ""}`;
+                    assert.match(log, /EP_PROBE=\S+\.flash0/);
+                    assert.match(log, /EP_PROBE=\S+\.flash1/);
+                    assert.strictEqual(loaded.status === 0, !rejectSecondBank, log);
+                    assert.strictEqual(log.includes("EP_READY=1"), !rejectSecondBank, log);
+                }
+            }
+        });
+
+        await scenario("Require complete image coverage across banks before the first erase", () => {
+            const start = 0x08000000;
+            const boundary = 0x08080000;
+            const end = 0x08100000;
+            const bank0 = "{name selected.flash0 target selected.cpu base 0x08000000 size 0x80000}";
+            const bank1 = "{name selected.flash1 target selected.cpu base 0x08080000 size 0x80000}";
+            const other = "{name other.flash target other.cpu base 0x08100000 size 0x10000}";
+            for (const [banks, ranges, badAddress] of [
+                [
+                    `${bank1} ${other} ${bank0}`,
+                    [
+                        [boundary - 16, boundary + 16],
+                        [end - 16, end]
+                    ],
+                    ""
+                ],
+                [
+                    `${bank0} ${bank1} ${other}`,
+                    [
+                        [start, start + 16],
+                        [end - 16, end + 1]
+                    ],
+                    "0x08100000"
+                ],
+                [`${bank0} ${other}`, [[boundary - 16, boundary + 16]], "0x08080000"]
+            ]) {
+                const loaded = spawnSync(
+                    runtime,
+                    [
+                        "-c",
+                        "noinit",
+                        "-c",
+                        "proc target {arg} {return selected.cpu}",
+                        "-c",
+                        `proc flash {op args} { if {$op eq "list"} { return {${banks}} }; if {$op eq "probe"} { if {$args ni {selected.flash0 selected.flash1}} { error {wrong target} }; echo "EP_PROBE=$args"; return }; echo EP_ERASE=1 }`,
+                        "-c",
+                        "proc program {file args} {flash write_image erase $file}",
+                        "-c",
+                        buildFlashProgramCommand('"app.elf"', 0, ranges),
+                        "-c",
+                        "shutdown"
+                    ],
+                    { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+                );
+                assert.ifError(loaded.error);
+                const log = `${loaded.stdout || ""}\n${loaded.stderr || ""}`;
+                assert.strictEqual(loaded.status === 0, !badAddress, log);
+                assert.strictEqual(log.includes("EP_ERASE=1"), !badAddress, log);
+                assert.strictEqual(log.includes("EP_PROBE=selected.flash1"), banks.includes(bank1), log);
+                assert.match(log, /EP_PROBE=selected\.flash0/);
+                if (badAddress) assert.match(log, new RegExp(`EP_FLASH_BOUNDS_ERROR.*${badAddress}`));
+            }
+        });
         // STM32C5 declares an stldr bank, and every DEV_ID loader resolves inside the bundled scripts.
         assert.ok(targets.includes("stm32c5x.cfg") && targets.includes("stm32c0x.cfg"));
         const c5 = spawnSync(

@@ -17,7 +17,16 @@ async function main() {
     );
     for (const target of ["stm32f4x.cfg", "stm32l0.cfg", "geehy/apm32f1x.cfg", "nordic/nrf52.cfg", "rp2040.cfg"])
         assert.strictEqual(resolveProbeConnection({ ...config, target }, inventory).transport, "swd");
-    for (const target of ["gd32vf103.cfg", "esp32.cfg", "custom.cfg"])
+    await scenario("New Arm targets use SWD on J-Link and preserve explicit transport", () => {
+        for (const target of ["artery/at32f4x.cfg", "gigadevice/gd32f1x0.cfg", "gigadevice/gd32f3x0-128.cfg"]) {
+            assert.strictEqual(resolveProbeConnection({ ...config, target }, inventory).transport, "swd");
+            assert.strictEqual(
+                resolveProbeConnection({ ...config, target, transport: "jtag" }, inventory).transport,
+                "jtag"
+            );
+        }
+    });
+    for (const target of ["gd32vf103.cfg", "esp32.cfg", "custom.cfg", "gigadevice/custom.cfg"])
         assert.strictEqual(resolveProbeConnection({ ...config, target }, inventory).transport, "auto");
 
     // Legacy record with extra fields (deviceId, fingerprint, transport: "jtag")

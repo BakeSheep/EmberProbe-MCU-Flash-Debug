@@ -11,6 +11,30 @@ const { leavesDirectory } = require("./file-identity");
 // "-DSTM32F407xx" and "/DSTM32F407xx" all count.
 const B = "(?<![a-ce-z0-9])(?<!(?:^|[^-/])d)";
 
+// Order codes from the bundled artery driver. Higher-density dual-bank parts use different layouts.
+const ARTERY_SINGLE_BANK_PARTS = [
+    "f403a(?:vct7|rct7|cct7|ccu7|vet7|ret7|cet7|ceu7)",
+    "f407(?:vct7|rct7|vet7|ret7)",
+    "f407a(?:vct7)",
+    "f413(?:rct7|rbt7|cct7|cbt7|kcu7-4|kbu7-4|c8t7|ccu7|cbu7)",
+    "f415(?:rct7|cct7|kcu7-4|rct7-7|rbt7|cbt7|kbu7-4|rbt7-7|r8t7|c8t7|k8u7-4|ccu7|cbu7)",
+    "f421(?:c8t7|k8t7|k8u7|k8u7-4|f8u7|f8p7|c6t7|k6t7|k6u7|k6u7-4|f6u7|f6p7|c4t7|k4t7|k4u7|k4u7-4|f4u7|f4p7|g8u7|g6u7|g4u7)",
+    "f423(?:vct7|vbt7|v8t7|rct7|rbt7|r8t7|rct7-7|rbt7-7|r8t7-7|cct7|cbt7|c8t7|ccu7|cbu7|c8u7|tcu7|tbu7|t8u7|kcu7-4|kbu7-4|k8u7-4)",
+    "f425(?:r8t7|r6t7|r8t7-7|r6t7-7|c8t7|c6t7|c8u7|c6u7|k8t7|k6t7|k8u7-4|k6u7-4|f8p7|f6p7)",
+    "f435(?:zdt7|zct7|vdt7|vct7|rdt7|rct7|cdt7|cct7|cdu7|ccu7)",
+    "f437(?:zdt7|zct7|vdt7|vct7|rdt7|rct7)",
+    "wb415(?:ccu7-7)"
+].join("|");
+
+const GD32_DENSITIES = /** @type {const} */ ([
+    ["4", "-16"],
+    ["6", "-32"],
+    ["8", ""],
+    ["b", "-128"]
+]);
+
+const GD32_F10_DENSITIES = /** @type {const} */ ([...GD32_DENSITIES, ["c", "-256"], ["d", "-384"], ["e", "-512"]]);
+
 /** @typedef {Readonly<{ pattern: RegExp, cfg: string, family: string, arch: string, specific: boolean }>} TargetRule */
 
 /** @returns {TargetRule} */
@@ -51,11 +75,73 @@ const TARGET_RULES = Object.freeze([
     rule(`${B}stm32wb0`, "", "stm32wb0", "arm"),
     rule(`${B}stm32wb(?![a0])`, "stm32wbx.cfg", "stm32wb", "arm"),
     rule(`${B}stm32wl`, "stm32wlx.cfg", "stm32wl", "arm"),
-    rule(`${B}apm32f0`, "geehy/apm32f0x.cfg", "apm32f0", "arm"),
+    rule(`${B}apm32f003`, "", "apm32f003", "arm"),
+    rule(`${B}apm32f0(?!03)`, "geehy/apm32f0x.cfg", "apm32f0", "arm"),
     rule(`${B}apm32f1`, "geehy/apm32f1x.cfg", "apm32f1", "arm"),
     rule(`${B}apm32f4`, "geehy/apm32f4x.cfg", "apm32f4", "arm"),
+    rule(`${B}apm32e030[a-z]8(?:[a-z]\\d)?(?![a-z0-9])`, "geehy/apm32e030.cfg", "apm32e030", "arm"),
+    rule(`${B}apm32e103[a-z]c(?:[a-z]\\ds?)?(?![a-z0-9])`, "geehy/apm32e103.cfg", "apm32e103xc", "arm"),
+    rule(`${B}apm32e103[a-z]e(?:[a-z]\\ds?)?(?![a-z0-9])`, "geehy/apm32e103-512.cfg", "apm32e103xe", "arm"),
+    rule(`${B}ch32f103c6(?:t6)?(?![a-z0-9])`, "wch/ch32f103-32.cfg", "ch32f103-32", "arm"),
+    rule(`${B}ch32f103(?:c8(?:[tu]6)?|r8(?:t6)?)(?![a-z0-9])`, "wch/ch32f103.cfg", "ch32f103", "arm"),
     rule(`${B}gd32vf103`, "gd32vf103.cfg", "gd32vf103", "riscv"),
     rule(`${B}gd32e23`, "gd32e23x.cfg", "gd32e23", "arm"),
+    rule(
+        `${B}at32(?:f403a(?:[rv]gt7|cg[tu]7)|f407(?:[rv]gt7|avgt7))(?![a-z0-9-])`,
+        "artery/at32f4x-1024.cfg",
+        "at32f4x-1024",
+        "arm"
+    ),
+    rule(`${B}at32(?:${ARTERY_SINGLE_BANK_PARTS})(?![a-z0-9-])`, "artery/at32f4x.cfg", "at32f4x", "arm"),
+    rule(
+        `${B}at32(?:f435(?:[rvz]gt7|cg[tu]7)|f437[rvz]gt7)(?![a-z0-9-])`,
+        "artery/at32f43x-1024.cfg",
+        "at32f43x-1024",
+        "arm"
+    ),
+    ...GD32_DENSITIES.filter(([density]) => density !== "b").map(([density, suffix]) =>
+        rule(
+            `${B}gd32f(?:130|150)[a-z]${density}(?:[a-z]\\d)?(?![a-z0-9])`,
+            `gigadevice/gd32f1x0${suffix}.cfg`,
+            `gd32f1x0${suffix}`,
+            "arm"
+        )
+    ),
+    ...GD32_DENSITIES.map(([density, suffix]) =>
+        rule(
+            `${B}gd32f${density === "b" ? "350" : "(?:310|330|350)"}[a-z]${density}(?:[a-z]\\d)?(?![a-z0-9])`,
+            `gigadevice/gd32f3x0${suffix}.cfg`,
+            `gd32f3x0${suffix}`,
+            "arm"
+        )
+    ),
+    ...GD32_F10_DENSITIES.map(([density, suffix]) =>
+        rule(
+            `${B}gd32f10[13][a-z]${density}(?:[a-z]\\d)?(?![a-z0-9])`,
+            `gigadevice/gd32f10x${suffix}.cfg`,
+            `gd32f10x${suffix}`,
+            "arm"
+        )
+    ),
+    ...[
+        ["c", ""],
+        ["d", "-384"],
+        ["e", "-512"]
+    ].map(([density, suffix]) =>
+        rule(
+            `${B}gd32f303[a-z]${density}(?:[a-z]\\d)?(?![a-z0-9])`,
+            `gigadevice/gd32f30x${suffix}.cfg`,
+            `gd32f30x${suffix}`,
+            "arm"
+        )
+    ),
+    ...[
+        ["[crvz]g", 1024],
+        ["[rvz]i", 2048],
+        ["[rvz]k", 3072]
+    ].map(([orderCode, kib]) =>
+        rule(`${B}gd32f303${orderCode}(?:t6)?(?![a-z0-9])`, `gigadevice/gd32f30x-${kib}.cfg`, `gd32f30x-${kib}`, "arm")
+    ),
     rule(`${B}nrf51`, "nordic/nrf51.cfg", "nrf51", "arm"),
     rule(`${B}nrf52`, "nordic/nrf52.cfg", "nrf52", "arm"),
     rule(`${B}nrf53`, "nordic/nrf53.cfg", "nrf53", "arm"),
@@ -186,7 +272,7 @@ function deviceField(text) {
  */
 function analyzeProjectFile(file, text) {
     const device = deviceField(String(text || ""));
-    // An explicit but unrecognized device (GD32F303, AT32...) must not fall back to
+    // An explicit but unrecognized device must not fall back to
     // incidental STM32 mentions elsewhere in the same project file.
     const evidence = device ? [device] : [path.basename(String(file || "")), String(text || "")];
     for (const value of evidence) {

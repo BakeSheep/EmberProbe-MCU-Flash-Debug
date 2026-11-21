@@ -7,6 +7,269 @@
     },
     "targets": [
         {
+            "path": "target/artery/at32f4x-1024.cfg",
+            "canonical": "target/emberprobe/at32f4x-dual-bank.tcl",
+            "sha256": "f96d1c214f70ad2f16661bee612e0d4cb6c478e240419173ec341a1406d75be3",
+            "sourceUrl": "https://static.chipdip.ru/lib/639/DOC046639644.pdf"
+        },
+        {
+            "path": "target/artery/at32f43x-1024.cfg",
+            "canonical": "target/emberprobe/at32f4x-dual-bank.tcl",
+            "sha256": "136ce440af6f6586b00b21b7a2a43baf3d410412ba2cfc63e36727d91ed0e38c",
+            "options": {
+                "_EP_ARTERY_DUAL_ARGS": "f43x"
+            },
+            "sourceUrl": "https://www.arterychip.com/download/RM/RM_AT32F435_437_EN_V2.06.pdf"
+        },
+        {
+            "path": "target/geehy/apm32e030.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "aaf1ed968372162ebe27c463cb42b10b6eabeb8954dda2458e48c0bbb7653817",
+            "options": {
+                "CHIPNAME": "apm32e030",
+                "CPUTAPID": "0x0bc11477",
+                "FLASH_SIZE": 65536,
+                "WORKAREASIZE": 1024
+            },
+            "sourceUrl": "https://www.geehy.com/uploads/tool/APM32E030x8%20%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C%20V1.2.pdf"
+        },
+        {
+            "path": "target/geehy/apm32e103-512.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "3401c5c70392580389d8448364c59eb0bf36dd4f5cd62c5d5acc5ce1f361c1f2",
+            "options": {
+                "CHIPNAME": "apm32e103",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 524288
+            },
+            "sourceUrl": "https://www.geehy.com/uploads/tool/APM32E103xCxE%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C%20V1.5.pdf"
+        },
+        {
+            "path": "target/geehy/apm32e103.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "0f716ddfdec88019f721c06440ebb092efefa5173e268982171d90b797f8ca48",
+            "options": {
+                "CHIPNAME": "apm32e103",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 262144
+            },
+            "sourceUrl": "https://www.geehy.com/uploads/tool/APM32E103xCxE%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C%20V1.5.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x-128.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "e59645174b09c8e74b37b1f267d79d4fe14909584f8bbb52b00a057944fad1f2",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 131072
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x-16.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "d1fd0a54ea715b55134f34bf8950700389c2afb64343838a5a6815d98c5837c8",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 16384
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x-256.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "2a440cc6829bc15c67ad88ee79318be746b48faf55f06c3ccc4ef2d324acec78",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 262144
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x-32.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "976ace7787be5ecbbde5a91f6c83b9ef96970cd53759618e30dac2ac10c80c30",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 32768
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x-384.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "72139b166d766dd6b6b9d9c86b40d0bc36cac0be27f7ad8705b9ac93f411b5c9",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 393216
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x-512.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "160483a85fed957cff71d3bc63d0410157c8793e208451eb685ec36705bcb10a",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 524288
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f10x.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "1dd53c5e4cabbc960f8e3cd438efd8b79cdc3f2a3744548585301281901a81e9",
+            "options": {
+                "CHIPNAME": "gd32f10x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 65536
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F10x_User_Manual_Rev2.9.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f1x0-16.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "86586fce9da0acd241dc15bcdd2d5a17be9fc970bd003c2e22d213904dafced3",
+            "options": {
+                "CHIPNAME": "gd32f1x0",
+                "CPUTAPID": "0x1ba01477",
+                "FLASH_SIZE": 16384
+            },
+            "sourceUrl": "https://www.gd32mcu.com/download/down/document_id/151/path_type/1"
+        },
+        {
+            "path": "target/gigadevice/gd32f1x0-32.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "3f88f3608063da23e07658dc97716786cfad2a839c828f8c754a049e0e4a2ca0",
+            "options": {
+                "CHIPNAME": "gd32f1x0",
+                "CPUTAPID": "0x1ba01477",
+                "FLASH_SIZE": 32768
+            },
+            "sourceUrl": "https://www.gd32mcu.com/download/down/document_id/151/path_type/1"
+        },
+        {
+            "path": "target/gigadevice/gd32f1x0.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "0279f1778a42d320688c803b7b0bc3dc9e0b7fe4abcc4d97aa747b6d8b2a456c",
+            "options": {
+                "CHIPNAME": "gd32f1x0",
+                "CPUTAPID": "0x1ba01477",
+                "FLASH_SIZE": 65536
+            },
+            "sourceUrl": "https://www.gd32mcu.com/download/down/document_id/151/path_type/1"
+        },
+        {
+            "path": "target/gigadevice/gd32f30x-1024.cfg",
+            "canonical": "target/emberprobe/gd32f30x-dual-bank.tcl",
+            "sha256": "5093f1ba9c041b1849b8aea0cbc12b0ae64e311e970ade765b46615a1d946c59",
+            "options": {
+                "FLASH_KIB": 1024
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f30x-2048.cfg",
+            "canonical": "target/emberprobe/gd32f30x-dual-bank.tcl",
+            "sha256": "0c7863a0b9ff6040a1e9b02ee4ac65507f873e1ad49653c446b2018a88a287a1",
+            "options": {
+                "FLASH_KIB": 2048
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f30x-3072.cfg",
+            "canonical": "target/emberprobe/gd32f30x-dual-bank.tcl",
+            "sha256": "df84163519b8a932df1faf15827cab5e6f7beaf562255e99bb1f7a096d003de1",
+            "options": {
+                "FLASH_KIB": 3072
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f30x-384.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "c6d0483009f9cb98ff8195f02e885e60d5690b0cbf8e030b9b6e87e684dbb466",
+            "options": {
+                "CHIPNAME": "gd32f30x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 393216
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f30x-512.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "1f7bb93e080fa4205e2c7858df888b0b2d5a5d459b9066285359193e5bb48c29",
+            "options": {
+                "CHIPNAME": "gd32f30x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 524288
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f30x.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "3513a9912eacc1df5c1b7d6f3439f538c1feb885f0af4509f45dcdefec8038bd",
+            "options": {
+                "CHIPNAME": "gd32f30x",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 262144
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F30x_User_Manual_Rev3.0.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f3x0-128.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "cf235848f2b19672518724af442018d144abf6ff612331c823df183fe78a68e9",
+            "options": {
+                "CHIPNAME": "gd32f3x0",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 131072
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F3x0_User_Manual_Rev3.3.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f3x0-16.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "9d4e3b49a78accdb48d1827008eddd496c54624eb41355d17980391db0b4cf94",
+            "options": {
+                "CHIPNAME": "gd32f3x0",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 16384
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F3x0_User_Manual_Rev3.3.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f3x0-32.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "ec7fa50c775eb141b6348807c982b03b50f09ee4b1b1e1040cb2d8f81a8af08f",
+            "options": {
+                "CHIPNAME": "gd32f3x0",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 32768
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F3x0_User_Manual_Rev3.3.pdf"
+        },
+        {
+            "path": "target/gigadevice/gd32f3x0.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "91596e6df5299a6f1fb33453e9c352df84def3ad68c258b80228281eb1cb1309",
+            "options": {
+                "CHIPNAME": "gd32f3x0",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 65536
+            },
+            "sourceUrl": "https://www.gd32mcu.com/data/documents/userManual/GD32F3x0_User_Manual_Rev3.3.pdf"
+        },
+        {
             "path": "target/numicroM0.cfg",
             "canonical": "target/numicro.cfg",
             "sha256": "f456332d2d2c3f7200c019d3d9b67089131076543b753984b6e4f07f4a8c58d9",
@@ -44,6 +307,28 @@
             "canonical": "target/st/stm32mp15x.cfg",
             "sha256": "b116258e473f10feab8ee97b29f374b0c5043bc0966cc8d6a26d45f924977272",
             "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/st/stm32mp15x.cfg"
+        },
+        {
+            "path": "target/wch/ch32f103-32.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "c98fc80381491e42ec791a42203a21ee65e079b77e97bb55780813face5aabb8",
+            "options": {
+                "CHIPNAME": "ch32f103",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 32768
+            },
+            "sourceUrl": "https://www.wch.cn/downloads/ch32f103evt_zip.html"
+        },
+        {
+            "path": "target/wch/ch32f103.cfg",
+            "canonical": "target/stm32f1x.cfg",
+            "sha256": "6ac5eb2eb6806d4a8bc111db390227d0e108cdacaddec801b23b012328e11940",
+            "options": {
+                "CHIPNAME": "ch32f103",
+                "CPUTAPID": "0x2ba01477",
+                "FLASH_SIZE": 65536
+            },
+            "sourceUrl": "https://www.wch.cn/uploads/file/20220324/1648104358515627.pdf"
         }
     ],
     "flashLoaders": [
@@ -82,15 +367,15 @@
             "prefix": "",
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd.exe",
-            "binarySha256": "ed0be5ce635b6a8dcf9b8388a993c47490d7073effb91651eaec8e59f70af022",
-            "originalPayloadSha256": "799d68dd06f5dfaf5d1b10457c037e023853241b06a82270e40f283af7533c21",
+            "binarySha256": "762c94c1a64da3eb0359a233c462ad738e8f24429f72a2e8e41569cb555b991b",
+            "originalPayloadSha256": "e80f35e667540f364416f2f1c1c7f55e79ba5173bd4bc15fe488c5254e55937c",
             "requiredFiles": [
                 "bin/openocd.exe",
                 "distro-info/licenses/openocd-0.12.0/COPYING",
                 "bin/libusb-1.0.dll",
                 "bin/libftdi1.dll"
             ],
-            "sha256": "0a643295654bb7bdfac95c302c08539c9c1d95fb5a6923663991c57acbb03996"
+            "sha256": "e076a98e5c621eccca92a2a2b6b7acee3b36e504f5c70bba542ae4d189a0cd22"
         },
         {
             "platform": "linux-x64",
@@ -98,8 +383,8 @@
             "prefix": "",
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd",
-            "binarySha256": "c79ab1b8aff1424ad635e07eb25c9d59fb01c51d4dbf477a285dfd6d72338f13",
-            "originalPayloadSha256": "7cad249c4271793d03d5b4e7c20d85a9795977556a722afb9db47b8597d9a973",
+            "binarySha256": "a60b097fc9f50689a130814b1594356e0e5a5b1a6566384a0c952f209843fabc",
+            "originalPayloadSha256": "cb3bcec291e40fa408bb699c892b98e20692d5dc9a5639e058e4bdbc48a74371",
             "requiredFiles": [
                 "bin/openocd",
                 "distro-info/licenses/openocd-0.12.0/COPYING",
@@ -110,22 +395,24 @@
                 "distro-info/licenses/libudev-241/LICENSE.LGPL2.1",
                 "distro-info/licenses/libudev-241/SOURCE.txt"
             ],
-            "sha256": "6d98c0dcc4e4528b1295e439be0900fc63ecb64fab4c9f15f8aa93c6924aa4f1"
+            "sha256": "5e02f7fb47462d8679dce09c6156c2f0a2549d66c8a5667faecb17b0229ca2f2"
         }
     ],
     "build": {
-        "distribution": "EmberProbe OpenOCD 0.12.0-7 + scatter v1 + stldr/STM32C5",
-        "buildId": "a3f2cc8a78836c4b29a412d3637bae7f5db990eb327e7fc1c1bde0adfdd42ab4",
+        "distribution": "EmberProbe OpenOCD 0.12.0-7 + scatter v1 + stldr/STM32C5 + GD32F30x + AT32 dual-bank",
+        "buildId": "fd5e29454daa8bdce31153f3a0579b8a58c0f36b1532ce926baea7bc6d775aef",
         "identity": {
             "lockSha256": "d85e60228caed490b7861158c9de972e470202c85e354d206b87e452093a5dd9",
             "patches": {
                 "0001-emberprobe-read-scatter.patch": "c6b04faf24609b8083e452fa5de7f3177b415af97334a6bd3cc772924bf2f63b",
                 "0002-stldr-flash-driver.patch": "9db535231a7a229f5057eaa217f931fb46899942d95b0c1e4eeb9d1d6930ffcc",
                 "0003-stm32c5x-target.patch": "9631a4d6c6269b3289aa48bcea015cfbcffc3fc20acc82c2f1ca8fcab4578dd9",
-                "0004-emberprobe-c5-local-loaders.patch": "be51f8a2f64b17b816363cd3868d9d402481fa10f5d8fe990e649b4e59ae6e41"
+                "0004-emberprobe-c5-local-loaders.patch": "be51f8a2f64b17b816363cd3868d9d402481fa10f5d8fe990e649b4e59ae6e41",
+                "0005-gd32f30x-dual-bank.patch": "7539facea99ea968fc2da1fdc31d18644fe2bd3d394dc7985b6a97a0a6f8a904",
+                "0006-artery-dual-bank.patch": "a0de0e644731763a10f6c68e6cc3c46a86f2e8e274bef843fe0ee81e3e3ad289"
             },
-            "buildScriptSha256": "fbd479511d7963c4cf84519028dde344761d2bd75c70d0555e628b8438f34afe",
-            "prepareScriptSha256": "97a81d33b7981ef1fa2dd629a1802fe7103bc8e70c922053df4d895c88c8440b",
+            "buildScriptSha256": "3fee6dffcaf97cbe11f6d5b0392b9957005bc5a83f0c63605b007a7cf06918eb",
+            "prepareScriptSha256": "ff17ae384f041d498c7ff1a8169f4b36e5d032f4378f9c3f81946d80d43d201f",
             "image": "ilegeul/debian@sha256:bce3e1f8db63c5fe3ad382bfcaeb8b595214b90b45facf9170de96e2c76334e9",
             "openocdRevision": "e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3",
             "xpackRevision": "10eb7ea34d422bc3405d1b322952ef4a68c84cc4",
@@ -137,13 +424,27 @@
     },
     "source": {
         "file": "native/openocd/emberprobe-openocd-source.tar.gz",
-        "sha256": "5e0e24c9434f5871fbd86e67d899d901475e08eae0a2e8bf97689e3513785ac1"
+        "sha256": "a621d4dc62945cedec2a871b2b25ca19744cb1481651f0aaca05bf726944727b"
     },
     "scriptOverrides": [
         {
             "path": "target/stm32c5x.cfg",
             "baseSha256": "9f38050ff1a8751e1d16b9aa44a65dea3066f656b327cc2cb08db0d224731366",
             "sha256": "0c9ad2a94779011e416c1c4f1fe43b49a48ddd85a026d5453b18f695a646be03"
+        }
+    ],
+    "targetHelpers": [
+        {
+            "path": "target/emberprobe/at32f4x-dual-bank.tcl",
+            "sha256": "d3ba3e1740e889c78b6a1eec14c9b18dfaa2e820d0591cb3cae08f365af35ad8"
+        },
+        {
+            "path": "target/emberprobe/f1-compat.tcl",
+            "sha256": "ad4476109ff9e109fd97c99f55cfa21578895ffad084b49a62246f4e4da80704"
+        },
+        {
+            "path": "target/emberprobe/gd32f30x-dual-bank.tcl",
+            "sha256": "9205b16b6e073170af8ec63babba70e9979d679f99d7fc7aa54a2dc2fd9a87a6"
         }
     ]
 }

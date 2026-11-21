@@ -4,6 +4,7 @@ const assert = require("assert");
 const { EventEmitter } = require("events");
 const { GdbWarmup, REWARM_MS } = require("../src/services/gdbWarmup");
 const { loadProvider } = require("./helpers/load-provider");
+const { FakeClock } = require("./helpers/fake-clock");
 
 const GDB = "C:\\Arm\\bin\\arm-none-eabi-gdb.exe";
 
@@ -121,6 +122,7 @@ const keepAlive = setInterval(() => {}, 1000);
             }
         });
         const warmed = [];
+        const clock = new FakeClock();
         const host = Object.create(Host.prototype);
         const values = new Map([["mcu.elfPath", "C:\\work\\build\\app.elf"]]);
         Object.assign(host, {
@@ -130,30 +132,29 @@ const keepAlive = setInterval(() => {}, 1000);
         });
         Object.assign(host.debugLaunch, {
             gdbWarmup: { warm: async (gdbPath) => warmed.push(gdbPath) },
-            gdbWarmupTimer: null
+            clock
         });
-        const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
         host.debugLaunch.scheduleGdbWarmup();
-        await settle();
+        await clock.advance(0);
         assert.deepStrictEqual(warmed, [GDB]);
         assert.deepStrictEqual(lookups, [folder]);
         vscode.workspace.isTrusted = false;
         host.debugLaunch.scheduleGdbWarmup(0);
-        await settle();
+        await clock.advance(0);
         vscode.workspace.isTrusted = true;
         values.delete("mcu.elfPath");
         host.debugLaunch.scheduleGdbWarmup(0);
-        await settle();
+        await clock.advance(0);
         assert.strictEqual(warmed.length, 1, "untrusted or unconfigured workspaces never start GDB");
         values.set("mcu.elfPath", "C:\\work\\build\\app.elf");
         host.debugLaunch.scheduleGdbWarmup(1000);
         assert(host.debugLaunch.gdbWarmupTimer);
-        host.debugLaunch.gdbWarmup.dispose = () => {};
-        clearTimeout(host.debugLaunch.gdbWarmupTimer);
-        host.debugLaunch.gdbWarmupTimer = null;
+        host.debugLaunch.cancelGdbWarmup();
+        await clock.advance(1000);
+        assert.strictEqual(warmed.length, 1, "cancellation clears the delayed warm-up");
         host.debugLaunch.scheduleGdbWarmup(0);
         host._shutdownPromise = Promise.resolve();
-        await settle();
+        await clock.advance(0);
         assert.strictEqual(warmed.length, 1, "shutdown cancels a pending warm-up");
     }
     console.log("GDB warm-up: Windows-only background start, dedupe, expiry, budget, dispose and trust gate passed");

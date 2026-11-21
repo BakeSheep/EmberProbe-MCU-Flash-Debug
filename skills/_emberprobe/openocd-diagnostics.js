@@ -69,6 +69,34 @@ function diagnoseScriptFailure(lines, make) {
     return { ...diagnostic, details: { ...diagnostic.details, scriptError: { message, context } } };
 }
 
+function diagnoseFlashBounds(lines, make) {
+    const prefix = "EP_FLASH_BOUNDS_ERROR ";
+    const bounds = lines.find((line) => line.startsWith(prefix));
+    if (bounds) {
+        return make(
+            "FLASH_IMAGE_OUT_OF_RANGE",
+            "configuration",
+            `无法确认整份镜像位于目标 Flash 范围内，烧录已停止。${bounds.slice(prefix.length)}`,
+            ["核对所选芯片的 Flash 容量、链接地址和烧录偏移。"],
+            false
+        );
+    }
+}
+
+function fallbackOpenOcdCause(tail) {
+    const reversed = tail.slice().reverse();
+    return (
+        reversed.find(
+            (line) =>
+                !/^(?:shutdown error|program_error\b|embedded:startup\.tcl:\d+:\s*Error:\s*$|.+\.cfg:\d+:\s*Error:\s*$)/i.test(
+                    line
+                ) && /\berror\b|failed|unable|denied|\bflash bank:/i.test(line)
+        ) ||
+        reversed.find((line) => /\berror\b|failed|unable|denied/i.test(line)) ||
+        "OpenOCD 未能建立采样连接。"
+    );
+}
+
 // Normalizes raw OpenOCD logs into stable machine-readable diagnostics shared by the UI and Agent Skills. Match order
 // matters: an unconnected target chip and a missing debug probe are different faults.
 function diagnoseOpenOcdFailure(lines, details = {}) {
@@ -203,6 +231,8 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
     // Keep explicit busy/access/disconnect diagnostics above, but outrank generic init, timeout and Flash errors.
     const communicationFailure = diagnoseProbeCommunication(text, make);
     if (communicationFailure) return communicationFailure;
+    const flashBounds = diagnoseFlashBounds(retained, make);
+    if (flashBounds) return flashBounds;
     // Preserve the first Tcl exception even when program_error's traceback fills the displayed log tail.
     const scriptFailure = diagnoseScriptFailure(retained, make);
     if (scriptFailure) return scriptFailure;
@@ -360,15 +390,10 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             false
         );
     }
-    return make(
-        "OPENOCD_START_FAILED",
-        "openocd",
-        tail
-            .slice()
-            .reverse()
-            .find((line) => /\berror\b|failed|unable|denied/i.test(line)) || "OpenOCD 未能建立采样连接。",
-        ["检查诊断中的 openocdTail 原始输出。", "确认探针、目标板供电、接线和 EmberProbe 配置。"]
-    );
+    return make("OPENOCD_START_FAILED", "openocd", fallbackOpenOcdCause(tail), [
+        "检查诊断中的 openocdTail 原始输出。",
+        "确认探针、目标板供电、接线和 EmberProbe 配置。"
+    ]);
 }
 
 function hintForErrors(lines, details = {}) {

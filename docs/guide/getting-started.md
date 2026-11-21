@@ -219,10 +219,31 @@ EmberProbe 在 Windows x64 和 Linux x64 上内置 OpenOCD，`emberprobe.openocd
 - 擦写速度尚未测量。
 - 使用自己的 OpenOCD 时需要它自带 C5 脚本和 Flash loader，否则报 `FLASH_LOADER_MISSING`。
 
+### GD32、APM32、CH32 与 AT32
+
+工程可自动识别 GD32F130/F150、GD32F310/F330/F350。手选时，`gigadevice/gd32f1x0.cfg` 和 `gigadevice/gd32f3x0.cfg` 对应 64 KiB Flash，其他容量选文件名带 `-16`、`-32` 或 `-128` 的配置。128 KiB 配置适用于 GD32F350。
+
+AT32F403A/F407、F413、F415、F421、F423、F425、F435/F437、WB415 中已收录的单 Bank 型号使用 `artery/at32f4x.cfg`。J-Link 在自动模式下选择 SWD。
+
+以下型号也可以自动识别或手动选择。手选时按实际 Flash 容量选择配置。
+
+| 型号 | 默认目标配置 | 容量与后缀 |
+| --- | --- | --- |
+| GD32F101/F103 单 Bank | `gigadevice/gd32f10x.cfg` | 默认 64 KiB，其他容量为 16、32、128、256、384、512 KiB |
+| GD32F303 单 Bank | `gigadevice/gd32f30x.cfg` | 默认 256 KiB，另有 `-384`、`-512` |
+| GD32F303 双 Bank | `gigadevice/gd32f30x-1024.cfg` | 1 MiB 用 `-1024`，2 MiB 用 `-2048`，3 MiB 用 `-3072` |
+| AT32F403A/F407/F407A 双 Bank | `artery/at32f4x-1024.cfg` | 1 MiB |
+| AT32F435/F437 双 Bank | `artery/at32f43x-1024.cfg` | 1 MiB，适用已收录的 LQFP 和 QFN 型号 |
+| APM32E103 | `geehy/apm32e103.cfg` | 默认 256 KiB，另有 `-512` |
+| APM32E030x8 | `geehy/apm32e030.cfg` | 64 KiB |
+| CH32F103C8/R8、C6 | `wch/ch32f103.cfg` | 默认 64 KiB，32 KiB 的 C6 选 `-32` |
+
+这些配置的实板兼容性仍待确认。烧录前会检查全部镜像地址是否落在所选芯片的 Flash 范围内。出现越界提示时，核对芯片容量、链接地址和额外镜像偏移。APM32F003 暂无内置目标配置。
+
 ### 限制
 
 - 目标脚本能加载不代表每块板子都能用，也不代表所有功能都可用。实板支持需要单独验证。
-- 需要额外驱动的厂商配置没有内置，包括 WCH、HPMicro、较新的 APM32/AT32 型号、STM32H5，以及更多的 Espressif 和 TI 系列。
+- CH32F20x、HPMicro、部分 APM32/AT32、STM32H5 以及部分 Espressif 和 TI 系列仍需外部 OpenOCD 支持。
 
 ## 相关文档
 

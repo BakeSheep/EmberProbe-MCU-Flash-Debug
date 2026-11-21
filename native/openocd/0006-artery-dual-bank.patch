@@ -1,0 +1,311 @@
+diff --git a/src/flash/nor/driver.h b/src/flash/nor/driver.h
+index 598394c..c286b9e 100644
+--- a/src/flash/nor/driver.h
++++ b/src/flash/nor/driver.h
+@@ -242,6 +242,7 @@ extern const struct flash_driver aduc702x_flash;
+ extern const struct flash_driver aducm360_flash;
+ extern const struct flash_driver ambiqmicro_flash;
+ extern const struct flash_driver artery_flash;
++extern const struct flash_driver artery_dual_flash;
+ extern const struct flash_driver at91sam3_flash;
+ extern const struct flash_driver at91sam4_flash;
+ extern const struct flash_driver at91sam4l_flash;
+diff --git a/src/flash/nor/drivers.c b/src/flash/nor/drivers.c
+index 6e68a00..b8b9672 100644
+--- a/src/flash/nor/drivers.c
++++ b/src/flash/nor/drivers.c
+@@ -21,6 +21,7 @@ static const struct flash_driver * const flash_drivers[] = {
+ 	&aducm360_flash,
+ 	&ambiqmicro_flash,
+ 	&artery_flash,
++	&artery_dual_flash,
+ 	&at91sam3_flash,
+ 	&at91sam4_flash,
+ 	&at91sam4l_flash,
+diff --git a/src/flash/nor/artery.c b/src/flash/nor/artery.c
+index 797d60d..e0620f9 100644
+--- a/src/flash/nor/artery.c
++++ b/src/flash/nor/artery.c
+@@ -1163,13 +1163,37 @@ FLASH_BANK_COMMAND_HANDLER(artery_flash_bank_command)
+ 	return ERROR_OK;
+ }
+ 
++/* The Bank 2 unlock, status, control, and address registers are banked.
++ * Device and user-system-data registers still belong to the controller.
++ */
++#define ARTERY_DUAL_BANK_SIZE (512 * 1024)
++#define ARTERY_DUAL_BANK2_BASE (FLASH_BASE + ARTERY_DUAL_BANK_SIZE)
++
++static uint32_t artery_flash_register_address(struct flash_bank *bank,
++		enum artery_flash_reg_index reg)
++{
++	const struct artery_flash_bank *info = bank->driver_priv;
++	const struct artery_series_info *series = &artery_series[info->part_info->series];
++	uint32_t address = series->flash_regs_base + series->flash_regs[reg];
++	if (bank->driver == &artery_dual_flash && bank->base == ARTERY_DUAL_BANK2_BASE) {
++		switch (reg) {
++		case ARTERY_FLASH_REG_UNLOCK:
++		case ARTERY_FLASH_REG_STS:
++		case ARTERY_FLASH_REG_CTRL:
++		case ARTERY_FLASH_REG_ADDR:
++			address += 0x40;
++			break;
++		default:
++			break;
++		}
++	}
++	return address;
++}
++
+ static int artery_read_flash_register(struct flash_bank *bank,
+ 		enum artery_flash_reg_index reg, uint32_t *value)
+ {
+-	const struct artery_flash_bank *artery_info = bank->driver_priv;
+-	const struct artery_part_info *part_info = artery_info->part_info;
+-	const struct artery_series_info *series_info = &artery_series[part_info->series];
+-	uint32_t reg_addr = series_info->flash_regs_base + series_info->flash_regs[reg];
++	uint32_t reg_addr = artery_flash_register_address(bank, reg);
+ 
+ 	return target_read_u32(bank->target, reg_addr, value);
+ }
+@@ -1177,10 +1201,7 @@ static int artery_read_flash_register(struct flash_bank *bank,
+ static int artery_write_flash_register(struct flash_bank *bank,
+ 		enum artery_flash_reg_index reg, uint32_t value)
+ {
+-	const struct artery_flash_bank *artery_info = bank->driver_priv;
+-	const struct artery_part_info *part_info = artery_info->part_info;
+-	const struct artery_series_info *series_info = &artery_series[part_info->series];
+-	uint32_t reg_addr = series_info->flash_regs_base + series_info->flash_regs[reg];
++	uint32_t reg_addr = artery_flash_register_address(bank, reg);
+ 
+ 	return target_write_u32(bank->target, reg_addr, value);
+ }
+@@ -1365,13 +1386,13 @@ static int artery_init_flash(struct flash_bank *bank)
+ 		return ERROR_FAIL;
+ 	}
+ 
+-	return artery_usd_unlock(bank);
++	return bank->driver == &artery_dual_flash ? ERROR_OK : artery_usd_unlock(bank);
+ }
+ 
+ // Deinitialize the flash memory controller.
+ static int artery_deinit_flash(struct flash_bank *bank)
+ {
+-	int retval = artery_usd_lock(bank);
++	int retval = bank->driver == &artery_dual_flash ? ERROR_OK : artery_usd_lock(bank);
+ 
+ 	if (retval != ERROR_OK)
+ 		return retval;
+@@ -1912,6 +1933,13 @@ static int artery_write_without_loader(struct flash_bank *bank,
+ 	if (retval != ERROR_OK)
+ 		return retval;
+ 
++	if (bank->driver == &artery_dual_flash) {
++		retval = artery_write_flash_register(bank, ARTERY_FLASH_REG_STS,
++			FLASH_STS_EPPERR | FLASH_STS_PRGMERR);
++		if (retval != ERROR_OK)
++			return retval;
++	}
++
+ 	retval = artery_write_flash_register(bank, ARTERY_FLASH_REG_CTRL,
+ 		FLASH_CTRL_FPRGM);
+ 
+@@ -1937,6 +1965,17 @@ static int artery_write_without_loader(struct flash_bank *bank,
+ 		if (retval != ERROR_OK)
+ 			return retval;
+ 
++		if (bank->driver == &artery_dual_flash) {
++			uint32_t status;
++			retval = artery_read_flash_register(bank, ARTERY_FLASH_REG_STS, &status);
++			if (retval != ERROR_OK)
++				return retval;
++			if (status & FLASH_STS_EPPERR)
++				return ERROR_FLASH_PROTECTED;
++			if (status & FLASH_STS_PRGMERR)
++				return ERROR_FLASH_OPERATION_FAILED;
++		}
++
+ 		address += block_size;
+ 		bytes_written += block_size;
+ 	}
+@@ -2606,3 +2645,163 @@ const struct flash_driver artery_flash = {
+ 	.info = artery_info,
+ 	.free_driver_priv = default_flash_free_driver_priv,
+ };
++
++/* Artery reference manuals, Flash and Debug chapters.
++ * The PID identifies an exact order code and the corresponding layout.
++ */
++static const struct artery_part_info artery_dual_parts[] = {
++	{ 0x70050344, "AT32F403AVGT7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++	{ 0x70050345, "AT32F403ARGT7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++	{ 0x70050346, "AT32F403ACGT7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++	{ 0x70050347, "AT32F403ACGU7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++	{ 0x7005034b, "AT32F407VGT7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++	{ 0x7005034c, "AT32F407RGT7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++	{ 0x70050353, "AT32F407AVGT7", ARTERY_SERIES_F403A_F407, 1024, 2048, 0, 0, 0 },
++};
++
++static const struct artery_part_info artery_f43x_dual_parts[] = {
++	{ 0x70083341, "AT32F435ZGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0d },
++	{ 0x70083344, "AT32F435VGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0d },
++	{ 0x70083347, "AT32F435RGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0d },
++	{ 0x7008334a, "AT32F435CGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0d },
++	{ 0x7008334d, "AT32F435CGU7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0d },
++	{ 0x70083350, "AT32F437ZGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0e },
++	{ 0x70083353, "AT32F437VGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0e },
++	{ 0x70083356, "AT32F437RGT7", ARTERY_SERIES_F435_F437, 1024, 2048, 0, 0, 0x0e },
++};
++
++FLASH_BANK_COMMAND_HANDLER(artery_dual_flash_bank_command)
++{
++	if ((CMD_ARGC != 6 && (CMD_ARGC != 7 || strcmp(CMD_ARGV[6], "f43x"))) ||
++		bank->size != ARTERY_DUAL_BANK_SIZE ||
++		(bank->base != FLASH_BASE && bank->base != ARTERY_DUAL_BANK2_BASE))
++		return ERROR_COMMAND_SYNTAX_ERROR;
++
++	struct artery_flash_bank *info = calloc(1, sizeof(*info));
++	if (!info)
++		return ERROR_FAIL;
++
++	info->f43x = CMD_ARGC == 7;
++	bank->driver_priv = info;
++	bank->write_start_alignment = bank->write_end_alignment = 4;
++	return ERROR_OK;
++}
++
++static int artery_dual_probe(struct flash_bank *bank)
++{
++	struct artery_flash_bank *info = bank->driver_priv;
++	struct target *target = bank->target;
++	info->probed = false;
++	info->part_info = NULL;
++	if (!target_was_examined(target))
++		return ERROR_TARGET_NOT_EXAMINED;
++	if (cortex_m_get_impl_part(target) != CORTEX_M4_PARTNO)
++		return ERROR_TARGET_INVALID;
++
++	int retval = target_read_u32(target, DEBUG_IDCODE, &info->idcode);
++	if (retval != ERROR_OK)
++		return retval;
++
++	const struct artery_part_info *parts = info->f43x ? artery_f43x_dual_parts : artery_dual_parts;
++	size_t count = info->f43x ? ARRAY_SIZE(artery_f43x_dual_parts) : ARRAY_SIZE(artery_dual_parts);
++	for (size_t i = 0; i < count; i++) {
++		if (parts[i].pid == info->idcode) {
++			info->part_info = &parts[i];
++			break;
++		}
++	}
++	if (!info->part_info) {
++		LOG_ERROR("Unsupported dual-bank Artery device ID 0x%08" PRIx32, info->idcode);
++		return ERROR_FLASH_OPERATION_FAILED;
++	}
++	uint32_t density;
++	retval = target_read_u32(target, 0x1ffff7e0, &density);
++	if (retval != ERROR_OK)
++		return retval;
++	if ((density & 0xffff) != info->part_info->flash_size) {
++		LOG_ERROR("Dual-bank Artery Flash capacity does not match the selected device");
++		return ERROR_FLASH_OPERATION_FAILED;
++	}
++
++	if (info->f43x) {
++		uint8_t series;
++		retval = target_read_u8(target, 0x1ffff7f3, &series);
++		if (retval != ERROR_OK)
++			return retval;
++		if (series != info->part_info->project_id) {
++			LOG_ERROR("AT32F435/F437 Flash UID does not match the device ID");
++			return ERROR_FLASH_OPERATION_FAILED;
++		}
++	}
++
++	unsigned int sectors = bank->size / info->part_info->page_size;
++	bool first = bank->base == FLASH_BASE;
++	unsigned int protection_blocks = first ? (info->f43x ? 35 : 32) : (info->f43x ? 4 : 1);
++	struct flash_sector *pages = alloc_block_array(0, info->part_info->page_size, sectors);
++	struct flash_sector *blocks = alloc_block_array(0, 4096, protection_blocks);
++	if (!pages || !blocks) {
++		free(pages);
++		free(blocks);
++		return ERROR_FAIL;
++	}
++	if (info->f43x) {
++		/* The first 128 KiB has 4 KiB protection blocks; the rest uses 128 KiB. */
++		unsigned int start = first ? 32 : 0;
++		uint32_t offset = first ? 128 * 1024 : 0;
++		for (unsigned int i = start; i < protection_blocks; i++) {
++			blocks[i].offset = offset;
++			blocks[i].size = 128 * 1024;
++			offset += blocks[i].size;
++		}
++	} else {
++		/* F403A/F407 EPP bit 31 protects the rest of Bank 1 and all of Bank 2. */
++		blocks[protection_blocks - 1].size = bank->size - blocks[protection_blocks - 1].offset;
++	}
++	free(bank->sectors);
++	free(bank->prot_blocks);
++	bank->sectors = pages;
++	bank->num_sectors = sectors;
++	bank->prot_blocks = blocks;
++	bank->num_prot_blocks = protection_blocks;
++	info->probed = true;
++	LOG_INFO("Device ID = 0x%08" PRIx32 " (%s)", info->idcode, info->part_info->name);
++	LOG_INFO("Flash size = %" PRIu32 " KiB", info->part_info->flash_size);
++	return ERROR_OK;
++}
++
++static int artery_dual_auto_probe(struct flash_bank *bank)
++{
++	const struct artery_flash_bank *info = bank->driver_priv;
++	return info->probed ? ERROR_OK : artery_dual_probe(bank);
++}
++
++static int artery_dual_protect_check(struct flash_bank *bank)
++{
++	if (bank->base == FLASH_BASE)
++		return artery_protect_check(bank);
++
++	const struct artery_flash_bank *info = bank->driver_priv;
++	uint64_t protection;
++	int retval = artery_read_protection(bank, &protection);
++	if (retval != ERROR_OK)
++		return retval;
++
++	unsigned int bit = info->f43x ? 35 : 31;
++	for (unsigned int i = 0; i < bank->num_prot_blocks; i++, bit++)
++		bank->prot_blocks[i].is_protected = !(protection & (UINT64_C(1) << bit));
++	return ERROR_OK;
++}
++
++const struct flash_driver artery_dual_flash = {
++	.name = "artery_dual",
++	.flash_bank_command = artery_dual_flash_bank_command,
++	.erase = artery_erase,
++	.write = artery_write,
++	.read = default_flash_read,
++	.probe = artery_dual_probe,
++	.auto_probe = artery_dual_auto_probe,
++	.erase_check = default_flash_blank_check,
++	.protect_check = artery_dual_protect_check,
++	.info = artery_info,
++	.free_driver_priv = default_flash_free_driver_priv,
++};
+diff --git a/src/flash/nor/artery.h b/src/flash/nor/artery.h
+index dcfa70a..2e7a675 100644
+--- a/src/flash/nor/artery.h
++++ b/src/flash/nor/artery.h
+@@ -63,10 +63,12 @@ struct artery_part_info {
+ 	uint32_t usd_size;
+ 	// User data area (part of the USD) size excluding the inverse bytes.
+ 	uint32_t usd_data_size;
++	uint8_t project_id;
+ };
+ 
+ struct artery_flash_bank {
+ 	bool probed;
++	bool f43x;
+ 	uint32_t idcode;
+ 	const struct artery_part_info *part_info;
+ };
