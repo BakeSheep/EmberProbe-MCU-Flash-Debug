@@ -177,15 +177,20 @@ class AgentBridge {
         }
         const meta = requestMeta(request.headers);
         const abortListeners = new Set();
-        meta.aborted = false;
-        meta.onAbort = (fn) => {
-            if (meta.aborted) fn();
-            else abortListeners.add(fn);
-            return () => abortListeners.delete(fn);
+        let aborted = false;
+        const context = {
+            get aborted() {
+                return aborted;
+            },
+            onAbort(fn) {
+                if (aborted) fn();
+                else abortListeners.add(fn);
+                return () => abortListeners.delete(fn);
+            }
         };
         const onDisconnected = () => {
-            if (response.writableEnded || meta.aborted) return;
-            meta.aborted = true;
+            if (response.writableEnded || aborted) return;
+            aborted = true;
             for (const fn of [...abortListeners]) {
                 try {
                     fn();
@@ -213,7 +218,7 @@ class AgentBridge {
                 if (!/^[a-z][a-zA-Z0-9.]*$/.test(payload.method || "")) {
                     throw Object.assign(new Error("Invalid method"), { code: "INVALID_METHOD" });
                 }
-                const result = await this.handler(payload.method, payload.params || {}, meta);
+                const result = await this.handler(payload.method, payload.params || {}, meta, context);
                 if (!response.writableEnded && !response.destroyed) response.end(stringifyJson({ ok: true, result }));
             } catch (error) {
                 if (response.writableEnded || response.destroyed) return;

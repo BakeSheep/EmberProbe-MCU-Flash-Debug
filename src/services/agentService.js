@@ -99,9 +99,9 @@ class AgentService {
     }
 
     // Call auditing records only channel, client, method and result code, never parameter values.
-    async call(method, params = {}, meta) {
+    async call(method, params = {}, meta, context) {
         try {
-            const result = await this.dispatch(method, params, meta);
+            const result = await this.dispatch(method, params, meta, context);
             this.onAudit?.({ channel: meta?.channel || "", client: meta?.client || "", method, code: "OK" });
             return result;
         } catch (error) {
@@ -115,7 +115,7 @@ class AgentService {
         }
     }
 
-    async dispatch(method, params, meta) {
+    async dispatch(method, params, meta, context) {
         if (!this.isTrusted())
             throw Object.assign(new Error("Agent Bridge requires a trusted workspace"), {
                 code: "WORKSPACE_UNTRUSTED"
@@ -137,7 +137,7 @@ class AgentService {
         this.assertOpen();
         if (this.onCall) await this.onCall(method, params, meta);
         this.assertOpen();
-        const result = await handler(params);
+        const result = await handler(params, context);
         return method === "chip.read" ? this.selectChipFields(result, params) : result;
     }
 
@@ -180,7 +180,7 @@ class AgentService {
         const epoch = this.lifecycleEpoch;
         const bridge = new this.Bridge(
             workspace,
-            (method, params, meta) => this.call(method, params, meta),
+            (method, params, meta, context) => this.call(method, params, meta, context),
             this.storageDirProvider?.(),
             { legacyPointer: this.legacyPointer }
         );

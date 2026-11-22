@@ -468,7 +468,7 @@ class MainViewProvider {
             });
     }
     connectionConfigurationChanged(samplingSpeedChanged = false, samplingSpeedOnly = false) {
-        this._probeConnectionService.markConfigurationChanged(
+        this._probeConnectionService?.markConfigurationChanged?.(
             samplingSpeedOnly
                 ? [this._sampling.session, this._agentOps.readSession].filter(Boolean)
                 : [

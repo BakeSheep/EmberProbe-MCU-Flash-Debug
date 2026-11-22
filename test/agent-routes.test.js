@@ -162,6 +162,11 @@ const { AgentService } = require("../src/services/agentService");
         () => guarded["peripherals.write"]({}),
         (error) => error === failure
     );
+    calls.length = 0;
+    const context = { aborted: false, onAbort: () => () => {} };
+    await bridge.call("variables.sample", { variables: ["g"] }, { channel: "mcp" }, context);
+    assert.strictEqual(calls.at(-1).method, "_agentOps.sampleVariables");
+    assert.strictEqual(calls.at(-1).args[2], context, "request abort context reaches sampleVariables");
     console.log("Agent route dispatch and peripheral write guards passed");
 })().catch((error) => {
     console.error(error);

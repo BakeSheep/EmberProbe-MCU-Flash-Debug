@@ -312,12 +312,12 @@ async function testProviderWiring() {
         ["markGap", "scope:a"]
     ]);
 
-    const make = (session) => {
+    const make = (session, hasDebugSession = !session) => {
         const p = Object.create(P.prototype);
         const rows = [];
         Object.assign(p, {
             _samplingCoordinator: new SamplingCoordinator(),
-            _debugBridge: { setIntent() {} },
+            _debugBridge: { hasSession: hasDebugSession, setIntent() {} },
             _liveWatchService: {},
             _samplingArchive: {},
             _postConsumerStatuses() {}
@@ -358,6 +358,10 @@ async function testProviderWiring() {
     dap.p._sampling.setArchiveBackpressure(false);
     assert.strictEqual(dap.rows.length, 1, "host-driven sampling still marks its paused interval");
     assert.strictEqual(dap.rows[0][0].bytes, null);
+    const idle = make(null, false);
+    idle.p._sampling.setArchiveBackpressure(true);
+    idle.p._sampling.setArchiveBackpressure(false);
+    assert.deepStrictEqual(idle.rows, [], "no active debug session means no synthetic gap row");
 }
 
 (async () => {

@@ -3,6 +3,8 @@ const assert = require("assert");
 const http = require("http");
 const { once } = require("events");
 const { AgentBridge, MAX_BODY, requestMeta } = require("../src/agentBridge");
+const { scenario } = require("./helpers/scenario");
+const { waitFor } = require("./helpers/wait");
 
 (async () => {
     let calls = 0;
@@ -134,6 +136,50 @@ const { AgentBridge, MAX_BODY, requestMeta } = require("../src/agentBridge");
         assert.deepStrictEqual(metas.pop(), { channel: "skill" }, "malformed values are dropped");
         assert.deepStrictEqual(requestMeta({ "x-emberprobe-channel": "skill", "x-emberprobe-skill-root": "a%0Ab" }), {
             channel: "skill"
+        });
+        await scenario("Notify request context on mid-flight disconnect without altering caller meta", async () => {
+            let started;
+            let abortCount = 0;
+            let seenMeta = "unset";
+            let seenContext = null;
+            let release;
+            const entered = new Promise((resolve) => {
+                started = resolve;
+            });
+            const done = new Promise((resolve) => {
+                release = resolve;
+            });
+            bridge.handler = async (_method, _params, meta, context) => {
+                seenMeta = meta;
+                seenContext = context;
+                context.onAbort(() => {
+                    abortCount++;
+                    release();
+                });
+                started();
+                await done;
+                return true;
+            };
+            const req = http.request({
+                host: "127.0.0.1",
+                port,
+                path: "/v1/call",
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${bridge.token}`,
+                    "Content-Length": Buffer.byteLength(validBody)
+                }
+            });
+            req.on("error", () => {});
+            req.end(validBody);
+            await entered;
+            assert.strictEqual(seenMeta, undefined);
+            assert.strictEqual(seenContext.aborted, false);
+            req.destroy();
+            await waitFor(() => seenContext.aborted === true && abortCount === 1);
+            let lateAbort = 0;
+            seenContext.onAbort(() => lateAbort++);
+            assert.strictEqual(lateAbort, 1, "late abort listeners fire immediately");
         });
         console.log("Bridge security tests passed");
     } finally {

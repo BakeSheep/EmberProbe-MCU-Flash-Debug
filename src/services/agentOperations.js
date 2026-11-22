@@ -364,7 +364,7 @@ class AgentOperations {
             run.wake?.();
         }
     }
-    async _runSamples(params, count, intervalMs, syncStatus, meta = null) {
+    async _runSamples(params, count, intervalMs, syncStatus, context = null) {
         const layoutErrors = new Map();
         await this.host._elfView.prepareLayouts(params.variables, { layoutErrors });
         const { elfResult, plan, compositePlan, variableErrors } = agentPlans.readPlan(
@@ -399,7 +399,7 @@ class AgentOperations {
                 const effectiveIntervalMs = intervalMs;
                 const run = { temporary, cancelled: false, wake: null };
                 (this._sampleRuns ??= new Set()).add(run);
-                const offAbort = meta?.onAbort?.(() => {
+                const offAbort = context?.onAbort?.(() => {
                     run.cancelled = true;
                     run.wake?.();
                     if (temporary) void this.stopReadIfRunning();
@@ -675,10 +675,10 @@ class AgentOperations {
             ...(result.variableErrors ? { partial: true, variableErrors: result.variableErrors } : {})
         };
     }
-    async sampleVariables(params, _syncStatus = true, meta = null) {
+    async sampleVariables(params, _syncStatus = true, context = null) {
         const count = validation.clampInteger(params.count, 10, 2, 1000);
         const intervalMs = validation.clampInteger(params.intervalMs, 200, 5, 60000);
-        return this._runSamples(params, count, intervalMs, true, meta);
+        return this._runSamples(params, count, intervalMs, true, context);
     }
     // Reads and decodes the Cortex-M fault registers; shares the _chipInfoRunning lock with chip.read (only one
     // one-shot OpenOCD process at a time)
