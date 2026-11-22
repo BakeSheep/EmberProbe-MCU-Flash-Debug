@@ -183,7 +183,8 @@ class ChartHistoryStore {
                     item,
                     identity: JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]),
                     parts: [],
-                    count: 0
+                    count: 0,
+                    trimmed: false
                 });
         state.revision++;
         return this.status(scope);
@@ -194,6 +195,7 @@ class ChartHistoryStore {
             while (part.start < part.end && (part.block.times[part.start] < cutoff || series.count > MAX_POINTS)) {
                 part.start++;
                 series.count--;
+                series.trimmed = true;
             }
             if (part.start < part.end) {
                 if (part.candidate && part.candidate.time !== part.block.times[part.start]) {
@@ -205,6 +207,7 @@ class ChartHistoryStore {
             this._untrack(part);
             part.block.live = null;
             series.parts.shift();
+            series.trimmed = true;
             if (--part.block.refs === 0) this.bytes -= part.block.bytes;
         }
     }
@@ -403,6 +406,7 @@ class ChartHistoryStore {
             this._release(s, true);
             s.parts = [];
             s.evicted = false;
+            s.trimmed = false;
             s.count = 0;
             s.discontinuous = false;
         }

@@ -574,13 +574,13 @@ const TOOLS = [
         toolset: "core",
         title: "Start or stop live sampling",
         description:
-            "Start persistent sampling of the watch list, or stop it (also cancels temporary Agent reads). intervalMs sets the sidebar rate; while the user's unlimited mode is on, acquisition runs as fast as the probe allows and sampling_status reports that actualHz.",
+            "Start persistent sampling, or stop it and cancel temporary Agent reads. intervalMs sets the waveform period in capped mode. Sidebar-only variables target 20 Hz. In unlimited mode, sampling_status reports the measured rate.",
         methods: ["sampling.start", "sampling.stop"],
         hardware: true,
         inputSchema: object(
             {
                 action: str("Action", { enum: ["start", "stop"] }),
-                intervalMs: int("Sidebar interval for start", 5, 10000)
+                intervalMs: int("Waveform interval for start", 5, 10000)
             },
             ["action"]
         ),

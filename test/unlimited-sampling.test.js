@@ -217,7 +217,7 @@ async function testSessionAndFairness() {
         session.setSamplingPlan(plan(false));
         assertStats(session.stats(), false, false);
         const meanDuration = durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
-        assert.strictEqual(session.effectiveIntervalMs, Math.max(5, Math.ceil(meanDuration / 0.85)));
+        assert.strictEqual(session.effectiveIntervalMs, Math.max(5, meanDuration / 0.85));
         assert.strictEqual(session._warmingUp, false);
         assert.deepStrictEqual(session._recentDurations, durations);
         await waitFor(() => !session.busy, "old cycle releases ownership");

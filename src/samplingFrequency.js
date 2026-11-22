@@ -11,7 +11,12 @@ function normalizeFrequencyHz(value, fallback = DEFAULT_FREQUENCY_HZ) {
 }
 
 function intervalMsFromHz(value) {
-    return Math.min(10000, Math.max(5, Math.round(1000 / normalizeFrequencyHz(value))));
+    return 1000 / normalizeFrequencyHz(value);
+}
+
+function clampSamplingIntervalMs(value, fallback) {
+    const interval = Number(value);
+    return Number.isFinite(interval) ? Math.min(10000, Math.max(5, interval)) : fallback;
 }
 
 function frequencyHzFromInterval(intervalMs) {
@@ -29,6 +34,7 @@ module.exports = {
     MAX_FREQUENCY_HZ,
     normalizeFrequencyHz,
     intervalMsFromHz,
+    clampSamplingIntervalMs,
     frequencyHzFromInterval,
     configuredFrequencyHz
 };

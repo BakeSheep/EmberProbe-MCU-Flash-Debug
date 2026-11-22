@@ -88,21 +88,7 @@ const { wait } = require("./helpers/wait");
         slowSession._recentDurations = [20, 20, 20, 20];
         slowSession.setIntervalMs(5);
         assert.strictEqual(slowSession.targetIntervalMs, 5);
-        assert.strictEqual(slowSession.effectiveIntervalMs, 24, "Slow probes retain a measured safety margin");
-
-        // Standalone backs off when mean duration exceeds 85% of the effective interval.
-        for (let i = 0; i < 32; i++) {
-            session._recordCycle(4.5);
-        }
-        session._lastAdaptiveEvalAt = session.clock.monotonicMs() - 1500;
-        session._evaluateAdaptiveSchedule();
-        assert.ok(session.effectiveIntervalMs > 5, "Must back off when mean duration > 85%");
-        assert.strictEqual(
-            session.effectiveIntervalMs,
-            6,
-            "Backoff should reserve headroom without doubling the period"
-        );
-        assert.strictEqual(session._consecutiveSuccesses, 0, "Success counter must reset on backoff");
+        assert.strictEqual(slowSession.effectiveIntervalMs, 20 / 0.85, "Slow probes retain a measured safety margin");
 
         // In debug mode, threshold is 40%
         const debugSession = new ManagedOpenOcdSession({ intervalMs: 10, mode: "debug" }, {});
@@ -122,23 +108,25 @@ const { wait } = require("./helpers/wait");
         async () => {
             const clock = new FakeClock();
             const session = new ManagedOpenOcdSession({ intervalMs: 5, clock: { monotonicMs: clock.now } }, {});
-            const record = (durations) => {
-                for (const duration of durations) session._recordCycle(duration, true, clock.now());
+            const measure = async (duration, last = duration) => {
+                for (let i = 0; i < 31; i++) session._recordCycle(duration, true, clock.now());
+                await clock.advance(500);
+                session._recordCycle(last, true, clock.now());
             };
             session._warmUp(0.5);
-            record(Array(31).fill(0.5));
-            await clock.advance(1000);
-            record([200]);
+            await measure(0.5, 200);
             assert.strictEqual(session.effectiveIntervalMs, 5, "a single stall should not create a lower rate plateau");
 
-            record(Array(31).fill(8));
-            await clock.advance(1000);
-            record([8]);
-            assert.strictEqual(session.effectiveIntervalMs, 10, "sustained load still needs more time");
+            await measure(8);
+            assert.strictEqual(session.effectiveIntervalMs, 5, "one evaluation alone does not change the period");
+            await measure(8);
+            assert.strictEqual(session.effectiveIntervalMs, 8 / 0.85, "sustained load needs more time");
+            assert.strictEqual(session._consecutiveSuccesses, 0);
+            assert.ok(session.stats().actualHz > 0, "a period change keeps the live rate window");
 
-            record(Array(31).fill(0.5));
-            await clock.advance(250);
-            record([0.5]);
+            await measure(0.5);
+            assert.strictEqual(session.effectiveIntervalMs, 8 / 0.85);
+            await measure(0.5);
             assert.strictEqual(session.effectiveIntervalMs, 5, "recovery should go directly to the measured interval");
         }
     );

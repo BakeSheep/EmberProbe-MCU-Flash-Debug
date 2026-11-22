@@ -22,6 +22,63 @@
         const dirty = () => {
             c.fastDirty = state.dirty = true;
         };
+        const view = env.window || globalThis;
+        const doc = env.document || view.document;
+        let cachedCanvas = { w: 0, h: 0 };
+        let cachedTheme = null;
+        function invalidateCanvas() {
+            cachedCanvas.w = cachedCanvas.h = 0;
+        }
+        function invalidateTheme() {
+            cachedTheme = null;
+        }
+        function canvasSize() {
+            if (!cachedCanvas.w || !cachedCanvas.h) {
+                cachedCanvas.w = canvas.clientWidth;
+                cachedCanvas.h = canvas.clientHeight;
+            }
+            return cachedCanvas;
+        }
+        function themeStyle() {
+            const body = doc?.body;
+            const root = doc?.documentElement;
+            const key =
+                (body?.className || "") +
+                "\0" +
+                (body?.getAttribute?.("style") || "") +
+                "\0" +
+                (root?.getAttribute?.("style") || "");
+            if (!cachedTheme || cachedTheme.key !== key) {
+                const cs = view.getComputedStyle(body);
+                const vars = {
+                    "--vscode-descriptionForeground": cs.getPropertyValue("--vscode-descriptionForeground"),
+                    "--vscode-editor-background": cs.getPropertyValue("--vscode-editor-background"),
+                    "--vscode-focusBorder": cs.getPropertyValue("--vscode-focusBorder"),
+                    "--vscode-foreground": cs.getPropertyValue("--vscode-foreground")
+                };
+                cachedTheme = {
+                    key,
+                    fontFamily: cs.fontFamily,
+                    getPropertyValue: (name) => vars[name] || ""
+                };
+            }
+            return cachedTheme;
+        }
+        if (view.ResizeObserver) {
+            const resizeObserver = new view.ResizeObserver(() => {
+                invalidateCanvas();
+                state.dirty = true;
+            });
+            if (env.wrap) resizeObserver.observe(env.wrap);
+            resizeObserver.observe(canvas);
+        }
+        if (view.MutationObserver && doc?.body) {
+            // VS Code updates body classes when its theme changes. Repaint frozen charts too.
+            new view.MutationObserver(() => {
+                invalidateTheme();
+                state.dirty = true;
+            }).observe(doc.body, { attributes: true, attributeFilter: ["class", "style"] });
+        }
         function reset() {
             c.viewHistory = [];
             c.lastWheel = -Infinity;
@@ -236,6 +293,10 @@
             acquisitionChanged,
             syncBounds,
             reset,
+            canvasSize,
+            invalidateCanvas,
+            themeStyle,
+            invalidateTheme,
             allowClick: () => clock.now() >= c.suppressClickUntil
         };
     }

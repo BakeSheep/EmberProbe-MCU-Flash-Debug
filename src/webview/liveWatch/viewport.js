@@ -113,8 +113,44 @@
         return clamp({ min: newBounds.max - wantedSpan, max: newBounds.max }, newBounds, minimumSpan);
     }
 
-    // Include clipped, continuous line segments without inventing samples or bridging explicit gaps.
-    function visibleRange(points, range) {
+    const RANGE_BLOCK_POINTS = 64;
+    const FIT_HOLD_MS = 1000;
+
+    function summarizeRanges(points) {
+        const blocks = [];
+        for (let first = 0; first < points.length; first += RANGE_BLOCK_POINTS) {
+            let min = Infinity,
+                max = -Infinity,
+                count = 0;
+            const end = Math.min(points.length, first + RANGE_BLOCK_POINTS);
+            for (let i = first; i < end; i++) {
+                const value = points[i].v;
+                if (!Number.isFinite(value)) continue;
+                min = Math.min(min, value);
+                max = Math.max(max, value);
+                count++;
+            }
+            blocks.push({ min, max, count });
+        }
+        return blocks;
+    }
+
+    function rangeIndex(points, time, upper) {
+        let lo = 0,
+            hi = points.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            const t = points[mid].t;
+            if (t < time || (upper && t === time)) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    // Read whole blocks from the summary. Only the two edges need the original points and clipped segments.
+    function visibleRange(points, range, blocks) {
+        const first = rangeIndex(points, range.min, false),
+            after = rangeIndex(points, range.max, true);
         let min = Infinity,
             max = -Infinity,
             count = 0;
@@ -123,21 +159,31 @@
             min = Math.min(min, value);
             max = Math.max(max, value);
         };
-        for (let i = 0; i < points.length; i++) {
-            const p = points[i],
-                previous = points[i - 1];
-            if (Number.isFinite(p.v) && p.t >= range.min && p.t <= range.max) {
-                include(p.v);
-                count++;
+        for (let i = first; i < after;) {
+            if (blocks && i % RANGE_BLOCK_POINTS === 0 && i + RANGE_BLOCK_POINTS <= after) {
+                const block = blocks[i / RANGE_BLOCK_POINTS];
+                min = Math.min(min, block.min);
+                max = Math.max(max, block.max);
+                count += block.count;
+                i += RANGE_BLOCK_POINTS;
+            } else {
+                const v = points[i++].v;
+                if (Number.isFinite(v)) {
+                    include(v);
+                    count++;
+                }
             }
-            if (!previous || !Number.isFinite(previous.v) || !Number.isFinite(p.v) || p.t <= previous.t) continue;
-            const from = Math.max(previous.t, range.min),
-                to = Math.min(p.t, range.max);
-            if (from >= to) continue;
-            for (const time of [from, to]) {
-                if (time === previous.t || time === p.t) continue;
-                const ratio = (time - previous.t) / (p.t - previous.t);
-                include(previous.v * (1 - ratio) + p.v * ratio);
+        }
+        if (range.min < range.max) {
+            for (const [index, time] of [
+                [first, range.min],
+                [after, range.max]
+            ]) {
+                const a = points[index - 1],
+                    b = points[index];
+                if (!a || !b || !Number.isFinite(a.v) || !Number.isFinite(b.v) || !(a.t < time && time < b.t)) continue;
+                const ratio = (time - a.t) / (b.t - a.t);
+                include(a.v * (1 - ratio) + b.v * ratio);
             }
         }
         return { min, max, count };
@@ -185,7 +231,7 @@
             return current;
         }
         if (state.fitHold == null) state.fitHold = now;
-        if (now - state.fitHold < 1000) return current;
+        if (now - state.fitHold < FIT_HOLD_MS) return current;
         state.fitHold = null;
         return target;
     }
@@ -213,15 +259,52 @@
         return pending ? y : fit;
     }
 
+    function twoDigits(value) {
+        return value < 10 ? "0" + value : String(value);
+    }
+
     function timeTick(time, width) {
         const date = new Date(time);
-        const base =
-            width >= 3600000
-                ? date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                : date.toLocaleTimeString([], { hour12: false, minute: "2-digit", second: "2-digit" });
+        const mmss = twoDigits(date.getMinutes()) + ":" + twoDigits(date.getSeconds());
+        const base = width >= 3600000 ? twoDigits(date.getHours()) + ":" + mmss : mmss;
         if (width >= 4000) return base;
-        const fraction = width < 4 ? String(Math.floor((time - Math.floor(time)) * 1000)).padStart(3, "0") : "";
-        return base + "." + String(date.getMilliseconds()).padStart(3, "0") + fraction;
+        const ms = date.getMilliseconds();
+        const msText = ms < 10 ? "00" + ms : ms < 100 ? "0" + ms : String(ms);
+        if (width >= 4) return base + "." + msText;
+        const us = Math.floor((time - Math.floor(time)) * 1000);
+        const usText = us < 10 ? "00" + us : us < 100 ? "0" + us : String(us);
+        return base + "." + msText + usText;
+    }
+
+    function commitFollowClock(clock, bounds, xMax, spanValue, key, now) {
+        if (!clock || clock.key !== key || Math.abs(clock.span - spanValue) > 0.001 || bounds.max < clock.dataMax) {
+            return {
+                key,
+                span: spanValue,
+                time: Math.max(bounds.min, Math.min(xMax, bounds.max)),
+                interval: 45,
+                peakInterval: 60,
+                committedAt: now,
+                frameAt: now,
+                dataMax: bounds.max
+            };
+        }
+        const gap = Math.max(0, now - clock.committedAt);
+        clock.interval += 0.2 * (gap - clock.interval);
+        clock.peakInterval = gap > clock.peakInterval ? gap : clock.peakInterval + 0.05 * (gap - clock.peakInterval);
+        clock.committedAt = now;
+        clock.dataMax = bounds.max;
+        return clock;
+    }
+
+    function advanceFollowClock(clock, now) {
+        const elapsed = Math.max(0, now - clock.frameAt);
+        const cushion = Math.min(350, Math.max(clock.interval * 1.25, clock.peakInterval ?? clock.interval) + 24);
+        const target = clock.dataMax - cushion + Math.max(0, now - clock.committedAt);
+        const rate = Math.max(0.75, Math.min(1.25, 1 + (target - (clock.time + elapsed)) / 200));
+        clock.time = Math.max(clock.time, Math.min(clock.dataMax, clock.time + elapsed * rate));
+        clock.frameAt = now;
+        return { min: clock.time - clock.span, max: clock.time };
     }
 
     return {
@@ -238,11 +321,15 @@
         toPercent,
         isAtEnd,
         followEnd,
+        summarizeRanges,
         visibleRange,
+        FIT_HOLD_MS,
         padRange,
         fitY,
         stabilizeY,
         followY,
-        timeTick
+        timeTick,
+        commitFollowClock,
+        advanceFollowClock
     };
 });

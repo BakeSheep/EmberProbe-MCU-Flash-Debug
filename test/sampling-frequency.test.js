@@ -9,7 +9,9 @@ const {
     normalizeFrequencyHz
 } = require("../src/samplingFrequency");
 
-assert.strictEqual(intervalMsFromHz(30), 33);
+assert.strictEqual(intervalMsFromHz(30), 1000 / 30);
+assert.strictEqual(intervalMsFromHz(180), 1000 / 180);
+assert.strictEqual(intervalMsFromHz(190), 1000 / 190);
 assert.strictEqual(intervalMsFromHz(200), 5);
 assert.strictEqual(frequencyHzFromInterval(100), 10);
 assert.strictEqual(normalizeFrequencyHz(500), 200);
@@ -42,18 +44,18 @@ scenario("Ignore obsolete intervals and read the effective frequency", () => {
     const messages = [];
     const intervals = [];
     provider._sampling.frequencyHz = 30;
-    provider._sampling.intervalMs = 33;
+    provider._sampling.intervalMs = 1000 / 30;
     provider._sampling.session = { setIntervalMs: (interval) => intervals.push(interval) };
     provider._livePanels = new Map([[1, { post: (message) => messages.push(message) }]]);
 
     assert.strictEqual(await provider._sampling.saveFrequency(60), 60);
     assert.strictEqual(settings.get("sampleFrequencyHz"), 60);
     assert.deepStrictEqual(targets, [vscode.ConfigurationTarget.Workspace]);
-    assert.deepStrictEqual(intervals, [17]);
+    assert.deepStrictEqual(intervals, [1000 / 60]);
     assert.strictEqual(messages.at(-1).frequencyHz, 60);
     assert.strictEqual(configuredFrequencyHz(config), 60, "Reopening this workspace should restore the chosen rate");
 
-    provider._sampling.setIntervalMs(17);
+    provider._sampling.setIntervalMs(1000 / 60);
     assert.strictEqual(
         provider._sampling.frequencyHz,
         60,
@@ -61,10 +63,11 @@ scenario("Ignore obsolete intervals and read the effective frequency", () => {
     );
     await assert.rejects(provider._sampling.saveFrequency(0), { code: "INVALID_SAMPLE_FREQUENCY" });
     assert.strictEqual(settings.get("sampleFrequencyHz"), 60);
-    settings.set("sampleFrequencyHz", 45);
+    settings.set("sampleFrequencyHz", 180);
     provider.samplingFrequencyConfigurationChanged();
-    assert.strictEqual(provider._sampling.frequencyHz, 45);
-    assert.strictEqual(provider._sampling.intervalMs, 22);
+    assert.strictEqual(provider._sampling.frequencyHz, 180);
+    assert.strictEqual(provider._sampling.intervalMs, 1000 / 180);
+    assert.strictEqual(intervals.at(-1), 1000 / 180);
     let finishSave;
     config.update = () => new Promise((resolve) => (finishSave = resolve));
     const saving = provider._sampling.saveFrequency(200);

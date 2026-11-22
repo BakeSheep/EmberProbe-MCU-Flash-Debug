@@ -348,7 +348,7 @@ class SamplingSpeedTuner {
                 (!!this._baselineInfo &&
                     !this._fallbackCount &&
                     (this._tunedFrameBudgetMs !== frameBudgetMs ||
-                        (frameBudgetMs !== null && this._tunedWatch !== session.watch))))
+                        (frameBudgetMs !== null && this._tunedWatch !== session.primarySamplingItems))))
         );
     }
 
@@ -545,7 +545,7 @@ class SamplingSpeedTuner {
     }
 
     async _sendFrameBenchmark(session, { watch, epoch, expectedCpuid, readCmd }, deadline) {
-        if (epoch !== session.sampleEpoch || watch !== session.watch) return { ok: false };
+        if (epoch !== session.sampleEpoch || watch !== session.primarySamplingItems) return { ok: false };
         this._tentativeError = null;
         const guard = {
             epoch,
@@ -718,8 +718,8 @@ class SamplingSpeedTuner {
         this._recheckAfterFirstCycle = false;
         const frameBudgetMs = this._frameBudgetMs(session);
         this._tunedFrameBudgetMs = frameBudgetMs;
-        this._tunedWatch = session.watch;
-        const frame = frameBudgetMs === null ? null : { watch: session.watch, epoch: session.sampleEpoch };
+        this._tunedWatch = session.primarySamplingItems;
+        const frame = frameBudgetMs === null ? null : { watch: this._tunedWatch, epoch: session.sampleEpoch };
         const deadline = this.clock.monotonicMs() + this._budgetMs();
 
         const baselineInfo = this._baselineInfo ?? (await this._probeEligibility(session, deadline, allowRecheck));

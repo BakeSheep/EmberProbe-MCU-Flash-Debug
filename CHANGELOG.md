@@ -6,6 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 采样与波形 / Sampling and waveforms
+
+- 独立限速采样优先维持波形频率，侧栏专属变量在探针有空档时刷新。波形与侧栏同时采样时，自适应时钟按波形读计划选频，侧栏改动影响该计划时重新评估。采样周期保留小数毫秒，速率按有效新读数计算。
+- Capped standalone sampling gives waveform reads priority and refreshes sidebar-only values in available probe time. With both active, clock tuning measures waveform reads and rechecks sidebar edits that change those reads. Sampling keeps fractional periods and measures the rate from fresh readings.
+
+- 降低 Windows 采样 Worker 的等待开销。自动纵轴动画复用曲线和包络数据，拖动时只查询视口所需的极值，数据停止推进后停止重绘。
+- Reduce sampling worker idle CPU on Windows. Reuse curves and envelopes during vertical-axis animation, limit range calculations to the viewport while dragging, and stop redrawing once the view settles.
+
 ### 变量与调试 / Variables and debugging
 
 - 侧栏 ELF 变量列表和波形导入弹窗按嵌套树逐层展开结构体、数组和运行时对象，支持勾选分支批量添加成员或单独添加子分支，并在查看列表中按所选分支归组展示；嵌套运行时容器保留自身配方与类型名，移除和拖拽同步联动其子项。

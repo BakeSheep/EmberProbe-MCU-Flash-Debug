@@ -655,6 +655,33 @@ async function main() {
         live.append("p", [{ name: "x", value: 2 }], WINDOW_MS + 200);
         assert.strictEqual(flat(await live.archiveViewport("p", ["x"], { min: 99, max: 101 }, 800))[0].v, 1);
         assert.strictEqual(live.status("p").bounds.min, 100);
+        {
+            const fastStore = new ArchiveChartHistoryStore({ archive: { bucketSize: 4 } });
+            const fastArchive = new SamplingArchive({ rootDir: path.join(dir, "fast-path-archive") });
+            try {
+                fastStore.configure("p", [{ name: "x", type: "f32" }], 0);
+                for (let t = 100; t <= 120; t += 10) {
+                    fastArchive.append([{ name: "x [f32]", value: t }], t, "p");
+                    fastStore.append("p", [{ name: "x", value: t }], t);
+                }
+                const fastSource = await fastArchive.historySource("p");
+                await fastStore.archiveProgress({ dataPath: fastSource.dataPath, bytes: fastSource.cutoff });
+                let diskQueries = 0;
+                const origQuery = fastStore.archive.query.bind(fastStore.archive);
+                fastStore.archive.query = (...args) => {
+                    diskQueries++;
+                    return origQuery(...args);
+                };
+                const overview = await fastStore.archiveViewport("p", ["x"], { min: 100, max: 120 }, 200);
+                assert.strictEqual(diskQueries, 0, "untrimmed in-memory history skips disk archive query");
+                assert.deepStrictEqual(
+                    flat(overview).map((p) => p.v),
+                    [100, 110, 120]
+                );
+            } finally {
+                await fastArchive.dispose();
+            }
+        }
         const highPath = path.join(dir, "high.bin"),
             highEncoder = new ArchiveEncoder();
         const high = [FILE_HEADER];

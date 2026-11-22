@@ -120,10 +120,11 @@ class ChartHistoryService {
         this.termination.catch(() => {});
         this.options.onError?.(error);
     }
-    request(method, args = []) {
+    request(method, args = [], estimatedBytes) {
         if (this.failed || this.disposed) return Promise.reject(this.failed || new Error("History service disposed"));
         if (["clear", "remove"].includes(method)) this.limitedScopes.delete(args[0]);
-        const bytes = method === "append" ? estimateHistoryBytes(args) : 0;
+        const bytes =
+            method === "append" ? (Number.isFinite(estimatedBytes) ? estimatedBytes : estimateHistoryBytes(args)) : 0;
         if (this.queuedBytes + bytes > MAX_BACKLOG_BYTES) return this.limit(args[0], args[2]);
         try {
             this.start();

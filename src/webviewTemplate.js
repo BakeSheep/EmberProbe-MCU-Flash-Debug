@@ -51,6 +51,7 @@ const PAGE_PRELUDE = {
         "chartInspection.js",
         "seriesGain.js",
         "chartViewportController.js",
+        "chartHistoryViewport.js",
         "chartControls.js",
         "chartTransport.js",
         "backgroundIcon.js",

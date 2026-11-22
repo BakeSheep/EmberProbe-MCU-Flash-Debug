@@ -1,7 +1,7 @@
 "use strict";
 const path = require("path");
 const { Worker } = require("worker_threads");
-const { clampInteger } = require("./validation");
+const { clampSamplingIntervalMs } = require("./samplingFrequency");
 const { deserializeError } = require("./services/errorEnvelope");
 const { reportTargetIdentity, reportTargetMismatch } = require("./chip/targetIdentity");
 const { validateManagedReadPlan } = require("./liveWatchReadPlan");
@@ -126,7 +126,7 @@ class SamplingSession {
         this.notify("setSamplingPlan", [plan]);
     }
     setIntervalMs(value) {
-        this.options.intervalMs = clampInteger(value, 100, 5, 10000);
+        this.options.intervalMs = clampSamplingIntervalMs(value, 100);
         this.notify("setIntervalMs", [this.options.intervalMs]);
     }
     stats() {
@@ -143,7 +143,9 @@ class SamplingSession {
                     ? {
                           graphHz: 0,
                           sidebarHz: 0,
-                          graphTargetHz: unlimitedActive ? null : 1000 / (this._samplingPlan.graphIntervalMs ?? 33),
+                          graphTargetHz: unlimitedActive
+                              ? null
+                              : 1000 / (this._samplingPlan.graphIntervalMs ?? 1000 / 30),
                           sidebarTargetHz: 20,
                           unlimited: unlimitedActive
                       }

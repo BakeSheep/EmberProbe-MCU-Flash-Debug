@@ -3,6 +3,7 @@
 // inside RAM sections), and the 8/16/32-bit element shapes a byte range is transferred with.
 const { isDeepStrictEqual } = require("util");
 
+const MAX_DEBUG_CYCLE_MS = 1000;
 const MAX_DEBUG_READ_BYTES = 4096;
 const MAX_DEBUG_READ_COMMANDS = 32;
 const MAX_BATCH_GROUPS = 8;
@@ -230,6 +231,7 @@ function compileReadBatches(
 }
 
 module.exports = {
+    MAX_DEBUG_CYCLE_MS,
     MAX_DEBUG_READ_BYTES,
     MAX_DEBUG_READ_COMMANDS,
     MAX_BATCH_GROUPS,

@@ -55,27 +55,12 @@ function commitFollowClock(bounds) {
         return;
     }
     var now = performance.now(),
-        clock = chartState.followClock,
         span =
             $("timeWindow").value === "custom" ? VP.span(chartState.x) : Math.max(1, parseInt(windowPreset, 10) * 1000),
         key = chartHistoryConfig().configKey;
     // A preset has a fixed duration even when retained history is still shorter at sampling startup.
     chartState.x = { min: chartState.x.max - span, max: chartState.x.max };
-    if (!clock || clock.key !== key || Math.abs(clock.span - span) > 0.001 || bounds.max < clock.dataMax) {
-        clock = chartState.followClock = {
-            key: key,
-            span: span,
-            time: Math.max(bounds.min, Math.min(chartState.x.max, bounds.max)),
-            interval: 80,
-            committedAt: now,
-            frameAt: now,
-            dataMax: bounds.max
-        };
-    } else {
-        clock.interval += 0.2 * (Math.max(0, now - clock.committedAt) - clock.interval);
-        clock.committedAt = now;
-        clock.dataMax = bounds.max;
-    }
+    chartState.followClock = VP.commitFollowClock(chartState.followClock, bounds, chartState.x.max, span, key, now);
     chartState.smoothCommit = (chartState.smoothCommit || 0) + 1;
     advanceFollowClock(now);
 }
@@ -88,15 +73,13 @@ function advanceFollowClock(now) {
         Math.abs(clock.span - VP.span(chartState.x)) > 0.001
     ) {
         resetFollowClock();
-        return;
+        return false;
     }
-    var elapsed = Math.max(0, now - clock.frameAt),
-        target = clock.dataMax - clock.interval - 16 + Math.max(0, now - clock.committedAt),
-        rate = Math.max(0.9, Math.min(1.1, 1 + (target - clock.time) / 1000));
-    clock.time = Math.max(clock.time, Math.min(clock.dataMax, clock.time + elapsed * rate));
-    clock.frameAt = now;
-    chartState.x = { min: clock.time - clock.span, max: clock.time };
+    var next = VP.advanceFollowClock(clock, now);
     chartState.smoothFollowing = true;
+    if (chartState.x.min === next.min && chartState.x.max === next.max) return false;
+    chartState.x = next;
+    return true;
 }
 // Freeze/resume keep the drawn views until replacements arrive; only outstanding requests are dropped.
 function cancelChartHistoryRequests() {
@@ -107,7 +90,9 @@ function cancelChartHistoryRequests() {
         state.remoteHistory.failed =
             null;
     state.remoteHistory.overviewDueAt = null;
+    state.remoteHistory.refreshAt = Infinity;
     state.remoteHistory.lastOverviewRequest = -Infinity;
+    state.remoteHistory.lastDetailRequest = -Infinity;
 }
 function resetChartHistoryViews() {
     state.remoteHistory.view = state.remoteHistory.overview = state.remoteHistory.composed = null;
@@ -117,133 +102,10 @@ function chartHistoryBoundsValid(bounds) {
     return bounds && Number.isFinite(bounds.min) && Number.isFinite(bounds.max) && bounds.max >= bounds.min;
 }
 function requestChartViewport(range, width) {
-    if (historyClearPending) return;
-    var config = chartHistoryConfig();
-    if (!config.names.length) {
-        state.remoteHistory.view = state.remoteHistory.overview = null;
-        state.remoteHistory.pending = state.remoteHistory.target = null;
-        state.remoteHistory.overviewDueAt = null;
-        return;
-    }
-    var status = state.frozen ? state.remoteHistory.status : state.remoteHistory.liveStatus;
-    if (!range || !status || !state.remoteHistory.status) return;
-    var now = performance.now(),
-        bounds = status.bounds,
-        span = Math.max(1, range.max - range.min),
-        columns = Math.min(8192, Math.max(1, Math.round(width))),
-        following = followingChartHistory(),
-        overscan = following ? Math.min(span, 5000) : span,
-        fetchRange = { min: range.min - (following ? 0 : overscan), max: range.max + overscan },
-        visibleRange = { ...range };
-    if (chartHistoryBoundsValid(bounds)) {
-        visibleRange.min = Math.max(bounds.min, range.min);
-        visibleRange.max = Math.min(bounds.max, range.max);
-        if (!following) {
-            fetchRange.min = Math.max(bounds.min, fetchRange.min);
-            fetchRange.max = Math.min(bounds.max, fetchRange.max);
-        }
-    }
-    // Clamp to retained bounds first: near an edge, the full overscan may already fit the column budget.
-    var excess = fetchRange.max - fetchRange.min - (span * 8192) / columns;
-    if (excess > 0) {
-        var trimLeft = Math.min(Math.max(0, range.min - fetchRange.min), excess / 2),
-            trimRight = Math.min(Math.max(0, fetchRange.max - range.max), excess - trimLeft);
-        trimLeft += excess - trimLeft - trimRight;
-        fetchRange.min += trimLeft;
-        fetchRange.max -= trimRight;
-    }
-    var target = {
-        configKey: config.configKey,
-        range: fetchRange,
-        width: Math.min(8192, Math.max(1, Math.round((columns * (fetchRange.max - fetchRange.min)) / span))),
-        names: config.names,
-        revision: status.revision,
-        snapshotId: state.remoteHistory.snapshotId
-    };
-    target.key = JSON.stringify([target.configKey, target.revision, target.range, target.width]);
-    target.overviewRange = chartHistoryBoundsValid(bounds) ? { ...bounds } : null;
-    target.overviewWidth = Math.min(4096, Math.max(64, Math.round(width)));
-    if (state.remoteHistory.target && state.remoteHistory.target.configKey !== target.configKey)
-        state.remoteHistory.overviewDueAt = null;
-    state.remoteHistory.target = target;
-    var view = state.remoteHistory.view,
-        msPerColumn = view ? Math.max(1, view.range.max - view.range.min) / view.width : Infinity,
-        desiredResolution = span / columns,
-        followRefreshInterval = Math.max(80, span / Math.max(1, width)),
-        epsilon = Math.max(0.001, span * 1e-9),
-        needsDetail =
-            !view ||
-            view.configKey !== target.configKey ||
-            visibleRange.min < view.range.min - epsilon ||
-            visibleRange.max > view.range.max + epsilon ||
-            msPerColumn > desiredResolution * 1.5 ||
-            msPerColumn < desiredResolution / 3 ||
-            (!state.frozen &&
-                status.revision !== view.revision &&
-                now - view.receivedAt >= (following ? followRefreshInterval : 1000));
-    // Only the latest detail is pending. Overview work is derived from target when the slot opens.
-    // A failed request is not repeated for the same key; overview failures back off for 5 s.
-    var inFlight = state.remoteHistory.inFlight,
-        failed = state.remoteHistory.failed;
-    state.remoteHistory.pending =
-        needsDetail &&
-        !(inFlight && inFlight.purpose === "detail" && inFlight.key === target.key) &&
-        !(failed && failed.purpose === "detail" && failed.key === target.key)
-            ? { ...target, purpose: "detail" }
-            : null;
-    var overview = state.remoteHistory.overview,
-        overviewInFlight = inFlight && inFlight.purpose === "overview" && inFlight.configKey === target.configKey,
-        overviewFailed =
-            failed && failed.purpose === "overview" && failed.configKey === target.configKey && now - failed.at < 5000,
-        missingOverview = !overview || overview.configKey !== target.configKey,
-        staleOverview = !state.frozen && overview && overview.revision !== status.revision;
-    if (
-        target.overviewRange &&
-        !overviewInFlight &&
-        !overviewFailed &&
-        (missingOverview || (staleOverview && now - state.remoteHistory.lastOverviewRequest >= 1000))
-    ) {
-        if (state.remoteHistory.overviewDueAt === null)
-            state.remoteHistory.overviewDueAt = missingOverview ? now : state.remoteHistory.lastOverviewRequest + 1000;
-    } else state.remoteHistory.overviewDueAt = null;
-    dispatchChartViewport();
+    historyViewport.request(range, width);
 }
 function dispatchChartViewport() {
-    if (historyClearPending || state.remoteHistory.inFlight || !state.remoteHistory.target) return;
-    var now = performance.now(),
-        overviewDue = state.remoteHistory.overviewDueAt !== null;
-    if (!state.remoteHistory.pending && !overviewDue) return;
-    var elapsed = now - state.remoteHistory.lastRequest;
-    if (elapsed < 80) {
-        state.dirty = true;
-        return;
-    }
-    var request;
-    if (overviewDue && (!state.remoteHistory.pending || now - state.remoteHistory.overviewDueAt > 1000)) {
-        request = {
-            ...state.remoteHistory.target,
-            purpose: "overview",
-            range: state.remoteHistory.target.overviewRange,
-            width: state.remoteHistory.target.overviewWidth
-        };
-        state.remoteHistory.lastOverviewRequest = now;
-        state.remoteHistory.overviewDueAt = null;
-    } else {
-        request = state.remoteHistory.pending;
-        state.remoteHistory.pending = null;
-    }
-    request.requestId = ++state.remoteHistory.nextId;
-    state.remoteHistory.inFlight = request;
-    state.remoteHistory.lastRequest = now;
-    post({
-        type: "chartViewport",
-        names: request.names,
-        range: request.range,
-        width: request.width,
-        snapshotId: request.snapshotId,
-        requestId: request.requestId,
-        historyRevision: historyRevision
-    });
+    historyViewport.dispatch();
 }
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
@@ -471,7 +333,9 @@ const state = {
         pending: null,
         target: null,
         overviewDueAt: null,
+        refreshAt: Infinity,
         lastOverviewRequest: -Infinity,
+        lastDetailRequest: -Infinity,
         operation: null,
         lastRequest: -Infinity
     },
@@ -498,6 +362,18 @@ const state = {
     importPicks: new Map(),
     symbols: new Map()
 };
+const historyViewport = EmberProbeChartHistoryViewport.create({
+    state,
+    configFor: chartHistoryConfig,
+    following: followingChartHistory,
+    validBounds: chartHistoryBoundsValid,
+    clearPending: () => historyClearPending,
+    historyRevision: () => historyRevision,
+    now: () => performance.now(),
+    post,
+    isComposite,
+    lowerBound: Inspection.lowerBound
+});
 // The value panel shows its cards in two columns from this width on.
 var PANEL_COLUMNS_WIDTH = 480;
 var saved = api && api.getState ? api.getState() : null,
@@ -513,6 +389,7 @@ const panelLayout = EmberProbePanelLayout.create({
     save: () => saveUi(),
     arrange: () => arrangeVariableCards(),
     changed: () => {
+        viewportController?.invalidateCanvas();
         state.dirty = true;
     }
 });
@@ -1677,6 +1554,9 @@ function updateChartEmpty(series, hasBounds) {
 }
 var viewportController = EmberProbeChartViewportController.create({
     canvas,
+    wrap: $("chartWrap"),
+    document,
+    window,
     stage: chartStage,
     chartState,
     state,
@@ -1766,81 +1646,8 @@ canvas.addEventListener("click", function (e) {
         return;
     if (Inspection.hit(chartState.curveGeometry.value, point).length) freezeChart();
 });
-// Keep the neighbour inside each cut so coarse and detailed lines meet without bridging gaps.
-// The coarse underlay is drawn only outside the detail curve. A segment that continues across a cut joins the
-// detail curve's own end point, so no coarse point lands inside the detail range (where it would shift on every
-// commit and make the curve's visible end jump); a segment ending before the cut keeps its gap.
-function chartOverviewOutside(arr, range, first, last) {
-    if (!arr.length) return [];
-    var parts = [],
-        leftCut = first ? first.t : range.min,
-        rightCut = last ? last.t : range.max;
-    if (arr[0].t < leftCut) {
-        var left = Inspection.lowerBound(arr, leftCut),
-            before = arr.slice(0, left);
-        if (left < arr.length && first) before.push(first);
-        parts.push(before);
-    }
-    if (arr[arr.length - 1].t > rightCut) {
-        var right = Inspection.lowerBound(arr, rightCut);
-        while (right < arr.length && arr[right].t === rightCut) right++;
-        var after = arr.slice(right);
-        if (right > 0 && last) after.unshift(last);
-        parts.push(after);
-    }
-    return parts;
-}
 function chartData(range, width) {
-    requestChartViewport(range, width);
-    // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
-    // arrives, but only for curves whose type/address identity is unchanged.
-    var configKey = chartHistoryConfig().configKey,
-        view = state.remoteHistory.view,
-        overview = state.remoteHistory.overview,
-        cached = state.remoteHistory.composed;
-    if (cached && cached.view === view && cached.overview === overview && cached.configKey === configKey)
-        return cached.series;
-    var composed = [];
-    function identity(item) {
-        return JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
-    }
-    function add(part, arr, detail, current) {
-        var idx = state.watch.findIndex(function (item) {
-            return item.name === part.name;
-        });
-        if (idx < 0 || state.hidden[part.name] || isComposite(state.watch[idx]) || !arr.length) return;
-        if (!current && (!part.item || identity(part.item) !== identity(state.watch[idx]))) return;
-        composed.push({
-            item: part.item || state.watch[idx],
-            idx: idx,
-            arr: arr,
-            ...(detail ? { visibleCount: part.visibleCount } : {})
-        });
-    }
-    if (view)
-        view.series.forEach(function (part) {
-            add(part, part.arr, true, view.configKey === configKey);
-        });
-    var ends = new Map();
-    if (view)
-        view.series.forEach(function (part) {
-            if (!part.arr.length) return;
-            var end = ends.get(part.name);
-            if (!end) ends.set(part.name, { first: part.arr[0], last: part.arr[part.arr.length - 1] });
-            else end.last = part.arr[part.arr.length - 1];
-        });
-    if (overview)
-        overview.series.forEach(function (part) {
-            var end = ends.get(part.name),
-                segments = view
-                    ? chartOverviewOutside(part.arr, view.range, end && end.first, end && end.last)
-                    : [part.arr];
-            segments.forEach(function (arr) {
-                add(part, arr, false, overview.configKey === configKey);
-            });
-        });
-    state.remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
-    return composed;
+    return historyViewport.compose(range, width);
 }
 function retainedTimeBounds() {
     return state.remoteHistory.status && state.remoteHistory.status.bounds;
@@ -1936,42 +1743,76 @@ function formatChartTime(ms) {
         (Number.isInteger(ms) ? "" : (ms - Math.floor(ms)).toFixed(3).slice(2, 5).replace(/0+$/, ""))
     );
 }
+var timelineCache = {};
 function refreshChartTimeline() {
     var overview = $("chartOverview"),
         from = $("chartFromRange"),
-        to = $("chartToRange");
+        to = $("chartToRange"),
+        axisStart = $("chartAxisStart"),
+        axisEnd = $("chartAxisEnd");
     if (!chartState.bounds || !chartState.x) {
-        overview.classList.add("disabled");
-        from.disabled = to.disabled = true;
-        overview.removeAttribute("title");
-        $("chartAxisStart").textContent = $("chartAxisEnd").textContent = "00:00";
+        if (timelineCache.disabled !== true) {
+            timelineCache = { disabled: true, start: "00:00", end: "00:00" };
+            overview.classList.add("disabled");
+            from.disabled = to.disabled = true;
+            overview.removeAttribute("title");
+            axisStart.textContent = axisEnd.textContent = "00:00";
+        }
         return;
     }
-    overview.classList.remove("disabled");
-    from.disabled = to.disabled = false;
+    if (timelineCache.disabled !== false) {
+        timelineCache.disabled = false;
+        overview.classList.remove("disabled");
+        from.disabled = to.disabled = false;
+        timelineCache.min = "0";
+        from.min = to.min = "0";
+    }
     // While smooth following, the timeline ends at the display clock rather than the stepped data edge, so the
     // selection stays pinned to the right end instead of sawing between commits.
     var bounds =
             chartState.smoothFollowing && chartState.follow
                 ? { min: chartState.bounds.min, max: Math.max(chartState.bounds.min + 1, chartState.x.max) }
                 : chartState.bounds,
-        total = Math.max(1, Math.round(VP.span(bounds))),
-        a = Math.max(0, Math.round(chartState.x.min - bounds.min)),
-        b = Math.min(total, Math.round(chartState.x.max - bounds.min)),
+        total = String(Math.max(1, Math.round(VP.span(bounds)))),
+        a = String(Math.max(0, Math.round(chartState.x.min - bounds.min))),
+        b = String(Math.min(Number(total), Math.round(chartState.x.max - bounds.min))),
         percent = VP.toPercent(chartState.x, bounds),
-        origin = Number.isFinite(samplingOrigin) ? samplingOrigin : bounds.min;
-    from.min = to.min = "0";
-    from.max = to.max = String(total);
-    from.value = String(a);
-    to.value = String(b);
-    $("chartRangeFill").style.left = percent.left + "%";
-    $("chartRangeFill").style.width = percent.width + "%";
-    $("chartAxisStart").textContent = formatElapsed(bounds.min - origin);
-    $("chartAxisEnd").textContent = formatElapsed(bounds.max - origin);
-    overview.title = t("lw.chartSelectedRange", {
-        from: formatElapsed(chartState.x.min - origin),
-        to: formatElapsed(chartState.x.max - origin)
-    });
+        left = percent.left + "%",
+        width = percent.width + "%",
+        origin = Number.isFinite(samplingOrigin) ? samplingOrigin : bounds.min,
+        startText = formatElapsed(bounds.min - origin),
+        endText = formatElapsed(bounds.max - origin),
+        title = t("lw.chartSelectedRange", {
+            from: formatElapsed(chartState.x.min - origin),
+            to: formatElapsed(chartState.x.max - origin)
+        });
+    if (timelineCache.max !== total) {
+        timelineCache.max = total;
+        from.max = to.max = total;
+    }
+    if (from.value !== a) from.value = a;
+    if (to.value !== b) to.value = b;
+    var fill = $("chartRangeFill");
+    if (timelineCache.left !== left) {
+        timelineCache.left = left;
+        fill.style.left = left;
+    }
+    if (timelineCache.width !== width) {
+        timelineCache.width = width;
+        fill.style.width = width;
+    }
+    if (timelineCache.start !== startText) {
+        timelineCache.start = startText;
+        axisStart.textContent = startText;
+    }
+    if (timelineCache.end !== endText) {
+        timelineCache.end = endText;
+        axisEnd.textContent = endText;
+    }
+    if (timelineCache.title !== title) {
+        timelineCache.title = title;
+        overview.title = title;
+    }
 }
 function draw(now) {
     var smooth = smoothFollowEnabled();
@@ -1981,22 +1822,31 @@ function draw(now) {
             state.dirty = true;
         }
         resetFollowClock();
-    } else {
-        advanceFollowClock(performance.now());
+    } else if (advanceFollowClock(performance.now())) state.dirty = true;
+    if (
+        chartState.autoY &&
+        (chartState.yFitMotion?.pending || (chartState.fitHold != null && now - chartState.fitHold >= VP.FIT_HOLD_MS))
+    )
         state.dirty = true;
-    }
-    if (!state.dirty) return;
     var animating = smooth || chartState.yFitMotion?.pending;
-    var interval = animating ? Math.max(16, Math.min(80, 2 * (chartState.drawDuration || 0))) : 80;
-    if ((smooth || !chartState.fastDirty) && now - lastDraw < interval) return;
+    var interval = animating ? Math.min(80, 2 * (chartState.drawDuration || 0)) : 80;
+    if (!state.dirty || ((smooth || !chartState.fastDirty) && now - lastDraw < interval)) {
+        if (performance.now() >= state.remoteHistory.refreshAt)
+            requestChartViewport(chartState.x, viewportController.canvasSize().w);
+        else dispatchChartViewport();
+        return;
+    }
     var drawStarted = performance.now();
     lastDraw = now;
     state.dirty = false;
     chartState.fastDirty = false;
-    if (!canvas.clientWidth || !canvas.clientHeight) return;
+    var size = viewportController.canvasSize(),
+        canvasWidth = size.w,
+        canvasHeight = size.h;
+    if (!canvasWidth || !canvasHeight) return;
     var hasBounds = syncTimeBounds(),
-        series = chartData(chartState.x, canvas.clientWidth);
-    refreshChartTimeline();
+        series = chartData(chartState.x, canvasWidth),
+        bodyStyle = viewportController.themeStyle();
     chartState.selectedName = chartState.hoverName;
     window.EmberProbeChart.paint({
         canvas,
@@ -2004,11 +1854,11 @@ function draw(now) {
         chartState,
         norm,
         jitterBands,
-        backgroundIcon: chartBackground.bitmap(getComputedStyle(document.body)),
+        backgroundIcon: chartBackground.bitmap(bodyStyle),
         series: seriesGain.project(series),
         hasBounds,
         pixelRatio: window.devicePixelRatio * EmberProbePageZoom.scale(document),
-        style: getComputedStyle(document.body),
+        style: bodyStyle,
         elements: { chartEmpty: $("chartEmpty"), points: $("points"), range: $("range") },
         VP,
         padRange: VP.padRange,
@@ -2019,10 +1869,14 @@ function draw(now) {
         formatChartTime,
         t,
         now,
-        smoothY: smoothFollowEnabled(true)
+        smoothY: smoothFollowEnabled(true),
+        width: canvasWidth,
+        height: canvasHeight
     });
+    refreshChartTimeline();
     updateChartEmpty(series, hasBounds);
-    historyLoading.textContent = t("lw.historyLoading");
+    var loadingText = t("lw.historyLoading");
+    if (historyLoading.textContent !== loadingText) historyLoading.textContent = loadingText;
     historyLoading.hidden =
         !state.watch.some(function (item) {
             return !state.hidden[item.name] && !isComposite(item);
@@ -2043,10 +1897,9 @@ function draw(now) {
                 }))
         );
     if (!historyLoading.hidden && !series.length) {
-        $("chartEmpty").textContent = t("lw.historyLoading");
+        $("chartEmpty").textContent = loadingText;
     }
     if (controls) controls.refresh(series);
-    if (chartState.autoY && (chartState.fitHold != null || chartState.yFitMotion?.pending)) state.dirty = true;
     var duration = performance.now() - drawStarted;
     chartState.drawDuration =
         chartState.drawDuration == null
@@ -2383,8 +2236,10 @@ window.EmberProbeMessages.connect(window, {
         var fresh = window.EmberProbeRuntime.liveState({ running: running }, m).fresh;
         document.body.classList.toggle("debug-stale", !fresh);
         if (typeof m.running === "boolean") {
-            if (running !== m.running)
+            if (running !== m.running) {
                 viewportController.acquisitionChanged(m.running, state.frozen || state.remoteHistory.operation);
+                state.dirty = true;
+            }
             running = m.running;
             if (!running) {
                 $("rate").textContent = rateText(0, 0);
@@ -2616,7 +2471,8 @@ window.EmberProbeMessages.connect(window, {
     },
     chartHistoryStatus: function (m) {
         if (historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
-        if (m.limited && !state.remoteHistory.liveStatus?.limited)
+        var previousStatus = state.remoteHistory.liveStatus;
+        if (m.limited && !previousStatus?.limited)
             setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
         state.remoteHistory.liveStatus = m;
         if (!m.bounds && m.limited && !state.frozen) {
@@ -2633,7 +2489,11 @@ window.EmberProbeMessages.connect(window, {
                 performance.now() - view.receivedAt > 1000
             )
                 state.remoteHistory.status = m;
-            state.dirty = true;
+            state.dirty ||=
+                previousStatus?.revision !== m.revision ||
+                previousStatus?.bounds?.min !== m.bounds?.min ||
+                previousStatus?.bounds?.max !== m.bounds?.max ||
+                previousStatus?.limited !== m.limited;
         }
         if (samplingOrigin === null && m.bounds) samplingOrigin = m.bounds.min;
     },
@@ -2655,6 +2515,7 @@ window.EmberProbeMessages.connect(window, {
                     purpose: request.purpose,
                     at: performance.now()
                 };
+                state.dirty = true;
             } else {
                 state.remoteHistory[request.purpose === "overview" ? "overview" : "view"] = {
                     series: window.EmberProbeChartTransport.decodeViewport(m.series || []),
@@ -2680,10 +2541,13 @@ window.EmberProbeMessages.connect(window, {
                     commitFollowClock(m.bounds);
                     syncTimeBounds();
                 }
+                if (request.purpose !== "overview" || !historyViewport.covers(chartState.x, request.configKey)) {
+                    state.dirty = true;
+                    if (request.purpose === "detail") chartState.fastDirty = true;
+                }
             }
-            state.dirty = true;
         }
-        requestChartViewport(chartState.x, canvas.clientWidth);
+        requestChartViewport(chartState.x, viewportController.canvasSize().w);
     },
     chartFreezeResult: function (m) {
         if (m.historyRevision !== historyRevision || m.requestId !== state.remoteHistory.operation) return;
@@ -2751,19 +2615,16 @@ EmberProbePageZoom.create({
     state,
     saved: saved?.pageZoom,
     save: saveUi,
-    changed: panelLayout.apply
+    changed: function () {
+        viewportController.invalidateCanvas();
+        panelLayout.apply();
+    }
 });
 panelLayout.apply();
 window.addEventListener("resize", function () {
+    viewportController.invalidateCanvas();
     if (!$("frequencyPopup").hidden) positionFrequencyPopup();
 });
-new ResizeObserver(function () {
-    state.dirty = true;
-}).observe($("chartWrap"));
-// VS Code updates body classes when its theme changes. Repaint frozen charts too.
-new MutationObserver(function () {
-    state.dirty = true;
-}).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 renderUnlimited(true);
 samplingSpeedControl.render();
 updateRun();

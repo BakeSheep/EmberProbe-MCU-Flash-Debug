@@ -68,7 +68,9 @@
         formatChartTime,
         t,
         now = 0,
-        smoothY = false
+        smoothY = false,
+        width,
+        height
     }) {
         const $ = (id) => elements[id];
         const sourceSeries = series;
@@ -78,9 +80,12 @@
         smoothY = smoothY && chartState.autoY && !chartState.heldFitX;
         if (!smoothY) chartState.yFitMotion = null;
         inspection = inspection || defaultInspection;
-        const prepareKey = norm;
-        if (!chartState.prepared || chartState.prepared.source !== series || chartState.prepared.key !== prepareKey)
-            chartState.prepared = { source: series, key: prepareKey, value: offsetSeries(series, norm) };
+        const screenY = inspection.screenY;
+        if (!chartState.prepared || chartState.prepared.source !== series || chartState.prepared.key !== norm) {
+            const value = offsetSeries(series, norm);
+            const ranges = value.series.map((s) => VP.summarizeRanges(s.arr));
+            chartState.prepared = { source: series, key: norm, value, ranges };
+        }
         const prepared = chartState.prepared.value;
         if (
             !norm &&
@@ -115,7 +120,7 @@
                 height = 17,
                 left = align === "center" ? x - width / 2 : x,
                 top = y - height / 2;
-            left = Math.max(1, Math.min(canvas.clientWidth - width - 1, left));
+            left = Math.max(1, Math.min((chartState.geometry?.w ?? canvas.clientWidth) - width - 1, left));
             ctx.fillStyle = fill;
             ctx.strokeStyle = stroke;
             ctx.lineWidth = 1;
@@ -165,8 +170,8 @@
         }
         function paint() {
             var dpr = Math.max(1, pixelRatio || 1),
-                w = canvas.clientWidth,
-                h = canvas.clientHeight;
+                w = width ?? canvas.clientWidth,
+                h = height ?? canvas.clientHeight;
             if (!w || !h) return;
             if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
                 canvas.width = Math.round(w * dpr);
@@ -235,8 +240,12 @@
                 (!chartState.smoothFollowing && held.source !== sourceSeries)
             ) {
                 const ranges = new Map();
-                series.forEach(function (s) {
-                    const { min: lo, max: hi, count } = VP.visibleRange(s.arr, chartState.x);
+                series.forEach(function (s, index) {
+                    const {
+                        min: lo,
+                        max: hi,
+                        count
+                    } = VP.visibleRange(s.arr, chartState.x, chartState.prepared.ranges[index]);
                     vMin = Math.min(vMin, lo);
                     vMax = Math.max(vMax, hi);
                     total += count;
@@ -285,10 +294,19 @@
                 descColor = bs.getPropertyValue("--vscode-descriptionForeground") || "#999",
                 background = bs.getPropertyValue("--vscode-editor-background") || "#1e1e1e",
                 focus = bs.getPropertyValue("--vscode-focusBorder") || "#007fd4";
-            const xSpan = VP.span(chartState.x),
-                ySpan = VP.span(chartState.y),
+            // Project at the fitted scale so easing the displayed axis does not rebuild the curve or its bands.
+            let geometry = chartState.curveGeometry;
+            const fit = chartState.yFitMotion?.target ?? chartState.y,
+                xSpan = VP.span(chartState.x),
+                fitSpan = VP.span(fit),
+                // Recentring the same fit can change the span by a few floating-point bits.
+                ySpan =
+                    smoothY && geometry && Math.abs(fitSpan - geometry.ySpan) <= fitSpan * 1e-12
+                        ? geometry.ySpan
+                        : fitSpan,
                 pxPerMs = pw / xSpan,
-                pxPerValue = ph / ySpan;
+                pxPerValue = ph / VP.span(chartState.y),
+                referencePxPerValue = ph / ySpan;
             const geometryKey = JSON.stringify([
                 norm,
                 !!jitterBands,
@@ -303,7 +321,6 @@
                 padB,
                 norm ? series.map((s) => [s.vMin, s.vMax]) : null
             ]);
-            let geometry = chartState.curveGeometry;
             if (
                 !geometry ||
                 geometry.source !== sourceSeries ||
@@ -315,9 +332,9 @@
                 // between the band and the line whenever the view scrolls or "All" grows.
                 const binMs = inspection.columnBin(xSpan, pw),
                     xRef = Math.floor(chartState.x.min / binMs) * binMs,
-                    yRef = chartState.y.max,
-                    min = xRef - xSpan / 2,
-                    max = chartState.x.max + xSpan / 2;
+                    yRef = fit.max,
+                    min = chartState.smoothFollowing ? xRef : xRef - xSpan / 2,
+                    max = chartState.x.max + (chartState.smoothFollowing ? Math.min(xSpan / 2, 5000) : xSpan / 2);
                 geometry = chartState.curveGeometry = {
                     source: sourceSeries,
                     key: geometryKey,
@@ -325,6 +342,7 @@
                     max,
                     xRef,
                     yRef,
+                    ySpan,
                     value: series.map((s, index) => {
                         const from = Math.max(0, inspection.lowerBound(s.arr, min) - 1),
                             to = Math.min(s.arr.length, inspection.lowerBound(s.arr, max) + 1),
@@ -337,7 +355,7 @@
                             const p = s.arr[from + i],
                                 value = norm ? (p.v - s.vMin) / (s.vMax - s.vMin || 1) : p.v;
                             xs[i] = (p.t - xRef) * pxPerMs;
-                            ys[i] = (yRef - value) * pxPerValue;
+                            ys[i] = (yRef - value) * referencePxPerValue;
                             if (columns) columns[i] = Math.floor((p.t - xRef) / binMs);
                         }
                         return {
@@ -360,6 +378,7 @@
             for (const curve of geometry.value) {
                 curve.dx = padL + (geometry.xRef - chartState.x.min) * pxPerMs;
                 curve.dy = padT + (chartState.y.max - geometry.yRef) * pxPerValue;
+                curve.yScale = pxPerValue / referencePxPerValue;
             }
             const pointer = chartState.pointer;
             const inPlot =
@@ -405,9 +424,9 @@
                     const n = band.xs.length;
                     if (band.xs[n - 1] < left || band.xs[0] > right) continue;
                     ctx.beginPath();
-                    ctx.moveTo(band.xs[0] + s.dx, band.top[0] + s.dy);
-                    for (let k = 1; k < n; k++) ctx.lineTo(band.xs[k] + s.dx, band.top[k] + s.dy);
-                    for (let k = n - 1; k >= 0; k--) ctx.lineTo(band.xs[k] + s.dx, band.bottom[k] + s.dy);
+                    ctx.moveTo(band.xs[0] + s.dx, screenY(s, band.top[0]));
+                    for (let k = 1; k < n; k++) ctx.lineTo(band.xs[k] + s.dx, screenY(s, band.top[k]));
+                    for (let k = n - 1; k >= 0; k--) ctx.lineTo(band.xs[k] + s.dx, screenY(s, band.bottom[k]));
                     ctx.closePath();
                     ctx.fill();
                 }
@@ -421,9 +440,9 @@
                         started = false;
                         continue;
                     }
-                    if (started) ctx.lineTo(xs[j] + s.dx, ys[j] + s.dy);
+                    if (started) ctx.lineTo(xs[j] + s.dx, screenY(s, ys[j]));
                     else {
-                        ctx.moveTo(xs[j] + s.dx, ys[j] + s.dy);
+                        ctx.moveTo(xs[j] + s.dx, screenY(s, ys[j]));
                         started = true;
                     }
                 }
@@ -441,7 +460,21 @@
                 const a = indices ? indices[k - 1] : k - 1,
                     b = indices ? indices[k] : k;
                 if (gap(a) || gap(b)) return null;
-                return { x: right, y: ys[a] + ((ys[b] - ys[a]) * (right - xs[a])) / (xs[b] - xs[a]) };
+                return {
+                    x: right,
+                    y: xs[b] === xs[a] ? ys[b] : ys[a] + ((ys[b] - ys[a]) * (right - xs[a])) / (xs[b] - xs[a])
+                };
+            }
+            function lastBandedHead(banded, left, right) {
+                for (
+                    let j = Math.min(banded.xs.length, inspection.lowerNumber(banded.xs, right, null, true)) - 1;
+                    j >= 0;
+                    j--
+                ) {
+                    if (banded.xs[j] < left) break;
+                    if (!Number.isNaN(banded.ys[j])) return { x: banded.xs[j], y: banded.ys[j] };
+                }
+                return null;
             }
             ctx.save();
             ctx.beginPath();
@@ -478,7 +511,7 @@
                                 continue;
                             }
                             const x = s.xs[i] + s.dx,
-                                y = s.ys[i] + s.dy;
+                                y = screenY(s, s.ys[i]);
                             if (started) ctx.lineTo(x, y);
                             else {
                                 ctx.moveTo(x, y);
@@ -492,22 +525,27 @@
                         const head = (chartState.smoothFollowing &&
                             (s.banded
                                 ? edgeHead(s.banded.xs, s.banded.ys, right, null, (i) => Number.isNaN(s.banded.ys[i]))
-                                : edgeHead(s.xs, s.ys, right, s.drawing, (i) => s.raw[i].v === null))) || {
-                            x: s.xs[last],
-                            y: s.ys[last]
-                        };
+                                : edgeHead(s.xs, s.ys, right, s.drawing, (i) => s.raw[i].v === null))) ||
+                            (s.banded && lastBandedHead(s.banded, left, right)) || {
+                                x: s.xs[last],
+                                y: s.ys[last]
+                            };
                         ctx.fillStyle = appearance.color;
                         ctx.beginPath();
-                        ctx.arc(head.x + s.dx, head.y + s.dy, 2.8, 0, Math.PI * 2);
+                        ctx.arc(head.x + s.dx, screenY(s, head.y), 2.8, 0, Math.PI * 2);
                         ctx.fill();
                     }
                 });
             ctx.restore();
             drawCrosshair({ background: background, focus: focus });
-            $("points").textContent = t("lw.points", { n: total });
-            $("range").textContent = norm
-                ? t("lw.normalized")
-                : axisText(chartState.y.min) + " ～ " + axisText(chartState.y.max);
+            const pointsEl = $("points"),
+                rangeEl = $("range"),
+                pointsText = t("lw.points", { n: total }),
+                rangeText = norm
+                    ? t("lw.normalized")
+                    : axisText(chartState.y.min) + " ～ " + axisText(chartState.y.max);
+            if (pointsEl.textContent !== pointsText) pointsEl.textContent = pointsText;
+            if (rangeEl.textContent !== rangeText) rangeEl.textContent = rangeText;
         }
 
         paint();

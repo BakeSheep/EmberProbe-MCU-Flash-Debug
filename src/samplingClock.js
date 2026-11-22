@@ -7,7 +7,7 @@ const HIGH_RESOLUTION_LEAD_MS = 1.5;
 const STANDALONE_READ_BUDGET_RATIO = 0.85;
 
 function intervalForReadCost(target, duration, threshold = STANDALONE_READ_BUDGET_RATIO) {
-    return Math.min(10000, Math.max(target, Math.ceil(duration / threshold)));
+    return Math.min(10000, Math.max(target, duration / threshold));
 }
 
 function p95SamplingDuration(durations) {
@@ -50,45 +50,48 @@ const SYSTEM_CLOCK = Object.freeze({
     monotonicMs: () => Number(process.hrtime.bigint()) / 1e6,
     sampleNow: () => performance.timeOrigin + performance.now(),
     schedule: (callback, delayMs) => setTimeout(callback, delayMs),
-    cancel: (timer) => clearTimeout(timer)
+    cancel: (timer) => clearTimeout(timer),
+    immediate: (callback) => setImmediate(callback),
+    cancelImmediate: (timer) => clearImmediate(timer)
 });
 
-// For short waits on Windows, yield with setImmediate so a late timer wake-up cannot skip a 5 ms period.
-// For longer waits without a fine timer, wake one coarse tick early. The Worker stays responsive to pause/stop.
+// With a fine Windows timer, sleep for most of the wait. Without one, wake a coarse tick early and
+// yield with setImmediate for the short remainder so the Worker can still process pause/stop messages.
 function scheduleSamplingTick(delayMs, callback, options = {}) {
+    const clock = options.clock || SYSTEM_CLOCK;
     if (options.immediate === true) {
-        const handle = setImmediate(callback);
-        return { cancel: () => clearImmediate(handle) };
+        const handle = clock.immediate(callback);
+        return { cancel: () => clock.cancelImmediate(handle) };
     }
     const platform = options.platform || process.platform;
     const highResolution = options.highResolution === true;
     if (platform !== "win32") {
-        const handle = setTimeout(callback, Math.max(0, delayMs));
-        return { cancel: () => clearTimeout(handle) };
+        const handle = clock.schedule(callback, Math.max(0, delayMs));
+        return { cancel: () => clock.cancel(handle) };
     }
-    const nowNs = options.nowNs || (() => process.hrtime.bigint());
-    const deadlineNs = nowNs() + BigInt(Math.round(Math.max(0, delayMs) * 1e6));
+    const deadline = clock.monotonicMs() + Math.max(0, delayMs);
+    const activeWait = highResolution ? HIGH_RESOLUTION_LEAD_MS : WINDOWS_ACTIVE_WAIT_MS;
     let handle = null;
     let kind = null;
     let cancelled = false;
 
     const arm = () => {
         if (cancelled) return;
-        const remainingMs = Number(deadlineNs - nowNs()) / 1e6;
+        const remainingMs = deadline - clock.monotonicMs();
         if (remainingMs <= 0) {
-            handle = setImmediate(() => {
+            handle = clock.immediate(() => {
                 if (!cancelled) callback();
             });
             kind = "immediate";
-        } else if (remainingMs <= WINDOWS_ACTIVE_WAIT_MS) {
-            handle = setImmediate(arm);
+        } else if (remainingMs <= activeWait) {
+            handle = clock.immediate(arm);
             kind = "immediate";
         } else {
             const requestedMs = Math.max(
                 1,
                 Math.floor(remainingMs - (highResolution ? HIGH_RESOLUTION_LEAD_MS : WINDOWS_TIMER_GRID_MS))
             );
-            handle = setTimeout(arm, requestedMs);
+            handle = clock.schedule(arm, requestedMs);
             kind = "timeout";
         }
     };
@@ -97,8 +100,8 @@ function scheduleSamplingTick(delayMs, callback, options = {}) {
     return {
         cancel() {
             cancelled = true;
-            if (kind === "immediate") clearImmediate(handle);
-            else if (kind === "timeout") clearTimeout(handle);
+            if (kind === "immediate") clock.cancelImmediate(handle);
+            else if (kind === "timeout") clock.cancel(handle);
             handle = null;
         }
     };

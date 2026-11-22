@@ -5,6 +5,7 @@ const {
     DEFAULT_FREQUENCY_HZ,
     frequencyHzFromInterval,
     intervalMsFromHz,
+    clampSamplingIntervalMs,
     normalizeFrequencyHz
 } = require("../samplingFrequency");
 const { writeConnectionIdentity } = require("../writeAuthorization");
@@ -86,6 +87,7 @@ class LiveWatchController {
         this._runtimeOverBudgetKey = "";
         this._runtimeRamCache = null;
         this._consumerTypesCache = null;
+        this._compositeMapsCache = null;
         this.lastDisconnect = null;
     }
     // A new ELF has other RAM sections.
@@ -326,15 +328,21 @@ class LiveWatchController {
     }
     invalidateConsumerTypes() {
         this._consumerTypesCache = null;
+        this._compositeMapsCache = null;
     }
     // Runtime-only composites (an expanded pointee has a type graph, not a static layout) belong here
     // too, so a failed read reaches their tree as an error rather than becoming a scalar sample.
     compositeMap(key) {
+        const list = this.host._scalarWatchList(key);
+        const cache = (this._compositeMapsCache ||= new Map());
+        const cached = cache.get(key);
+        if (cached?.list === list) return cached.map;
         const map = new Map();
-        for (const item of this.host._scalarWatchList(key)) {
+        for (const item of list) {
             if (item.isComposite && (item.compositeLayout || item.runtimeLayout))
                 map.set(item.name, { ...item, layout: item.compositeLayout || null });
         }
+        cache.set(key, { list, map });
         return map;
     }
     async refreshSamplingPlan() {
@@ -614,7 +622,7 @@ class LiveWatchController {
         for (const entry of this.host._livePanels.values()) entry.post(state);
     }
     setIntervalMs(intervalMs, frequencyHz) {
-        const value = validation.clampInteger(intervalMs, intervalMsFromHz(this.frequencyHz), 5, 10000);
+        const value = clampSamplingIntervalMs(intervalMs, intervalMsFromHz(this.frequencyHz));
         this.frequencyHz =
             frequencyHz === undefined
                 ? value === this.intervalMs
@@ -710,7 +718,7 @@ class LiveWatchController {
                 });
             return;
         }
-        this.host._pendingSidebarScalars = (this.host._pendingSidebarScalars || []).concat(scalarSamples);
+        this.host._pendingSidebarScalars = latestByName(this.host._pendingSidebarScalars, scalarSamples);
         // A short relocation still invalidates a queued value even when the final frame restores the address.
         this.host._pendingSidebarComposites = (this.host._pendingSidebarComposites || []).concat(compositeSamples);
         if (!this.host._sidebarBatchTimer) {
@@ -824,21 +832,28 @@ class LiveWatchController {
                       runtimeLeaves.samples.concat(decoded.scalarSamples)
                   )
                 : decoded.scalarSamples;
-            const graphTypes = new Map(
-                entry.historyItems
-                    ? entry.historyItems.map((item) => [item.name, item.type])
-                    : types.graphs.get(entry.watchKey)
-            );
+            const graphTypes =
+                entry.historyTypes ||
+                new Map(
+                    entry.historyItems
+                        ? entry.historyItems.map((item) => [item.name, item.type])
+                        : types.graphs.get(entry.watchKey)
+                );
+            const archiveNames = entry.archiveNames;
             if (recorded.length && this.host._chartHistory && !entry.archiveOnly)
                 this.host._historyFeed.queueAppend(entry, recorded, t);
             this.host._samplingArchive.append(
                 recorded.map((sample) => {
-                    const spec = graphTypes.get(sample.name);
-                    const type = typeof spec === "string" ? spec : spec.type;
+                    let archiveName = archiveNames?.get(sample.name);
+                    if (!archiveName) {
+                        const spec = graphTypes.get(sample.name);
+                        const type = typeof spec === "string" ? spec : spec.type;
+                        archiveName = `${sample.name} [${type}]`;
+                    }
                     const historyIdentity = entry.historyIdentities?.get(sample.name);
                     return {
                         ...sample,
-                        name: `${sample.name} [${type}]`,
+                        name: archiveName,
                         ...(historyIdentity ? { historyIdentity } : {})
                     };
                 }),
@@ -1187,7 +1202,7 @@ class LiveWatchController {
                     adaptiveAdapterSpeed: "sampling",
                     cwd,
                     port,
-                    intervalMs: validation.clampInteger(intervalMs ?? this.intervalMs, this.intervalMs, 5, 10000)
+                    intervalMs: clampSamplingIntervalMs(intervalMs ?? this.intervalMs, this.intervalMs)
                 },
                 {
                     onConnectionConfirmed: () => {

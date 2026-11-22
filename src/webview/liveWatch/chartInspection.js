@@ -24,10 +24,13 @@
         }
         return lo;
     }
+    function screenY(series, y) {
+        return y * (series.yScale ?? 1) + series.dy;
+    }
     function pointAt(series, index) {
         return {
             x: series.xs[index] + series.dx,
-            y: series.ys[index] + series.dy,
+            y: screenY(series, series.ys[index]),
             raw: series.raw[index]
         };
     }
@@ -207,6 +210,7 @@
     return {
         lowerBound,
         lowerNumber,
+        screenY,
         pointAt,
         columnBin,
         envelopeIndices,

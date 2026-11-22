@@ -503,14 +503,25 @@
             if (env.formatValue) return env.formatValue(name, point);
             return point ? (point.valueText ?? env.fmtNum(point.v)) : t("lw.noReading");
         }
-        let tooltipKey = "";
+        let tooltipKey = "",
+            lastRestoreHidden = null,
+            lastStatusText = null,
+            lastFreezeText = null,
+            lastSelected = undefined,
+            lastTooltipHidden = null,
+            lastTooltipLeft = null,
+            lastTooltipTop = null;
         function refresh() {
             const s = get(),
                 c = s.chart,
                 a = s.analysis;
-            $("restoreCurves").hidden = !a.previousHidden;
+            const restoreHidden = !a.previousHidden;
+            if (restoreHidden !== lastRestoreHidden) {
+                lastRestoreHidden = restoreHidden;
+                $("restoreCurves").hidden = restoreHidden;
+            }
             fitControl.refresh();
-            status.textContent =
+            const statusText =
                 t(
                     s.frozen
                         ? s.running
@@ -522,35 +533,59 @@
                 ) +
                 " · " +
                 t(yModeKey(c));
-            $("freeze").textContent = t(s.frozen ? "lw.resume" : "lw.freeze");
-            const hits = c.hits || [];
-            const labels = hits.map((hit) => (env.tooltipName ? env.tooltipName(hit.name) : hit.name));
-            const values = hits.map((hit) => value(hit.name, hit.point));
-            const key = JSON.stringify([hits, labels, values, hits.map((h) => s.style(h.name)), s.lang]);
-            tooltip.classList.toggle("hidden", !hits.length);
-
-            if (key !== tooltipKey) {
-                tooltipKey = key;
-                tooltip.textContent = "";
-                hits.forEach((hit, index) => {
-                    const row = doc.createElement("div");
-                    row.className = "curve-hit";
-                    row.style.borderLeftColor = s.style(hit.name).color;
-                    row.textContent = labels[index] + ": " + values[index];
-                    row.setAttribute("aria-label", labels[index] + ": " + values[index]);
-                    row.dataset.rawName = hit.name;
-                    tooltip.append(row);
-                });
+            if (statusText !== lastStatusText) {
+                lastStatusText = statusText;
+                status.textContent = statusText;
             }
-            const p = c.pointer || { x: 70, y: 20 };
-            tooltip.style.left =
-                Math.max(4, Math.min($("chartStage").clientWidth - tooltip.offsetWidth - 4, p.x + 16)) + "px";
-            tooltip.style.top =
-                Math.max(4, Math.min($("chartStage").clientHeight - tooltip.offsetHeight - 4, p.y + 16)) + "px";
+            const freezeText = t(s.frozen ? "lw.resume" : "lw.freeze");
+            if (freezeText !== lastFreezeText) {
+                lastFreezeText = freezeText;
+                $("freeze").textContent = freezeText;
+            }
+            const hits = c.hits || [];
+            const tooltipHidden = !hits.length;
+            if (tooltipHidden !== lastTooltipHidden) {
+                lastTooltipHidden = tooltipHidden;
+                tooltip.classList.toggle("hidden", tooltipHidden);
+            }
+            if (hits.length) {
+                const labels = hits.map((hit) => (env.tooltipName ? env.tooltipName(hit.name) : hit.name));
+                const values = hits.map((hit) => value(hit.name, hit.point));
+                const key = JSON.stringify([hits, labels, values, hits.map((h) => s.style(h.name)), s.lang]);
+                if (key !== tooltipKey) {
+                    tooltipKey = key;
+                    tooltip.textContent = "";
+                    hits.forEach((hit, index) => {
+                        const row = doc.createElement("div");
+                        row.className = "curve-hit";
+                        row.style.borderLeftColor = s.style(hit.name).color;
+                        row.textContent = labels[index] + ": " + values[index];
+                        row.setAttribute("aria-label", labels[index] + ": " + values[index]);
+                        row.dataset.rawName = hit.name;
+                        tooltip.append(row);
+                    });
+                }
+                const p = c.pointer || { x: 70, y: 20 };
+                const left =
+                    Math.max(4, Math.min($("chartStage").clientWidth - tooltip.offsetWidth - 4, p.x + 16)) + "px";
+                const top =
+                    Math.max(4, Math.min($("chartStage").clientHeight - tooltip.offsetHeight - 4, p.y + 16)) + "px";
+                if (left !== lastTooltipLeft) {
+                    lastTooltipLeft = left;
+                    tooltip.style.left = left;
+                }
+                if (top !== lastTooltipTop) {
+                    lastTooltipTop = top;
+                    tooltip.style.top = top;
+                }
+            }
             const selected = c.hoverName || (c.pointer ? hits[0]?.name : null);
-            doc.querySelectorAll("[data-series-name]").forEach((el) =>
-                el.classList.toggle("curve-emphasis", el.dataset.seriesName === selected)
-            );
+            if (selected !== lastSelected || selected !== null) {
+                lastSelected = selected;
+                doc.querySelectorAll("[data-series-name]").forEach((el) =>
+                    el.classList.toggle("curve-emphasis", el.dataset.seriesName === selected)
+                );
+            }
         }
         return { decorate, refresh };
     }

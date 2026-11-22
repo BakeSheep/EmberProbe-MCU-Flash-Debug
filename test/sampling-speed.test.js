@@ -537,6 +537,53 @@ function stlinkV3Table(requestedKhz) {
         }
     );
 
+    await scenario(
+        "capped clock tuning measures the waveform and keeps its cadence on sidebar-only edits",
+        async () => {
+            const f = await createTunedSession({
+                initialKhz: 2000,
+                unlimited: false,
+                options: { intervalMs: 5 },
+                speedReadBehavior: (_speed, _request, command) => ({
+                    advanceMs: command.includes("0x20002000") ? 12 : 1.5
+                })
+            });
+            const plan = { graphItems: WATCH_ITEM, ramSectionRanges: RAM_RANGES, graphIntervalMs: 5 };
+            try {
+                f.session.setSamplingPlan({ ...plan, sidebarItems: [{ name: "side", address: 0x20002000, size: 64 }] });
+                await f.session.start();
+                assert.strictEqual(f.session.stats().adapterSpeedKhz, 2000);
+                assert.strictEqual(f.session.effectiveIntervalMs, 5);
+                assert.ok(
+                    !f.fake.commands.some((cmd) => cmd.includes("0x20002000")),
+                    "startup benchmarks exclude sidebar reads"
+                );
+                await f.session._sampleTick();
+                f.addMonoMs(3.5);
+                await f.session._sampleTick();
+                assert.strictEqual(f.session.stats().actualHz, 200);
+
+                const graph = f.session.primarySamplingItems;
+                const nextGraph = f.session.ratePlan.nextGraph;
+                const ticks = f.session.ratePlan.graphTicks;
+                const commands = f.fake.commands.length;
+                f.session.setSamplingPlan({
+                    ...plan,
+                    sidebarItems: [{ name: "other", address: 0x20002400, size: 64 }]
+                });
+                assert.strictEqual(f.session.primarySamplingItems, graph);
+                assert.strictEqual(f.session.ratePlan.nextGraph, nextGraph);
+                assert.strictEqual(f.session.ratePlan.graphTicks, ticks);
+                f.addMonoMs(3.5);
+                await f.session._sampleTick();
+                assert.strictEqual(f.session.stats().actualHz, 200);
+                assert.ok(!f.fake.commands.slice(commands).some((cmd) => /adapter speed|0xe000ed00/.test(cmd)));
+            } finally {
+                await f.close();
+            }
+        }
+    );
+
     await scenario("the unlimited flag still uses the sidebar budget when the graph has no watches", async () => {
         const f = await createTunedSession({
             initialKhz: 2000,

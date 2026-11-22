@@ -167,6 +167,28 @@ async function controls() {
         state.compare = false;
         controls.refresh(series);
         assert.ok(doc.getElementById("curveTooltip").classList.contains("hidden"));
+        const tooltipEl = doc.getElementById("curveTooltip");
+        const stageEl = doc.getElementById("chartStage");
+        let layoutReads = 0;
+        for (const [el, prop] of [
+            [tooltipEl, "offsetWidth"],
+            [tooltipEl, "offsetHeight"],
+            [stageEl, "clientWidth"],
+            [stageEl, "clientHeight"]
+        ])
+            Object.defineProperty(el, prop, {
+                configurable: true,
+                get: () => ++layoutReads
+            });
+        controls.refresh(series);
+        assert.equal(layoutReads, 0, "hidden tooltip skips layout reads on refresh");
+        for (const [el, prop] of [
+            [tooltipEl, "offsetWidth"],
+            [tooltipEl, "offsetHeight"],
+            [stageEl, "clientWidth"],
+            [stageEl, "clientHeight"]
+        ])
+            delete el[prop];
 
         const calls = [];
         const ctx = new Proxy(
@@ -1520,6 +1542,41 @@ async function smoothRender() {
         assert.ok(dot[1] < edge() - 1, "static views keep the marker on the last visible sample");
     });
 
+    // Banded noisy curves keep the right-edge dot on the smoothed trend line even beyond the last column center,
+    // and identical-x segments never emit NaN markers.
+    geometryScenario(({ state, series, options, calls, draw }) => {
+        series[0].arr = Array.from({ length: 2401 }, (_, i) => ({ t: i, v: i % 2 ? 12 : -8 }));
+        state.x = { min: 0, max: 2800 };
+        state.smoothFollowing = true;
+        options.jitterBands = true;
+        draw();
+        const banded = state.curveGeometry.value[0].banded;
+        assert.ok(banded && banded.bands.length >= 1);
+        const dot = calls.find(([op]) => op === "arc");
+        const lastTrendX = banded.xs.at(-1) + state.curveGeometry.value[0].dx;
+        const lastTrendY = I.screenY(state.curveGeometry.value[0], banded.ys.at(-1));
+        assert.ok(Math.abs(dot[1] - lastTrendX) < 1e-9 && Math.abs(dot[2] - lastTrendY) < 1e-9);
+
+        calls.length = 0;
+        options.jitterBands = false;
+        options.series = [
+            {
+                item: { name: "a" },
+                idx: 0,
+                arr: [
+                    { t: 100, v: 5 },
+                    { t: 200, v: 5 },
+                    { t: 200, v: 15 },
+                    { t: 300, v: 15 }
+                ]
+            }
+        ];
+        state.x = { min: 100, max: 200 };
+        state.smoothFollowing = true;
+        draw();
+        assert.ok(Number.isFinite(calls.find(([op]) => op === "arc")[2]));
+    });
+
     geometryScenario(({ state, series, options, draw }) => {
         const base = 18446744073709551000n;
         series[0].arr = Array.from({ length: 301 }, (_, t) => ({
@@ -1535,6 +1592,40 @@ async function smoothRender() {
         assert.strictEqual(draw(), original, "autoY translation with unchanged span reuses geometry");
         assert.strictEqual(state.prepared, prepared);
         assert.strictEqual(options.elements.range.textContent, `${base + 109n} ～ ${base + 211n}`);
+    });
+
+    scenario("automatic Y motion reuses fitted geometry and hit coordinates", () => {
+        geometryScenario(({ state, series, options, calls, draw }) => {
+            state.autoY = true;
+            state.fitMode = "fill";
+            state.smoothFollowing = true;
+            state.smoothCommit = 1;
+            options.smoothY = true;
+            options.jitterBands = true;
+            options.now = 0;
+            draw();
+            options.series = series.map((part) => ({ ...part, arr: part.arr.map((p) => ({ ...p, v: p.v * 3 })) }));
+            state.smoothCommit++;
+            const previous = state.curveGeometry;
+            options.now = 16;
+            const geometry = draw();
+            const firstScale = geometry.value[0].yScale;
+            assert.notStrictEqual(geometry, previous);
+            assert.ok(state.yFitMotion.pending);
+            for (let frame = 2; frame <= 36; frame++) {
+                options.now = frame * 16;
+                assert.strictEqual(draw(), geometry);
+                const curve = geometry.value[0];
+                const index = curve.raw.findIndex((p) => p.t === state.x.max);
+                const point = I.pointAt(curve, index);
+                const expectedY =
+                    state.geometry.padT + ((state.y.max - point.raw.v) * state.geometry.ph) / VP.span(state.y);
+                assert.ok(Math.abs(point.y - expectedY) < 1e-8);
+                assert.equal(I.hit(geometry.value, point, 1)[0].point, point.raw);
+                assert.ok(Math.abs(calls.find(([op]) => op === "arc")[2] - point.y) < 1e-8);
+            }
+            assert.notStrictEqual(geometry.value[0].yScale, firstScale);
+        });
     });
 
     function followScenario(run, reduced = false, sample = (_time, index) => Math.sin(index / 20)) {
@@ -1816,7 +1907,7 @@ async function smoothRender() {
     });
 
     followScenario((h) => {
-        h.commit();
+        h.commit(5000, 80);
         h.cost(60);
         for (let f = 0; f < 10; f++) h.frame(80);
         assert.ok(h.w.chartState.drawDuration > 40);
@@ -1826,6 +1917,48 @@ async function smoothRender() {
         assert.strictEqual(h.paints, count);
         h.frame(19);
         assert.strictEqual(h.paints, count + 1, "the adaptive interval is capped at 80 ms");
+    });
+
+    scenario("a settled live chart skips idle paints and draws again for new data", () => {
+        followScenario((h) => {
+            h.commit();
+            for (let f = 0; f < 10; f++) {
+                h.frame(80);
+                if (h.w.eval("state").remoteHistory.inFlight) h.answer();
+            }
+            assert.equal(h.w.chartState.x.max, h.max);
+            const count = h.paints;
+            for (let f = 0; f < 60; f++) {
+                h.status();
+                h.frame();
+            }
+            assert.equal(h.paints, count);
+            h.commit();
+            h.frame(80);
+            assert.ok(h.paints > count);
+        });
+    });
+
+    scenario("followClock maintains smooth forward motion across a 120 ms commit jitter spike", () => {
+        followScenario(({ w, frame, commit }) => {
+            for (let i = 0; i < 6; i++) commit(50, 50);
+            commit(120, 120);
+            for (let i = 0; i < 12; i++) commit(50, 50);
+            let prev = w.chartState.x.max;
+            for (let f = 0; f < 7; f++) {
+                frame(16);
+                assert.ok(w.chartState.x.max > prev, `frame ${f} must advance without stalling`);
+                prev = w.chartState.x.max;
+            }
+            commit(120, 16);
+            assert.ok(w.chartState.x.max >= prev);
+            prev = w.chartState.x.max;
+            for (let f = 0; f < 5; f++) {
+                commit(50, 50);
+                assert.ok(w.chartState.x.max > prev);
+                prev = w.chartState.x.max;
+            }
+        });
     });
 
     console.log("Translation geometry, exact axes, gaps, smooth follow lifecycle and adaptive frame cadence passed");
@@ -2235,6 +2368,30 @@ async function fitAndUndo() {
     );
     assert.ok(Math.abs(clipped.min - 1.6) < 1e-9 && Math.abs(clipped.max - 2.4) < 1e-9);
     assert.equal(clipped.count, 0, "segment endpoints are clipped without adding sample counts");
+    scenario("viewport range summaries scan only edges and preserve gaps and duplicate times", () => {
+        const points = Array.from({ length: 8192 }, (_, i) => ({
+            t: i >> 1,
+            v: i % 37 === 0 ? null : (i % 200) - 100
+        }));
+        const blocks = viewport.summarizeRanges(points);
+        const range = { min: 31.5, max: 4000.5 };
+        const expected = viewport.visibleRange(points, range);
+        let reads = 0;
+        const counted = new Proxy(points, {
+            get(target, key) {
+                if (/^\d+$/.test(String(key))) reads++;
+                return target[key];
+            }
+        });
+        assert.deepStrictEqual(viewport.visibleRange(counted, range, blocks), expected);
+        assert.ok(reads <= 160, `${reads} point accesses include the binary searches and two partial blocks`);
+        for (const range of [
+            { min: 31, max: 31 },
+            { min: 31.1, max: 31.9 },
+            { min: 3000, max: 4001 }
+        ])
+            assert.deepStrictEqual(viewport.visibleRange(points, range, blocks), viewport.visibleRange(points, range));
+    });
     const constant = viewport.fitY({ min: 5, max: 5 }, "center", { min: 4, max: 6 });
     assert.ok(viewport.validRange(constant), "constant values have a finite, nonzero fit range");
     const centered = { fitMode: "center", y: { min: -5, max: 5 } };
@@ -2731,6 +2888,26 @@ async function viewportRequests() {
         }
     });
 
+    scenario(({ w, draw, answer, settle, append, status, advance }) => {
+        settle();
+        w.chartState.follow = true;
+        w.applyWindowPreset("10");
+        answer(draw(80));
+        advance(1001);
+        append(102200);
+        status();
+        answer(draw(0));
+        advance(1001);
+        append(102300);
+        status();
+        const overviewReq = draw(0);
+        assert.strictEqual(overviewReq.purpose, "overview");
+        answer(overviewReq);
+        const detailReq = draw(0);
+        assert.strictEqual(detailReq.purpose, "detail", "live overview does not cool down an overdue detail");
+        answer(detailReq);
+    });
+
     scenario(({ w, settle, draw }) => {
         settle();
         const original = w.EmberProbeChart.paint,
@@ -2790,6 +2967,92 @@ async function viewportRequests() {
         assert.strictEqual(w.eval("state").remoteHistory.overview, null);
         assert.strictEqual(draw(), null, "empty visible names need no request");
         assert.strictEqual(w.historyLoading.hidden, true);
+    });
+
+    scenario(({ w, settle, append, status, draw, advance }) => {
+        settle();
+        const history = w.eval("state").remoteHistory;
+        append(101100);
+        status();
+        assert.strictEqual(draw(0), null, "a stationary viewport waits for its next revision refresh");
+        assert.ok(history.refreshAt > w.performance.now());
+        const originalPaint = w.EmberProbeChart.paint;
+        let paints = 0;
+        w.EmberProbeChart.paint = (options) => {
+            paints++;
+            originalPaint(options);
+        };
+        const now = advance(history.refreshAt - w.performance.now());
+        w.draw(now);
+        assert.strictEqual(
+            history.inFlight.purpose,
+            "detail",
+            "the refresh deadline dispatches even while the canvas is idle"
+        );
+        assert.strictEqual(paints, 0);
+    });
+
+    scenario(({ w, draw, answer, settle, append, status, advance }) => {
+        w.chartState.follow = true;
+        w.applyWindowPreset("10");
+        answer(draw());
+        settle();
+        advance(1001);
+        append(101100);
+        status();
+        answer(draw(0));
+        w.draw(w.performance.now());
+        const history = w.eval("state").remoteHistory;
+        const composed = history.composed.series;
+        const geometry = w.chartState.curveGeometry;
+        const overviewReq = draw(80);
+        assert.strictEqual(overviewReq.purpose, "overview");
+        w.eval("state").dirty = false;
+        answer(overviewReq);
+        assert.strictEqual(w.eval("state").dirty, false, "live overview inside view range skips dirtying");
+        w.draw(w.performance.now());
+        assert.strictEqual(w.eval("state").remoteHistory.composed.series, composed);
+        assert.strictEqual(w.chartState.curveGeometry, geometry);
+        w.chartState.follow = false;
+        w.chartState.x = { min: 1000, max: 11000 };
+        w.eval("state").dirty = true;
+        w.chartState.fastDirty = true;
+        w.draw(w.performance.now());
+        assert.notStrictEqual(
+            w.eval("state").remoteHistory.composed.series,
+            composed,
+            "panning outside view composes overview"
+        );
+    });
+
+    scenario(({ w, draw, answer, settle, append, status, advance }) => {
+        w.chartState.follow = true;
+        w.applyWindowPreset("0");
+        answer(draw());
+        settle();
+        const originalPaint = w.EmberProbeChart.paint;
+        let paints = 0;
+        w.EmberProbeChart.paint = (options) => {
+            paints++;
+            originalPaint(options);
+        };
+        const history = w.eval("state").remoteHistory;
+        append(101100);
+        status();
+        const detail = draw(80);
+        assert.strictEqual(detail.purpose, "detail");
+        const before = paints;
+        w.eval("state").dirty = true;
+        w.chartState.fastDirty = false;
+        advance(20);
+        history.refreshAt = w.performance.now();
+        w.draw(w.performance.now());
+        assert.strictEqual(paints, before, "throttled draw still skips paint");
+        assert.ok(history.pending || history.inFlight, "throttled draw still dispatches due viewport requests");
+        answer(detail);
+        assert.strictEqual(w.chartState.fastDirty, true, "detail reply sets fastDirty for immediate paint");
+        w.draw(advance(16));
+        assert.strictEqual(paints, before + 1, "detail reply paints without waiting an extra 80 ms");
     });
 
     scenario(({ w, draw, answer, series, settle }) => {
@@ -2892,7 +3155,7 @@ async function viewportRequests() {
                 receivedAt: w.performance.now()
             };
             w.eval("state").remoteHistory.overview = { ...w.eval("state").remoteHistory.overview, revision: 2 };
-            const interval = Math.max(80, span / width);
+            const interval = Math.max(40, span / width);
             advance(interval - 1);
             w.requestChartViewport(w.chartState.x, width);
             assert.strictEqual(
@@ -3419,6 +3682,62 @@ async function remoteHistory() {
         "Remote viewports, silent history, stale replies, freeze, clear races and raw export",
         remoteHistory
     );
+    await scenario("VP.timeTick formats ranges and animation frames cache canvas size and theme style", () => {
+        const two = (n) => String(n).padStart(2, "0");
+        const sampleMs = 1700000000123.456;
+        const d = new Date(sampleMs);
+        const hhmmss = `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+        const mmss = `${two(d.getMinutes())}:${two(d.getSeconds())}`;
+        assert.strictEqual(VP.timeTick(sampleMs, 3600000), hhmmss);
+        assert.strictEqual(VP.timeTick(sampleMs, 5000), mmss);
+        assert.strictEqual(VP.timeTick(sampleMs, 1000), `${mmss}.123`);
+        assert.strictEqual(VP.timeTick(sampleMs, 2), `${mmss}.123456`);
+
+        const page = render(getLiveWatchContent({}, "en"));
+        try {
+            const w = page.window;
+            let widthReads = 0,
+                styleReads = 0;
+            let currentWidth = 800;
+            Object.defineProperties(w.canvas, {
+                clientWidth: { get: () => (++widthReads, currentWidth) },
+                clientHeight: { value: 400 }
+            });
+            const origGetStyle = w.getComputedStyle;
+            w.getComputedStyle = (el) => {
+                if (el === w.document.body) styleReads++;
+                return origGetStyle.call(w, el);
+            };
+            page.send({ type: "watchList", items: [{ name: "a", type: "f32", address: 0x20000000, size: 4 }] });
+            page.send({
+                type: "chartHistoryStatus",
+                historyRevision: w.historyRevision,
+                revision: 1,
+                bounds: { min: 0, max: 1000 }
+            });
+            w.syncTimeBounds();
+            w.draw(100);
+            const afterFirstWidth = widthReads;
+            const afterFirstStyle = styleReads;
+            for (let f = 1; f <= 10; f++) {
+                w.eval("state").dirty = true;
+                w.draw(100 + f * 80);
+            }
+            assert.strictEqual(widthReads, afterFirstWidth, "cached canvasSize avoids per-frame layout reads");
+            assert.strictEqual(styleReads, afterFirstStyle, "cached themeStyle avoids per-frame getComputedStyle");
+            currentWidth = 900;
+            w.dispatchEvent(new w.Event("resize"));
+            w.document.body.classList.add("vscode-light");
+            w.eval("state").dirty = true;
+            w.draw(2000);
+            assert.ok(widthReads > afterFirstWidth, "resize invalidates cached canvas dimensions");
+            assert.ok(styleReads > afterFirstStyle, "body class mutation invalidates cached theme style");
+            assert.strictEqual(w.viewportController.canvasSize().w, 900);
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    });
     console.log("Chart page controls, rendering, viewport and remote history tests passed");
 })().catch((error) => {
     console.error(error);

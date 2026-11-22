@@ -33,7 +33,11 @@
             const targetHz = m.frequencyHz || requestedFrequencyHz;
             title = [
                 "Target: " + targetHz + " Hz",
-                "Effective: " + (1000 / m.effectiveIntervalMs).toFixed(1) + " Hz (" + m.effectiveIntervalMs + " ms)",
+                "Effective: " +
+                    (1000 / m.effectiveIntervalMs).toFixed(1) +
+                    " Hz (" +
+                    Number(m.effectiveIntervalMs.toFixed(3)) +
+                    " ms)",
                 "P95: " + (m.p95DurationMs || 0) + "ms",
                 "Missed: " + (m.missedDeadlines || 0) + (m.pauseReason ? " | Paused: " + m.pauseReason : "")
             ].join(" | ");

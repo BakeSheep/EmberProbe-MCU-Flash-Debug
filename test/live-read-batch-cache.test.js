@@ -131,18 +131,20 @@ function runtimeItem(name, address) {
 
     const layered = readerFixture();
     const sidebar = { name: "sidebar", address: BASE + 16, size: 4 };
-    layered.session.setSamplingPlan({ graphItems: [right, left], sidebarItems: [sidebar], graphIntervalMs: 7 });
+    let clock = 1000;
+    layered.session.clock.monotonicMs = layered.session.clock.sampleNow = () => clock;
+    layered.session.setSamplingPlan({ graphItems: [right, left], sidebarItems: [sidebar, left], graphIntervalMs: 7 });
     layered.session.effectiveIntervalMs = 7;
     const plan = layered.session.ratePlan;
-    const due = plan.due.bind(plan);
-    let clock = 0;
-    layered.session.ratePlan.due = (_clock, interval) => due(clock, interval);
     const subsets = new Set();
     const latest = new Map();
     const layeredCompilations = await countReadCompilations(async () => {
         for (let tick = 0; tick < TICKS; tick++) {
             for (const item of plan.items) layered.fake.seed(item.address, [tick & 0xff, 2, 3, 4]);
+            const previous = layered.last;
             await layered.session._sampleTick();
+            clock += plan.delay(clock);
+            if (layered.last === previous) continue;
             const current = layered.last.due;
             subsets.add(current.graphNames.length ? (current.sidebarNames.length ? "both" : "graph") : "sidebar");
             const names = [...new Set([...current.graphNames, ...current.sidebarNames])];
@@ -155,14 +157,13 @@ function runtimeItem(name, address) {
             assert.deepStrictEqual(
                 layered.last.samples,
                 names.map((name) => latest.get(name)),
-                "piggy-back keeps cached values and their original acquisition timestamps"
+                "shared sidebar values retain their waveform acquisition timestamps"
             );
-            clock += plan.delay(clock);
         }
     });
-    assert.strictEqual(subsets.size, 3, "exercise graph-only, sidebar-only and combined reads");
-    assert.strictEqual(layeredCompilations, 3, "fresh due arrays must compile each ordered subset only once");
-    assert.strictEqual(layered.batches.size, 3, "multi-rate reads must reuse the same three batch objects");
+    assert.deepStrictEqual([...subsets].sort(), ["both", "graph", "sidebar"]);
+    assert.strictEqual(layeredCompilations, 2, "each ordered subset compiles only once");
+    assert.strictEqual(layered.batches.size, 2, "multi-rate reads reuse the two batch objects");
     const next = { name: "next", address: BASE + 96, size: 2 };
     layered.fake.seed(next.address, [41, 42]);
     const newPlanCompilations = await countReadCompilations(async () => {

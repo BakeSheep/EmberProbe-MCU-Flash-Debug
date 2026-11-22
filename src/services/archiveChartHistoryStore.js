@@ -352,6 +352,26 @@ class ArchiveChartHistoryStore extends ChartHistoryStore {
         const part = s.discontinuous ? null : s.parts[start];
         return { start, time: part ? part.block.times[part.start] : Infinity };
     }
+    _archivedMin(state, s, archived) {
+        const from = s.item.historyFromMs ?? -Infinity;
+        let min = Infinity;
+        for (const a of archived) {
+            const bounds =
+                s.archiveBounds?.from === from && state.cutMax === undefined && state.archiveOffset === undefined
+                    ? s.archiveBounds
+                    : this.archive.bounds(a, from, state.cutMax ?? Infinity, state.archiveOffset ?? Infinity);
+            if (Number.isFinite(bounds.min)) min = Math.min(min, bounds.min);
+        }
+        return min;
+    }
+    _needsArchivePrefix(scope, state, s, range, includePending = false) {
+        const seam = this._boundary(s);
+        if (range.min > seam.time) return false;
+        if (!Number.isFinite(seam.time) || seam.start > 0 || s.evicted || s.trimmed) return true;
+        const archived = this._archived(scope, state, s);
+        if (!archived.length) return includePending && !!this.archive.dataPath && this.archive.indexedOffset === 0;
+        return this._archivedMin(state, s, archived) < seam.time;
+    }
     async archiveViewport(scope, names, range, width, snapshotId) {
         // Validate before any I/O, even when the requested series has no retained memory.
         if (
@@ -375,7 +395,7 @@ class ArchiveChartHistoryStore extends ChartHistoryStore {
         // Capture the queued tail so a viewport cannot race a progress message already received.
         const needsArchive = names.some((name) => {
             const s = state.series.get(name);
-            return s && range.min <= this._boundary(s).time;
+            return s && this._needsArchivePrefix(scope, state, s, range, true);
         });
         if (needsArchive) await this.archive.pending;
         check();
@@ -392,7 +412,7 @@ class ArchiveChartHistoryStore extends ChartHistoryStore {
                 continue;
             }
             const boundary = () => this._boundary(s);
-            if (range.min > boundary().time) {
+            if (!this._needsArchivePrefix(scope, state, s, range, false)) {
                 for (const segment of this._memoryViewport(scope, state, name, range, width, snapshotId).series)
                     output.push(segment);
                 continue;

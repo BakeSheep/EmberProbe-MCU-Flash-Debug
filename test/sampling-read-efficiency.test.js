@@ -283,19 +283,29 @@ function startupFixture(mode, branch) {
     standalone._recentDurations = [...Array(28).fill(5), ...Array(4).fill(40)];
     standalone._consecutiveSuccesses = 4;
     standalone._evaluateAdaptiveSchedule();
-    assert.strictEqual(standalone.effectiveIntervalMs, 12, "spikes affect mean duty, not p95 duty");
+    assert.strictEqual(
+        standalone.effectiveIntervalMs,
+        (28 * 5 + 4 * 40) / 32 / 0.85,
+        "spikes affect mean duty, not p95 duty"
+    );
     assert.strictEqual(standalone.stats().p95DurationMs, 40);
     standalone._recentDurations = [7, 7, 7, 7];
     standalone._setClockInterval(10, true);
     assert.strictEqual(standalone.effectiveIntervalMs, 10);
     standalone._setClockInterval(5, true);
-    assert.strictEqual(standalone.effectiveIntervalMs, 9);
+    assert.strictEqual(standalone.effectiveIntervalMs, 7 / 0.85);
     standalone.effectiveIntervalMs = 100;
     standalone._consecutiveSuccesses = 32;
     standalone._lastBackoffOrErrorAt = 0;
     standalone._recentDurations = [...Array(28).fill(5), ...Array(4).fill(80)];
     standalone._evaluateAdaptiveSchedule(10000);
-    assert.strictEqual(standalone.effectiveIntervalMs, 15, "recover directly to the measured interval");
+    assert.strictEqual(standalone.effectiveIntervalMs, 100, "a single assessment does not move the rate");
+    standalone._evaluateAdaptiveSchedule(10500);
+    assert.strictEqual(
+        standalone.effectiveIntervalMs,
+        (28 * 5 + 3 * 80) / 31 / 0.85,
+        "recover to the trimmed mean interval"
+    );
     const debug = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debug._recentDurations = [...Array(28).fill(5), ...Array(4).fill(40)];
     debug._setClockInterval(10);
@@ -328,13 +338,21 @@ function startupFixture(mode, branch) {
     assert.strictEqual(plan.nextGraph, 220.5);
     assert.strictEqual(plan.nextSidebar, 250.5, "long stalls resync");
     const warming = new MultiRatePlan({ graphItems: [item("g")], sidebarItems: [item("s")], graphIntervalMs: 20 });
-    for (const now of [100.5, 200.5]) warming.deliver([], now, warming.due(now, 100));
+    const capture = (now, interval) => {
+        const due = warming.due(now, interval);
+        warming.deliver(
+            due.items.map((entry) => ({ name: entry.name, bytes: [1] })),
+            now,
+            due
+        );
+    };
+    for (const now of [100.5, 200.5]) capture(now, 100);
     warming.retime(100, 20);
     assert.strictEqual(warming.nextGraph, 220.5, "calibration replaces the outstanding slow graph period");
     assert.strictEqual(warming.nextSidebar, 250.5, "sidebar uses its own period floor when retiming");
-    warming.deliver([], 220.5, warming.due(220.5, 20));
-    warming.deliver([], 240.5, warming.due(240.5, 20));
-    assert.strictEqual(warming.stats().graphHz, 50, "old warm-up frames do not bias the actual frame rate");
+    capture(220.5, 20);
+    capture(240.5, 20);
+    assert.strictEqual(warming.stats().graphHz, 3000 / 140, "the rolling rate includes both sides of calibration");
     for (const interval of [5, 33, 200, 10000]) {
         const plan = new MultiRatePlan({
             graphItems: [item("g")],

@@ -6,6 +6,7 @@ const net = require("net");
 const { isDeepStrictEqual } = require("util");
 const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { clampInteger } = require("./validation");
+const { clampSamplingIntervalMs } = require("./samplingFrequency");
 const {
     SYSTEM_CLOCK,
     adaptiveReadCost,
@@ -16,12 +17,13 @@ const {
     scheduleSamplingTick
 } = require("./samplingClock");
 const { SamplingThroughput } = require("./samplingThroughput");
+const { sampleTick } = require("./samplingCycle");
 const { SamplingSpeedTuner } = require("./samplingSpeed");
 const { TclTransport } = require("./tclTransport");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = require("./services/runtimeObjectReader");
-const { MultiRatePlan } = require("./services/multiRatePlan");
+const { MultiRatePlan, SIDEBAR_INTERVAL_MS } = require("./services/multiRatePlan");
 const { targetCheckMonitor } = require("./chip/targetIdentity");
 const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog, isTransportProbeFailure } = require("./openocdProcess");
 const {
@@ -34,6 +36,7 @@ const { rttControl } = require("./rttControl");
 const { isNonHaltingWordWrite, assertSidebarWriteCurrent } = require("./writeAccess");
 const { validateWritePreconditions } = require("./writePreconditions");
 const {
+    MAX_DEBUG_CYCLE_MS,
     normalizeRamSectionRanges,
     parseMemoryElements,
     transferShape,
@@ -43,7 +46,6 @@ const {
     compileReadBatches
 } = require("./liveWatchReadPlan");
 
-const MAX_DEBUG_CYCLE_MS = 1000;
 const MAX_SCATTER_SEGMENTS = 64;
 const MAX_SCATTER_BYTES = 4096;
 const MAX_SCATTER_READ_GAP_BYTES = 4;
@@ -127,11 +129,13 @@ class ManagedOpenOcdSession {
         this.scatterReads = false;
         this._scatterFailures = 0;
         this.ramSectionRanges = [];
-        this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
+        this.targetIntervalMs = clampSamplingIntervalMs(this.options.intervalMs, 100);
         this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
         this._warmingUp = true;
+        this._adaptiveDirection = 0;
+        this._adaptiveMeasurements = 0;
         this._lastAdaptiveEvalAt = 0;
         this._lastBackoffOrErrorAt = 0;
         this._missedDeadlines = 0;
@@ -149,6 +153,10 @@ class ManagedOpenOcdSession {
 
     get unlimitedActive() {
         return this.unlimited && this.mode !== "debug" && !!this.ratePlan?.graphItems.length;
+    }
+
+    get primarySamplingItems() {
+        return this.ratePlan?.graphPriority ? this.ratePlan.graphReadItems : this.watch;
     }
 
     _tryAcquireExclusive() {
@@ -258,14 +266,19 @@ class ManagedOpenOcdSession {
               ? Math.max(100, this.targetIntervalMs)
               : intervalForReadCost(this.targetIntervalMs, frameDurationMs);
         if (retimePlan) this.ratePlan?.retime(this.effectiveIntervalMs, interval);
-        else if (this.ratePlan && interval !== this.effectiveIntervalMs) {
-            this.ratePlan.graphTicks = [];
-            this.ratePlan.sidebarTicks = [];
+        else if (this.ratePlan?.graphPriority && interval !== this.effectiveIntervalMs)
+            this.ratePlan.resetGraphDeadline(this.ratePlan.nextGraph);
+        if (this.ratePlan) {
+            this.ratePlan.sidebarDurations = [];
+            this.ratePlan.mergedDurations = [];
+            this.ratePlan.graphDurations = [];
         }
         this.effectiveIntervalMs = interval;
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
         this._warmingUp = !this.unlimitedActive && frameDurationMs === null;
+        this._adaptiveDirection = 0;
+        this._adaptiveMeasurements = 0;
         const nowMonoMs = this.clock.monotonicMs();
         this._lastAdaptiveEvalAt = nowMonoMs;
         this._lastBackoffOrErrorAt = this.mode === "debug" ? nowMonoMs : -Infinity;
@@ -285,6 +298,8 @@ class ManagedOpenOcdSession {
             return false;
         this._samplingThroughput.reset();
         this._consecutiveSuccesses = 0;
+        this._adaptiveDirection = 0;
+        this._adaptiveMeasurements = 0;
         this._lastAdaptiveEvalAt = this.clock.monotonicMs();
         this._recentCycleTimestamps = [];
         return true;
@@ -318,7 +333,7 @@ class ManagedOpenOcdSession {
                 this.timer = null;
                 this._sampleTick(true);
             },
-            { highResolution: this._timerResolutionHeld, immediate: this.unlimitedActive }
+            { highResolution: this._timerResolutionHeld, immediate: this.unlimitedActive, clock: this.clock }
         );
     }
 
@@ -347,52 +362,79 @@ class ManagedOpenOcdSession {
 
     setIntervalMs(ms) {
         if (this.ratePlan) {
-            const interval = clampInteger(ms, 33, 5, 10000);
+            const interval = clampSamplingIntervalMs(ms, 1000 / 30);
             const changed = interval !== this.ratePlan.graphIntervalMs;
             if (changed) {
                 this.ratePlan.graphIntervalMs = interval;
-                this.ratePlan.nextGraph = 0;
+                this.ratePlan.resetGraphDeadline();
                 if (!this.unlimitedActive) this.ratePlan.graphTicks = [];
             }
-            return this._setClockInterval(this.ratePlan.requestedIntervalMs, changed && !this.unlimitedActive);
+            return this._setClockInterval(
+                this.ratePlan.requestedIntervalMs === Infinity
+                    ? SIDEBAR_INTERVAL_MS
+                    : this.ratePlan.requestedIntervalMs,
+                changed && !this.unlimitedActive && this.ratePlan.graphItems.length > 0
+            );
         }
         return this._setClockInterval(ms);
     }
 
     setSamplingPlan(plan) {
         const ramSectionRanges = normalizeRamSectionRanges(plan.ramSectionRanges);
-        const ratePlan = new MultiRatePlan({ ...plan, unlimited: plan.unlimited === true && this.mode !== "debug" });
+        const ratePlan = new MultiRatePlan({
+            ...plan,
+            graphIntervalMs: clampSamplingIntervalMs(plan.graphIntervalMs, 1000 / 30),
+            unlimited: plan.unlimited === true && this.mode !== "debug",
+            prioritizeGraph: this.mode === "standalone"
+        });
         const previous = this.ratePlan;
+        const sameRanges = previous && isDeepStrictEqual(this.ramSectionRanges, ramSectionRanges);
         const sameConsumers =
-            previous &&
-            isDeepStrictEqual(this.ramSectionRanges, ramSectionRanges) &&
+            sameRanges &&
             sameConsumerItems(previous.graphItems, ratePlan.graphItems) &&
             sameConsumerItems(previous.sidebarItems, ratePlan.sidebarItems);
         if (sameConsumers) {
-            if (previous.graphIntervalMs === ratePlan.graphIntervalMs && this.unlimited === (plan.unlimited === true))
-                return;
-            // Changing only the rate does not invalidate measured probe costs or cached sidebar values.
-            ratePlan.latest = previous.latest;
-            ratePlan.nextSidebar = previous.nextSidebar;
-            ratePlan.sidebarTicks = previous.sidebarTicks;
-            this.ratePlan = ratePlan;
+            if (this.unlimited === (plan.unlimited === true)) return this.setIntervalMs(ratePlan.graphIntervalMs);
+            previous.graphIntervalMs = ratePlan.graphIntervalMs;
+            previous.unlimited = ratePlan.unlimited;
+            previous.resetGraphDeadline();
+            previous.graphTicks = [];
             this.unlimited = plan.unlimited === true;
             this._resetHostHold();
-            this._setClockInterval(ratePlan.requestedIntervalMs, true);
+            this._setClockInterval(
+                previous.requestedIntervalMs === Infinity ? SIDEBAR_INTERVAL_MS : previous.requestedIntervalMs,
+                true
+            );
             return;
         }
         this.sampleEpoch++;
+        if (
+            sameRanges &&
+            previous.graphPriority &&
+            ratePlan.graphPriority &&
+            previous.graphIntervalMs === ratePlan.graphIntervalMs &&
+            sameConsumerItems(previous.graphReadItems, ratePlan.graphReadItems)
+        ) {
+            // A sidebar edit invalidates old batches without restarting an identical waveform timer or clock probe.
+            ratePlan.preserveGraph(previous);
+            this.ratePlan = ratePlan;
+            this.watch = ratePlan.items;
+            this._scheduleNext(0);
+            return;
+        }
         this.setWatch(ratePlan.items, ramSectionRanges);
         this.ratePlan = ratePlan;
         this.unlimited = plan.unlimited === true;
-        this._setClockInterval(ratePlan.requestedIntervalMs === Infinity ? 50 : ratePlan.requestedIntervalMs);
+        this._setClockInterval(
+            ratePlan.requestedIntervalMs === Infinity ? SIDEBAR_INTERVAL_MS : ratePlan.requestedIntervalMs
+        );
         this._warmUp();
         this._clearSamplingTimer();
         if (this.samplingEnabled && !this.stopped && this.tcl.connected) this._scheduleNext(0);
     }
 
     _setClockInterval(ms, force = false) {
-        const interval = clampInteger(ms, 100, 5, 10000);
+        const interval = clampSamplingIntervalMs(ms, 100);
         if (interval === this.targetIntervalMs && !force) return;
         this.sampleEpoch++;
         this.options.intervalMs = interval;
@@ -405,6 +447,8 @@ class ManagedOpenOcdSession {
               : Math.max(100, interval);
         this._warmingUp = !this.unlimitedActive && this._recentDurations.length < 4;
         this._consecutiveSuccesses = 0;
+        this._adaptiveDirection = 0;
+        this._adaptiveMeasurements = 0;
         this._lastAdaptiveEvalAt = this.clock.monotonicMs();
         this._recentCycleTimestamps = [];
         this._samplingThroughput.reset();
@@ -442,8 +486,10 @@ class ManagedOpenOcdSession {
             this._pauseReason = null;
             if (!this._resumeMeasured()) this._warmUp();
             if (this.ratePlan) {
-                this.ratePlan.nextGraph = this.ratePlan.nextSidebar = 0;
+                this.ratePlan.resetGraphDeadline();
+                this.ratePlan.nextSidebar = this.ratePlan.nextSidebarShared = 0;
                 this.ratePlan.latest.clear();
+                this.ratePlan.sidebarPublished.clear();
                 this.ratePlan.graphTicks = [];
                 this.ratePlan.sidebarTicks = [];
             }
@@ -478,8 +524,13 @@ class ManagedOpenOcdSession {
 
     stats() {
         const p95 = p95SamplingDuration(this._recentDurations);
-        const consumers = this.ratePlan?.stats();
-        const actualHz = consumers ? consumers.graphHz : this._computeActualHz();
+        const consumers = this.ratePlan?.stats(this.clock.monotonicMs(), this.effectiveIntervalMs);
+        if (consumers && !this.samplingEnabled) consumers.graphHz = consumers.sidebarHz = 0;
+        const actualHz = consumers
+            ? this.ratePlan.graphItems.length
+                ? consumers.graphHz
+                : consumers.sidebarHz
+            : this._computeActualHz();
         return {
             unlimited: this.unlimited,
             unlimitedActive: this.unlimitedActive,
@@ -487,7 +538,7 @@ class ManagedOpenOcdSession {
             ...this._hostHoldStats(),
             targetIntervalMs: this.targetIntervalMs,
             effectiveIntervalMs: this.effectiveIntervalMs,
-            actualHz,
+            actualHz: this.samplingEnabled ? actualHz : 0,
             bytesPerSecond: this.samplingEnabled ? this._samplingThroughput.rate(this.clock.monotonicMs()) : 0,
             consumers,
             noEchoResponses: this.tcl.noEchoResponses,
@@ -511,7 +562,7 @@ class ManagedOpenOcdSession {
 
     _recordCycle(durationMs, success = true, timestamp = this.clock.now()) {
         const nowMonoMs = this.clock.monotonicMs();
-        this._recentCycleTimestamps.push(timestamp);
+        if (success) this._recentCycleTimestamps.push(timestamp);
         while (
             this._recentCycleTimestamps.length > 2 &&
             (this._recentCycleTimestamps.length > 256 || this._recentCycleTimestamps[0] < timestamp - 1500)
@@ -521,25 +572,26 @@ class ManagedOpenOcdSession {
         this._recentDurations.push(durationMs);
         if (this._recentDurations.length > 32) this._recentDurations.shift();
 
-        if (!this.unlimitedActive && durationMs > this.effectiveIntervalMs) {
+        if (!this.unlimitedActive && !this.ratePlan?.graphPriority && durationMs > this.effectiveIntervalMs) {
             this._missedDeadlines++;
         }
 
         if (success) {
             this._consecutiveSuccesses++;
+            this._adaptiveMeasurements++;
         } else {
             this._consecutiveSuccesses = 0;
             this._lastBackoffOrErrorAt = nowMonoMs;
         }
 
-        const evalInterval =
-            this.mode === "standalone" && this.effectiveIntervalMs > this.targetIntervalMs ? 250 : 1000;
-        if (
-            (this._warmingUp && this._consecutiveSuccesses >= 4) ||
-            nowMonoMs - this._lastAdaptiveEvalAt >= evalInterval
-        ) {
+        const evaluate =
+            this.mode === "debug"
+                ? nowMonoMs - this._lastAdaptiveEvalAt >= 1000
+                : this._adaptiveMeasurements >= 4 && nowMonoMs - this._lastAdaptiveEvalAt >= 500;
+        if ((this._warmingUp && this._consecutiveSuccesses >= 4) || evaluate) {
             this._evaluateAdaptiveSchedule(nowMonoMs);
             this._lastAdaptiveEvalAt = nowMonoMs;
+            this._adaptiveMeasurements = 0;
         }
     }
 
@@ -564,13 +616,19 @@ class ManagedOpenOcdSession {
                     successes,
                     stableForMs
                 );
+        if (!calibrated && this.mode === "standalone") {
+            const direction = Math.abs(next - current) > 1e-6 ? Math.sign(next - current) : 0;
+            const stable = direction !== 0 && direction === this._adaptiveDirection;
+            this._adaptiveDirection = direction;
+            if (!stable) return;
+        }
         if (calibrated) this._warmingUp = false;
         if (!calibrated && current === next) return;
         if (this.mode === "debug" && next > current) this._lastBackoffOrErrorAt = nowMonoMs;
         this.effectiveIntervalMs = next;
         this.ratePlan?.retime(current, next);
         this._consecutiveSuccesses = 0;
-        this._recentCycleTimestamps = [];
+        this._adaptiveDirection = 0;
     }
 
     _status(msg) {
@@ -617,7 +675,7 @@ class ManagedOpenOcdSession {
             throw new Error(`Invalid OpenOCD configuration：${this.options.probe} / ${this.options.target}`);
         }
         const port = clampInteger(this.options.port, 6666, 1, 65535);
-        this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
+        this.targetIntervalMs = clampSamplingIntervalMs(this.options.intervalMs, 100);
         this.options.intervalMs = this.targetIntervalMs;
         const gdbPort = this.mode === "debug" ? clampInteger(this.options.gdbPort, 0, 1, 65535) : 0;
         if (this.mode === "debug" && !gdbPort) throw new Error("Managed debug OpenOCD requires a GDB port");
@@ -1498,96 +1556,8 @@ class ManagedOpenOcdSession {
         }
     }
 
-    async _sampleTick(fromScheduler = false) {
-        if (this.tcl.held || this.tcl.probing || this._starting) return;
-        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.tcl.connected) return;
-        if (!this.watch.length) return;
-        if (!this._tryAcquireExclusive()) {
-            // A read/write transaction owns the Tcl connection. The tick runs at its release: dropping it would
-            // freeze the watch list, and waiting a whole interval lets frequent peripheral reads starve sampling.
-            if (fromScheduler) this._samplingTickDeferred = true;
-            return;
-        }
-        if (this._speedTuner.needsPreCycle(this)) {
-            let stopTick;
-            try {
-                stopTick = await this._speedTuner.runPreCycle(this);
-            } finally {
-                if (stopTick !== false) this._releaseExclusive();
-            }
-            if (stopTick) return;
-        }
-        const epoch = this.sampleEpoch;
-        const startMs = this.clock.monotonicMs();
-        const targetEpoch = this.targetEpoch;
-        const readBytesBefore = this._memoryReadBytes;
-        const startedAt = this.clock.now();
-        const deadline = startedAt + MAX_DEBUG_CYCLE_MS;
-        const cycleStart = this.clock.sampleNow();
-        const tick = { ok: false, tuned: false, ms: 0, frameDurationMs: null };
-        try {
-            const due = this.ratePlan?.due(startMs, this.effectiveIntervalMs);
-            const items = due ? due.items : this.watch;
-            const guard = this.mode === "debug" ? { epoch, requireSampling: true, deadline } : null;
-            const { samples, ok } = items.length
-                ? await this._readItems(items, cycleStart, guard)
-                : { samples: [], ok: 0 };
-            if (epoch !== this.sampleEpoch || !this.samplingEnabled) return;
-            // One sub-millisecond stamp per cycle, centred on its reads, keeps every cycle a single archive/CSV row.
-            const t = (cycleStart + this.clock.sampleNow()) / 2;
-            for (const sample of samples) sample.t = t;
-            const delivered = due ? this.ratePlan.deliver(samples, t, due) : samples;
-            if (this.handlers.onSample) this.handlers.onSample(delivered, t, due);
-            if (ok === items.length) {
-                tick.ok = true;
-                if (this._scatterRecheck) {
-                    this._scatterRecheck = false;
-                    try {
-                        this.scatterReads = (await this.tcl.sendChecked("emberprobe_read_scatter version")) === "1";
-                    } catch {
-                        // Still unsupported (for example an HLA target): keep the batch path.
-                    }
-                }
-                if (this._speedTuner.shouldRecheckAfterFirstCycle()) {
-                    tick.frameDurationMs = await this._speedTuner.tune(this);
-                    tick.tuned = true;
-                }
-                if (this._sampleErrorActive) {
-                    // One successful memory read does not prove target polling recovered.
-                    this._successfulReads++;
-                    if (this._successfulReads >= 3 && this.clock.now() - this._lastErrorAt >= 2000) {
-                        this._sampleErrorActive = false;
-                        this._lastReportedError = "";
-                        this._pollFailureSince = null;
-                        this._pollFailureCount = 0;
-                        this._lastReadError = "";
-                        this._notifiedError = "";
-                        this._status({ key: "sb.sampling" });
-                    }
-                }
-            } else if (ok === 0 && this._lastReadError && this._lastReadError !== this._notifiedError) {
-                this._notifiedError = this._lastReadError;
-                this._error(
-                    "读取内存失败：" + this._lastReadError + "（运行中读取失败时可尝试降低采样率或确认目标状态）"
-                );
-            }
-        } catch (e) {
-            if (epoch === this.sampleEpoch && this.samplingEnabled && !this.connectionFailed) this._error(e.message);
-        } finally {
-            tick.ms = this.clock.monotonicMs() - startMs;
-            if (!tick.tuned && epoch === this.sampleEpoch && targetEpoch === this.targetEpoch && this.samplingEnabled)
-                this._samplingThroughput.record(this._memoryReadBytes - readBytesBefore, startMs, startMs + tick.ms);
-            if (!tick.tuned && epoch === this.sampleEpoch) this._recordCycle(tick.ms, tick.ok, startedAt);
-            if (tick.tuned || this._speedTuner.needsStepDown(this, epoch, tick.ok))
-                await this._speedTuner.finishCycle(this, tick.tuned, tick.frameDurationMs);
-            this._releaseExclusive();
-            if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
-                const nextDelay = this.ratePlan
-                    ? this.ratePlan.delay(this.clock.monotonicMs())
-                    : Math.max(0, Math.round(this.effectiveIntervalMs - tick.ms));
-                this._scheduleNext(nextDelay);
-            }
-        }
+    _sampleTick(fromScheduler = false) {
+        return sampleTick(this, fromScheduler);
     }
 
     stop(timeoutMs = 1200) {

@@ -23,6 +23,7 @@ async function restoreHistory(store, request) {
             series.count = 0;
             series.discontinuous = false;
             series.evicted = false;
+            series.trimmed = false;
             store._viewed(series, viewed);
         }
         state.revision++;
@@ -92,7 +93,7 @@ function run(port, options = {}) {
             setTimeout(() => {
                 timers.delete(scope);
                 port.postMessage({ event: "updated", scope, ...store.status(scope) });
-            }, 80)
+            }, 30)
         );
     };
     async function handle({ id, method, args = [] }) {

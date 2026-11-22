@@ -102,7 +102,7 @@ class ChartHistoryFeed {
         this.queuedBytes = queuedBytes;
         for (const sample of samples) batch.samples.push(sample.t == null ? { ...sample, t: tick } : sample);
         if (batch.bytes >= 256 * 1024) this.flushAppend(entry);
-        else if (!entry._historyBatchTimer) entry._historyBatchTimer = setTimeout(() => this.flushAppend(entry), 50);
+        else if (!entry._historyBatchTimer) entry._historyBatchTimer = setTimeout(() => this.flushAppend(entry), 20);
     }
     flushAppend(entry) {
         const batch = entry._historyBatch;
@@ -120,7 +120,7 @@ class ChartHistoryFeed {
         batch.samples.sort((a, b) => a.t - b.t);
         const pending = (this.pendingAppends ||= new Set());
         const task = this.host._chartHistory
-            .request("append", [batch.scope, batch.samples, batch.tick])
+            .request("append", [batch.scope, batch.samples, batch.tick], batch.bytes)
             .then((status) => {
                 if (status?.limited) this.warnLimited();
             })
@@ -177,6 +177,8 @@ class ChartHistoryFeed {
                     : acquisitionTime
         }));
         entry.historyIdentities = new Map(entry.historyItems.map((item) => [item.name, item.historyIdentity]));
+        entry.historyTypes = new Map(entry.historyItems.map((item) => [item.name, item.type]));
+        entry.archiveNames = new Map(entry.historyItems.map((item) => [item.name, `${item.name} [${item.type}]`]));
         this.itemsByScope.set(scope, entry.historyItems);
         if (entry.archiveOnly) return;
         this.host._chartHistory
