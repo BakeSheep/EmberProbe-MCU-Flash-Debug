@@ -606,9 +606,9 @@ function styleFor(name) {
     return state.curveStyles[name] || state.seriesStyles[name] || Styles.preview;
 }
 function toggleCurve(name) {
-    analysis.previousHidden = null;
-    analysis.focused = null;
+    analysis.previousHidden = analysis.focused = null;
     state.hidden[name] = !state.hidden[name];
+    if (chartState.heldFitX && chartState.autoY) chartState.fitRequested = true;
     saveUi();
     renderVars();
 }

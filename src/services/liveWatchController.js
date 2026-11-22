@@ -883,7 +883,14 @@ class LiveWatchController {
         this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, this.intent);
         // Only host-driven DAP sampling loses samples while paused; mark that hole with an empty row. Worker
         // sessions deliver their held backlog afterwards, which an empty row stamped now would precede.
-        if (!paused && !session && this.host._liveWatchService && this.host._samplingArchive) {
+        if (
+            !paused &&
+            !session &&
+            this.intent &&
+            this.host._debugBridge?.hasSession &&
+            this.host._liveWatchService &&
+            this.host._samplingArchive
+        ) {
             const active = this.activeReadPlan ? this.activeReadPlan() : [];
             if (active.length) {
                 const t = Date.now();

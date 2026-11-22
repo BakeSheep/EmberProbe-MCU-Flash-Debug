@@ -427,7 +427,14 @@ async function* readArchive(filePath, { start = 0, end = Infinity, dictionary = 
         if (position === cutoff) await iterator.next();
         return { end: validEnd, dictionary: state };
     } finally {
-        input.destroy();
+        if (!input.closed) {
+            await new Promise((resolve) => {
+                input.once("close", () => resolve(undefined));
+                input.destroy();
+            });
+        } else {
+            input.destroy();
+        }
     }
 }
 

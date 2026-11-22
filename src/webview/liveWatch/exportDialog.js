@@ -80,7 +80,7 @@
         function updateTimeline(changed) {
             const from = $("exportFromRange"),
                 to = $("exportToRange"),
-                span = Math.max(1, timelineEnd - timelineStart);
+                span = Math.max(1, Math.ceil(timelineEnd - timelineStart));
             let a = Number(from.value),
                 b = Number(to.value);
             if (a > b) {

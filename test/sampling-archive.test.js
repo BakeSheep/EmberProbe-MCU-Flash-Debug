@@ -883,6 +883,87 @@ async function main() {
         fs.rmSync(fullRoot, { recursive: true, force: true });
     }
 
+    await scenario(
+        "Stopped standalone reclaim does not synthesize null samples and chains concurrent clears",
+        async () => {
+            const { LiveWatchController } = require("../src/services/liveWatchController");
+            const { compactSamplingArchive } = require("../src/services/samplingArchiveCompaction");
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-reclaim-race-"));
+            let rawCalls = 0;
+            const controller = Object.create(LiveWatchController.prototype);
+            Object.assign(controller, {
+                intent: false,
+                session: null,
+                activeReadPlan: () => [{ name: "a", type: "u32" }],
+                handleRawSamples: () => {
+                    rawCalls++;
+                },
+                status: () => ({ running: false }),
+                host: {
+                    _samplingCoordinator: {
+                        setBackpressure() {},
+                        setDeliveryHold() {},
+                        setDebugIntent() {}
+                    },
+                    debugLaunch: { managedServer: null },
+                    _debugBridge: { hasSession: false },
+                    _liveWatchService: {},
+                    _samplingArchive: {},
+                    _postConsumerStatuses() {}
+                }
+            });
+            let startedCompaction;
+            const entered = new Promise((r) => {
+                startedCompaction = r;
+            });
+            let releaseFirst;
+            const gate = new Promise((r) => {
+                releaseFirst = r;
+            });
+            let passes = 0;
+            const arch = new SamplingArchive({
+                rootDir: path.join(root, "history"),
+                maxBytes: 256,
+                onBackpressure: (paused) => controller.setArchiveBackpressure(paused),
+                compactArchive: async (req) => {
+                    passes++;
+                    if (passes === 1) {
+                        startedCompaction();
+                        await gate;
+                    }
+                    return compactSamplingArchive(req);
+                }
+            });
+            try {
+                arch.append([{ name: "a", valueText: "1".repeat(80) }], 1000, "panel-1");
+                arch.append([{ name: "b", valueText: "2".repeat(80) }], 1001, "panel-2");
+                await arch.flush();
+                arch.maxBytes = 120;
+                arch.clear("panel-1");
+                const first = arch.reclaimCleared();
+                await entered;
+                // Second panel clears and an in-flight surviving sample arrives while pass 1 is compacting.
+                arch.clear("panel-2");
+                assert.strictEqual(arch.append([{ name: "c", valueText: "7" }], 1002, "panel-3"), true);
+                releaseFirst();
+                await first;
+                await arch.flush();
+                assert.strictEqual(passes, 2, "concurrent clear triggers a follow-up compaction pass");
+                assert.strictEqual(
+                    rawCalls,
+                    0,
+                    "stopped standalone backpressure release must not synthesize null samples"
+                );
+                assert.strictEqual(arch.status("panel-1").rows, 0);
+                assert.strictEqual(arch.status("panel-2").rows, 0);
+                assert.strictEqual(arch.status("panel-3").rows, 1, "in-flight sample for surviving scope is retained");
+            } finally {
+                await arch.dispose();
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        }
+    );
+
     console.log("sampling archive tests passed");
 }
 

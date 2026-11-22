@@ -369,6 +369,12 @@ try {
     doc.getElementById("exportInvert").click();
     pointer("pointerdown", box, 50, 35);
     assert.strictEqual(w.eval("exportDialog").drag, null, "empty lists do not start selection");
+    w.eval("exportDialog").show({
+        variables: ["v_a [f32]"],
+        firstTimestampMs: 1000,
+        lastTimestampMs: 1001.2
+    });
+    assert.strictEqual(doc.getElementById("exportRangeFill").style.width, "100%");
     page.assertHealthy();
 } finally {
     page.close();

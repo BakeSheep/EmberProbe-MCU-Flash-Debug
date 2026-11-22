@@ -57,6 +57,7 @@ const { RtosViewService } = require("./services/rtosViewService");
 const { DebugControlService } = require("./services/debugControlService");
 const { SidebarDataBreakpoints } = require("./services/sidebarDataBreakpoints");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
+const { compactSamplingArchive } = require("./services/samplingArchiveCompaction");
 const { ChartHistoryService } = require("./services/chartHistoryService");
 const { RttController } = require("./services/rttController");
 const { RttTerminalService } = require("./services/rttTerminalService");
@@ -259,7 +260,10 @@ function createSamplingServices(host, context, vscode) {
             `sampling-history-${process.pid}-${crypto.randomBytes(6).toString("hex")}`
         ),
         maxBytes: archiveLimitMiB * 1024 * 1024,
-        compactArchive: (request) => host._chartHistory.compactArchive(request),
+        compactArchive: (request) =>
+            host._chartHistory && !host._chartHistory.failed
+                ? host._chartHistory.compactArchive(request)
+                : compactSamplingArchive(request),
         onWritten: (bytes) =>
             host._chartHistory?.archiveProgress({
                 dataPath: host._samplingArchive.dataPath,

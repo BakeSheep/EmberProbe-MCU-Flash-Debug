@@ -39,6 +39,7 @@
                 state.hidden = Object.fromEntries(names.map((name) => [name, action === "hideAll"]));
                 analysis.previousHidden = null;
                 analysis.focused = null;
+                if (action === "showAll" && chartState.heldFitX && chartState.autoY) chartState.fitRequested = true;
                 renderVars();
                 saveUi();
             }
@@ -47,6 +48,7 @@
                     action === "restore"
                         ? Analysis.restore(analysis, names)
                         : Analysis.focus(analysis, state.hidden, names, value);
+                if (chartState.heldFitX && chartState.autoY) chartState.fitRequested = true;
                 renderVars();
                 saveUi();
             }
@@ -84,6 +86,7 @@
             if (action === "gain") {
                 if (!gain.set(value.name, value.gain)) return;
                 chartState.prepared = chartState.curveGeometry = chartState.rangeStats = null;
+                if (chartState.heldFitX && chartState.autoY) chartState.fitRequested = true;
                 chartState.hits = [];
                 updateValues();
             }

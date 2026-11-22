@@ -210,32 +210,48 @@ class SamplingArchive {
 
     async _reclaim(readers) {
         await Promise.allSettled(readers);
-        await this.flush();
-        if (this.closed || this.failed) return;
-        const dataPath = this.dataPath;
-        const outputPath = path.join(this.rootDir, `samples-${crypto.randomBytes(8).toString("hex")}.bin`);
-        const cutoff = this.indexedBytes;
-        const oldLimit = this.maxBytes;
-        const through = this.clearVersion;
-        if (this.handle) await this.handle.close();
-        this.handle = null;
-        let compacted;
-        try {
-            compacted = await this.compactArchive({ dataPath, outputPath, cutoff, generations: [...this.generations] });
-        } catch (error) {
-            await fsp.rm(outputPath, { force: true }).catch(() => {});
-            throw error;
+        while (this.clearVersion !== this.compactedThrough && !this.closed && !this.failed) {
+            await this.flush();
+            if (this.closed || this.failed) return;
+            const dataPath = this.dataPath;
+            const outputPath = path.join(this.rootDir, `samples-${crypto.randomBytes(8).toString("hex")}.bin`);
+            const cutoff = this.indexedBytes;
+            const oldLimit = this.maxBytes;
+            const through = this.clearVersion;
+            if (this.handle) await this.handle.close();
+            this.handle = null;
+            let compacted;
+            try {
+                compacted = await this.compactArchive({
+                    dataPath,
+                    outputPath,
+                    cutoff,
+                    generations: [...this.generations]
+                });
+            } catch (error) {
+                await fsp.rm(outputPath, { force: true }).catch(() => {});
+                throw error;
+            }
+            this.dataPath = outputPath;
+            this.encoder = new ArchiveEncoder(compacted.dictionary);
+            this.timeIndex = compacted.timeIndex;
+            this.rows = compacted.rows;
+            this.writtenBytes = this.indexedBytes = compacted.bytes;
+            this.compactedThrough = through;
+            this.limitReached =
+                compacted.bytes >= this.maxBytes || (compacted.bytes === cutoff && oldLimit >= this.maxBytes);
+            this.onWritten(compacted.bytes);
+            await fsp.rm(dataPath, { force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});
         }
-        this.dataPath = outputPath;
-        this.encoder = new ArchiveEncoder(compacted.dictionary);
-        this.timeIndex = compacted.timeIndex;
-        this.rows = compacted.rows;
-        this.writtenBytes = this.indexedBytes = compacted.bytes;
-        this.compactedThrough = through;
-        this.limitReached =
-            compacted.bytes >= this.maxBytes || (compacted.bytes === cutoff && oldLimit >= this.maxBytes);
-        this.onWritten(compacted.bytes);
-        await fsp.rm(dataPath, { force: true });
+        if (this.reclaimBuffer?.length) {
+            const buffered = this.reclaimBuffer;
+            this.reclaimBuffer = [];
+            for (const entry of buffered) {
+                if (this.closed || this.failed || this.limitReached) break;
+                if ((this.generations.get(entry.scope) || 0) !== entry.generation) continue;
+                this._appendRowNow(entry.samples, entry.timestampMs, entry.scope);
+            }
+        }
     }
 
     append(samples, timestampMs, scope = "") {
@@ -255,7 +271,21 @@ class SamplingArchive {
     }
 
     _appendRow(samples, timestampMs, scope) {
-        if (this.closed || this.failed || this.limitReached || this.reclaiming) return false;
+        if (this.closed || this.failed || this.limitReached) return false;
+        if (this.reclaiming) {
+            (this.reclaimBuffer ||= []).push({
+                samples,
+                timestampMs,
+                scope,
+                generation: this.generations.get(scope) || 0
+            });
+            return true;
+        }
+        return this._appendRowNow(samples, timestampMs, scope);
+    }
+
+    _appendRowNow(samples, timestampMs, scope) {
+        if (this.closed || this.failed || this.limitReached) return false;
         const values = Object.create(null);
         for (const sample of Array.isArray(samples) ? samples : []) {
             if (!sample || typeof sample.name !== "string") continue;

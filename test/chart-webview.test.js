@@ -3356,6 +3356,52 @@ async function remoteHistory() {
             page.close();
         }
     });
+    await scenario("Float64 ULP followY convergence and frozen autoY curve visibility/gain refit", () => {
+        const page = render(getLiveWatchContent({}, "en"));
+        try {
+            const { window: w } = page;
+            const host = chartHistoryHost(page);
+            const state = {
+                y: { min: 1e9 - 1e-4, max: 1e9 + 2e-4 },
+                fitHold: null,
+                fitRequested: false,
+                yFitMotion: null
+            };
+            const target = { min: 1e9 - 8e-6, max: 1e9 + 1.08e-4 };
+            const visible = { min: 1e9, max: 1e9 + 1e-4 };
+            for (let i = 1; i <= 120; i++) {
+                state.y = w.VP.followY(state, target, visible, i * 16);
+            }
+            assert.strictEqual(state.yFitMotion.pending, false, "followY converges instead of stalling at <0.5 ULP");
+
+            page.send({
+                type: "watchList",
+                items: [
+                    { name: "small", type: "f32", address: 0x20000000, size: 4 },
+                    { name: "large", type: "f32", address: 0x20000004, size: 4 }
+                ]
+            });
+            w.eval("state").hidden.large = true;
+            host.samples([
+                { name: "small", value: 1, t: 1000 },
+                { name: "small", value: 2, t: 2000 },
+                { name: "large", value: 500, t: 1000 },
+                { name: "large", value: 1000, t: 2000 }
+            ]);
+            w.viewportController.fit("fill", true);
+            host.draw(100);
+            assert.ok(w.chartState.y.max < 10);
+            w.freezeChart();
+            host.pump();
+            host.draw(120);
+            assert.ok(w.chartState.heldFitX, "freezing holds current axes");
+            w.toggleCurve("large");
+            host.draw(140);
+            assert.ok(w.chartState.y.max >= 1000, "revealing a hidden curve while frozen refits auto Y");
+        } finally {
+            page.close();
+        }
+    });
     await scenario("Toolbar controls, accessibility and overlap", controls);
     await scenario("Active curve allocation, expanded styles, visibility and overrides", activeStyles);
     await scenario("Curve identity, inspection, snapshots and interaction", experience);

@@ -202,9 +202,11 @@
         // History arrives in batches. Ease the displayed bounds between commits while keeping new extrema visible.
         const elapsed = Math.max(0, now - (motion?.at ?? now));
         const weight = -Math.expm1(-elapsed / 120);
+        const nextMin = state.y.min + (fit.min - state.y.min) * weight;
+        const nextMax = state.y.max + (fit.max - state.y.max) * weight;
         const y = {
-            min: Math.min(visible.min, state.y.min + (fit.min - state.y.min) * weight),
-            max: Math.max(visible.max, state.y.max + (fit.max - state.y.max) * weight)
+            min: Math.min(visible.min, elapsed > 0 && nextMin === state.y.min ? fit.min : nextMin),
+            max: Math.max(visible.max, elapsed > 0 && nextMax === state.y.max ? fit.max : nextMax)
         };
         const pending = Math.max(Math.abs(fit.min - y.min), Math.abs(fit.max - y.max)) > span(fit) * 0.001;
         state.yFitMotion = { target: fit, at: now, pending };

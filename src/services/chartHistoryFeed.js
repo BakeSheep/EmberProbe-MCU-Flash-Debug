@@ -14,6 +14,7 @@ class ChartHistoryFeed {
         this.host = host;
         // Chart windows can be closed while the archive and its observation boundaries still exist.
         this.itemsByScope = new Map();
+        this.runtimeLeavesByScope = new Map();
         /** @type {Set<Promise<void>>} */
         this.pendingAppends = new Set();
         // Bytes batched on the host and not yet sent to the worker.
@@ -142,9 +143,17 @@ class ChartHistoryFeed {
         const scope = this.host._debugSamplingScope(entry.watchKey);
         const watched = this.host._scalarWatchList(entry.watchKey);
         const owners = new Set(watched.map((item) => item.name));
-        for (const [name, leaf] of entry.runtimeHistoryLeaves || [])
-            if (!owners.has(leaf.runtimeOwner)) entry.runtimeHistoryLeaves.delete(name);
-        const items = buildChartHistoryItems(watched, elfSymbols, [...(entry.runtimeHistoryLeaves?.values() || [])]);
+        let runtimeLeaves = this.runtimeLeavesByScope.get(scope);
+        if (!runtimeLeaves) {
+            runtimeLeaves = new Map();
+            this.runtimeLeavesByScope.set(scope, runtimeLeaves);
+        }
+        if (entry.runtimeHistoryLeaves && entry.runtimeHistoryLeaves !== runtimeLeaves) {
+            for (const [k, v] of entry.runtimeHistoryLeaves) runtimeLeaves.set(k, v);
+        }
+        entry.runtimeHistoryLeaves = runtimeLeaves;
+        for (const [name, leaf] of runtimeLeaves) if (!owners.has(leaf.runtimeOwner)) runtimeLeaves.delete(name);
+        const items = buildChartHistoryItems(watched, elfSymbols, [...runtimeLeaves.values()]);
         const identity = (item) => JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
         const previousItems = this.itemsByScope.get(scope);
         if (!entry.archiveOnly && entry.historyScope && entry.historyScope !== scope) {
