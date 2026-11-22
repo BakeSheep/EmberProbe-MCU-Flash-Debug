@@ -1396,8 +1396,8 @@ function stlinkV3Table(requestedKhz) {
                 const value = doc.getElementById("samplingClockValue");
                 const hint = doc.getElementById("samplingClockHint");
                 const hints = {
-                    zh: "提供时钟频率可有效提高采样率。关闭“自适应”后，可手动设置采样时钟。",
-                    en: "Setting the clock frequency can improve the sampling rate. Turn off Adaptive to set the sampling clock manually."
+                    zh: "提高时钟频率可有效提高采样率。关闭“自适应”后，可手动设置采样时钟。",
+                    en: "Setting the clock frequency can improve the sampling rate. Turn off Auto to set the sampling clock manually."
                 };
                 assert.strictEqual(hint.textContent, hints[lang]);
                 assert.strictEqual(label.nextElementSibling, value);

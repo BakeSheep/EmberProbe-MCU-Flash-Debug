@@ -11,7 +11,32 @@ const { supportedPlatform } = require("./cubemxEnvironment");
 const parser = new XMLParser({ ignoreAttributes: false, processEntities: false });
 const IDENTIFIER = /^[a-z0-9_-]{1,128}$/i;
 const VERSION = /^\d+\.\d+\.\d+(?:[-+][a-z0-9.-]+)?$/i;
-const sortVersions = (values) => values.sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
+const FAMILIES = "H7RS WB0 WBA WL3 MP1 MP2 F0 F1 F2 F3 F4 F7 G0 G4 G5 H5 H7 L0 L1 L4 L5 U0 U3 U5 C0 C5 N6 WB WL".split(
+    " "
+);
+
+function extractStm32Family(value) {
+    const name = path.basename(String(value || "").replace(/\\/g, "/")).replace(/\.cfg$/i, "");
+    if (/^stm32h7[rs]\d/i.test(name)) return "H7RS";
+    return (
+        FAMILIES.find((family) => new RegExp("^stm32" + family + "(?:[0-9x_].*|[a-z][0-9].*)?$", "i").test(name)) ||
+        name.match(/^stm32([a-z]{1,2}\d)/i)?.[1]?.toUpperCase() ||
+        undefined
+    );
+}
+
+function compareVersionDesc(a, b) {
+    const [aCore, aRest = ""] = String(a).split(/[-+]/, 2);
+    const [bCore, bRest = ""] = String(b).split(/[-+]/, 2);
+    const coreCmp = bCore.localeCompare(aCore, "en", { numeric: true });
+    if (coreCmp !== 0) return coreCmp;
+    const aPre = String(a).includes("-");
+    const bPre = String(b).includes("-");
+    if (aPre !== bPre) return aPre ? 1 : -1;
+    return bRest.localeCompare(aRest, "en", { numeric: true });
+}
+
+const sortVersions = (values) => values.sort(compareVersionDesc);
 
 async function readBounded(file, limit) {
     const handle = await fs.open(file, "r");
@@ -50,10 +75,11 @@ async function packRepository(options = {}) {
     } catch (error) {
         if (error.code !== "ENOENT") throw error;
     }
-    if (config.cmsis_pack_root) {
-        if (typeof config.cmsis_pack_root !== "string" || !path.isAbsolute(config.cmsis_pack_root))
+    const packRoot = config && typeof config === "object" ? /** @type {any} */ (config).cmsis_pack_root : null;
+    if (packRoot) {
+        if (typeof packRoot !== "string" || !path.isAbsolute(packRoot))
             throw new Error("CubeUserConfig cmsis_pack_root must be an absolute path");
-        return config.cmsis_pack_root;
+        return packRoot;
     }
     const dataRoot =
         platform === "win32"
@@ -98,10 +124,12 @@ function versionMatches(version, required) {
     const actual = version.split(".").map(Number);
     const expected = match.slice(2).map(Number);
     const compare = actual[0] - expected[0] || actual[1] - expected[1] || actual[2] - expected[2];
-    return (
-        compare >= 0 &&
-        (match[1] === ">=" || (actual[0] === expected[0] && (match[1] === "^" || actual[1] === expected[1])))
-    );
+    if (compare < 0) return false;
+    if (match[1] === ">=") return true;
+    if (match[1] === "~") return actual[0] === expected[0] && actual[1] === expected[1];
+    if (expected[0] > 0) return actual[0] === expected[0];
+    if (expected[1] > 0) return actual[0] === 0 && actual[1] === expected[1];
+    return actual[0] === 0 && actual[1] === 0 && actual[2] === expected[2];
 }
 
 async function directories(root) {
@@ -150,15 +178,13 @@ async function inspectFirmware(config, options = {}) {
     const platform = options.platform || process.platform;
     if (!supportedPlatform(platform) || !config.cubemx2Path) return null;
     await (options.installation || installation)(config.cubemx2Path, { platform });
-    let family = String(config.target || "")
-        .match(/(?:^|[/\\])stm32([a-z]\d)(?:[0-9a-z_]*)(?:\.cfg)?$/i)?.[1]
-        ?.toUpperCase();
+    let family = extractStm32Family(config.target);
     let requirements;
     if (config.iocPath) {
         const file = await (options.resolveIoc || (async (value) => value))(config.iocPath);
         const project = parseIoc2(await readBounded(file, MAX_IOC2_BYTES));
         const chip = summarize(project, file).chip;
-        const projectFamily = chip.match(/^STM32([A-Z]\d)/i)?.[1]?.toUpperCase();
+        const projectFamily = extractStm32Family(chip);
         if (family && projectFamily && family !== projectFamily)
             throw new Error("Target and .ioc2 family do not match");
         family = projectFamily || family;
@@ -174,13 +200,16 @@ async function inspectFirmware(config, options = {}) {
     const packs = [];
     for (const item of requirements) {
         const versions = await installedVersions(repository, item.vendor, item.name);
-        const supported = !item.conditional && versionMatches("0.0.0", item.requiredVersion) !== null;
         const related = requirements.filter(
             (other) =>
                 other.vendor.toLowerCase() === item.vendor.toLowerCase() &&
                 other.name.toLowerCase() === item.name.toLowerCase() &&
                 !other.conditional
         );
+        const supported =
+            !item.conditional &&
+            versionMatches("0.0.0", item.requiredVersion) !== null &&
+            related.every((other) => versionMatches("0.0.0", other.requiredVersion) !== null);
         const installed =
             supported &&
             versions.some((version) =>

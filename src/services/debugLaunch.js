@@ -124,7 +124,7 @@ class DebugLaunch {
                 serverOptions.serverpath ||
                 this._vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const [resolvedSvdPath, openocdPath] = await Promise.all([
-                configuration?.svdFile || this.host._svdManager.pathForDebug(workspaceFolder),
+                configuration?.svdFile || configuration?.svdPath || this.host._svdManager.pathForDebug(workspaceFolder),
                 this.host._resolveOpenOcdPath(configuredOpenOcdPath)
             ]);
             if (!openocdPath) return false;
@@ -154,12 +154,12 @@ class DebugLaunch {
                         executable: elfPath,
                         cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
                         runToEntryPoint: configuration?.runToEntryPoint ?? "main",
-                        ...(svdPath ? { svdFile: svdPath } : {}),
+                        ...(svdPath ? { svdFile: cleanWindowsPath(configuration?.svdFile) || svdPath } : {}),
                         rtos
                     }
                 });
                 startAccepted = true;
-                return addPeripheralViewerSvd(grouped, svdPath);
+                return addPeripheralViewerSvd(grouped, cleanWindowsPath(grouped.svdPath) || svdPath);
             }
             await this.prepareProbe(workspaceFolder);
             startup?.phase("prepare");
@@ -193,9 +193,9 @@ class DebugLaunch {
                     runToEntryPoint: configuration?.runToEntryPoint ?? "main",
                     __emberprobeManagedToken: this.managedToken
                 },
-                svdPath
+                cleanWindowsPath(configuration?.svdPath) || svdPath
             );
-            if (svdPath) debugConfig.svdFile = svdPath;
+            if (svdPath) debugConfig.svdFile = cleanWindowsPath(configuration?.svdFile) || svdPath;
             // The adapter uses this.host to decide whether it runs RTOS-aware; an explicit empty value must override an
             // old value in launch.json.
             if (rtos) debugConfig.rtos = rtos;
@@ -768,7 +768,7 @@ class DebugLaunch {
                 },
                 validated.cwd || folder.uri.fsPath
             );
-            const svd = validated.svdFile || (await this.host._svdManager.pathForDebug(folder));
+            const svd = cleanWindowsPath(validated.svdFile || (await this.host._svdManager.pathForDebug(folder)));
             const rtos = resolveRtos(validated, own.get("rtos", ""));
             if (!own.get("experimental.externalGdb.enabled", false))
                 throw new Error("External GDB was disabled during startup");
@@ -793,7 +793,7 @@ class DebugLaunch {
                 ...(svd ? { svdFile: svd } : {})
             };
             this.armStartupWatchdog();
-            return addPeripheralViewerSvd(result, result.svdPath || svd);
+            return addPeripheralViewerSvd(result, cleanWindowsPath(result.svdPath) || svd);
         } catch (error) {
             if (reserved) await this.host._externalDebug.finish();
             throw error;

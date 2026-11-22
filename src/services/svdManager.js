@@ -137,15 +137,38 @@ class SvdManager {
         if (bound) return bound;
         if (hadBinding && !this.disposed) {
             const cleared = await this.library.bind(folder.uri, "", stamp);
-            if (!cleared) return null;
-            stamp = cleared;
+            if (cleared) {
+                stamp = cleared;
+            } else {
+                stamp = this.library.bindingStamp(folder.uri);
+                if (this.library.bindings()[key])
+                    return this.library.resolveBound(folder.uri, identity.exact ? identity : null, { readOnly: true });
+            }
         }
         if (this.disposed || this.library.bindingStamp(folder.uri) !== stamp) return null;
+        const identityKey = JSON.stringify([identity.device, identity.vendor, identity.family, !!identity.exact]);
         const active = this.discoveries.get(key);
-        if (active) return active;
-        const pending = this.discoverForFolder(folder, identity, stamp).finally(() => this.discoveries.delete(key));
-        this.discoveries.set(key, pending);
-        return pending;
+        if (active && active.stamp === stamp && active.identityKey === identityKey) return active.promise;
+        const record = { stamp, identityKey, promise: null };
+        record.promise = this.discoverForFolder(folder, identity, stamp)
+            .then(async (found) => {
+                if (
+                    !found &&
+                    hadBinding &&
+                    !this.disposed &&
+                    this.library.bindingStamp(folder.uri) === stamp &&
+                    this.workspaceForElf()?.uri.toString() === key
+                ) {
+                    await this.context.workspaceState.update(this.cacheKeys.svdPath, undefined);
+                    this.onStatus({ state: "idle", key: "svd.notConfigured" });
+                }
+                return found;
+            })
+            .finally(() => {
+                if (this.discoveries.get(key) === record) this.discoveries.delete(key);
+            });
+        this.discoveries.set(key, record);
+        return record.promise;
     }
 
     async discoverForFolder(folder, identity, stamp) {
@@ -177,6 +200,7 @@ class SvdManager {
                 try {
                     await this.library.validate(await this.library.read(file), matchingIdentity);
                     matches.push(file);
+                    if (matches.length > 1) break;
                 } catch {
                     /* incompatible */
                 }

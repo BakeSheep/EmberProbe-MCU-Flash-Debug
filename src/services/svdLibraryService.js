@@ -114,18 +114,36 @@ class SvdLibraryService {
     }
     // Peripheral polling resolves the binding several times per round; only a changed file is read and hashed again.
     async readHashed(file) {
-        const stat = await fs.promises.stat(file);
+        let stat;
+        try {
+            stat = await fs.promises.stat(file);
+        } catch (error) {
+            if (this.hashedFile?.file === file) this.hashedFile = null;
+            throw error;
+        }
         const known = this.hashedFile;
         if (
             known?.file === file &&
             known.size === stat.size &&
             known.mtimeMs === stat.mtimeMs &&
-            known.ctimeMs === stat.ctimeMs
+            known.ctimeMs === stat.ctimeMs &&
+            known.ino === stat.ino &&
+            known.dev === stat.dev
         )
             return known;
         const buffer = await this.read(file);
+        const after = await fs.promises.stat(file).catch(() => stat);
         const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-        this.hashedFile = { file, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, buffer, sha256 };
+        this.hashedFile = {
+            file,
+            size: after.size,
+            mtimeMs: after.mtimeMs,
+            ctimeMs: after.ctimeMs,
+            ino: after.ino,
+            dev: after.dev,
+            buffer,
+            sha256
+        };
         return this.hashedFile;
     }
     validate(buffer, identity = null, digest = crypto.createHash("sha256").update(buffer).digest("hex")) {
@@ -196,7 +214,26 @@ class SvdLibraryService {
         return `${this.bindingVersions.get(key) || 0}:${this.bindings()[key] || ""}`;
     }
 
-    async bind(folderUri, hash, expectedStamp) {
+    bind(folderUri, hash, expectedStamp) {
+        if (!this._bindPending) {
+            const p = this._bind(folderUri, hash, expectedStamp).finally(() => {
+                if (this._bindPending === p) this._bindPending = null;
+            });
+            this._bindPending = p;
+            return p;
+        }
+        const next = this._bindPending.then(
+            () => this._bind(folderUri, hash, expectedStamp),
+            () => this._bind(folderUri, hash, expectedStamp)
+        );
+        const tracked = next.finally(() => {
+            if (this._bindPending === tracked) this._bindPending = null;
+        });
+        this._bindPending = tracked;
+        return next;
+    }
+
+    async _bind(folderUri, hash, expectedStamp) {
         const key = folderUri?.toString?.() || String(folderUri || "");
         if (!key)
             throw Object.assign(new Error("A workspace folder is required for SVD binding"), { code: "NO_WORKSPACE" });
@@ -300,6 +337,7 @@ class SvdLibraryService {
         const file = path.join(this.root, hash, "device.svd");
         try {
             const { buffer, sha256 } = await this.readHashed(file);
+            if (sha256.toLowerCase() !== hash.toLowerCase()) throw new Error("SVD library file hash mismatch");
             const svd = await this.validate(buffer, identity, sha256);
             const metadata = await this.metadata(hash);
             if (this.bindingStamp(folderUri) !== stamp) return null;

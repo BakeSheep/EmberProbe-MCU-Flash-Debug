@@ -107,9 +107,33 @@ const { parseIoc2 } = require("../src/services/cubemx2Project");
                     ["2.2.0", "~2.1.0", false],
                     ["2.0.9", ">=2.1.0", false],
                     ["3.0.0", ">=2.1.0", true],
-                    ["2.1.0", "*", null]
+                    ["2.1.0", "*", null],
+                    ["0.2.3", "^0.2.0", true],
+                    ["0.3.0", "^0.2.0", false],
+                    ["0.0.3", "^0.0.3", true],
+                    ["0.0.4", "^0.0.3", false]
                 ])
                     assert.strictEqual(versionMatches(version, required), matched);
+                const mixedUnsupported = fixture.replace(
+                    "    - pack: STMicroelectronics::syscalls@2.0.0",
+                    "    - pack: STMicroelectronics::syscalls@2.0.0\n    - pack: STMicroelectronics::stm32c5xx_dfp@*"
+                );
+                await fs.writeFile(project, mixedUnsupported);
+                assert.strictEqual(
+                    (await inspectFirmware(config, options)).state,
+                    "unknown",
+                    "an unsupported sibling range must classify as unknown rather than false version-mismatch"
+                );
+                const wbOnly = await inspectFirmware(
+                    { cubemx2Path: config.cubemx2Path, target: "target/stm32wbx.cfg", iocPath: "" },
+                    options
+                );
+                assert.strictEqual(wbOnly.family, "WB");
+                const h7rsOnly = await inspectFirmware(
+                    { cubemx2Path: config.cubemx2Path, target: "target/stm32h7rsx.cfg", iocPath: "" },
+                    options
+                );
+                assert.strictEqual(h7rsOnly.family, "H7RS");
                 const conditional = fixture.replace(
                     "STMicroelectronics::stm32c5xx_dfp@2.1.0",
                     "STMicroelectronics::stm32c5xx_dfp@2.1.0\n      for-context: +Debug"

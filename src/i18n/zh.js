@@ -247,7 +247,7 @@ module.exports = Object.freeze({
     "lw.samplingClock": "自适应采样时钟",
     "lw.samplingClockAuto": "自适应",
     "lw.samplingClockPending": "待采样",
-    "lw.samplingClockHint": "提供时钟频率可有效提高采样率。关闭“自适应”后，可手动设置采样时钟。",
+    "lw.samplingClockHint": "提高时钟频率可有效提高采样率。关闭“自适应”后，可手动设置采样时钟。",
     "lw.samplingClockLocked": "采样运行中，请先停止采样后再修改采样时钟",
     "lw.runtimeCollapsed": "展开后开始采样",
     "lw.removeWatch": "移除监视",

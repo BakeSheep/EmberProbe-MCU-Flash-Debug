@@ -277,7 +277,7 @@ module.exports = Object.freeze({
     "lw.samplingClockAuto": "Auto",
     "lw.samplingClockPending": "Pending",
     "lw.samplingClockHint":
-        "Setting the clock frequency can improve the sampling rate. Turn off Adaptive to set the sampling clock manually.",
+        "Setting the clock frequency can improve the sampling rate. Turn off Auto to set the sampling clock manually.",
     "lw.samplingClockLocked": "Stop sampling before changing the sampling clock",
     "lw.runtimeCollapsed": "Sampling starts when expanded",
     "lw.removeWatch": "Remove watch",

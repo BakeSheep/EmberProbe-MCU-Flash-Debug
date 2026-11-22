@@ -267,6 +267,26 @@ const SVD = Buffer.from(
     await assert.rejects(failing.downloadOfficial(folder), { code: "TEST" });
     assert(statuses.some((status) => status.state === "error"));
 
+    await scenario(
+        "Serialized library.bind preserves concurrent workspace bindings and rejects tampered hashes",
+        async () => {
+            const secondFolder = { uri: { fsPath: path.join(root, "ws2"), toString: () => "file:///ws2" } };
+            const hashA = "a".repeat(64);
+            const hashB = "b".repeat(64);
+            await Promise.all([manager.library.bind(folder.uri, hashA), manager.library.bind(secondFolder.uri, hashB)]);
+            assert.strictEqual(manager.library.bindings()[folder.uri.toString()], hashA);
+            assert.strictEqual(manager.library.bindings()[secondFolder.uri.toString()], hashB);
+            const tamperedDir = path.join(manager.library.root, hashA);
+            await fs.promises.mkdir(tamperedDir, { recursive: true });
+            await fs.promises.writeFile(path.join(tamperedDir, "device.svd"), "<device><name>Tampered</name></device>");
+            assert.strictEqual(
+                await manager.library.resolveBound(folder.uri, null, { readOnly: true }),
+                null,
+                "resolveBound rejects a library file whose SHA-256 does not match its directory hash"
+            );
+        }
+    );
+
     await fs.promises.rm(root, { recursive: true, force: true });
     console.log("SVD manager tests passed");
 })().catch((error) => {

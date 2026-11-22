@@ -349,7 +349,10 @@ class McpRegistration {
         if (!this.connectionCheck) {
             // Load the MCP client SDK only when the check is requested.
             const { checkMcpConnection } = require("./mcpConnectivity");
-            this.connectionCheck = checkMcpConnection(this.serverSpec()).finally(() => {
+            this.connectionCheck = (async () => {
+                await this.writeLauncher();
+                return checkMcpConnection(this.serverSpec());
+            })().finally(() => {
                 this.connectionCheck = null;
             });
         }
