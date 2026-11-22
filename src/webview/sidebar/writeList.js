@@ -140,6 +140,7 @@
             timers = Object.create(null),
             lastAt = Object.create(null),
             latestSeq = Object.create(null),
+            inFlightSeqs = Object.create(null),
             retiredSeq = Object.create(null),
             // Last value known to be on the target per write card; a failed write rolls back to it.
             confirmed = Object.create(null),
@@ -239,8 +240,12 @@
             }
             delete lastAt[name];
             if (notify && latestSeq[name] !== undefined) {
-                retiredSeq[name] = latestSeq[name];
+                const retired = (retiredSeq[name] ||= new Set());
+                for (const s of inFlightSeqs[name] || [latestSeq[name]]) retired.add(s);
+                delete inFlightSeqs[name];
                 page.post?.({ type: "cancelSidebarWrite", name, seq: latestSeq[name] });
+            } else {
+                delete inFlightSeqs[name];
             }
             delete latestSeq[name];
             const card = cells[name];
@@ -252,6 +257,7 @@
         function remove(name) {
             cancelPending(name, !!cells[name]?.item.fromWatch);
             delete confirmed[name];
+            delete inFlightSeqs[name];
             delete retiredSeq[name];
             state.writeList = state.writeList.filter((w) => w.name !== name);
             render();
@@ -326,8 +332,8 @@
                 feedback({ key: gate });
                 return;
             }
-            delete retiredSeq[item.name];
             latestSeq[item.name] = ++seq;
+            (inFlightSeqs[item.name] ||= new Set()).add(seq);
             cells[item.name]?.input.classList.add("pending");
             page.post({
                 type: "writeVariable",
@@ -726,15 +732,17 @@
         // A retired request can still report its write progress, without updating the current card.
         function onResult(m) {
             m = { ...m, code: m.diagnostic?.code || m.code, details: m.diagnostic?.details || m.details };
+            inFlightSeqs[m.name]?.delete(m.seq);
             if (latestSeq[m.name] === undefined || m.seq !== latestSeq[m.name]) {
-                if (retiredSeq[m.name] !== undefined && retiredSeq[m.name] === m.seq) {
-                    delete retiredSeq[m.name];
+                if (retiredSeq[m.name]?.delete(m.seq)) {
+                    if (!retiredSeq[m.name].size) delete retiredSeq[m.name];
                     if (!m.ok && (typeof m.details?.written === "boolean" || m.details?.resultUnknown))
                         reportFailure(m);
                 }
                 return;
             }
             delete latestSeq[m.name];
+            delete inFlightSeqs[m.name];
             const card = cells[m.name];
             if (card) {
                 card.input.classList.remove("pending");
@@ -831,6 +839,7 @@
         // The host's saved list replaces the cards and forgets their confirmed values.
         function load(items) {
             for (const item of state.writeList) if (item.fromWatch) cancelPending(item.name, true);
+            inFlightSeqs = Object.create(null);
             retiredSeq = Object.create(null);
             state.writeList = items.map((item) => {
                 const binding = item.fromWatch && watchWriteBinding(item.writeBinding);

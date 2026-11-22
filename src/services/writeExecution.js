@@ -607,6 +607,14 @@ class WriteExecution {
             throw Object.assign(new Error(this.host._t("sb.writeWatchRequired")), { i18nKey: "sb.writeWatchRequired" });
     }
     async writeUiVariable(name, value, options = {}) {
+        try {
+            return await this._writeUiVariable(name, value, options);
+        } catch (error) {
+            if (options.fromWatch) this.host._debugBridge?.resamplePaused?.();
+            throw error;
+        }
+    }
+    async _writeUiVariable(name, value, options = {}) {
         if (this.host._sampling.closing || this.host._sampling.exitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"

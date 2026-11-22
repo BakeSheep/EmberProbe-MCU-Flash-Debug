@@ -154,6 +154,11 @@
             const symbol = state.symbols.get(runtime.variableBaseName(name)) || watch;
             const parent = latest(watch.name);
             const exact = name === watch.name ? null : latest(name);
+            if (parent?.sample.tree && !parent.nodes) {
+                parent.nodes = new Map();
+                sampleNodes(parent.sample.tree, watch.name, parent.nodes);
+            }
+            const parentHasLeaf = name === watch.name ? !!parent : !!parent?.nodes?.has(name);
             // A leaf may be sampled independently while its owner is folded. Only use it if
             // the decoder supplied a real leaf address and type, or reported that it is stale.
             const separate =
@@ -162,15 +167,13 @@
                     exact.sample.stale ||
                     exact.sample.value == null ||
                     (Number.isSafeInteger(exact.sample.address) && exact.sample.type));
-            const record = separate && newer(exact, parent) ? exact : parent;
+            const sameCycle =
+                separate && parent && Number.isFinite(exact.sample.t) && exact.sample.t === parent.sample.t;
+            const record = separate && (!parentHasLeaf || sameCycle || newer(exact, parent)) ? exact : parent;
             if (!record) return { key: "sb.writeSampleRequired" };
             let node = record.sample;
             let valid = !node.diagnostic && !node.stale;
             if (parent?.sample.tree) {
-                if (!parent.nodes) {
-                    parent.nodes = new Map();
-                    sampleNodes(parent.sample.tree, watch.name, parent.nodes);
-                }
                 if (record === parent) {
                     const leaf = parent.nodes.get(name);
                     node = leaf?.node;
@@ -210,7 +213,15 @@
                 )
                     return { key: "sb.writeTypeUnknown" };
                 access = { type, isBoolean: !!leaf.isBoolean, typeName: leaf.typeName };
-                node = { ...node, address: leaf.address ?? node.address };
+                const address = leaf.address ?? node.address;
+                const size = runtime.typeByteLength(type);
+                if (
+                    state.writeRanges &&
+                    (!Number.isSafeInteger(address) ||
+                        !state.writeRanges.some(({ start, end }) => address >= start && address + size <= end))
+                )
+                    return { key: "sb.writeReadOnly" };
+                node = { ...node, address };
             }
             if (node.type && node.type !== access.type) return { key: "sb.writeTypeUnknown" };
             const binding = watchWriteBinding({
@@ -242,9 +253,7 @@
                 if (
                     previous &&
                     (previous.sample.writeContext > sample.writeContext ||
-                        (sample.writeContext === previous.sample.writeContext &&
-                            ((Number.isFinite(sample.t) && sample.t === previous.sample.t) ||
-                                !newer(record, previous))))
+                        (sample.writeContext === previous.sample.writeContext && !newer(record, previous)))
                 )
                     continue;
                 watch.samples.set(sample.name, record);

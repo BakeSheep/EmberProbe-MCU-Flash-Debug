@@ -143,9 +143,11 @@
                             const alternatives = type.args.map(unwrap);
                             const deferred = allowDynamicLeaf && branch(alternatives, index + 1);
                             if (deferred) return deferred;
-                            type = alternatives.every((entry) => entry?.watchType === alternatives[0]?.watchType)
-                                ? alternatives[0]
-                                : null;
+                            type =
+                                alternatives[0]?.watchType &&
+                                alternatives.every((entry) => entry?.watchType === alternatives[0]?.watchType)
+                                    ? alternatives[0]
+                                    : null;
                         } else type = unwrap(type.args?.[0]);
                     } else if (type.stl === "pair" && ["first", "second"].includes(segment.name))
                         type = unwrap(type.args[segment.name === "first" ? 0 : 1]);

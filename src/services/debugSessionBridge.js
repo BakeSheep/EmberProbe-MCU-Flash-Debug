@@ -415,6 +415,16 @@ class DebugSessionBridge {
         this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
     }
 
+    resamplePaused() {
+        if (!this.intentEnabled || !this.paused || !this.hasSession || this.conflict) return;
+        if (this.writing) {
+            this.refreshAfterWrite = true;
+            return;
+        }
+        this.snapshotPending = true;
+        this._schedule(0);
+    }
+
     refreshSnapshot() {
         if (!this.intentEnabled || !this.paused || !this.hasSession || this.conflict) return;
         // The target is still paused, so a changed read plan must not abort an in-flight write;
@@ -1159,6 +1169,7 @@ class DebugSessionBridge {
                 sidebarGuard
             );
         } catch (error) {
+            if (this.intentEnabled && this.paused) this.snapshotPending = true;
             if (guardedWrite) {
                 error.retryable = false;
                 error.details = {

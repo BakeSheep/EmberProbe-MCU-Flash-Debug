@@ -509,7 +509,98 @@ const graph = { root: 4, types };
         assert.strictEqual(menu.entry("value").key, "sb.writeTypeUnknown");
         symbol.hasDwarfWriteType = true;
         assert.strictEqual(menu.entry("value").entry.type, "u32");
+        state.writeRanges = [{ start: 0x20001000, end: 0x20002000 }];
+        assert.strictEqual(menu.entry("value").key, "sb.writeReadOnly");
     });
+
+    await scenario(
+        "Keep an independently sampled leaf writable when its collapsed parent arrives in the same tick",
+        async () => {
+            const { create } = require("../src/webview/sidebar/watchWrites");
+            const ptr = { name: "ptr", isPointer: true, address: 0x20000000, size: 4 };
+            const leaf = { name: "ptr.value", address: 0x20000000, size: 4, runtimeLeaf: true };
+            const state = {
+                watch: [ptr, leaf],
+                writeList: [],
+                symbols: new Map([[ptr.name, ptr]]),
+                latest: {},
+                latestText: {}
+            };
+            const menu = create({ state, canRead: () => true, has: () => false, toggle: () => {} });
+            menu.setContext(1);
+            menu.sampled([
+                {
+                    name: "ptr.value",
+                    address: 0x20001000,
+                    type: "i32",
+                    typeName: "int",
+                    value: 42,
+                    writeRestriction: "",
+                    writeContext: 1,
+                    t: 100
+                }
+            ]);
+            menu.sampled([
+                {
+                    name: "ptr",
+                    tree: { kind: "pointer", address: 0x20001000, typeName: "int *" },
+                    writeContext: 1,
+                    t: 100
+                }
+            ]);
+            assert.strictEqual(menu.entry("ptr.value").entry?.value, 42);
+        }
+    );
+
+    await scenario(
+        "Reject non-scalar variant alternatives and resolve reference watch paths without allowDynamicLeaf",
+        async () => {
+            const runtime = require("../src/webview/runtime");
+            const structVariant = {
+                name: "v",
+                address: 0x20000000,
+                size: 8,
+                runtimeLayout: {
+                    root: 0,
+                    types: [
+                        { kind: "class", stl: "variant", args: [1, 2], byteSize: 8 },
+                        { kind: "struct", typeName: "A", byteSize: 4, fields: [] },
+                        { kind: "struct", typeName: "B", byteSize: 4, fields: [] }
+                    ]
+                }
+            };
+            assert.strictEqual(
+                runtime.runtimeWatchEntry("v.value", structVariant, [{ kind: "member", name: "value" }], false),
+                null
+            );
+            const refStruct = {
+                name: "ref",
+                address: 0x20000010,
+                size: 4,
+                runtimeLayout: {
+                    root: 0,
+                    types: [
+                        { kind: "reference", target: 1, byteSize: 4 },
+                        {
+                            kind: "struct",
+                            typeName: "Target",
+                            byteSize: 4,
+                            fields: [{ name: "count", offset: 0, type: 2 }]
+                        },
+                        { kind: "scalar", typeName: "int", watchType: "i32", byteSize: 4 }
+                    ]
+                }
+            };
+            const resolved = runtime.runtimeWatchEntry(
+                "ref.count",
+                refStruct,
+                [{ kind: "member", name: "count" }],
+                false
+            );
+            assert.strictEqual(resolved?.type, "i32");
+            assert.strictEqual(resolved?.runtimeStaticPointers, true);
+        }
+    );
 
     console.log("Watch-list write menu, dynamic qualifiers, sampling gates and stale results passed");
 })().catch((error) => {
