@@ -136,6 +136,64 @@ jobs:
         # Both assets come from the build job that verified their shared identity.
         run: node scripts/publish-release.js
 
+  publish-marketplace:
+    timeout-minutes: 15
+    name: Publish VS Code Marketplace
+    needs: [build, publish]
+    if: ${{ !inputs.rebuild && !contains(inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REBUILD_RELEASE: ${{ inputs.rebuild && 'true' || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Download verified VSIX
+        uses: actions/download-artifact@v8
+        with:
+          name: emberprobe-vsix
+          path: dist
+      - name: Publish verified VSIX to VS Code Marketplace
+        run: node scripts/publish-store.js marketplace
+
+  publish-openvsx:
+    timeout-minutes: 15
+    name: Publish Open VSX
+    needs: [build, publish]
+    if: ${{ !inputs.rebuild && !contains(inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REBUILD_RELEASE: ${{ inputs.rebuild && 'true' || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Download verified VSIX
+        uses: actions/download-artifact@v8
+        with:
+          name: emberprobe-vsix
+          path: dist
+      - name: Publish verified VSIX to Open VSX
+        run: node scripts/publish-store.js openvsx
+
   driver-helper:
     needs: gates
     timeout-minutes: 20

@@ -1,10 +1,10 @@
 # EmberProbe 发布指南
 
-推送稳定版本标签后，[Release 工作流](../../.github/workflows/release.yml)会验证版本、运行质量门禁、生成 VSIX，并自动创建 GitHub Release 和上传附件。
+推送稳定版本标签后，[Release 工作流](../../.github/workflows/release.yml)会验证版本、运行质量门禁、生成 VSIX，并自动创建 GitHub Release、上传附件，随后将同一份已验证 VSIX 发布到 VS Code Marketplace 与 Open VSX。
 
 ## 权限与安全
 
-Windows J-Link 驱动功能在本版随未签名的 helper 与 libwdi DLL 发布。Release 工作流在一次性 Windows runner 上构建它们，生成 SHA-256 清单，并验证构建产物与 VSIX 内字节一致；helper 在提权后还会核对配套 DLL 的 SHA-256。哈希校验不能提供发布者身份认证，Windows 可能显示“未知发布者”或根据本机策略阻止运行。发布 job 只在发布阶段申请 `contents: write`，并使用 GitHub 自动提供的短期 `GITHUB_TOKEN` 创建 Release。建议保护 `v*` 标签，防止未审查的提交触发发布。
+Windows J-Link 驱动功能在本版随未签名的 helper 与 libwdi DLL 发布。Release 工作流在一次性 Windows runner 上构建它们，生成 SHA-256 清单，并验证构建产物与 VSIX 内字节一致；helper 在提权后还会核对配套 DLL 的 SHA-256。哈希校验不能提供发布者身份认证，Windows 可能显示“未知发布者”或根据本机策略阻止运行。发布 job 拆分最小权限：GitHub Release 仅申请 `contents: write`，使用短期 `GITHUB_TOKEN`；VS Code Marketplace 与 Open VSX 发布 job 绑定受保护的 `release` GitHub Environment（仅允许 `v*.*.*` 标签与 `master` 分支部署），仅申请 `contents: read` 和 `id-token: write`，通过 OIDC Trusted Publishing 签发短期凭证，不保存长期 PAT。建议保护 `v*` 标签，防止未审查的提交触发发布。
 
 ## 发布稳定版本
 
@@ -34,7 +34,8 @@ gh run watch
 1. 复用 CI。Windows、Ubuntu、macOS 在 Node.js 24 上执行常规检查和 bundle，Ubuntu 执行质量检查及 Extension Host 冒烟测试，Windows 构建 libwdi/helper。
 2. 在 Windows 构建 libwdi 与 helper，验证 WDK 二进制的 Microsoft 签名，将 libwdi 的 SHA-256 编入 helper，并生成两个未签名原生文件的 SHA-256 清单。
 3. 校验标签与发布元数据，将原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与清单一致。
-4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。
+4. 创建 GitHub Draft Release 并上传已验证的 VSIX 与对应源码包；两类附件均上传成功后转为正式 Release。
+5. 稳定版公开后，两个独立的商店发布 job（`publish-marketplace` 与 `publish-openvsx`）在 `release` Environment 中下载同一份已验证的 `dist/emberprobe.vsix`，通过 OIDC Trusted Publishing 分别发布到 VS Code Marketplace（`@vscode/vsce` `--oidc --skip-duplicate`）与 Open VSX（`ovsx` `--trusted-publishing --skip-duplicate`），不重新打包，也不依赖长期 PAT。
 
 ### 内置 OpenOCD 资源
 
@@ -71,7 +72,7 @@ gh run watch
 - 每个预发布版本都需要非空的 `## [Unreleased]`，`release:prepare` 会将其移入 `## [0.9.0-beta.1]` 等独立章节。
 - 发布正式版 `0.9.0` 时，`release:prepare` 会把 `Unreleased` 与全部 `0.9.0-*` 章节按新到旧合并为一个 `## [0.9.0]` 章节，并删除这些预发布章节，让稳定版用户在一处看到完整变化。若 `rc` 之后没有新改动，`Unreleased` 可以为空。各预发布版本的说明仍保留在对应的 GitHub Release 中。
 - 预发布版本也会更新 README 中的当前版本号；正式版发布时恢复为稳定版本号。
-- 当前只通过 GitHub Release 分发 VSIX。VS Code Marketplace 不接受 `-beta.N` 这类版本号；如以后上架 Marketplace，需要改用 `vsce publish --pre-release` 与奇偶 minor 版本方案。
+- 预发布版本只通过 GitHub Pre-release 分发，工作流会自动跳过 VS Code Marketplace 与 Open VSX 发布。VS Code Marketplace 不接受 `-beta.N` 这类版本号；若未来要在商店发布预发布通道，需改用 `--pre-release` 与奇偶 minor 版本方案。
 
 ## 兼容层退出
 
@@ -110,7 +111,7 @@ gh release edit v0.8.1 --notes-file "release-notes.md"
 工作流可安全处理常见重试场景：
 
 - Draft Release 已存在时会复用并更新 VSIX。
-- GitHub Release 已经公开时会直接结束，不重复发布。
+- GitHub Release 已经公开时会跳过 GitHub 发布，继续执行下游商店发布；已在 VS Code Marketplace 或 Open VSX 存在的同版本会由 `--skip-duplicate` 安全跳过，只补发此前失败的商店。
 
 如维护者明确要求同版本修复图标等打包问题，可从包含修复的 `master` 提交执行：
 
@@ -118,6 +119,6 @@ gh release edit v0.8.1 --notes-file "release-notes.md"
 gh workflow run release.yml --ref master -f tag=v0.8.4 -F rebuild=true
 ```
 
-`rebuild` 默认关闭。显式开启后，检查、原生构建、打包和上传使用本次工作流的同一个提交 SHA，仍校验五个文件与目标版本一致；通过全部门禁后替换该版本的 VSIX 附件，保留发布说明和公开状态。标签保持原有指向。发布说明应记录打包修复、构建提交与对应运行，以说明附件来源；功能代码变化仍使用新版本。
+`rebuild` 默认关闭。显式开启后，检查、原生构建、打包和上传使用本次工作流的同一个提交 SHA，仍校验五个文件与目标版本一致；通过全部门禁后替换 GitHub Release 的附件，保留发布说明和公开状态。由于 VS Code Marketplace 与 Open VSX 不允许覆盖已发布的同版本号，`rebuild=true` 会自动跳过两个商店发布 job。标签保持原有指向。发布说明应记录打包修复、构建提交与对应运行，以说明附件来源；需要同步更新商店的改动应发布新版本号。
 
 不要删除已经发布的标签后用同一版本指向其他提交；除明确授权的打包修复外，发布构件应保持不可变。

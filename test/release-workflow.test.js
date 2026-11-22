@@ -1,9 +1,19 @@
 "use strict";
 const assert = require("assert");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const yaml = require("yaml");
 const { publishRelease } = require("../scripts/publish-release");
+const {
+    DEFAULT_VSIX_PATH,
+    VSCE_PACKAGE,
+    OVSX_PACKAGE,
+    buildStoreCommand,
+    buildChildEnv,
+    publishStore
+} = require("../scripts/publish-store");
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "../package.json"), "utf8"));
 const read = (name) => yaml.parse(fs.readFileSync(path.join(__dirname, "../.github/workflows", name + ".yml"), "utf8"));
 const ci = read("ci"),
     release = read("release"),
@@ -42,17 +52,45 @@ assert.ok(
 assert.strictEqual(release.jobs.publish.needs, "build");
 assert.strictEqual(release.permissions.contents, "read");
 assert.strictEqual(release.jobs.publish.permissions.contents, "write");
+assert.ok(!release.jobs.publish.permissions["id-token"]);
 assert.strictEqual(release.on.workflow_dispatch.inputs.rebuild.type, "boolean");
 assert.strictEqual(release.on.workflow_dispatch.inputs.rebuild.default, false);
 const releaseSource = "${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}";
 assert.strictEqual(release.jobs.gates.with.ref, releaseSource);
-for (const name of ["build", "driver-helper", "publish"]) {
+for (const name of ["build", "driver-helper", "publish", "publish-marketplace", "publish-openvsx"]) {
     assert.strictEqual(
         release.jobs[name].steps.find((step) => step.uses === "actions/checkout@v7").with.ref,
         releaseSource
     );
 }
 assert.strictEqual(release.jobs.publish.env.REPLACE_RELEASE_ASSET, "${{ inputs.rebuild && 'true' || 'false' }}");
+for (const [jobName, target] of [
+    ["publish-marketplace", "marketplace"],
+    ["publish-openvsx", "openvsx"]
+]) {
+    const job = release.jobs[jobName];
+    assert.ok(job, `missing ${jobName} job`);
+    assert.ok(job["timeout-minutes"] <= 15);
+    assert.deepStrictEqual(job.needs, ["build", "publish"]);
+    assert.strictEqual(job.if, "${{ !inputs.rebuild && !contains(inputs.tag || github.ref_name, '-') }}");
+    assert.strictEqual(job.environment, "release");
+    assert.deepStrictEqual(job.permissions, { contents: "read", "id-token": "write" });
+    assert.strictEqual(job.env.RELEASE_TAG, "${{ inputs.tag || github.ref_name }}");
+    assert.strictEqual(job.env.REBUILD_RELEASE, "${{ inputs.rebuild && 'true' || 'false' }}");
+    assert.ok(
+        job.steps.some(
+            (step) =>
+                step.uses === "actions/download-artifact@v8" &&
+                step.with?.name === "emberprobe-vsix" &&
+                step.with?.path === "dist"
+        )
+    );
+    assert.ok(job.steps.some((step) => step.run === `node scripts/publish-store.js ${target}`));
+}
+assert.ok(
+    pkg.scripts.package.includes(VSCE_PACKAGE),
+    `package script and publish-store.js must pin the same vsce version (${VSCE_PACKAGE})`
+);
 const buildScript = fs.readFileSync(path.join(__dirname, "../scripts/build-driver-helper.ps1"), "utf8");
 assert.match(buildScript, /manifest\.json/);
 assert.match(buildScript, /Get-FileHash -LiteralPath \$file -Algorithm SHA256/);
@@ -162,4 +200,150 @@ assert.throws(
     () => publishRelease("v1.2.3-nightly.1"),
     (error) => error.code === "INVALID_RELEASE_TAG"
 );
+
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-store-"));
+try {
+    const validVsix = path.join(tempDir, "emberprobe.vsix");
+    const emptyVsix = path.join(tempDir, "empty.vsix");
+    const missingVsix = path.join(tempDir, "missing.vsix");
+    fs.writeFileSync(validVsix, "vsix-bytes");
+    fs.writeFileSync(emptyVsix, "");
+
+    for (const [target, expectedPkg, expectedFlag] of [
+        ["marketplace", VSCE_PACKAGE, "--oidc"],
+        ["openvsx", OVSX_PACKAGE, "--trusted-publishing"]
+    ]) {
+        const linuxCmd = buildStoreCommand(target, DEFAULT_VSIX_PATH, "linux");
+        assert.strictEqual(linuxCmd.command, "npx");
+        assert.deepStrictEqual(linuxCmd.args, [
+            "--yes",
+            expectedPkg,
+            "publish",
+            expectedFlag,
+            "--skip-duplicate",
+            "--packagePath",
+            DEFAULT_VSIX_PATH
+        ]);
+        assert.strictEqual(buildStoreCommand(target, DEFAULT_VSIX_PATH, "win32").command, "npx.cmd");
+
+        const calls = [];
+        const result = publishStore(
+            target,
+            "v1.2.3",
+            (command, args, execOptions) => {
+                calls.push({ command, args, env: execOptions.env });
+            },
+            {
+                vsixPath: validVsix,
+                platform: "linux",
+                env: { PATH: "/usr/bin", VSCE_PAT: "secret-a", OVSX_PAT: "secret-b" }
+            }
+        );
+        assert.deepStrictEqual(result, { target, published: true, version: "1.2.3", vsixPath: validVsix });
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].command, "npx");
+        assert.deepStrictEqual(calls[0].args, [
+            "--yes",
+            expectedPkg,
+            "publish",
+            expectedFlag,
+            "--skip-duplicate",
+            "--packagePath",
+            validVsix
+        ]);
+        assert.strictEqual(calls[0].env.PATH, "/usr/bin");
+        assert.ok(!Object.hasOwn(calls[0].env, "VSCE_PAT"));
+        assert.ok(!Object.hasOwn(calls[0].env, "OVSX_PAT"));
+
+        for (const prereleaseTag of ["v1.2.3-alpha.1", "v1.2.3-beta.2", "v1.2.3-rc.1"]) {
+            let called = false;
+            const skipped = publishStore(
+                target,
+                prereleaseTag,
+                () => {
+                    called = true;
+                },
+                { vsixPath: missingVsix }
+            );
+            assert.deepStrictEqual(skipped, { target, published: false, reason: "prerelease" });
+            assert.strictEqual(called, false);
+        }
+
+        let rebuildCalled = false;
+        const skippedRebuild = publishStore(
+            target,
+            "v1.2.3",
+            () => {
+                rebuildCalled = true;
+            },
+            { rebuild: true, vsixPath: missingVsix }
+        );
+        assert.deepStrictEqual(skippedRebuild, { target, published: false, reason: "rebuild" });
+        assert.strictEqual(rebuildCalled, false);
+
+        let stringRebuildCalled = false;
+        const stringRebuild = publishStore(
+            target,
+            "v1.2.3",
+            () => {
+                stringRebuildCalled = true;
+            },
+            { rebuild: "true", vsixPath: validVsix }
+        );
+        assert.strictEqual(stringRebuild.published, true);
+        assert.strictEqual(stringRebuildCalled, true);
+
+        for (const badPath of [missingVsix, emptyVsix]) {
+            let missingCalled = false;
+            assert.throws(
+                () =>
+                    publishStore(
+                        target,
+                        "v1.2.3",
+                        () => {
+                            missingCalled = true;
+                        },
+                        { vsixPath: badPath }
+                    ),
+                (error) => error.code === "MISSING_VSIX"
+            );
+            assert.strictEqual(missingCalled, false);
+        }
+
+        assert.throws(
+            () =>
+                publishStore(
+                    target,
+                    "v1.2.3",
+                    () => {
+                        throw new Error("oidc exchange failed");
+                    },
+                    { vsixPath: validVsix }
+                ),
+            /oidc exchange failed/
+        );
+    }
+
+    const sanitized = buildChildEnv({ KEEP: "1", VSCE_PAT: "x", OVSX_PAT: "y" });
+    assert.deepStrictEqual(sanitized, { KEEP: "1" });
+    assert.throws(
+        () => publishStore("unknown", "v1.2.3", () => {}),
+        (error) => error.code === "INVALID_STORE_TARGET"
+    );
+    assert.throws(
+        () => buildStoreCommand("unknown"),
+        (error) => error.code === "INVALID_STORE_TARGET"
+    );
+    assert.throws(
+        () => publishStore("marketplace", "main", () => {}),
+        (error) => error.code === "INVALID_RELEASE_TAG"
+    );
+    assert.throws(
+        () => publishStore("openvsx", "v1.2.3-nightly.1", () => {}),
+        (error) => error.code === "INVALID_RELEASE_TAG"
+    );
+} finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+}
+
 console.log("Workflow and release behavior tests passed");
