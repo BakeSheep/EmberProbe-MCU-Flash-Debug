@@ -12,14 +12,19 @@ const SHARED_ROUTES = {
         host._setLang(message.lang);
         host._postLive({ type: "setLang", lang: host._lang });
     },
-    expandLayout: ({ host, post }, message) => host._elfView.handleLayoutExpansion(message, post),
+    expandLayout: ({ host, post, view, entry }, message) =>
+        host._elfView.handleLayoutExpansion(message, post, view || entry),
     resolveCompositeLayout: async ({ host, post }, message) => {
-        const reply = { type: "compositeLayoutResult", name: message.name, version: message.version };
+        const { name, version, generation, promote } = message;
+        const reply = { type: "compositeLayoutResult", name, version, generation };
         try {
-            const layout = await host._elfView.resolveLayout(message.name, message.version);
-            post({ ...reply, layout, ...host._elfView.layoutExpansionSnapshot(message.name) });
+            const layout = await host._elfView.resolveLayout(name, version, {
+                generation,
+                background: message.background === true && promote !== true
+            });
+            if (promote !== true) post({ ...reply, layout, ...host._elfView.layoutExpansionSnapshot(name) });
         } catch (error) {
-            post({ ...reply, error: error.message });
+            if (promote !== true) post({ ...reply, error: error.message });
         }
     },
     saveRuntimeExpansions: ({ host, watchKey }, message) => host._saveRuntimeExpansions(watchKey, message.expansions)

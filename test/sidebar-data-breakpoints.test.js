@@ -445,6 +445,7 @@ function serviceFixture() {
                     { name: "counter", type: "u32" }
                 ]
             });
+            view.document.querySelector("#liveValues .sb-comp-head").click();
             await Promise.resolve();
             const status = {
                 type: "sidebarDataBreakpoints",

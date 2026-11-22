@@ -189,9 +189,12 @@
         // entries drawn inside their pointer rows or, without one, as stand-alone cards.
         let cells = Object.create(null);
         let bodies = Object.create(null);
+        let valueBodies = Object.create(null);
         let placed = new Set();
         let fallback = new Set();
         let renderedScalars = new Set();
+        const compositeBodies = new WeakMap();
+        const foldedBodies = new WeakSet();
         const watchGroups = new Map();
         let runtimeExpansionsLoaded = false;
         let sentRuntimeExpansions = null;
@@ -323,6 +326,7 @@
         function renderPointee(host, item, label) {
             placed.add(item.name);
             if (isComposite(item)) {
+                valueBodies[item.name] = host;
                 bodies[item.name] = host;
                 renderRuntimeBody(host, state.latest[item.name], item.name);
                 return;
@@ -374,7 +378,7 @@
             );
         }
         // Collapsible head and body of a nested composite; returns the body to render into.
-        function nestShell(container, fieldName, typeName, path, displayPath = path) {
+        function nestShell(container, fieldName, typeName, path, displayPath = path, onOpen) {
             const wrap = element("div", classes.nest);
             const head = element("div", classes.head);
             const open = !!state.expanded[path];
@@ -393,6 +397,7 @@
                 state.expanded[path] = next;
                 body.classList.toggle("open", next);
                 arrow.classList.toggle("open", next);
+                if (next) onOpen?.();
                 page.save();
             };
             wrap.append(head, body);
@@ -416,9 +421,12 @@
         function compositeOpen(item) {
             return state.expanded[item.selectedMembers ? "\0" + item.name : item.name] ?? !!item.selectedMembers;
         }
-        function toggleComposite(item) {
+        function toggleComposite(item, body) {
             const key = item.selectedMembers ? "\0" + item.name : item.name;
-            return (state.expanded[key] = !compositeOpen(item));
+            const open = (state.expanded[key] = !compositeOpen(item));
+            compositeBodies.get(body)?.(open);
+            if (open && !item.selectedMembers) updateComposite(item.name);
+            return open;
         }
         function forgetPaths(collections, names, groupName) {
             const hasOwner = (path) =>
@@ -596,18 +604,35 @@
             for (const name of members) if (runtime.isPointeeDescendant(entry, name)) return true;
             return false;
         }
-        function renderNest(container, layout, fieldName, path, baseAddr, offset, displayPath = path) {
-            const body = nestShell(container, fieldName, layout.typeName, path, displayPath);
-            renderLayout(body, layout, path, baseAddr, offset, null, displayPath);
+        function hasDependentWatches(path) {
+            return state.watch.some((item) => runtime.isDescendantPath(item.name, path));
+        }
+        function renderNested(container, fieldName, typeName, path, displayPath, draw) {
+            let materialized = !!state.expanded[path] || hasDependentWatches(path);
+            const body = nestShell(container, fieldName, typeName, path, displayPath, () => {
+                if (materialized) return;
+                materialized = true;
+                runtime.resetVariableNotices(body, t, page.copy);
+                draw(body, true);
+                for (const item of state.watch)
+                    if (isComposite(item) && runtime.isDescendantPath(path, item.name)) updateComposite(item.name);
+            });
+            runtime.createVariableNotices(body, t);
+            draw(body, materialized);
+        }
+        function renderNest(container, layout, fieldName, path, baseAddr, offset, displayPath) {
+            renderNested(container, fieldName, layout.typeName, path, displayPath, (body, showRows) =>
+                renderLayout(body, layout, path, baseAddr, offset, null, displayPath, showRows)
+            );
         }
         // `range` ({ start, end }) shows a chosen slice of a top-level array; without one the first
         // page is shown and can grow.
-        function renderLayout(container, layout, path, baseAddr, offset, range, displayPath = path) {
+        function renderLayout(container, layout, path, baseAddr, offset, range, displayPath = path, showRows = true) {
             if (!layout) return;
             const raw = showRaw(path);
             const promoted = !raw && runtime.summaryRow(layout, path, offset);
             if (promoted) {
-                renderSummary(container, promoted, baseAddr, path);
+                renderSummary(container, promoted, baseAddr, path, undefined, showRows);
                 return;
             }
             const symbol = layoutSymbol(path);
@@ -619,7 +644,7 @@
                     const memberPath = runtime.layoutMemberPath(path, member);
                     const memberOffset = offset + (Number(member.offset) || 0);
                     const summary = !raw && runtime.summaryRow(member, memberPath, memberOffset);
-                    if (summary) renderSummary(container, summary, baseAddr, member.name, member.typeName);
+                    if (summary) renderSummary(container, summary, baseAddr, member.name, member.typeName, showRows);
                     else if (member.unobservable)
                         page.layoutExpansion().render(
                             container,
@@ -627,7 +652,7 @@
                             runtime.variableBaseName(path),
                             t
                         );
-                    else if (member.compositeLayout && !member.name)
+                    else if (member.compositeLayout && (!member.name || !showRows))
                         renderLayout(
                             container,
                             member.compositeLayout,
@@ -635,7 +660,8 @@
                             baseAddr,
                             memberOffset,
                             null,
-                            displayPath
+                            member.name ? runtime.layoutMemberPath(displayPath, member) : displayPath,
+                            showRows
                         );
                     else if (member.compositeLayout)
                         renderNest(
@@ -647,7 +673,7 @@
                             memberOffset,
                             runtime.layoutMemberPath(displayPath, member)
                         );
-                    else if (member.watchType)
+                    else if (showRows && member.watchType)
                         renderLeaf(
                             container,
                             member.name,
@@ -690,6 +716,17 @@
                             runtime.variableBaseName(path),
                             t
                         );
+                    else if (item.compositeLayout && !showRows)
+                        renderLayout(
+                            container,
+                            item.compositeLayout,
+                            elementPath,
+                            baseAddr,
+                            elementOffset,
+                            null,
+                            displayPath + "[" + i + "]",
+                            false
+                        );
                     else if (item.compositeLayout)
                         renderNest(
                             container,
@@ -700,7 +737,7 @@
                             elementOffset,
                             displayPath + "[" + i + "]"
                         );
-                    else
+                    else if (showRows)
                         renderLeaf(
                             container,
                             "[" + i + "]",
@@ -728,7 +765,7 @@
                     );
             }
         }
-        function renderSummary(container, summary, baseAddr, label, typeName) {
+        function renderSummary(container, summary, baseAddr, label, typeName, showRows = true) {
             const node = {
                 ...summary.node,
                 displayPath: summary.displayPath,
@@ -738,9 +775,20 @@
             const layout = node.compositeLayout || ((node.members || node.elements || node.kind === "array") && node);
             if (node.unobservable)
                 page.layoutExpansion().render(container, { ...node, path: summary.path }, baseName(summary.path), t);
+            else if (layout && !showRows)
+                renderLayout(
+                    container,
+                    layout,
+                    summary.path,
+                    baseAddr,
+                    summary.offset,
+                    null,
+                    summary.displayPath,
+                    false
+                );
             else if (layout)
                 renderNest(container, layout, label, summary.path, baseAddr, summary.offset, summary.displayPath);
-            else
+            else if (showRows)
                 renderLeaf(
                     container,
                     label,
@@ -753,13 +801,21 @@
         }
         // Nested structs and array elements get a collapsible head, as in static layouts; base
         // classes, anonymous members and a pointer's own target stay flat.
-        function renderRuntimeTree(container, tree, path, label = "value", promoted = false, nest = false) {
+        function renderRuntimeTree(
+            container,
+            tree,
+            path,
+            label = "value",
+            promoted = false,
+            nest = false,
+            showRows = true
+        ) {
             if (!tree) return;
             const raw = showRaw(path);
             const summary = !promoted && !raw && runtime.summaryRow(tree, path);
             if (summary) {
                 const target = { ...summary.node, displayPath: path, summaryPath: path, functionEmpty: summary.empty };
-                if (target.members || target.elements) {
+                if (showRows && (target.members || target.elements)) {
                     const wrap = element("div", classes.nest);
                     const head = element("button", classes.head + " summary-head");
                     head.type = "button";
@@ -777,14 +833,15 @@
                     renderRuntimeTree(body, target, summary.path, label, true);
                     wrap.append(head, body);
                     container.appendChild(wrap);
-                } else renderRuntimeTree(container, target, summary.path, label, true);
+                } else renderRuntimeTree(container, target, summary.path, label, true, false, showRows);
                 return;
             }
             const pointer = tree.isPointer || tree.valueText === "nullptr";
             const hasValue = Object.prototype.hasOwnProperty.call(tree, "value");
-            if (nest && !pointer && !hasValue && (tree.members || tree.elements)) {
-                const body = nestShell(container, label, tree.typeName, path, tree.displayPath || path);
-                renderRuntimeTree(body, tree, path, label, promoted);
+            if (showRows && nest && !pointer && !hasValue && (tree.members || tree.elements)) {
+                renderNested(container, label, tree.typeName, path, tree.displayPath || path, (body, visible) =>
+                    renderRuntimeTree(body, tree, path, label, promoted, false, visible)
+                );
                 return;
             }
             const renderMembers = (target) => {
@@ -813,14 +870,15 @@
                             !!member.name &&
                                 !member.isBase &&
                                 !/^@base\d+$/.test(member.name) &&
-                                !(pointer && member.name === "value")
+                                !(pointer && member.name === "value"),
+                            showRows
                         );
                 }
                 if (tree.collapsed) note(target, t("lw.runtimeCollapsed"));
             };
             // A closed pointer keeps its disclosure: opening it asks the host to read the target.
             const inline = pointer && (tree.members?.length || tree.collapsed) ? renderMembers : null;
-            if (pointer || hasValue)
+            if (showRows && (pointer || hasValue))
                 renderLeaf(
                     container,
                     label,
@@ -831,7 +889,7 @@
                     { ...tree, ...(pointer ? { isPointer: true } : {}) },
                     inline
                 );
-            if (tree.members && !inline) renderMembers(container);
+            if (tree.members && (!inline || !showRows)) renderMembers(container);
             else if (tree.elements)
                 for (const item of tree.elements)
                     renderRuntimeTree(
@@ -843,7 +901,8 @@
                         path + "[" + item.index + "]",
                         "[" + item.index + "]",
                         false,
-                        true
+                        true,
+                        showRows
                     );
             if (tree.elements && tree.collapsed) note(container, t("lw.runtimeCollapsed"));
             if (tree.unobservable)
@@ -851,15 +910,16 @@
             else if (tree.unavailable)
                 note(container, { title: page.displayName(path), ...runtime.unavailableNotice(tree, t) });
         }
-        function renderRuntimeBody(body, sampled, name) {
+        function renderRuntimeBody(body, sampled, name, showRows = true) {
             // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
             const tree =
                 sampled ||
-                runtime.placeholderRuntimeTree(
-                    state.watch.find((item) => item.name === name),
-                    pointers.shown()
-                );
-            const shape = JSON.stringify([showRaw(name), !sampled, runtime.displayTreeShape(tree)]);
+                (showRows &&
+                    runtime.placeholderRuntimeTree(
+                        state.watch.find((item) => item.name === name),
+                        pointers.shown()
+                    ));
+            const shape = JSON.stringify([showRows, showRaw(name), !sampled, runtime.displayTreeShape(tree)]);
             if (body.dataset.runtimeShape === shape) return;
             for (const path of Object.keys(cells)) if (body.contains(cells[path])) delete cells[path];
             runtime.resetVariableNotices(body, t, page.copy);
@@ -869,7 +929,7 @@
             const symbol = layoutSymbol(name);
             const rootLayout = symbol?.name === name ? symbol.compositeLayout : null;
             renderRawMembersUi(body, sampled || rootLayout || tree, name);
-            renderRuntimeTree(body, tree, name);
+            renderRuntimeTree(body, tree, name, "value", false, false, showRows);
             if (rootLayout)
                 for (const entry of runtime.displayUnavailableRows(rootLayout, name, 64, symbol, showRaw(name)))
                     page.layoutExpansion().render(body, entry, name, t);
@@ -879,21 +939,41 @@
         // Fills the body of a composite watch card and returns the notices footer that follows it.
         function renderCompositeBody(body, item, range) {
             const footer = runtime.createVariableNotices(body, t, element("div"), page.copy, item.name);
-            if (item.selectedMembers) renderSelectedMembers(body, item);
-            else if (item.runtimeLayout) {
-                bodies[item.name] = body;
-                renderRuntimeBody(body, state.latest[item.name], item.name);
-            } else {
-                const layout = item.compositeLayout || {};
-                renderRawMembersUi(body, layout, item.name);
-                if (layout.truncated) note(body, t("lw.layoutPartial"), "warning");
-                renderLayout(body, layout, item.name, Number(item.address) >>> 0, 0, range || null);
+            if (item.selectedMembers) {
+                renderSelectedMembers(body, item);
+                return footer;
             }
+            const { name, compositeLayout: layout = {} } = item;
+            const dependent = hasDependentWatches(name);
+            valueBodies[name] = body;
+            let materialized = false;
+            function draw(showRows) {
+                if (item.runtimeLayout) {
+                    bodies[name] = body;
+                    renderRuntimeBody(body, state.latest[name], name, showRows);
+                } else {
+                    runtime.resetVariableNotices(body, t, page.copy);
+                    renderRawMembersUi(body, layout, name);
+                    if (layout?.truncated) note(body, t("lw.layoutPartial"), "warning");
+                    renderLayout(body, layout, name, Number(item.address) >>> 0, 0, range || null, name, showRows);
+                }
+                materialized ||= showRows;
+            }
+            if (!compositeOpen(item) && !dependent) foldedBodies.add(body);
+            draw(!foldedBodies.has(body));
+            compositeBodies.set(body, (open) => {
+                if (dependent) return;
+                if (!open) foldedBodies.add(body);
+                else {
+                    foldedBodies.delete(body);
+                    if (!materialized || item.runtimeLayout) draw(true);
+                }
+            });
             return footer;
         }
         function updateComposite(name) {
             const tree = state.latest[name];
-            if (!tree) return;
+            if (!tree || foldedBodies.has(valueBodies[name])) return;
             const nodes = new Map();
             const held = new Set();
             walkLeaves(tree, name, (path, node, stale) => {
@@ -919,7 +999,7 @@
         function treeSampled(name, tree) {
             pointers.remember(runtime.pointerSnapshots(tree, name));
             const body = bodies[name];
-            if (body) renderRuntimeBody(body, tree, name);
+            if (body) renderRuntimeBody(body, tree, name, !foldedBodies.has(body));
         }
         // A member watch shown by its composite's tree, or an expanded pointee's, instead of its own row.
         function isLeafChild(name) {
@@ -1041,6 +1121,7 @@
                 displayInfos = new WeakMap();
                 cells = Object.create(null);
                 bodies = Object.create(null);
+                valueBodies = Object.create(null);
                 placed = new Set();
                 fallback = new Set();
                 renderedScalars = new Set();

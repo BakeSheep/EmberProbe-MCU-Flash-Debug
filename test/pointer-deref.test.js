@@ -164,7 +164,10 @@ const { writePlan } = require("../src/services/agentPlans");
         );
         const sampleTree = elf.decodeComposite(bytes, motor.compositeLayout, motor);
         for (const sidebar of [false, true]) {
-            const view = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+            const expanded = { motor: true, "motor.@base0": true };
+            const view = sidebar
+                ? render(getModernWebviewContent({}, "en"), { sbExpanded: expanded })
+                : render(getLiveWatchContent({}, "en"), { expanded });
             const saveType = sidebar ? "saveSidebarWatch" : "saveWatch";
             const saved = () => view.messages.findLast((message) => message.type === saveType).items;
             const toggle = (path) => view.document.querySelector('.pointer-toggle[data-path="' + path + '"]');

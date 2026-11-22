@@ -52,7 +52,7 @@ const { createWorkerElfService } = require("./helpers/elf-service");
     await scenario("Coalesce concurrent ELF loads and recover from worker startup failure", async () => {
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-elf-concurrency-"));
         const file = path.join(temp, "firmware.elf");
-        fs.writeFileSync(file, buildElf({ cus: 1, vars: 4, structs: 1, members: 2 }).buf);
+        fs.writeFileSync(file, buildElf({ cus: 1, vars: 16, structs: 1, members: 2 }).buf);
         const service = createWorkerElfService(file);
         try {
             const first = service.load();
@@ -70,6 +70,38 @@ const { createWorkerElfService } = require("./helpers/elf-service");
             assert.strictEqual(service.loadIdentity, null);
             service.workerPath = validWorkerPath;
             assert((await service.ready()).dwarfReady);
+            await scenario(
+                "Coalesce layout requests and promote explicit expansion ahead of queued search",
+                async () => {
+                    const worker = service.worker;
+                    const generation = service.generation;
+                    const sent = [];
+                    worker.postMessage = (message) => sent.push(message);
+                    const background = { generation, background: true };
+                    const first = service.layout("v0_2", background);
+                    const queued = service.layout("v0_6", background);
+                    const searched = service.layout("v0_10", background);
+                    const expanded = service.layout("v0_10", { generation });
+                    assert.deepStrictEqual(
+                        sent.map(({ name }) => name),
+                        ["v0_2", "v0_10"]
+                    );
+                    const layout = { kind: "struct", members: [] };
+                    worker.emit("message", { ...sent[1], type: "layoutResult", layout });
+                    assert.strictEqual(await searched, layout);
+                    assert.strictEqual(await expanded, layout);
+                    assert.strictEqual(sent.length, 2);
+                    worker.emit("message", { ...sent[0], type: "layoutResult", layout });
+                    await first;
+                    assert.strictEqual(sent.at(-1).name, "v0_6");
+                    const discarded = service.layout("v0_14", background);
+                    const outcomes = Promise.allSettled([queued, discarded]);
+                    service.invalidate();
+                    assert((await outcomes).every(({ reason }) => reason?.code === "ELF_CHANGED"));
+                    assert.strictEqual(sent.length, 3);
+                    await assert.rejects(service.layout("v0_2", { generation }), { code: "ELF_CHANGED" });
+                }
+            );
         } finally {
             service.invalidate();
             fs.rmSync(temp, { recursive: true, force: true });

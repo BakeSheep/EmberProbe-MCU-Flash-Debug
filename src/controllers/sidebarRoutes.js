@@ -350,6 +350,7 @@ const SIDEBAR_ROUTES = {
 function createSidebarHandler(host, view, vscode) {
     const page = {
         host,
+        view,
         vscode,
         post: (message) => view.webview.postMessage(message),
         watchKey: CACHE_KEYS.sidebarWatchList

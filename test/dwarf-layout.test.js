@@ -1310,12 +1310,14 @@ async function deepLayouts() {
                 sidebar.document.querySelector(".available-row.comp .av-arrow").click();
                 assert.strictEqual(sidebar.document.querySelectorAll(".available-row.leaf").length, 1);
                 sidebar.send({ type: "sidebarWatchList", items: [symbol(layout)] });
+                sidebar.document.querySelector("#liveValues .sb-comp-head").click();
                 assert.strictEqual(sidebar.document.querySelectorAll(".sb-mrow").length, 1);
                 graph.document.getElementById("import").click();
                 graph.send({ type: "variablesList", symbols: [symbol(layout)] });
                 graph.document.querySelector(".imp-row .imp-arrow").click();
                 assert.strictEqual(graph.document.querySelectorAll(".imp-row.leaf").length, 1);
                 graph.send({ type: "watchList", items: [symbol(layout)] });
+                graph.document.querySelector("#vars .comp-head").click();
                 assert.strictEqual(graph.document.querySelectorAll(".member-row").length, 1);
                 for (const key of [
                     "lw.layoutDepthLimit",
@@ -1358,18 +1360,21 @@ async function deepLayouts() {
             const rows = (view, selector) => view.document.querySelectorAll(selector).length;
             const more = (view) => view.document.querySelector(".array-more button");
             sidebar.send({ type: "sidebarWatchList", items: [symbol(array(25), "sbus_buf")] });
+            sidebar.document.querySelector("#liveValues .sb-comp-head").click();
             assert.strictEqual(rows(sidebar, ".sb-mrow"), 16);
             assert.ok(sidebar.document.querySelector(".array-more").textContent.includes("其余 9 个元素未显示"));
             more(sidebar).click();
             assert.strictEqual(rows(sidebar, ".sb-mrow"), 25);
             assert.strictEqual(more(sidebar), null);
             sidebar.send({ type: "sidebarWatchList", items: [symbol(array(100), "big")] });
+            sidebar.document.querySelector("#liveValues .sb-comp-head").click();
             assert.strictEqual(rows(sidebar, ".sb-mrow"), 16);
             more(sidebar).click();
             assert.strictEqual(rows(sidebar, ".sb-mrow"), 80);
             more(sidebar).click();
             assert.strictEqual(rows(sidebar, ".sb-mrow"), 100);
             graph.send({ type: "watchList", items: [symbol(array(25), "sbus_buf")] });
+            graph.document.querySelector("#vars .comp-head").click();
             assert.strictEqual(rows(graph, ".member-row"), 16);
             more(graph).click();
             assert.strictEqual(rows(graph, ".member-row"), 25);

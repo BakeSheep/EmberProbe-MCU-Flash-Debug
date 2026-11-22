@@ -255,7 +255,7 @@ const { writePlan } = require("../src/services/agentPlans");
         await host._elfView.rebindPromise;
         for (const messages of [sidebar, graph])
             assert.deepStrictEqual(messages.slice(1), [
-                { type: "compositeLayoutResult", name: owner.name, version: "cold", layout }
+                { type: "compositeLayoutResult", name: owner.name, version: "cold", generation: 3, layout }
             ]);
     });
 

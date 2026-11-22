@@ -448,12 +448,21 @@
     // Display-only collection. Bulk chart collection keeps pointers and raw internals out.
     function displayLayoutLeaves(symbol, layout, name, baseAddr, options = {}) {
         const out = [];
-        const { showRaw = false, includePointers = false, maxArray = 16, onBranch } = options;
+        const { showRaw = false, includePointers = false, maxArray = 16, onBranch, targetPath } = options;
         const maxDepth = symbol?.layoutExpansions ? MAX_LAYOUT_PATH_DEPTH : MAX_COMPOSITE_DEPTH;
         let visits = 0;
         const walk = (node, path, offset, labelPath, depth = 0, flags = {}) => {
             if (!node || node.unobservable || depth > maxDepth || out.length >= 1000 || ++visits > MAX_LAYOUT_VISITS)
                 return;
+            if (targetPath) {
+                const current = labelPath.toLowerCase();
+                if (
+                    current !== targetPath &&
+                    !isDescendantPath(current, targetPath) &&
+                    !isDescendantPath(targetPath, current)
+                )
+                    return;
+            }
             flags = { ...flags, isConst: flags.isConst || !!node.isConst };
             const promoted = !showRaw && summaryRow(node, path, offset);
             if (promoted) {
@@ -470,7 +479,11 @@
                 walk(node.compositeLayout, path, offset, labelPath, depth, flags);
             } else if (node.kind === "array") {
                 const elementType = node.elementType || {};
-                for (let index = 0; index < Math.min(Number(node.totalElements) || 0, maxArray); index++) {
+                const total = Number(node.totalElements) || 0;
+                const requested = targetPath?.slice(labelPath.length).match(/^\[(\d+)\]/);
+                const start = requested ? Number(requested[1]) : 0;
+                const end = Math.min(total, requested ? start + 1 : maxArray);
+                for (let index = start; index < end; index++) {
                     const childPath = path + "[" + index + "]";
                     const element = layoutBranch(symbol, elementType, childPath);
                     walk(
@@ -764,7 +777,7 @@
                                       };
                                       requests.set(id, { ...request, loading: true });
                                       post(request);
-                                      changed();
+                                      changed(name);
                                   }
                               }
                           ]
@@ -792,13 +805,14 @@
                 const request = requests.get(id);
                 if (request && request.handle !== message.handle) return false;
                 if (message.layout) {
+                    if (!request && current.layoutExpansions?.[message.path]) return false;
                     current.layoutExpansionGeneration = message.generation;
                     current.layoutExpansions ||= Object.create(null);
                     current.layoutExpansions[message.path] = message.layout;
                     requests.delete(id);
                 } else if (request) requests.set(id, { ...request, loading: false, error: message.code });
                 else return false;
-                changed();
+                changed(message.name);
                 return true;
             }
         };

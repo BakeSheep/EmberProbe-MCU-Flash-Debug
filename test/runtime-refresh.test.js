@@ -57,6 +57,8 @@ for (const [label, html, listType, scalarType, selector] of [
     try {
         view.send({ type: listType, items: [runtimeItem, scalarItem] });
         view.send(sample(array(element(42))));
+        assert.strictEqual(view.document.querySelector(selector), null, "folded runtime card has no member rows");
+        view.document.querySelector(".sb-comp-head, .comp-head").click();
         const cell = view.document.querySelector(selector);
         assert.strictEqual(cell.textContent, "42", `${label}: first runtime sample is populated immediately`);
         const button = view.document.querySelector(".member-row .curve-toggle");
@@ -219,6 +221,7 @@ scenario("Render runtime members ahead of overlapping static layouts", () => {
         try {
             view.send({ type: listType, items: [runtimeItem] });
             view.send({ type: "liveCompositeSample", samples: [runtimeSample] });
+            view.document.querySelector(".sb-comp-head, .comp-head").click();
             const cell = view.document.querySelector(`${nameSelector}[title="values.value"]`);
             assert.ok(cell, `${name} should render runtime members when a static layout is also present`);
             const row = rowSelector ? cell.closest(rowSelector) : cell.parentElement;
@@ -256,6 +259,7 @@ scenario("runtime base classes stay flat on both pages", () => {
         try {
             view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [item] });
             view.send({ type: "liveCompositeSample", samples: [{ name: "obj", tree }] });
+            view.document.querySelector(".sb-comp-head, .comp-head").click();
             const heads = [...view.document.querySelectorAll(sidebar ? ".sb-comp-name" : ".comp-name")];
             assert.deepStrictEqual(
                 heads.map((head) => head.textContent),
@@ -290,6 +294,7 @@ scenario("collapsed runtime nodes share one expand notice on both pages", () => 
         try {
             view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [item] });
             view.send({ type: "liveCompositeSample", samples: [{ name: "obj", tree }] });
+            view.document.querySelector(".sb-comp-head, .comp-head").click();
             const notes = [...view.document.querySelectorAll(sidebar ? ".sb-note" : ".comp-note")].filter(
                 (note) => note.textContent === collapsedNote
             );

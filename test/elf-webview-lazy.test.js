@@ -31,6 +31,87 @@ for (const listType of ["availableVariables", "variablesList"]) {
     );
 }
 
+scenario("Keep a disclosure focused through unrelated replies and expand with one activation", () => {
+    for (const sidebar of [true, false]) {
+        const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+        const { document: doc, window } = page;
+        const prefix = sidebar ? "availableVariables" : "variablesList";
+        const list = doc.getElementById(sidebar ? "availableVars" : "impList");
+        const layout = { kind: "struct", byteSize: 4, members: [{ name: "ready", byteSize: 4, watchType: "u32" }] };
+        const metadata = (name) => ({ name, isComposite: true, address: 0x20000000, size: 4 });
+        const load = (generation) => {
+            page.send({ type: prefix + "Reset", version: "same-elf", generation });
+            page.send({
+                type: prefix + "Chunk",
+                version: "same-elf",
+                symbols: [metadata("target"), metadata("other")]
+            });
+            if (!sidebar && doc.getElementById("overlay").classList.contains("hidden"))
+                doc.getElementById("import").click();
+            page.send({ type: prefix + "Done", version: "same-elf" });
+        };
+        const reply = (name, generation) =>
+            page.send({ type: "compositeLayoutResult", version: "same-elf", generation, name, layout });
+        const arrow = () => list.querySelector('[data-picker-path="target"] button[aria-expanded]');
+        try {
+            load(2);
+            const toggle = arrow();
+            toggle.focus();
+            toggle.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+            reply("other", 2);
+            assert.strictEqual(arrow(), toggle);
+            assert.strictEqual(doc.activeElement, toggle);
+            toggle.click();
+            assert.strictEqual(toggle.getAttribute("aria-expanded"), "true");
+            assert.match(list.textContent, /Loading members/);
+            assert.strictEqual(page.messages.filter((message) => message.type === "resolveCompositeLayout").length, 1);
+            reply("target", 1);
+            assert.strictEqual(list.querySelector('[data-picker-path="target.ready"]'), null);
+            reply("target", 2);
+            assert.ok(list.querySelector('[data-picker-path="target.ready"]'));
+            assert.strictEqual(arrow(), toggle);
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    }
+});
+
+scenario("Find qualified static array paths outside the first page", () => {
+    const array = {
+        name: "_ZN3lab4gridE",
+        displayName: "lab::grid",
+        isComposite: true,
+        address: 0x20000000,
+        size: 256,
+        compositeLayout: {
+            kind: "array",
+            totalElements: 64,
+            byteSize: 256,
+            elementType: { byteSize: 4, watchType: "u32" }
+        }
+    };
+    for (const sidebar of [true, false]) {
+        const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+        try {
+            page.send({ type: sidebar ? "availableVariables" : "variablesList", symbols: [structuredClone(array)] });
+            if (!sidebar) page.window.openImport();
+            const filter = page.document.getElementById(sidebar ? "varSearch" : "impFilter");
+            const search = (query) => {
+                filter.value = query;
+                filter.dispatchEvent(new page.window.Event("input"));
+            };
+            search("LAB::GRID[63]");
+            assert.ok(page.document.querySelector('[data-picker-path="_ZN3lab4gridE[63]"]'));
+            search("lab::grid[64]");
+            assert.strictEqual(page.document.querySelector("[data-picker-member]"), null);
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    }
+});
+
 scenario("Resolve a reference before adding it in either picker", () => {
     const symbol = { name: "reference", address: 0x08010000, size: 4, typeName: "int &", isReference: true };
     const runtimeLayout = {
@@ -184,19 +265,19 @@ try {
     sidebar.send({ type: "compositeLayoutResult", name: "v599", version: "stale", layout });
     assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 0);
     sidebar.send({ type: "compositeLayoutResult", name: "v599", version: "first", layout });
-    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 999);
-    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 1000);
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 64);
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 65);
     search.value = "";
     search.dispatchEvent(new sidebar.window.Event("input"));
     sidebar.document.querySelector("#availableVars .av-arrow").click();
     sidebar.send({ type: "compositeLayoutResult", name: "v0", version: "first", layout });
     sidebar.document.querySelectorAll("#availableVars .av-arrow")[1].click();
     sidebar.send({ type: "compositeLayoutResult", name: "v1", version: "first", layout });
-    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 1000);
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 628);
     assert.strictEqual(
         sidebar.document.querySelectorAll("#availableVars .av-children")[1].querySelectorAll(".leaf").length,
-        0,
-        "an exhausted member budget must not render extra members"
+        64,
+        "both expanded structures get a page of members"
     );
     sidebar.send({ type: "availableVariablesReset", version: "typedef" });
     sidebar.send({
@@ -286,6 +367,7 @@ try {
     graph.send({ type: "variablesListDone", version: "graph-first" });
     assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 500);
     graph.document.querySelector("#impList .imp-arrow").click();
+    assert.match(graph.document.querySelector("#impList .imp-children.open").textContent, /Loading members/);
     assert.deepStrictEqual(graph.messages.at(-1), {
         type: "resolveCompositeLayout",
         name: "g0",
@@ -308,8 +390,12 @@ try {
             }))
         }
     });
-    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 1000);
+    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 564);
+    const firstBody = graph.document.querySelector("#impList .imp-children");
+    firstBody.querySelector(".array-more .notice-action").click();
+    assert.strictEqual(firstBody.querySelectorAll(".leaf").length, 128);
     const arrows = graph.document.querySelectorAll("#impList .imp-arrow");
+    arrows[1].focus();
     arrows[1].click();
     graph.send({
         type: "compositeLayoutResult",
@@ -320,15 +406,13 @@ try {
             members: [{ name: "value", offset: 0, byteSize: 4, watchType: "u32" }]
         }
     });
-    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row.leaf").length, 500);
+    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row.leaf").length, 129);
+    assert.strictEqual(graph.document.activeElement, arrows[1], "reply keeps the disclosure focused");
     assert.strictEqual(
         graph.document.querySelectorAll("#impList .imp-children")[1].querySelectorAll(".leaf").length,
-        0
+        1
     );
     graph.document.querySelector("#impList .imp-arrow").click();
-    const secondArrow = graph.document.querySelectorAll("#impList .imp-arrow")[1];
-    secondArrow.click();
-    secondArrow.click();
     assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row.leaf").length, 1);
     graph.send({ type: "variablesListReset", version: "graph-typedef" });
     graph.send({
@@ -770,7 +854,7 @@ scenario("A summarized ELF root keeps its display name and canonical member path
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device0", layout });
         assert.equal(doc.querySelector(".imp-leaf-name").textContent, "gain");
         doc.querySelector("input[data-leaf-path]").click();
-        await clock.advance(220);
+        await clock.advance(0);
         assert.equal(requests().length, 5, "continue searching when a slot becomes free");
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device1", error: "Unavailable type" });
         assert.equal(doc.querySelector("input[data-leaf-path]").checked, true, "layout replies retain checked matches");
@@ -1099,12 +1183,20 @@ scenario("A summarized ELF root keeps its display name and canonical member path
             await p._elfView.refreshBindings();
             assert.ok(
                 sidebarMessages.some(
-                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                    (m) =>
+                        m.type === "compositeLayoutResult" &&
+                        m.name === "drive" &&
+                        m.generation === 3 &&
+                        m.layout === layout
                 )
             );
             assert.ok(
                 panelMessages.some(
-                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                    (m) =>
+                        m.type === "compositeLayoutResult" &&
+                        m.name === "drive" &&
+                        m.generation === 3 &&
+                        m.layout === layout
                 )
             );
             sidebarMessages.length = 0;
@@ -1112,14 +1204,308 @@ scenario("A summarized ELF root keeps its display name and canonical member path
             await p._elfView.prepareLayouts(["drive.axes[1].low"], { broadcast: true });
             assert.ok(
                 sidebarMessages.some(
-                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                    (m) =>
+                        m.type === "compositeLayoutResult" &&
+                        m.name === "drive" &&
+                        m.generation === 3 &&
+                        m.layout === layout
                 )
             );
             assert.ok(
                 panelMessages.some(
-                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                    (m) =>
+                        m.type === "compositeLayoutResult" &&
+                        m.name === "drive" &&
+                        m.generation === 3 &&
+                        m.layout === layout
                 )
             );
+        }
+    );
+
+    scenario("Keep nested picker branch pagination inside its own branch across parent pagination", () => {
+        const subMembers = Array.from({ length: 70 }, (_, i) => ({
+            name: "f" + i,
+            offset: i * 4,
+            byteSize: 4,
+            watchType: "u32"
+        }));
+        const rootMembers = [
+            {
+                name: "sub",
+                offset: 0,
+                byteSize: 280,
+                compositeLayout: { kind: "struct", byteSize: 280, typeName: "Sub", members: subMembers }
+            },
+            ...Array.from({ length: 75 }, (_, i) => ({
+                name: "m" + i,
+                offset: 280 + i * 4,
+                byteSize: 4,
+                watchType: "u32"
+            }))
+        ];
+        const symbol = {
+            name: "root",
+            isComposite: true,
+            address: 0x20000000,
+            size: 580,
+            compositeLayout: { kind: "struct", byteSize: 580, typeName: "Root", members: rootMembers }
+        };
+        for (const sidebar of [true, false]) {
+            const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+            try {
+                const list = page.document.getElementById(sidebar ? "availableVars" : "impList");
+                page.send({
+                    type: sidebar ? "availableVariables" : "variablesList",
+                    symbols: [structuredClone(symbol)]
+                });
+                if (!sidebar) page.window.openImport();
+                list.querySelector('[data-picker-path="root"] button[aria-expanded]').click();
+                const rootBody = list.querySelector(sidebar ? ".av-children" : ".imp-children");
+                const subRow = list.querySelector('[data-picker-path="root.sub"]');
+                const subBody = subRow.nextElementSibling;
+                subRow.querySelector("button[aria-expanded]").click();
+                assert.strictEqual(rootBody.querySelectorAll(":scope > .variable-notices .array-more").length, 1);
+                assert.strictEqual(subBody.querySelectorAll(":scope > .variable-notices .array-more").length, 1);
+                rootBody.querySelector(":scope > .variable-notices .array-more .notice-action").click();
+                assert.strictEqual(rootBody.querySelectorAll(":scope > div > .leaf").length, 75);
+                const subMore = subBody.querySelector(":scope > .variable-notices .array-more .notice-action");
+                assert.ok(subMore, "parent pagination preserves child pagination controls");
+                subMore.click();
+                assert.strictEqual(subBody.querySelectorAll(".leaf").length, 70);
+                page.assertHealthy();
+            } finally {
+                page.close();
+            }
+        }
+    });
+
+    scenario("Refresh newly expanded and paged liveWatch import selections after watchList updates", () => {
+        const symbol = {
+            name: "foo",
+            isComposite: true,
+            address: 0x20000000,
+            size: 280,
+            compositeLayout: {
+                kind: "struct",
+                byteSize: 280,
+                typeName: "Foo",
+                members: Array.from({ length: 70 }, (_, i) => ({
+                    name: "f" + i,
+                    offset: i * 4,
+                    byteSize: 4,
+                    watchType: "u32"
+                }))
+            }
+        };
+        const page = render(getLiveWatchContent({}, "en"));
+        try {
+            const doc = page.document;
+            page.send({ type: "variablesList", symbols: [symbol] });
+            page.window.openImport();
+            page.send({
+                type: "watchList",
+                items: [
+                    { name: "foo.f0", address: 0x20000000, size: 4, type: "u32" },
+                    { name: "foo.f65", address: 0x20000104, size: 4, type: "u32" }
+                ]
+            });
+            doc.querySelector('#impList [data-picker-path="foo"] button[aria-expanded]').click();
+            assert.strictEqual(doc.querySelector('#impList input[data-leaf-path="foo.f0"]').checked, true);
+            doc.querySelector("#impList .array-more .notice-action").click();
+            assert.strictEqual(doc.querySelector('#impList input[data-leaf-path="foo.f65"]').checked, true);
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    });
+
+    await scenario(
+        "Reuse scalar reference layout, reset user-only search expansion, and resume search after scalar pointer layout",
+        async () => {
+            const ref = {
+                name: "ref",
+                address: 0x20000000,
+                size: 4,
+                typeName: "int &",
+                isReference: true,
+                isComposite: false,
+                hasRuntimeLayout: true
+            };
+            const refLayout = {
+                kind: "class",
+                byteSize: 4,
+                members: [],
+                runtimeLayout: {
+                    root: 1,
+                    types: [
+                        { kind: "scalar", typeName: "int", byteSize: 4, watchType: "i32" },
+                        { kind: "reference", typeName: "int &", byteSize: 4, target: 0 }
+                    ]
+                }
+            };
+            const sidebar = render(getModernWebviewContent({}, "en"));
+            try {
+                sidebar.send({ type: "availableVariablesReset", version: "ref-v1", generation: 1 });
+                sidebar.send({ type: "availableVariablesChunk", version: "ref-v1", symbols: [ref] });
+                sidebar.send({ type: "availableVariablesDone", version: "ref-v1" });
+                sidebar.send({ type: "availableTypesDone", version: "ref-v1" });
+                const btn = () => sidebar.document.querySelector("#availableVars .av-watch");
+                btn().click();
+                sidebar.send({
+                    type: "compositeLayoutResult",
+                    version: "ref-v1",
+                    generation: 1,
+                    name: "ref",
+                    layout: refLayout
+                });
+                btn().click();
+                btn().click();
+                assert.strictEqual(
+                    sidebar.messages.filter((m) => m.type === "resolveCompositeLayout").length,
+                    1,
+                    "re-watching a resolved scalar reference does not request its layout again"
+                );
+                assert.strictEqual(
+                    sidebar.messages.findLast((m) => m.type === "saveSidebarWatch").items[0].name,
+                    "ref"
+                );
+                sidebar.assertHealthy();
+            } finally {
+                sidebar.close();
+            }
+
+            const makeComposite = (name, origin) => ({
+                name,
+                origin,
+                isComposite: true,
+                address: 0x20000000,
+                size: 4,
+                compositeLayout: {
+                    kind: "struct",
+                    byteSize: 4,
+                    members: [{ name: "target_field", offset: 0, byteSize: 4, watchType: "u32" }]
+                }
+            });
+            for (const isSidebar of [true, false]) {
+                const page = render(isSidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+                try {
+                    const symbols = [
+                        ...Array.from({ length: 8 }, (_, i) => makeComposite("lib" + i, "vendor")),
+                        makeComposite("my_user_var", "user")
+                    ];
+                    page.send({ type: isSidebar ? "availableVariables" : "variablesList", symbols });
+                    if (!isSidebar) page.window.openImport();
+                    const filter = page.document.getElementById(isSidebar ? "varSearch" : "impFilter");
+                    filter.value = "target_field";
+                    filter.dispatchEvent(new page.window.Event("input"));
+                    page.document.getElementById(isSidebar ? "varUserOnly" : "impUserOnly").click();
+                    const arrow = page.document.querySelector('[data-picker-path="my_user_var"] button[aria-expanded]');
+                    assert.strictEqual(arrow.getAttribute("aria-expanded"), "true");
+                    page.send({
+                        type: isSidebar ? "availableVariables" : "variablesList",
+                        symbols: [makeComposite("fresh_user_var", "user")]
+                    });
+                    assert.ok(page.document.querySelector('[data-picker-path="fresh_user_var"]'));
+                    page.assertHealthy();
+                } finally {
+                    page.close();
+                }
+            }
+
+            const refPtr = {
+                name: "refPtr",
+                address: 0x20000000,
+                size: 4,
+                typeName: "int * &",
+                isReference: true,
+                isPointer: true,
+                isComposite: false,
+                hasRuntimeLayout: true
+            };
+            const refPtrLayout = {
+                kind: "class",
+                byteSize: 4,
+                members: [],
+                runtimeLayout: {
+                    root: 2,
+                    types: [
+                        { kind: "scalar", typeName: "int", byteSize: 4, watchType: "i32" },
+                        { kind: "pointer", typeName: "int *", byteSize: 4, target: 0 },
+                        { kind: "reference", typeName: "int * &", byteSize: 4, target: 1 }
+                    ]
+                }
+            };
+            for (const isSidebar of [true, false]) {
+                const clock = new FakeClock();
+                const page = render(
+                    isSidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"),
+                    {},
+                    { clock }
+                );
+                try {
+                    const prefix = isSidebar ? "availableVariables" : "variablesList";
+                    const symbols = [
+                        { name: "c0", address: 0x20000010, size: 4, isComposite: true },
+                        { name: "c1", address: 0x20000020, size: 4, isComposite: true },
+                        { name: "c2", address: 0x20000030, size: 4, isComposite: true },
+                        { ...refPtr },
+                        { name: "c4", address: 0x20000040, size: 4, isComposite: true }
+                    ];
+                    page.send({ type: prefix + "Reset", version: "ptr-search", generation: 1 });
+                    page.send({ type: prefix + "Chunk", version: "ptr-search", symbols });
+                    if (!isSidebar) page.window.openImport();
+                    page.send({ type: prefix + "Done", version: "ptr-search" });
+                    page.send({ type: isSidebar ? "availableTypesDone" : "variableTypesDone", version: "ptr-search" });
+                    const filter = page.document.getElementById(isSidebar ? "varSearch" : "impFilter");
+                    filter.value = "needle";
+                    filter.dispatchEvent(new page.window.Event("input"));
+                    await clock.advance(220);
+                    const requests = () => page.messages.filter((m) => m.type === "resolveCompositeLayout");
+                    assert.deepStrictEqual(
+                        requests().map((m) => [m.name, !!m.background, !!m.promote]),
+                        [
+                            ["c0", true, false],
+                            ["c1", true, false],
+                            ["c2", true, false],
+                            ["refPtr", true, false]
+                        ]
+                    );
+                    page.send({
+                        type: isSidebar ? "sidebarWatchList" : "watchList",
+                        items: [
+                            {
+                                name: "refPtr",
+                                address: 0x20000000,
+                                size: 4,
+                                type: "u32",
+                                isPointer: true,
+                                isReference: true
+                            }
+                        ]
+                    });
+                    assert.deepStrictEqual(requests().at(-1), {
+                        type: "resolveCompositeLayout",
+                        name: "refPtr",
+                        version: "ptr-search",
+                        generation: 1,
+                        promote: true,
+                        ...(isSidebar ? {} : { panelId: 1 })
+                    });
+                    page.send({
+                        type: "compositeLayoutResult",
+                        version: "ptr-search",
+                        generation: 1,
+                        name: "refPtr",
+                        layout: refPtrLayout
+                    });
+                    await clock.advance(0);
+                    assert.strictEqual(requests().at(-1).name, "c4", "scalar pointer layout completion resumes search");
+                    page.assertHealthy();
+                } finally {
+                    page.close();
+                }
+            }
         }
     );
 

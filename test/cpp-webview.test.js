@@ -47,6 +47,7 @@ try {
     assert.strictEqual(sidebar.document.querySelectorAll(".available-row.comp").length, 1);
 
     sidebar.send({ type: "sidebarWatchList", items: [classSymbol] });
+    sidebar.document.querySelector("#liveValues .sb-comp-head").click();
     assert.strictEqual(sidebar.document.querySelectorAll(".sb-mrow").length, 1);
     assert.ok(sidebar.document.getElementById("liveValues").textContent.includes("ns::obj"));
     sidebar.assertHealthy();
@@ -79,6 +80,8 @@ try {
     const rawWatchItem = { ...classSymbol };
     delete rawWatchItem.displayName;
     graph.send({ type: "watchList", items: [rawWatchItem] });
+    graph.document.getElementById("impCancel").click();
+    graph.document.querySelector("#vars .comp-head").click();
     assert.strictEqual(graph.document.querySelectorAll(".member-row").length, 1);
     assert.ok(graph.document.querySelector(".comp-name").textContent.includes("ns::obj"));
     graph.assertHealthy();
@@ -113,6 +116,7 @@ scenario("Share promoted anonymous paths and const write controls across views",
             "root.value"
         );
         sidebar.send({ type: "sidebarWatchList", items: [symbol] });
+        sidebar.document.querySelector("#liveValues .sb-comp-head").click();
         assert.strictEqual(sidebar.document.querySelector(".sb-mname").title, "root.value");
         sidebar.assertHealthy();
     } finally {
@@ -121,6 +125,7 @@ scenario("Share promoted anonymous paths and const write controls across views",
     const graph = render(getLiveWatchContent({ panelId: 1 }, "en"));
     try {
         graph.send({ type: "watchList", items: [symbol] });
+        graph.document.querySelector("#vars .comp-head").click();
         assert.strictEqual(graph.document.querySelector(".member-name").title, "root.value");
         assert.strictEqual(
             graph.window.eval("valueTree").collectLeaves(root, "root", rootSymbol.address)[0].path,

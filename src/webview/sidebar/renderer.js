@@ -107,10 +107,9 @@ const valueTree = EmberProbeValueTree.create({
     copy: (text) => api?.postMessage({ type: "copyText", text }),
     layoutExpansion: () => layoutExpansionUi,
     requestPointerLayout: (name) => {
-        if (!api || !state.version || availableLayoutPending.has(name)) return;
-        availableLayoutPending.add(name);
+        if (!api || !state.version) return;
         sbPointerLayoutWaiters.add(name);
-        api.postMessage({ type: "resolveCompositeLayout", name, version: state.version });
+        variablePicker.requestLayout({ name });
     },
     togglePointee: (entry) => sbTogglePointee(entry),
     decorateLeaf: (row, name) => name,
@@ -167,7 +166,7 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     generation: () => state.generation,
     symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => sbDisplayName({ name: path }),
-    changed: () => {
+    changed: (name) => {
         for (const item of state.watch) {
             const symbol = state.symbols.get(item.name);
             if (
@@ -178,8 +177,9 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
                 item.layoutExpansionGeneration = symbol?.layoutExpansionGeneration;
             }
         }
+        variablePicker.invalidate(name);
         renderAvailable();
-        renderValues();
+        if (valueTree.hasWatchedBase(name)) renderValues();
     }
 });
 function msgText(m) {
@@ -783,6 +783,7 @@ const variablePicker = EmberProbeSymbolPicker.create({
     symbols: () => state.available,
     userOnly: () => userVarsOnly,
     expanded: () => state.availableExpanded,
+    language: () => LANG,
     pending: availableLayoutPending,
     typesReady: () => availableTypesReady,
     post: api && ((message) => api.postMessage(message)),
@@ -801,15 +802,6 @@ function applyUserVarsOnly() {
     button.classList.toggle("primary", userVarsOnly);
     button.setAttribute("aria-pressed", String(userVarsOnly));
 }
-function renderAvailable() {
-    const scrollTop = availableBox.scrollTop;
-    const scrollLeft = availableBox.scrollLeft;
-    const content = document.createDocumentFragment();
-    renderAvailableContents(content);
-    availableBox.replaceChildren(content);
-    availableBox.scrollTop = scrollTop;
-    availableBox.scrollLeft = scrollLeft;
-}
 function sbAvailableEntry(sym) {
     return (
         EmberProbeRuntime.runtimeWatchEntry(sym.name, sym) ||
@@ -825,9 +817,7 @@ function sbToggleAvailable(sym, entry = sbAvailableEntry(sym)) {
     )
         return sbToggle(entry);
     availableAddPending.add(sym.name);
-    if (availableLayoutPending.has(sym.name)) return;
-    availableLayoutPending.add(sym.name);
-    api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: state.version });
+    variablePicker.requestLayout(sym);
 }
 function sbCompositeRow(sym, arrow, on) {
     const row = document.createElement("div");
@@ -911,7 +901,7 @@ function sbScalarRow(sym, already) {
             sym.name,
             !availableTypesReady || noLayout,
             sym.unsupportedReason || t("sb.compositeUnsupported"),
-            () => sbToggleAvailable(sym, entry)
+            () => sbToggleAvailable(sym)
         )
     );
     const n = document.createElement("span");
@@ -923,10 +913,10 @@ function sbScalarRow(sym, already) {
     ty.className = "available-type";
     ty.textContent = sym.typeName || sym.watchType || t("sb.composite");
     b.append(cell, ty);
-    if (!noLayout) b.onclick = () => sbToggleAvailable(sym, entry);
+    if (!noLayout) b.onclick = () => sbToggleAvailable(sym);
     return b;
 }
-function renderAvailableContents(content) {
+function renderAvailable() {
     EmberProbeRuntime.renderElfDiagnostics(
         document.getElementById("availableDiagnostics"),
         variableWarnings,
@@ -939,10 +929,10 @@ function renderAvailableContents(content) {
     allCount.textContent = userVarsOnly ? pool.length + "/" + state.available.length : String(state.available.length);
     allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: state.available.length }) : "";
     // The error is in the diagnostics notice above the list.
-    if (variableError) return;
+    if (variableError) return availableBox.replaceChildren();
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
     const selected = new Set(state.watch.map((w) => w.name));
-    const { matching, list } = variablePicker.render(content, query, {
+    const { matching, list } = variablePicker.render(availableBox, query, {
         composite: (sym, arrow) => sbCompositeRow(sym, arrow, selected.has(sym.name)),
         branchControls: sbBranchControls,
         leaf: (lf) => sbLeafRow(lf),
@@ -952,7 +942,7 @@ function renderAvailableContents(content) {
         const note = document.createElement("div");
         note.className = "sb-note";
         note.textContent = t("lw.showingFirst", { n: list.length });
-        content.appendChild(note);
+        availableBox.appendChild(note);
     }
 }
 function mkAvBtn(cls, glyph, on, disabled, titleTxt, handler) {
@@ -1082,7 +1072,7 @@ function sbRenderComposite(item, box) {
     const body = document.createElement("div");
     body.className = "sb-body";
     head.onclick = () => {
-        const open = valueTree.toggleComposite(item);
+        const open = valueTree.toggleComposite(item, body);
         row.classList.toggle("open", open);
         arrow.classList.toggle("open", open);
         saveSbUi();
@@ -1098,12 +1088,7 @@ function sbOnComposite(samples) {
     const searching = !!document.getElementById("varSearch").value.trim();
     (samples || []).forEach((s) => {
         if (s && s.name) {
-            if (
-                (state.availableExpanded[s.name] || searching) &&
-                EmberProbeRuntime.runtimeTreeShape(state.latest[s.name]) !==
-                    EmberProbeRuntime.runtimeTreeShape(s.tree) &&
-                EmberProbeRuntime.runtimeSelection(state.symbols.get(s.name), s.tree)
-            )
+            if (variablePicker.sampleChanged(s.name, s.tree, state.availableExpanded[s.name] || searching))
                 refreshAvailable = true;
             state.latest[s.name] = s.tree;
             valueTree.treeSampled(s.name, s.tree);
@@ -1494,6 +1479,7 @@ window.EmberProbeMessages.connect(window, {
         state.available = (m.symbols || []).slice();
         availableTypesReady = true;
         state.symbols = new Map(state.available.map((symbol) => [symbol.name, symbol]));
+        variablePicker.reset();
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
@@ -1520,6 +1506,7 @@ window.EmberProbeMessages.connect(window, {
         availableTypeChunks = 0;
         availableLayoutPending.clear();
         availableAddPending.clear();
+        variablePicker.reset();
         variableError = "";
         variableErrorKey = "";
         variableErrorParams = null;
@@ -1560,7 +1547,7 @@ window.EmberProbeMessages.connect(window, {
         layoutExpansionUi.receive(m);
     },
     compositeLayoutResult: function (m) {
-        if (m.version !== state.version) return;
+        if (m.version !== state.version || (m.generation != null && m.generation !== state.generation)) return;
         availableLayoutPending.delete(m.name);
         const symbol = state.symbols.get(m.name);
         if (!symbol) return;
@@ -1570,27 +1557,27 @@ window.EmberProbeMessages.connect(window, {
             symbol.runtimeLayout = m.layout?.runtimeLayout || null;
             if (symbol.runtimeLayout) renderValues();
             else symbol.layoutError = m.error || t("lw.compositeNoLayout");
-            return;
-        }
-        if (m.layout) {
-            symbol.compositeLayout = m.layout;
-            symbol.layoutExpansions = m.layoutExpansions;
-            symbol.layoutExpansionGeneration = m.layoutExpansionGeneration;
-            symbol.runtimeLayout = m.layout.runtimeLayout || null;
-            symbol.unsupportedReason = "";
-            symbol.layoutError = "";
         } else {
-            symbol.layoutError = m.error || t("lw.compositeNoLayout");
-            symbol.unsupportedReason = symbol.layoutError;
+            if (m.layout) {
+                symbol.compositeLayout = m.layout;
+                symbol.layoutExpansions = m.layoutExpansions;
+                symbol.layoutExpansionGeneration = m.layoutExpansionGeneration;
+                symbol.runtimeLayout = m.layout.runtimeLayout || null;
+                symbol.unsupportedReason = "";
+                symbol.layoutError = "";
+            } else {
+                symbol.layoutError = m.error || t("lw.compositeNoLayout");
+                symbol.unsupportedReason = symbol.layoutError;
+            }
+            if (symbol.isReference && !symbol.runtimeLayout) symbol.layoutError ||= t("lw.compositeNoLayout");
+            const added =
+                availableAddPending.delete(m.name) &&
+                !symbol.layoutError &&
+                !state.watch.some((item) => item.name === m.name);
+            if (added) sbToggle(sbAvailableEntry(symbol));
+            else if (m.layout && valueTree.hasWatchedBase(m.name)) renderValues();
         }
-        if (symbol.isReference && !symbol.runtimeLayout) symbol.layoutError ||= t("lw.compositeNoLayout");
-        const added =
-            availableAddPending.delete(m.name) &&
-            !symbol.layoutError &&
-            !state.watch.some((item) => item.name === m.name);
-        if (added) sbToggle(sbAvailableEntry(symbol));
-        else if (m.layout && valueTree.hasWatchedBase(m.name)) renderValues();
-        renderAvailable();
+        if (variablePicker.resolved(symbol)) renderAvailable();
     },
     debugSessionChanged: function () {
         writes.invalidate();

@@ -722,6 +722,7 @@ function testTypeShowcase() {
         env.deliver(sidebar, { type: "initCheck" });
         env.deliver(sidebar, { type: "liveToggle" });
         env.advance(600);
+        view.document.querySelector("#liveValues .sb-comp-head").click();
         const text = view.document.getElementById("liveValues").textContent;
         for (const expected of [".Active / .Ready(3)", "&g_sensors[1]", "fault_handler()", "NULL", '"left-wheel"'])
             assert.ok(text.includes(expected), expected);

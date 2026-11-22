@@ -435,10 +435,9 @@ const valueTree = EmberProbeValueTree.create({
     copy: (text) => api?.postMessage({ type: "copyText", text }),
     layoutExpansion: () => layoutExpansionUi,
     requestPointerLayout: (name) => {
-        if (!state.version || impLayoutPending.has(name)) return;
-        impLayoutPending.add(name);
+        if (!state.version) return;
         pointerLayoutWaiters.add(name);
-        post({ type: "resolveCompositeLayout", name, version: state.version });
+        importPicker.requestLayout({ name });
     },
     togglePointee: (entry) => togglePointee(entry),
     // A member row's swatch adds the member to the chart or switches its curve.
@@ -503,7 +502,7 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     generation: () => state.generation,
     symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => displayNameFor({ name: path }),
-    changed: () => {
+    changed: (name) => {
         for (const item of state.watch) {
             const symbol = state.symbols.get(item.name);
             if (
@@ -514,8 +513,9 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
                 item.layoutExpansionGeneration = symbol?.layoutExpansionGeneration;
             }
         }
+        importPicker.invalidate(name);
         if (!$("overlay").classList.contains("hidden")) renderImport();
-        renderVars();
+        if (valueTree.hasWatchedBase(name)) renderVars();
     }
 });
 function post(m) {
@@ -1031,7 +1031,7 @@ function renderCompositeCard(item, box) {
     var body = document.createElement("div");
     body.className = "comp-body";
     head.onclick = function () {
-        const open = valueTree.toggleComposite(item);
+        const open = valueTree.toggleComposite(item, body);
         card.classList.toggle("open", open);
         arrow.classList.toggle("open", open);
         saveUi();
@@ -1081,21 +1081,15 @@ function onCompositeSamples(samples) {
     if (historyClearPending) return;
     var refreshImport = false;
     var searching = !!$("impFilter").value.trim();
+    const visible = !$("overlay").classList.contains("hidden");
     (samples || []).forEach(function (s) {
         if (!s || !s.name) return;
-        if (
-            (state.importExpanded[s.name] || searching) &&
-            !$("overlay").classList.contains("hidden") &&
-            EmberProbeRuntime.runtimeTreeShape(state.latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
-            EmberProbeRuntime.runtimeSelection(state.symbols.get(s.name), s.tree)
-        )
+        if (importPicker.sampleChanged(s.name, s.tree, visible && (state.importExpanded[s.name] || searching)))
             refreshImport = true;
-        if (s && s.name) {
-            state.latest[s.name] = s.tree;
-            valueTree.treeSampled(s.name, s.tree);
-        }
+        state.latest[s.name] = s.tree;
+        valueTree.treeSampled(s.name, s.tree);
     });
-    if (refreshImport && !$("overlay").classList.contains("hidden")) renderImport();
+    if (refreshImport) renderImport();
     // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card,
     // or members that still have their own chart card.
     if (valueTree.needsWatchRerender()) renderVars();
@@ -1235,6 +1229,7 @@ const importPicker = EmberProbeSymbolPicker.create({
     symbols: () => state.allSymbols,
     userOnly: () => impUserOnly,
     expanded: () => state.importExpanded,
+    language: () => LANG,
     pending: impLayoutPending,
     typesReady: () => impTypesReady,
     post: api && ((message) => post(message)),
@@ -1337,27 +1332,26 @@ function importScalarRow(s, checked) {
     return row;
 }
 function importChecked() {
-    const watched = new Set(state.watch.map((item) => item.name));
-    return (name) => (state.importPicks.has(name) ? !!state.importPicks.get(name) : watched.has(name));
+    let source, count, watched;
+    return (name) => {
+        if (state.importPicks.has(name)) return !!state.importPicks.get(name);
+        if (source !== state.watch || count !== state.watch.length) {
+            source = state.watch;
+            count = source.length;
+            watched = new Set(source.map((item) => item.name));
+        }
+        return watched.has(name);
+    };
 }
 function renderImport() {
     renderElfDiagnostics();
-    var f = ($("impFilter").value || "").trim().toLowerCase(),
-        box = $("impList");
     const checked = importChecked();
-    box.textContent = "";
-    var result = importPicker.render(box, f, {
-        composite: function (s, arrow) {
-            return importCompositeRow(s, arrow, checked(s.name));
-        },
+    var result = importPicker.render($("impList"), ($("impFilter").value || "").trim().toLowerCase(), {
+        composite: (s, arrow) => importCompositeRow(s, arrow, checked(s.name)),
         branchControls: (leaves, path, typeName, composite) =>
             importBranchControls(leaves, path, typeName, composite, checked),
-        leaf: function (lf) {
-            return importLeafRow(lf, checked(lf.path));
-        },
-        scalar: function (s) {
-            return importScalarRow(s, checked(s.name));
-        }
+        leaf: (lf) => importLeafRow(lf, checked(lf.path)),
+        scalar: (s) => importScalarRow(s, checked(s.name))
     });
     $("impCount").textContent =
         (impUserOnly
@@ -1367,6 +1361,7 @@ function renderImport() {
 }
 function openImport() {
     state.importPicks.clear();
+    importPicker.clearRows();
     $("impFilter").value = "";
     renderImport();
     $("overlay").classList.remove("hidden");
@@ -2094,13 +2089,15 @@ window.EmberProbeMessages.connect(window, {
         }
         valueTree.runtimeExpansionsReady();
         renderVars();
-        if (!$("overlay").classList.contains("hidden")) renderImport();
+        if (!$("overlay").classList.contains("hidden"))
+            EmberProbeSymbolPicker.updateCheckboxSelections($("impList"), importChecked());
         state.dirty = true;
     },
     variablesList: function (m) {
         impWarnings = m.warnings || [];
         impError = m.error || "";
         renderElfDiagnostics();
+        importPicker.reset();
         state.allSymbols = m.symbols || [];
         impTypesReady = true;
         state.symbols = new Map(state.allSymbols.map((symbol) => [symbol.name, symbol]));
@@ -2130,7 +2127,7 @@ window.EmberProbeMessages.connect(window, {
         impWarnings = m.warnings || [];
         impError = "";
         renderElfDiagnostics();
-        importPicker.cancelSearch();
+        importPicker.reset();
         if ((m.version || "") !== state.version || (m.generation ?? null) !== state.generation)
             state.importPicks.clear();
         state.version = m.version || "";
@@ -2194,7 +2191,7 @@ window.EmberProbeMessages.connect(window, {
         layoutExpansionUi.receive(m);
     },
     compositeLayoutResult: function (m) {
-        if (m.version !== state.version) return;
+        if (m.version !== state.version || (m.generation != null && m.generation !== state.generation)) return;
         impLayoutPending.delete(m.name);
         const symbol = state.symbols.get(m.name);
         if (!symbol) return;
@@ -2204,19 +2201,17 @@ window.EmberProbeMessages.connect(window, {
             symbol.runtimeLayout = m.layout?.runtimeLayout || null;
             if (symbol.runtimeLayout) renderVars();
             else symbol.layoutError = m.error || t("lw.compositeNoLayout");
-            return;
-        }
-        if (m.layout) {
-            symbol.compositeLayout = m.layout;
-            symbol.layoutExpansions = m.layoutExpansions;
-            symbol.layoutExpansionGeneration = m.layoutExpansionGeneration;
-            symbol.runtimeLayout = m.layout.runtimeLayout || null;
-            symbol.layoutError = "";
         } else {
-            symbol.layoutError = m.error || t("lw.compositeNoLayout");
+            symbol.layoutError = m.layout ? "" : m.error || t("lw.compositeNoLayout");
+            if (m.layout) {
+                symbol.compositeLayout = m.layout;
+                symbol.layoutExpansions = m.layoutExpansions;
+                symbol.layoutExpansionGeneration = m.layoutExpansionGeneration;
+                symbol.runtimeLayout = m.layout.runtimeLayout || null;
+                if (valueTree.hasWatchedBase(m.name)) renderVars();
+            }
         }
-        if (m.layout && valueTree.hasWatchedBase(m.name)) renderVars();
-        if (!$("overlay").classList.contains("hidden")) renderImport();
+        if (importPicker.resolved(symbol)) renderImport();
     },
     addResolved: function (m) {
         if (m.version && m.version !== state.version) return;

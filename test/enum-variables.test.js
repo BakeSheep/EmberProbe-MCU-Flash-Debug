@@ -223,6 +223,7 @@ const parsed = {
             ui.send({ type: watchMessage, items: [packetSymbol] });
             ui.window.eval("valueRefresh.reset()");
             ui.send({ type: "liveCompositeSample", samples: [{ name: "packet", tree: packet }] });
+            ui.document.querySelector(".sb-comp-head, .comp-head").click();
             const memberSelector = watchMessage === "watchList" ? ".member-value" : ".sb-mval";
             assert.strictEqual(ui.document.querySelector(memberSelector).textContent, negative.enumText);
             if (watchMessage === "sidebarWatchList") {

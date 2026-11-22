@@ -76,6 +76,14 @@ function setup(sidebar, lang, initialState = {}) {
             const arrow = () => view.document.querySelector(".picker-branch button[aria-expanded=false]");
             while (arrow()) arrow().click();
         },
+        expandWatchBranches() {
+            const closed = () =>
+                view.document.querySelector(
+                    "#liveValues .sb-comp-head > .sb-arrow:not(.open), #vars .comp-head > .comp-arrow:not(.open), .summary-head[aria-expanded=false]"
+                );
+            let control;
+            while ((control = closed())) (control.matches("button") ? control : control.parentElement).click();
+        },
         raw(name = "motor") {
             view.document.querySelector('.raw-members-toggle[data-variable-name="' + name + '"]').click();
             this.flush();
@@ -149,6 +157,7 @@ for (const version of [4, 5]) {
                 try {
                     view.watch([item, rawWatch, counter]);
                     view.sample(initialTree);
+                    view.expandWatchBranches();
                     view.scalar([
                         { name: managerPath, value: 17 },
                         { name: counter.name, value: 0 }
@@ -250,6 +259,7 @@ for (const version of [4, 5]) {
                     search.dispatchEvent(new view.window.Event("input"));
 
                     view.raw();
+                    view.expandWatchBranches();
                     view.expandPickerBranches();
                     assert.strictEqual(view.document.querySelectorAll(view.rowSelector).length, 26);
                     assert.strictEqual(view.document.querySelectorAll(view.listSelector).length, 26);
@@ -406,6 +416,7 @@ for (const sidebar of [false, true]) {
             ]
         };
         view.sample(tree, "object");
+        view.document.querySelector(".sb-comp-head, .comp-head").click();
         assert.strictEqual(view.text("object.next"), "&node");
         assert.strictEqual(view.text("object.next.value.count"), "8");
         // A pointee the reader already followed nests under its pointer row, collapsed until toggled.
@@ -497,6 +508,7 @@ for (const sidebar of [false, true]) {
                 },
                 "packet"
             );
+            view.expandWatchBranches();
             assert.strictEqual(view.text("packet.samples._M_elems[1]"), "22");
             assert.strictEqual(
                 view.row("packet.samples._M_elems[1]").querySelector(view.nameSelector).title,

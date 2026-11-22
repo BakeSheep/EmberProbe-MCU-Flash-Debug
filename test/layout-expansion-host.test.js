@@ -4,6 +4,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const elf = require("../src/elfSymbols");
+const { CACHE_KEYS } = require("../src/cacheKeys");
+const { scenario } = require("./helpers/scenario");
 const { loadProvider } = require("./helpers/load-provider");
 const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
 const { fixture, handle } = require("./helpers/layout-expansion-fixture");
@@ -42,15 +44,24 @@ function deepElf(count = 100) {
     const messages = [],
         sidebar = [],
         graph = [];
+    const watches = new Map();
+    const synced = [];
+    let planRefreshes = 0;
+    const panel = { watchKey: "testPanel", post: (reply) => graph.push(reply) };
     Object.assign(provider, {
         _elfService: f.service,
+        _context: { workspaceState: watches },
         _webviewView: { webview: { postMessage: (reply) => sidebar.push(reply) } },
-        _livePanels: new Map([[1, { post: (reply) => graph.push(reply) }]]),
+        _livePanels: new Map([[1, panel]]),
         _watchLists: { invalidate() {} },
-        _syncSidebarTarget() {},
-        _syncGraphTarget() {}
+        _syncSidebarTarget: () => synced.push("sidebar"),
+        _syncGraphTarget: (entry) => synced.push(entry.watchKey)
     });
-    Object.assign(provider._sampling, { refreshSamplingPlan: async () => {} });
+    Object.assign(provider._sampling, {
+        refreshSamplingPlan: async () => {
+            planRefreshes++;
+        }
+    });
     const request = { name: "axes", path: "axes[0].a.b", handle: handle(), generation: 7, version: "v1" };
     for (const invalid of [
         { handle: {} },
@@ -77,6 +88,23 @@ function deepElf(count = 100) {
     assert.strictEqual(messages.at(-1).layout, f.sublayout);
     assert.strictEqual(sidebar.at(-1).layout, f.sublayout);
     assert.strictEqual(graph.at(-1).layout, f.sublayout);
+    await scenario("Send one expansion reply per view and sync the affected watch lists", async () => {
+        assert.deepStrictEqual(synced, []);
+        assert.strictEqual(planRefreshes, 0);
+        sidebar.length = graph.length = 0;
+        watches.set(CACHE_KEYS.sidebarWatchList, [{ name: "axes[1].a.b.gain" }]);
+        watches.set(panel.watchKey, [{ name: "axes[0].a.b.gain" }]);
+        await provider._elfView.handleLayoutExpansion(request, panel.post, panel);
+        assert.strictEqual(sidebar.length, 1);
+        assert.strictEqual(graph.length, 1);
+        assert.deepStrictEqual(synced, [panel.watchKey]);
+        assert.strictEqual(planRefreshes, 1);
+        sidebar.length = graph.length = 0;
+        const view = provider._webviewView;
+        await provider._elfView.handleLayoutExpansion(request, (reply) => sidebar.push(reply), view);
+        assert.strictEqual(sidebar.length, 1);
+        assert.strictEqual(graph.length, 1);
+    });
     await assert.rejects(provider._elfView.expandLayout({ ...request, generation: 6 }), {
         code: "STALE_LAYOUT_HANDLE"
     });

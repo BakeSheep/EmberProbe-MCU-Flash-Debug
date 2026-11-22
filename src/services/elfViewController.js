@@ -1,7 +1,7 @@
 "use strict";
 const elfSymbols = require("../elfSymbols");
 const validation = require("../validation");
-const { runtimeWatchEntry, variableScope } = require("../webview/runtime");
+const { isDescendantPath, runtimeWatchEntry, variableScope } = require("../webview/runtime");
 const { toUiError } = require("./errorEnvelope");
 const { displayWarnings } = require("../webview/elfDiagnostics");
 const { CACHE_KEYS } = require("../cacheKeys");
@@ -99,6 +99,7 @@ class ElfViewController {
             type: "compositeLayoutResult",
             name,
             version,
+            generation,
             layout,
             ...this.layoutExpansionSnapshot(name)
         };
@@ -253,6 +254,7 @@ class ElfViewController {
                 hasRuntimeLayout: symbol.hasRuntimeLayout,
                 unsupportedReason: symbol.unsupportedReason || "",
                 hasDwarfWriteType: symbol.hasDwarfWriteType,
+                cppTypeUnavailable: !!symbol.cppTypeUnavailable,
                 sourceFile: symbol.sourceFile || "",
                 origin: symbol.origin || "user",
                 ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
@@ -322,11 +324,18 @@ class ElfViewController {
             }
         }
     }
-    async resolveLayout(name, version) {
-        const result = await this.host._elfService.ready();
-        if (version !== this.version(result))
+    /**
+     * @param {string} name
+     * @param {string} version
+     * @param {{ generation?: number, background?: boolean }} [options]
+     */
+    async resolveLayout(name, version, { generation, background } = {}) {
+        const service = this.host._elfService;
+        const result = await service.ready();
+        const current = service.generation;
+        if (version !== this.version(result) || (generation != null && generation !== current))
             throw Object.assign(new Error("ELF changed while resolving layout"), { code: "ELF_CHANGED" });
-        return this.host._elfService.layout(name);
+        return service.layout(name, { generation: current, background });
     }
     layoutExpansionSnapshot(name) {
         const symbol = this.host._elfService.symbolByName.get(name);
@@ -353,7 +362,7 @@ class ElfViewController {
             throw Object.assign(new Error("ELF changed while expanding layout"), { code: "STALE_LAYOUT_HANDLE" });
         return layout;
     }
-    async handleLayoutExpansion(message, post) {
+    async handleLayoutExpansion(message, post, origin) {
         const identity = {
             type: "layoutExpansionResult",
             name: message.name,
@@ -370,13 +379,34 @@ class ElfViewController {
             return;
         }
         const reply = { ...identity, layout };
+        const sidebar = this.host._webviewView;
+        const panels = [...this.host._livePanels.values()];
         post(reply);
-        this.host._webviewView?.webview.postMessage(reply);
-        for (const entry of this.host._livePanels.values()) entry.post(reply);
+        if (sidebar !== origin) sidebar?.webview.postMessage(reply);
+        for (const entry of panels) if (entry !== origin && entry.post !== post) entry.post(reply);
         this.host._watchLists.invalidate();
-        this.host._syncSidebarTarget((message) => this.host._webviewView?.webview.postMessage(message), true);
-        for (const entry of this.host._livePanels.values()) this.host._syncGraphTarget(entry, true);
-        await this.host._sampling.refreshSamplingPlan();
+        const state = this.host._context.workspaceState;
+        const affected = (key) => {
+            const items = state.get(key);
+            return (
+                Array.isArray(items) &&
+                items.some((item) => {
+                    const name = item?.name;
+                    return (
+                        typeof name === "string" &&
+                        (name === message.path ||
+                            isDescendantPath(message.path, name) ||
+                            isDescendantPath(name, message.path))
+                    );
+                })
+            );
+        };
+        const sidebarAffected = affected(CACHE_KEYS.sidebarWatchList) || affected(CACHE_KEYS.sidebarWriteList);
+        const affectedPanels = panels.filter((entry) => affected(entry.watchKey));
+        if (sidebarAffected && sidebar)
+            this.host._syncSidebarTarget((message) => sidebar.webview.postMessage(message), true);
+        for (const entry of affectedPanels) this.host._syncGraphTarget(entry, true);
+        if (sidebarAffected || affectedPanels.length) await this.host._sampling.refreshSamplingPlan();
     }
     async rebindWatchLists(symbols) {
         const entries = Array.from(this.host._livePanels.values());

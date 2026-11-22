@@ -242,7 +242,15 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
         };
 
         for (const sidebar of [true, false]) {
-            const view = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+            const widgetsName = nameOf("lab::g_widgets");
+            const expanded = {
+                [nameOf("lab::g_widgetTable")]: true,
+                [widgetsName]: true,
+                [widgetsName + "[1]"]: true
+            };
+            const view = sidebar
+                ? render(getModernWebviewContent({}, "en"), { sbExpanded: expanded })
+                : render(getLiveWatchContent({}, "en"), { expanded });
             const list = sidebar ? "availableVariables" : "variablesList";
             const saveType = sidebar ? "saveSidebarWatch" : "saveWatch";
             let items = ["lab::g_focus", "lab::g_widgetTable", "lab::g_name", "lab::g_hook", "lab::g_counterPtr"]
@@ -301,7 +309,6 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                 assert.strictEqual(cell(nameOf("lab::g_gridCell")).textContent, "&g_grid[1][2]");
                 assert.strictEqual(count(), "11");
                 // Struct array elements keep a collapsible `[i]` head instead of flattening their members.
-                const widgetsName = nameOf("lab::g_widgets");
                 const elementHead = row(widgetsName + "[1].id").closest(
                     sidebar ? ".sb-members" : ".comp-members"
                 ).previousElementSibling;

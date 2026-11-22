@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { scenario } = require("./helpers/scenario");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
@@ -204,8 +205,16 @@ for (const sidebar of [true, false]) {
         bytes.writeFloatLE(3.5, 52);
         const tree = decodeComposite(bytes, f.layout, f.symbol);
         page.send({ type: "liveCompositeSample", samples: [{ name: "axes", tree }] });
-        const update = page.window.eval("valueTree").updateComposite;
-        update("axes");
+        const doc = page.document;
+        const card = doc.querySelector(sidebar ? "#liveValues .composite" : "#vars .composite");
+        const head = sidebar ? ".sb-comp-head" : ".comp-head";
+        const label = sidebar ? ".sb-comp-name" : ".comp-name";
+        const leaves = () => card.querySelectorAll(sidebar ? ".sb-mrow" : ".member-row");
+        assert.strictEqual(leaves().length, 0, "a folded structure only renders its title and notices");
+        card.querySelector(head).click();
+        assert.strictEqual(leaves().length, 0, "folded child branches stay unmaterialized");
+        for (const name of ["[0]", "a"])
+            [...card.querySelectorAll(head)].find((row) => row.querySelector(label).textContent === name).click();
         const leaf = [...page.document.querySelectorAll(sidebar ? ".sb-mrow" : ".member-row")].find((row) =>
             row.textContent.includes("gain")
         );
@@ -215,4 +224,104 @@ for (const sidebar of [true, false]) {
         page.close();
     }
 }
+
+scenario("Preserve array pagination and layout expansion notices when std::array cards are folded", () => {
+    const stdArraySymbol = {
+        name: "arr",
+        isComposite: true,
+        address: 0x20000000,
+        size: 400,
+        compositeLayout: {
+            kind: "struct",
+            byteSize: 400,
+            typeName: "std::array<int, 100>",
+            stdSummary: { kind: "array", targets: ["_M_elems"] },
+            members: [
+                {
+                    name: "_M_elems",
+                    offset: 0,
+                    byteSize: 400,
+                    memberRole: "internal",
+                    compositeLayout: {
+                        kind: "array",
+                        totalElements: 100,
+                        byteSize: 400,
+                        elementType: { byteSize: 4, watchType: "i32" }
+                    }
+                }
+            ]
+        }
+    };
+    const deepStdArraySymbol = {
+        name: "deepArr",
+        isComposite: true,
+        address: 0x20001000,
+        size: 16,
+        compositeLayout: {
+            kind: "struct",
+            byteSize: 16,
+            typeName: "std::array<Deep, 2>",
+            expansionGeneration: 7,
+            stdSummary: { kind: "array", targets: ["_M_elems"] },
+            members: [
+                {
+                    name: "_M_elems",
+                    offset: 0,
+                    byteSize: 16,
+                    memberRole: "internal",
+                    compositeLayout: {
+                        kind: "array",
+                        totalElements: 2,
+                        byteSize: 16,
+                        elementType: {
+                            byteSize: 8,
+                            unobservable: "depth-limit",
+                            expansionHandle: { dieOffset: 42 }
+                        }
+                    }
+                }
+            ]
+        }
+    };
+    for (const sidebar of [true, false]) {
+        const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+        try {
+            const prefix = sidebar ? "availableVariables" : "variablesList";
+            page.send({ type: prefix + "Reset", version: "v1", generation: 7 });
+            page.send({ type: prefix + "Chunk", version: "v1", symbols: [stdArraySymbol, deepStdArraySymbol] });
+            page.send({
+                type: sidebar ? "sidebarWatchList" : "watchList",
+                items: [stdArraySymbol, deepStdArraySymbol]
+            });
+            const cards = page.document.querySelectorAll(sidebar ? "#liveValues .composite" : "#vars .composite");
+            assert.strictEqual(
+                page.document.querySelectorAll(sidebar ? "#liveValues .sb-mrow" : "#vars .member-row").length,
+                0,
+                "folded std::array cards render no leaf rows"
+            );
+            assert.ok(cards[0].querySelector(".array-more"), "folded std::array retains array-more notice");
+            assert.ok(
+                cards[1].querySelector(".layout-expansion-row"),
+                "folded std::array retains layout expansion notice"
+            );
+            const headSelector = sidebar ? ".sb-comp-head" : ".comp-head";
+            cards[0].querySelector(headSelector).click();
+            assert.strictEqual(
+                cards[0].querySelectorAll(sidebar ? ".sb-mrow" : ".member-row").length,
+                0,
+                "nested promoted array branch stays folded until opened"
+            );
+            cards[0].querySelectorAll(headSelector)[1].click();
+            assert.strictEqual(
+                cards[0].querySelectorAll(sidebar ? ".sb-mrow" : ".member-row").length,
+                16,
+                "opening std::array materializes the first 16 elements"
+            );
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    }
+});
+
 console.log("Sidebar/live-watch localized lazy expansion, loading/error/stale, nested and watch UI tests passed");

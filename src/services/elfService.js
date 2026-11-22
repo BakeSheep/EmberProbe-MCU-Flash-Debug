@@ -39,6 +39,9 @@ class ElfService {
         this.generation = 0;
         this.nextRequestId = 0;
         this.pendingLayouts = new Map();
+        this.layoutLoads = new Map();
+        this.backgroundLayouts = new Set();
+        this.activeBackgroundLayout = null;
         this.symbolByName = new Map();
         this.layoutErrors = new Map();
         this.symbolExpansionsPending = new Map();
@@ -59,6 +62,7 @@ class ElfService {
                 })
             );
         this.pendingLayouts.clear();
+        this._clearQueuedLayouts(Object.assign(new Error("ELF changed"), { code: "ELF_CHANGED" }));
         for (const symbol of this.symbolByName.values()) {
             for (const path of Object.keys(symbol.layoutExpansions || {})) delete symbol.layoutExpansions[path];
             symbol.layoutExpansionGeneration = -1;
@@ -74,6 +78,13 @@ class ElfService {
         this.rejectSymbols = null;
         this.rejectDwarf = null;
         this.cache = null;
+    }
+
+    _clearQueuedLayouts(error) {
+        for (const load of this.backgroundLayouts) load.reject(error);
+        this.backgroundLayouts.clear();
+        this.layoutLoads.clear();
+        this.activeBackgroundLayout = null;
     }
 
     _path() {
@@ -278,6 +289,7 @@ class ElfService {
             result.dwarfReady = false;
             for (const pending of this.pendingLayouts.values()) pending.reject(failure);
             this.pendingLayouts.clear();
+            this._clearQueuedLayouts(failure);
             worker.terminate().catch(() => {});
             if (this.worker === worker) this.worker = null;
             result.warnings.push(`${failure.code}: ${failure.message}`);
@@ -407,37 +419,81 @@ class ElfService {
         return this.cache;
     }
 
-    async layout(name) {
-        await this.ready();
+    /**
+     * @param {string} name
+     * @param {{ generation?: number, background?: boolean }} [options]
+     */
+    async layout(name, { generation, background = false } = {}) {
+        if (generation == null) await this.ready();
+        else if (generation !== this.generation || !this.cache?.dwarfReady)
+            throw Object.assign(new Error("ELF changed"), { code: "ELF_CHANGED" });
         const symbol = this.symbolByName.get(name);
         if (!symbol) return null;
         if (symbol.cppTypeUnavailable) return null;
         if (symbol.compositeLayout) return symbol.compositeLayout;
         const previousError = this.layoutErrors.get(name);
         if (previousError) throw Object.assign(new Error(previousError.message), { code: previousError.code });
-        const id = ++this.nextRequestId;
-        const generation = this.generation;
-        return new Promise((resolve, reject) => {
-            this.pendingLayouts.set(id, {
-                resolve: (layout) => {
-                    if (generation !== this.generation) return reject(new Error("ELF changed"));
-                    if (layout) {
-                        layout.expansionGeneration = generation;
-                        symbol.compositeLayout = layout;
-                        symbol.runtimeLayout = layout.runtimeLayout;
-                        symbol.unsupportedReason = "";
-                    }
-                    resolve(layout);
-                },
-                reject
-            });
-            try {
-                this.worker.postMessage({ type: "layout", id, name });
-            } catch (error) {
-                this.pendingLayouts.delete(id);
-                reject(error);
+        const pending = this.layoutLoads.get(name);
+        if (pending) {
+            if (!background) this._startLayout(pending);
+            return pending.promise;
+        }
+        const load = { name, symbol, generation: this.generation, started: false };
+        load.promise = new Promise((resolve, reject) => {
+            load.resolve = resolve;
+            load.reject = reject;
+        }).finally(() => {
+            if (this.layoutLoads.get(name) !== load) return;
+            this.layoutLoads.delete(name);
+            if (this.activeBackgroundLayout === load) {
+                this.activeBackgroundLayout = null;
+                this._startBackgroundLayout();
             }
         });
+        this.layoutLoads.set(name, load);
+        if (background) {
+            this.backgroundLayouts.add(load);
+            this._startBackgroundLayout();
+        } else this._startLayout(load);
+        return load.promise;
+    }
+
+    // The Worker handles one request at a time. Keep queued search work in the host
+    // so an explicit disclosure can get ahead of it, including a search for the same root.
+    _startBackgroundLayout() {
+        if (this.activeBackgroundLayout) return;
+        const load = this.backgroundLayouts.values().next().value;
+        if (!load) return;
+        this.activeBackgroundLayout = load;
+        this._startLayout(load);
+    }
+
+    _startLayout(load) {
+        if (load.started) return;
+        load.started = true;
+        this.backgroundLayouts.delete(load);
+        const { name, symbol, generation, resolve, reject } = load;
+        const id = ++this.nextRequestId;
+        this.pendingLayouts.set(id, {
+            resolve: (layout) => {
+                if (generation !== this.generation)
+                    return reject(Object.assign(new Error("ELF changed"), { code: "ELF_CHANGED" }));
+                if (layout) {
+                    layout.expansionGeneration = generation;
+                    symbol.compositeLayout = layout;
+                    symbol.runtimeLayout = layout.runtimeLayout;
+                    symbol.unsupportedReason = "";
+                }
+                resolve(layout);
+            },
+            reject
+        });
+        try {
+            this.worker.postMessage({ type: "layout", id, name });
+        } catch (error) {
+            this.pendingLayouts.delete(id);
+            reject(error);
+        }
     }
 
     // Expansions remain detached: merging fresh budgets into a cached root would

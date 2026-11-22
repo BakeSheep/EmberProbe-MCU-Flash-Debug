@@ -328,6 +328,7 @@ const member = (tree, name) => tree.members.find((entry) => entry.name === name)
         view.send({ type: "liveCompositeSample", samples: [{ name: "g.node.value", tree: opened }] });
         const notes = [...view.document.querySelectorAll(".comp-note")].map((note) => note.textContent);
         assert.ok(notes.includes("Sampling starts when expanded"), notes.join("|"));
+        view.document.querySelector(".var-card.composite .comp-head").click();
         const head = [...view.document.querySelectorAll(".comp-nest > .comp-head")].find(
             (node) => node.querySelector(".comp-name")?.textContent === "inner"
         );
