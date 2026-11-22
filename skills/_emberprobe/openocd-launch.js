@@ -171,14 +171,18 @@ function isSafeCfgPath(value) {
     return parts.length > 0 && parts.every((part) => part && part !== "." && part !== "..");
 }
 
+function normalizeDriveLetter(filePath) {
+    return process.platform === "win32" ? String(filePath || "").replace(/^[a-z]:/, (d) => d.toUpperCase()) : filePath;
+}
+
 function resolveExecutablePath(executable) {
     const configured = String(executable || "").trim();
     if (!configured) return "";
     assertNativeExecutable(configured);
     if (configured.includes("/") || configured.includes("\\")) {
-        const absolute = path.resolve(configured);
+        const absolute = normalizeDriveLetter(path.resolve(configured));
         try {
-            const canonical = fs.realpathSync(absolute);
+            const canonical = normalizeDriveLetter(fs.realpathSync(absolute));
             assertNativeExecutable(canonical);
             return canonical;
         } catch (error) {
@@ -207,7 +211,7 @@ function resolveExecutablePath(executable) {
                 fs.accessSync(candidate, fs.constants.X_OK);
                 if (!fs.statSync(candidate).isFile()) continue;
                 assertNativeExecutable(candidate);
-                const canonical = fs.realpathSync(candidate);
+                const canonical = normalizeDriveLetter(fs.realpathSync(candidate));
                 assertNativeExecutable(canonical);
                 return canonical;
             } catch (error) {
@@ -223,7 +227,7 @@ function matchesOpenOcdExecutable(requested, configured, resolved) {
     const setting = String(configured || "").trim();
     return (
         (String(requested || "").trim() === "openocd" && (!setting || setting === "openocd")) ||
-        resolveExecutablePath(requested) === resolved
+        resolveExecutablePath(requested) === normalizeDriveLetter(resolved)
     );
 }
 

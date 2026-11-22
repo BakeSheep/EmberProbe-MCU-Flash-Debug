@@ -218,7 +218,25 @@ class ConnectedProbes {
     }
     // Makes a connected device the workspace's probe. A device of another family also switches the interface
     // script to that family's default, so the list and the next operation never disagree.
-    async select(deviceId) {
+    select(deviceId) {
+        if (!this._selectPending) {
+            const p = this._select(deviceId).finally(() => {
+                if (this._selectPending === p) this._selectPending = null;
+            });
+            this._selectPending = p;
+            return p;
+        }
+        const next = this._selectPending.then(
+            () => this._select(deviceId),
+            () => this._select(deviceId)
+        );
+        const tracked = next.finally(() => {
+            if (this._selectPending === tracked) this._selectPending = null;
+        });
+        this._selectPending = tracked;
+        return next;
+    }
+    async _select(deviceId) {
         if (deviceId !== "" && !validation.connectedProbeId(deviceId))
             throw Object.assign(new Error("Invalid connected probe"), { code: "PROBE_SELECTION_INVALID" });
         this.host._assertConnectionEditable({ probeSerial: true });
@@ -228,9 +246,10 @@ class ConnectedProbes {
             await store.clear();
             this.host._probeConnectionService.clearTargetMismatch();
             this._selectionChanged();
-            return this.refresh();
+            return (await this.refresh()) || this.view((await this.inventory().scan()).inventory);
         }
-        const view = this.view((await this.inventory().scan()).inventory);
+        const { inventory } = await this.inventory().scan();
+        const view = this.view(inventory);
         const device = view.devices.find((item) => item.id === deviceId);
         if (!device)
             throw Object.assign(new Error("The selected probe is no longer connected"), {
@@ -271,10 +290,16 @@ class ConnectedProbes {
         this._selectionChanged();
         // The card's tooltip announced the script it switches to; the configuration row shows it.
         if (probe !== current) await this.host._showDebuggerConfig();
-        return this.refresh();
+        return (await this.refresh()) || this.view(inventory);
     }
     _selectionChanged() {
         this.host._resolvedProbeConnection = null;
+        this.host._probeConnectionService?.markConfigurationChanged?.([
+            this.host._sampling?.session,
+            this.host.debugLaunch?.managedServer,
+            this.host._agentOps?.readSession,
+            this.host._debugBridge?.activeSession
+        ]);
         this.host._sampling?.clearAdaptiveSpeedMemory();
         this.host._sampling?.broadcastSamplingSpeedState();
     }

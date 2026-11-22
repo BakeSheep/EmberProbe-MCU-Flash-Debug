@@ -238,6 +238,7 @@ class RttController {
             this._stallRecovered = false;
             this.recovery = null;
             this.error = null;
+            const interrupts = this._interrupts;
             if (!selection) {
                 try {
                     await this._startOwnSession();
@@ -250,7 +251,7 @@ class RttController {
                 this._hostSession = selection.session;
                 this.source = selection.source;
             }
-            const failure = await this._attach();
+            const failure = await this._attach(interrupts);
             if (failure) throw failure;
             return this.status();
         });
@@ -454,7 +455,7 @@ class RttController {
 
     // Runs one attachment. Returns the terminal failure, if any, instead of throwing: callers that fire and forget
     // (session changes) must not produce unhandled rejections.
-    _attach() {
+    _attach(interrupts = this._interrupts) {
         const run = ++this._attachRun;
         this.state = "starting";
         this.reason = null;
@@ -463,14 +464,14 @@ class RttController {
         this._startAttempts = 0;
         this._retry = null;
         this._postStatus();
-        return this._attemptStart(run, true);
+        return this._attemptStart(run, true, interrupts);
     }
 
     // `rtt start` searches once, so a miss repeats it; once found, an empty listing only polls the listing.
-    async _attemptStart(run, fullStart) {
+    async _attemptStart(run, fullStart, interrupts = this._interrupts) {
         try {
             const result = fullStart
-                ? await this._startRtt(this._interrupts)
+                ? await this._startRtt(interrupts)
                 : await this._session().rttControl({ operation: "channels" });
             if (!result) return null;
             this.channels = result.channels;
@@ -499,16 +500,18 @@ class RttController {
         } catch (error) {
             if (error?.retryable || TRANSIENT_HOST_ERRORS.includes(error?.code))
                 return this._scheduleStartRetry(run, true, error.message);
-            await this._fail(error);
-            return error;
+            const stopFailure = await this._fail(error);
+            return stopFailure || error;
         }
     }
 
     // Searches the resolved block slice by slice. Returns the start result, or null when a stop or yield interrupted
     // the search; its queued task follows at once.
     async _startRtt(interrupts) {
+        if (this._interrupts !== interrupts) return null;
         const settings = this._runSettings;
         this._block = await this._resolveBlock(settings);
+        if (this._interrupts !== interrupts) return null;
         if (this._modeOverrides().length) {
             if (!this._block.exact)
                 throw rttError(
@@ -544,8 +547,8 @@ class RttController {
         const maxAttempts = mayBeHalted && this._block?.exact ? HALTED_START_MAX_ATTEMPTS : START_MAX_ATTEMPTS;
         if (this._startAttempts > maxAttempts) {
             const error = rttError(timeoutCode, `RTT gave up after ${maxAttempts} attempts: ${reason}`);
-            await this._fail(error);
-            return error;
+            const stopFailure = await this._fail(error);
+            return stopFailure || error;
         }
         const delayMs = Math.min(
             START_FIRST_DELAY_MS * START_BACKOFF_FACTOR ** (this._startAttempts - 1),
@@ -1014,7 +1017,7 @@ class RttController {
 
     async _fail(error) {
         this.error = { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) };
-        await this._stopInternal("start-failed");
+        return this._stopInternal("start-failed");
     }
 
     async _detachToPending(reason) {

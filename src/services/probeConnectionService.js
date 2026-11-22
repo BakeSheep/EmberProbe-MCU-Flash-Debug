@@ -281,11 +281,19 @@ class ProbeConnectionService {
         }
     }
 
+    _effectiveSettingsIdentity(configured = this.getConfig(), selection = this.getSuccessfulConnection()) {
+        const picked = selection?.source === "user" ? selection.probeSerial || selection.deviceId || "" : "";
+        return connectionIdentity({
+            ...configured,
+            probeSerial: normalizeProbeSerial(configured.probeSerial) || picked
+        });
+    }
+
     settingsChanged(session) {
         const previous = session.options?.settingsIdentity;
         const configured = this.getConfig();
         return (
-            (!!previous && JSON.stringify(previous) !== JSON.stringify(connectionIdentity(configured))) ||
+            (!!previous && JSON.stringify(previous) !== JSON.stringify(this._effectiveSettingsIdentity(configured))) ||
             (session.options?.samplingAdapterSpeedKhz !== undefined &&
                 session.options.samplingAdapterSpeedKhz !== normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz))
         );
@@ -306,8 +314,8 @@ class ProbeConnectionService {
         this.beforePrepare();
         const configured = this.getConfig();
         const samplingSpeed = options.sampling ? normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz) : undefined;
-        const expectedSettings = JSON.stringify(connectionIdentity(configured));
         const selection = this.getSuccessfulConnection();
+        const expectedSettings = JSON.stringify(this._effectiveSettingsIdentity(configured, selection));
         let request = { ...configured, ...options, successfulConnection: selection };
         request.probe = request.probe || request.debugger || (await this.resolveProbe());
         request.target = request.target || request.mcu;
@@ -320,7 +328,7 @@ class ProbeConnectionService {
                 const prepared = await this.prepareConnection(request, preparationOptions);
                 this.beforePrepare();
                 const result = prepared;
-                const current = connectionIdentity(this.getConfig());
+                const current = this._effectiveSettingsIdentity(this.getConfig());
                 if (
                     JSON.stringify(current) !== expectedSettings ||
                     (samplingSpeed !== undefined &&

@@ -380,14 +380,32 @@ async function preflight(options, deps = {}) {
         sources.openocd = "config";
         let error;
         if (!openocd) {
-            error = Object.assign(new Error("The configured OpenOCD could not be prepared"), {
-                code: "OPENOCD_NOT_FOUND"
-            });
-        } else if (options.openocd && !matchesOpenOcdExecutable(options.openocd, config.openocdPath, openocd)) {
-            error = Object.assign(new Error("Agent OpenOCD must match the configured executable"), {
-                code: "OPENOCD_EXECUTABLE_MISMATCH"
-            });
-            openocd = "";
+            const configuredPath = String(config.openocdPath || "").trim();
+            if (configuredPath && configuredPath !== "openocd") {
+                try {
+                    openocd = resolveExecutablePath(configuredPath);
+                } catch (e) {
+                    error = e;
+                }
+            }
+            if (!openocd && !error) {
+                error = Object.assign(new Error("The configured OpenOCD could not be prepared"), {
+                    code: "OPENOCD_NOT_FOUND"
+                });
+            }
+        } else if (options.openocd) {
+            let matched = false;
+            try {
+                matched = matchesOpenOcdExecutable(options.openocd, config.openocdPath, openocd);
+            } catch (e) {
+                error = e;
+            }
+            if (!error && !matched) {
+                error = Object.assign(new Error("Agent OpenOCD must match the configured executable"), {
+                    code: "OPENOCD_EXECUTABLE_MISMATCH"
+                });
+            }
+            if (error) openocd = "";
         }
         if (error) {
             diagnostics.push(diagnosticForError(error, { operation: "openocd.launch" }));

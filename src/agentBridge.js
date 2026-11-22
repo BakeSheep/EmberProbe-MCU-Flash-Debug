@@ -176,6 +176,27 @@ class AgentBridge {
             return;
         }
         const meta = requestMeta(request.headers);
+        const abortListeners = new Set();
+        meta.aborted = false;
+        meta.onAbort = (fn) => {
+            if (meta.aborted) fn();
+            else abortListeners.add(fn);
+            return () => abortListeners.delete(fn);
+        };
+        const onDisconnected = () => {
+            if (response.writableEnded || meta.aborted) return;
+            meta.aborted = true;
+            for (const fn of [...abortListeners]) {
+                try {
+                    fn();
+                } catch {
+                    /* ignore */
+                }
+            }
+            abortListeners.clear();
+        };
+        request.on("aborted", onDisconnected);
+        response.on("close", onDisconnected);
         request.on("data", (chunk) => {
             if (!receiving) return;
             size += chunk.length;

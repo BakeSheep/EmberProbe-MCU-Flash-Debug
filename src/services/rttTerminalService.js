@@ -157,8 +157,10 @@ class RttTerminalService {
         try {
             status = await this._controller().start({ origin });
         } catch (error) {
-            if (this._failureNoticed !== error?.code)
+            if (this._failureNoticed !== error?.code) {
                 this._notice({ level: "error", titleKey: "notice.rttStartFailed", error: this._withErrorKey(error) });
+                if (error?.code === "PROBE_EXIT_UNCONFIRMED") this._failureNoticed = "PROBE_EXIT_UNCONFIRMED";
+            }
             if (origin === "agent") throw error;
             return false;
         }

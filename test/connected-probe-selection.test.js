@@ -412,6 +412,35 @@ async function main() {
     const scans = provider._connectedProbes.inventoryService.started;
     await dispatch({ type: "refreshConnectedProbes" });
     assert.strictEqual(provider._connectedProbes.inventoryService.started, scans + 1);
+
+    await scenario(
+        "Active ProbeCoordinator leases block probe selection and selectForAgent survives monitor race",
+        async () => {
+            const connected = provider._connectedProbes;
+            const coordinator = new ProbeCoordinator();
+            provider._probeCoordinator = coordinator;
+            provider._debugBridge = { hasAnySession: false };
+            delete provider._assertConnectionEditable;
+            for (const op of ["download", "liveStart", "debugStart", "chipInfo", "agentRead"]) {
+                const lease = coordinator.acquire(op);
+                try {
+                    await assert.rejects(connected.select(first.id), { code: "PROBE_CONFIGURATION_BUSY" });
+                } finally {
+                    lease.release();
+                }
+            }
+            provider._assertConnectionEditable = () => {};
+            const origRefresh = connected.refresh.bind(connected);
+            connected.refresh = async () => null;
+            try {
+                const picked = await connected.selectForAgent({ deviceId: first.id });
+                assert.strictEqual(picked.deviceId, first.id);
+                assert.strictEqual(picked.state, "selected");
+            } finally {
+                connected.refresh = origRefresh;
+            }
+        }
+    );
     console.log("Connected probe selection tests passed");
 }
 

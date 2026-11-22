@@ -1796,6 +1796,22 @@ function makeController(host, options = {}) {
         assert.strictEqual(drained, "last line\n");
         assert.strictEqual(socket.destroyed, true);
     });
+    await scenario("attach failure with unconfirmed OpenOCD exit reports PROBE_EXIT_UNCONFIRMED", async () => {
+        const host = fakeHost();
+        const order = [];
+        const { controller } = makeController(host, {
+            rttSettings: () => ({ channels: [{ index: 0, mode: "block" }] })
+        });
+        controller._ManagedOpenOcdSession = class extends ownSessionClass(order) {
+            async stop() {
+                order.push({ type: "ownStopFailed" });
+                return false;
+            }
+        };
+        await assert.rejects(controller.start(), { code: "PROBE_EXIT_UNCONFIRMED" });
+        assert.strictEqual(controller.state, "stop-failed");
+        assert.strictEqual(host._probeCoordinator.isActive("rtt"), true);
+    });
     console.log("RTT controller tests passed");
 })().catch((error) => {
     console.error(error);

@@ -638,19 +638,20 @@ const {
         });
 
         await scenario("C5 loader failures leave initialization pending and permit a corrected retry", () => {
-            for (const failure of ["missing-file", "unknown-device", "set_loader", "set_size"]) {
+            for (const failure of ["missing-file", "unknown-device", "unknown-die-size", "set_loader", "set_size"]) {
                 const setup = {
                     "missing-file": "set dev_id_loader(0x45A) flash_loaders/missing.xldr",
                     "unknown-device": "set _ep_devid 0xFFF",
+                    "unknown-die-size": "set _ep_devid 0xFFF; set _ep_flash_kb 0xFFFF",
                     set_loader: "set _ep_fail set_loader",
                     set_size: "set _ep_fail set_size"
                 }[failure];
                 const output = runC5Event([
-                    "set _ep_devid 0x45A; set saved_loader $dev_id_loader(0x45A)",
+                    "set _ep_devid 0x45A; set _ep_flash_kb 512; set saved_loader $dev_id_loader(0x45A)",
                     setup,
                     "set rc [catch {_ep_test_examine} msg]; echo EP_FAILURE=$rc; echo EP_MESSAGE=$msg; " +
                         "echo EP_PENDING=$EXAMINED",
-                    "set _ep_devid 0x45A; set _ep_fail {}; set dev_id_loader(0x45A) $saved_loader",
+                    "set _ep_devid 0x45A; set _ep_flash_kb 512; set _ep_fail {}; set dev_id_loader(0x45A) $saved_loader",
                     "_ep_test_examine; echo EP_RECOVERED=$EXAMINED"
                 ]);
                 assert.match(output, /EP_FAILURE=1/);
@@ -658,6 +659,7 @@ const {
                 assert.match(output, /EP_RECOVERED=1/);
                 assert.match(output, /EP_STLDR=set_size stm32c5x.flash 524288/);
                 if (failure.startsWith("set_")) assert.match(output, /EP_MESSAGE=EP_LOADER_FAILURE/);
+                else if (failure === "unknown-die-size") assert.match(output, /Error : No die 0xFFF exists/);
                 else assert.match(output, /Error : No STLDR loader file found/);
             }
         });

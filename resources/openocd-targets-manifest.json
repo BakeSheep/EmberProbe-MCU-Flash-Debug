@@ -375,7 +375,7 @@
                 "bin/libusb-1.0.dll",
                 "bin/libftdi1.dll"
             ],
-            "sha256": "e076a98e5c621eccca92a2a2b6b7acee3b36e504f5c70bba542ae4d189a0cd22"
+            "sha256": "f5cb8d551c721bdca2ee46142b50601f72876a182245dfeee9c704da321c18bc"
         },
         {
             "platform": "linux-x64",
@@ -395,7 +395,7 @@
                 "distro-info/licenses/libudev-241/LICENSE.LGPL2.1",
                 "distro-info/licenses/libudev-241/SOURCE.txt"
             ],
-            "sha256": "5e02f7fb47462d8679dce09c6156c2f0a2549d66c8a5667faecb17b0229ca2f2"
+            "sha256": "7a2780a298091c4c15c84fcd1e93a4cb67557fca33e14fc322059a80c8da54a9"
         }
     ],
     "build": {
@@ -424,13 +424,13 @@
     },
     "source": {
         "file": "native/openocd/emberprobe-openocd-source.tar.gz",
-        "sha256": "a621d4dc62945cedec2a871b2b25ca19744cb1481651f0aaca05bf726944727b"
+        "sha256": "a3b0b87a3d0666a8b6a05a9a9e7dbdb2427cff421430048df878fff6a07b6e6b"
     },
     "scriptOverrides": [
         {
             "path": "target/stm32c5x.cfg",
             "baseSha256": "9f38050ff1a8751e1d16b9aa44a65dea3066f656b327cc2cb08db0d224731366",
-            "sha256": "0c9ad2a94779011e416c1c4f1fe43b49a48ddd85a026d5453b18f695a646be03"
+            "sha256": "a4b450ae7cd6a392ae468022cf2d5414ceea10e14972d23a3fc4b6a821c439c8"
         }
     ],
     "targetHelpers": [

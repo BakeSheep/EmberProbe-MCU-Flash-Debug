@@ -458,7 +458,9 @@ class MainViewProvider {
             (this._sampling.session ||
                 this.debugLaunch.managedServer ||
                 this._agentOps.readSession ||
-                this._probeCoordinator?.isActive("rtt") ||
+                (this._probeCoordinator?.anyActive
+                    ? this._probeCoordinator.anyActive()
+                    : this._probeCoordinator?.isActive?.("rtt")) ||
                 this._debugBridge.hasAnySession)
         )
             throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
@@ -1185,14 +1187,18 @@ class MainViewProvider {
                     /* bounded shutdown */
                 }
             }
-            await this.debugLaunch.stopManagedServer();
+            await this.debugLaunch
+                .stopManagedServer()
+                .catch((error) => console.error("Managed debug server cleanup failed:", error));
             const stopped = this._sampling.stop();
-            if (stopped) await stopped;
+            if (stopped)
+                await Promise.resolve(stopped).catch((error) => console.error("Sampling cleanup failed:", error));
             await this._historyFeed.flushPending();
             await this._livePanelRegistry?.pending.catch(console.error);
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
             this._sampling.dispose();
+            this._probeConnectionService?.dispose();
             this.disposeDebugBridge();
             await this._agentService.dispose().catch(() => {});
         })();
