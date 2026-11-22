@@ -250,6 +250,14 @@ scenario("Tcl scope errors retain their first exception before the programming s
         ["*** buffer overflow detected ***", "OPENOCD_NATIVE_CRASH"]
     ])
         assert.strictEqual(diagnoseOpenOcdFailure([...lines, line]).code, code);
+    const { isProbeCommunicationFailure } = require("../skills/_emberprobe/openocd-diagnostics");
+    assert.strictEqual(isProbeCommunicationFailure("Error: CMSIS-DAP command CMD_DAP_SWJ_CLOCK failed."), false);
+    assert.strictEqual(
+        isProbeCommunicationFailure(
+            "Error: error writing data: hid_write\nError: CMSIS-DAP command CMD_DAP_SWJ_CLOCK failed."
+        ),
+        true
+    );
     assert.strictEqual(diagnoseOpenOcdFailure(["shutdown error"]).code, "OPENOCD_START_FAILED");
     assert.strictEqual(diagnoseOpenOcdFailure(["Error: failed to read memory"]).code, "OPENOCD_START_FAILED");
     assert.strictEqual(

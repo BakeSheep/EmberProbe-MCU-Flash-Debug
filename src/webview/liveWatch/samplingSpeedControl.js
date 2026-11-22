@@ -173,20 +173,23 @@
             },
             receiveStatus(m, flags) {
                 if (!m || typeof m !== "object") return;
+                const transitional = m.mode === "disconnecting" || m.mode === "exit-unconfirmed";
                 if (flags && (typeof flags.running === "boolean" || typeof flags.starting === "boolean")) {
-                    state.locked = Boolean(flags.running || flags.starting || m.mode === "disconnecting");
-                } else if (typeof m.running === "boolean" || typeof m.starting === "boolean") {
-                    state.locked = Boolean(m.running || m.starting || m.mode === "disconnecting");
+                    state.locked = Boolean(flags.running || flags.starting || transitional);
+                } else if (typeof m.running === "boolean" || typeof m.starting === "boolean" || transitional) {
+                    state.locked = Boolean(m.running || m.starting || transitional);
                 }
                 const adaptiveInfo = m.adaptiveSpeed;
-                if (
-                    state.adaptive &&
-                    adaptiveInfo &&
-                    ADAPTIVE_STATES.has(adaptiveInfo.state) &&
-                    Number.isFinite(adaptiveInfo.effectiveKhz) &&
-                    adaptiveInfo.effectiveKhz > 0
-                ) {
-                    state.adaptiveEffectiveKhz = adaptiveInfo.effectiveKhz;
+                if (state.adaptive && adaptiveInfo) {
+                    if (
+                        ADAPTIVE_STATES.has(adaptiveInfo.state) &&
+                        Number.isFinite(adaptiveInfo.effectiveKhz) &&
+                        adaptiveInfo.effectiveKhz > 0
+                    ) {
+                        state.adaptiveEffectiveKhz = adaptiveInfo.effectiveKhz;
+                    } else if (["pending", "ineligible", "failed", "disabled"].includes(adaptiveInfo.state)) {
+                        state.adaptiveEffectiveKhz = null;
+                    }
                 }
                 if (Number.isFinite(m.adapterSpeedKhz) && m.adapterSpeedKhz > 0) {
                     state.effectiveKhz = m.adapterSpeedKhz;

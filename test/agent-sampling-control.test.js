@@ -546,6 +546,11 @@ function fixture() {
             }
             await host._agentOps.controlSampling("stop");
             assert.strictEqual(archive.status(scope).rows, 2);
+            sampling.lastDisconnect = { code: "PROBE_COMMUNICATION_FAILED", message: "lost" };
+            assert.strictEqual(sampling.status().lastDisconnect.code, "PROBE_COMMUNICATION_FAILED");
+            await host._agentOps.controlSampling("start");
+            assert.strictEqual(sampling.status().lastDisconnect, undefined, "new sampling start clears lastDisconnect");
+            await host._agentOps.controlSampling("stop");
 
             await archive.flush();
             await history.request("archiveProgress", [{ dataPath: archive.dataPath, bytes: archive.indexedBytes }]);

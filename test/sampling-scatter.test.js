@@ -490,6 +490,24 @@ async function close({ fake, session }) {
     } finally {
         await close(debug);
     }
+    const stalePlan = await fixture();
+    try {
+        const { session, fake } = stalePlan;
+        const itemObj = { name: "ptr", address: 0x20000000, size: 4, runtimeLayout: { root: 0, types: [] } };
+        session._runtimePlans.set(itemObj, [{ address: 0x20000100, size: 4, descriptor: true }]);
+        const execute = fake._execute.bind(fake);
+        fake._execute = (cmd) =>
+            cmd.startsWith("emberprobe_read_scatter {")
+                ? { ok: false, response: "scatter memory read failed (-4)" }
+                : execute(cmd);
+        await assert.rejects(
+            session._sampleRuntimeItem(itemObj, null, { bytes: 0, commands: 0, deadline: Date.now() + 1000 }),
+            /scatter memory read failed/
+        );
+        assert.strictEqual(session._runtimePlans.has(itemObj), false, "faulting prefetch plan is evicted");
+    } finally {
+        await close(stalePlan);
+    }
     for (const detection of [false, true]) {
         const f = await fixture();
         try {

@@ -482,7 +482,10 @@ class MainViewProvider {
             this._connectedProbes
                 .refresh()
                 .catch((error) => console.error("Probe inventory check failed:", error.message));
-        if (!samplingSpeedOnly || (samplingSpeedChanged && !this._sampling.savingSamplingSpeed))
+        if (
+            !samplingSpeedOnly ||
+            (samplingSpeedChanged && this._sampling.shouldClearAdaptiveSpeedOnConfigChange(samplingSpeedOnly))
+        )
             this._sampling.clearAdaptiveSpeedMemory();
         this._sampling.broadcastSamplingSpeedState();
         if (samplingSpeedChanged && (this._sampling.session || this._sampling.starting))
@@ -1370,6 +1373,7 @@ class MainViewProvider {
             await this._context.workspaceState.update(CACHE_KEYS.elfPath, validation.cleanWindowsPath(result.elf));
         if (writeDebugger) await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
         if (writeMcu) await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
+        if (writeDebugger || writeMcu) this.connectionConfigurationChanged();
         if (writeElf) await this._elfView.refreshBindings();
         await this.updateView();
         if (writeDebugger) await this._connectedProbes.refresh();

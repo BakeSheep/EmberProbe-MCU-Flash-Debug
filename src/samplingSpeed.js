@@ -248,8 +248,15 @@ function isBatchSyntaxError(error) {
     return /(?:invalid command name|unknown command)\s+["']?(?:join|list)/i.test(String(error?.message || ""));
 }
 
-function resetSessionMetrics(session, frameDurationMs = null) {
-    session._warmUp(frameDurationMs);
+const LINK_DIAGNOSTIC_CODES = new Set([
+    "OPENOCD_MEMORY_RESPONSE_ERROR",
+    "LIVE_MEMORY_UNAVAILABLE",
+    "LIVE_MEMORY_UNSUPPORTED",
+    "LIVE_TARGET_POLL_FAILED"
+]);
+
+function resetSessionMetrics(session, frameDurationMs = null, retimePlan = true) {
+    session._warmUp(frameDurationMs, retimePlan);
     session._pollFailureSince = null;
     session._pollFailureCount = 0;
 }
@@ -386,7 +393,7 @@ class SamplingSpeedTuner {
         const steppingDown = this.hasPendingStepDown();
         const frameDurationMs = steppingDown ? null : await this.tune(session);
         const changed = steppingDown ? await this.stepDown(session) : previousKhz !== this.effectiveKhz;
-        if (changed || frameDurationMs != null) resetSessionMetrics(session, frameDurationMs);
+        if (changed || frameDurationMs != null) resetSessionMetrics(session, frameDurationMs, false);
         if (!steppingDown || changed) {
             if (session.samplingEnabled) session._status?.({ key: "sb.sampling" });
         }
@@ -557,7 +564,7 @@ class SamplingSpeedTuner {
                     epoch === session.sampleEpoch &&
                     ok === watch.length &&
                     !this._tentativeError &&
-                    samples.every((sample) => !sample.diagnostic),
+                    samples.every((sample) => !LINK_DIAGNOSTIC_CODES.has(sample.diagnostic?.code)),
                 durationMs: this.clock.monotonicMs() - start
             };
         } catch (error) {
@@ -627,26 +634,29 @@ class SamplingSpeedTuner {
     }
 
     async _restoreSpeed(session, targetKhz, { expectedCpuid, readCmd }, deadline) {
-        const remainingMs = Math.floor(deadline - this.clock.monotonicMs());
-        if (remainingMs <= 0 || !(await ensureConnected(session, remainingMs))) return false;
-        this._lastReduced = null;
-        this._tentativeError = null;
+        const wasProbing = this.probingActive;
         this.probingActive = true;
         try {
+            const remainingMs = Math.floor(deadline - this.clock.monotonicMs());
+            if (remainingMs <= 0 || !(await ensureConnected(session, remainingMs))) return false;
+            this._lastReduced = null;
+            this._tentativeError = null;
             const speed = parseAdapterSpeedKhz(
                 await this._probeBefore(session, `adapter speed ${targetKhz}`, deadline)
             );
             if (!speed || this._resolveEffectiveKhz(targetKhz, speed) !== targetKhz) return false;
+            this._tentativeError = null;
             const reply = await this._probeBefore(session, `${readCmd} 0x${CPUID_ADDRESS.toString(16)} 32 1`, deadline);
             return !this._tentativeError && verifyWordElement(reply, expectedCpuid);
         } catch {
             return false;
         } finally {
-            this.probingActive = false;
+            this.probingActive = wasProbing;
         }
     }
 
     async _probeCandidate(session, khz, plan, deadline, timedCount, testedEffective) {
+        const wasProbing = this.probingActive;
         this._lastReduced = null;
         this._tentativeError = null;
         this.probingActive = true;
@@ -674,7 +684,7 @@ class SamplingSpeedTuner {
                 frameDurationMs: step.frameDurationMs
             };
         } finally {
-            this.probingActive = false;
+            this.probingActive = wasProbing;
         }
     }
 
@@ -778,164 +788,169 @@ class SamplingSpeedTuner {
         let plateauCount = 0;
         let stopReason = "";
 
-        while (queue.length) {
-            if (session.stopped || session.connectionFailed) return;
-            if (frame && frame.epoch !== session.sampleEpoch) {
-                this._tunedWatch = null;
-                stopReason = "plan_changed";
-                break;
-            }
-            if (deadline - this.clock.monotonicMs() < 1) {
-                stopReason = "budget_reached";
-                break;
-            }
-            const entry = queue.shift();
-            const khz = entry.khz;
-            if (attemptedRequested.has(khz)) continue;
-            if (this._hardMaxKhz !== null && khz > this._hardMaxKhz && testedEffective.has(this._hardMaxKhz)) {
-                stopReason = "driver_clamped";
-                break;
-            }
-            attemptedRequested.add(khz);
-
-            let probe;
-            try {
-                probe = await this._probeCandidate(
-                    session,
-                    khz,
-                    baseline.plan,
-                    deadline,
-                    baseline.timedCount,
-                    testedEffective
-                );
-            } catch (error) {
-                if (error.code !== TUNING_BUDGET_EXHAUSTED) throw error;
-                currentEffectiveKhz = null;
-                stopReason = "budget_reached";
-                break;
-            }
-            if (session.stopped || session.connectionFailed) return;
-            if (frame && frame.epoch !== session.sampleEpoch) {
-                this._tunedWatch = null;
-                currentEffectiveKhz = null;
-                stopReason = "plan_changed";
-                break;
-            }
-            if (probe.status === "duplicate") {
-                currentReportedKhz = probe.reportedKhz;
-                currentEffectiveKhz = probe.effectiveKhz;
-                if (this._hardMaxKhz !== null && khz >= this._hardMaxKhz) {
+        this.probingActive = true;
+        try {
+            while (queue.length) {
+                if (session.stopped || session.connectionFailed) return;
+                if (frame && frame.epoch !== session.sampleEpoch) {
+                    this._tunedWatch = null;
+                    stopReason = "plan_changed";
+                    break;
+                }
+                if (deadline - this.clock.monotonicMs() < 1) {
+                    stopReason = "budget_reached";
+                    break;
+                }
+                const entry = queue.shift();
+                const khz = entry.khz;
+                if (attemptedRequested.has(khz)) continue;
+                if (this._hardMaxKhz !== null && khz > this._hardMaxKhz && testedEffective.has(this._hardMaxKhz)) {
                     stopReason = "driver_clamped";
                     break;
                 }
-                continue;
-            }
-            const rejected = probe.status === "rejected";
-            const stepEffective = rejected ? khz : probe.effectiveKhz;
-            currentReportedKhz = rejected ? currentReportedKhz : probe.reportedKhz;
-            currentEffectiveKhz = rejected ? null : probe.effectiveKhz;
-            this.testedSteps.push({
-                requestedKhz: khz,
-                effectiveKhz: stepEffective,
-                medianMs: rejected ? null : probe.medianMs,
-                ok: probe.status === "ok"
-            });
-            if (rejected || probe.status === "failed") {
-                // A failed benchmark can leave the adapter at an unverified speed even if the setter returned an error.
-                currentEffectiveKhz = null;
-                stopReason = rejected ? "driver_rejected" : "stability_limit";
-                if (!entry.refined) {
-                    const mid = midpointCandidateKhz(lastGoodRequestedKhz, khz);
-                    if (mid && !attemptedRequested.has(mid)) {
-                        if (await this._restoreSpeed(session, best.effectiveKhz, baselineInfo, deadline)) {
-                            currentEffectiveKhz = best.effectiveKhz;
-                            currentReportedKhz = best.effectiveKhz;
-                            queue = [{ khz: mid, refined: true }];
-                            stopReason = "";
-                            continue;
-                        }
-                        stopReason = deadline - this.clock.monotonicMs() < 1 ? "budget_reached" : "restore_failed";
+                attemptedRequested.add(khz);
+
+                let probe;
+                try {
+                    probe = await this._probeCandidate(
+                        session,
+                        khz,
+                        baseline.plan,
+                        deadline,
+                        baseline.timedCount,
+                        testedEffective
+                    );
+                } catch (error) {
+                    if (error.code !== TUNING_BUDGET_EXHAUSTED) throw error;
+                    currentEffectiveKhz = null;
+                    stopReason = "budget_reached";
+                    break;
+                }
+                if (session.stopped || session.connectionFailed) return;
+                if (frame && frame.epoch !== session.sampleEpoch) {
+                    this._tunedWatch = null;
+                    currentEffectiveKhz = null;
+                    stopReason = "plan_changed";
+                    break;
+                }
+                if (probe.status === "duplicate") {
+                    currentReportedKhz = probe.reportedKhz;
+                    currentEffectiveKhz = probe.effectiveKhz;
+                    if (this._hardMaxKhz !== null && khz >= this._hardMaxKhz) {
+                        stopReason = "driver_clamped";
+                        break;
                     }
+                    continue;
                 }
-                break;
-            }
+                const rejected = probe.status === "rejected";
+                const stepEffective = rejected ? khz : probe.effectiveKhz;
+                currentReportedKhz = rejected ? currentReportedKhz : probe.reportedKhz;
+                currentEffectiveKhz = rejected ? null : probe.effectiveKhz;
+                this.testedSteps.push({
+                    requestedKhz: khz,
+                    effectiveKhz: stepEffective,
+                    medianMs: rejected ? null : probe.medianMs,
+                    ok: probe.status === "ok"
+                });
+                if (rejected || probe.status === "failed") {
+                    // A failed benchmark can leave the adapter at an unverified speed even if the setter returned an error.
+                    currentEffectiveKhz = null;
+                    stopReason = rejected ? "driver_rejected" : "stability_limit";
+                    if (!entry.refined) {
+                        const mid = midpointCandidateKhz(lastGoodRequestedKhz, khz);
+                        if (mid && !attemptedRequested.has(mid)) {
+                            if (await this._restoreSpeed(session, best.effectiveKhz, baselineInfo, deadline)) {
+                                currentEffectiveKhz = best.effectiveKhz;
+                                currentReportedKhz = best.effectiveKhz;
+                                queue = [{ khz: mid, refined: true }];
+                                stopReason = "";
+                                continue;
+                            }
+                            stopReason = deadline - this.clock.monotonicMs() < 1 ? "budget_reached" : "restore_failed";
+                        }
+                    }
+                    break;
+                }
 
-            lastGoodRequestedKhz = khz;
-            if (testedEffective.has(probe.effectiveKhz)) {
-                stopReason = "driver_clamped";
-                break;
-            }
-            testedEffective.add(probe.effectiveKhz);
-            const previous = verifiedSteps.at(-1);
-            const step = {
-                requestedKhz: khz,
-                effectiveKhz: probe.effectiveKhz,
-                medianMs: probe.medianMs,
-                frameDurationMs: probe.frameDurationMs
-            };
-            verifiedSteps.push(step);
-            if (frame && step.frameDurationMs <= frameBudgetMs) {
-                best = step;
-                stopReason = "target_reached";
-                break;
-            }
-            if (
-                isMeaningfulImprovement(best.medianMs, step.medianMs) &&
-                isMeaningfulImprovement(previous.medianMs, step.medianMs)
-            ) {
-                best = step;
-                plateauCount = 0;
-            } else if (isSignificantSlowdown(best.medianMs, probe.medianMs)) {
-                stopReason = "slowdown";
-                break;
-            } else if (++plateauCount >= MAX_PLATEAU_STEPS) {
-                stopReason = "plateau";
-                break;
-            }
-            if (this._hardMaxKhz !== null && probe.effectiveKhz >= this._hardMaxKhz) {
-                stopReason = "driver_clamped";
-                break;
-            }
-        }
-
-        if (session.stopped || session.connectionFailed) return;
-        let locked = best;
-        if (
-            currentEffectiveKhz !== best.effectiveKhz ||
-            currentReportedKhz !== best.effectiveKhz ||
-            !session.tcl.connected
-        ) {
-            const recoveryDeadline = this.clock.monotonicMs() + this._budgetMs();
-            const restored =
-                stopReason !== "restore_failed" &&
-                (await this._restoreSpeed(session, best.effectiveKhz, baselineInfo, recoveryDeadline));
-            if (session.stopped || session.connectionFailed) return;
-            if (!restored) {
+                lastGoodRequestedKhz = khz;
+                if (testedEffective.has(probe.effectiveKhz)) {
+                    stopReason = "driver_clamped";
+                    break;
+                }
+                testedEffective.add(probe.effectiveKhz);
+                const previous = verifiedSteps.at(-1);
+                const step = {
+                    requestedKhz: khz,
+                    effectiveKhz: probe.effectiveKhz,
+                    medianMs: probe.medianMs,
+                    frameDurationMs: probe.frameDurationMs
+                };
+                verifiedSteps.push(step);
+                if (frame && step.frameDurationMs <= frameBudgetMs) {
+                    best = step;
+                    stopReason = "target_reached";
+                    break;
+                }
                 if (
-                    best.effectiveKhz === baseKhz ||
-                    !(await this._restoreSpeed(session, baseKhz, baselineInfo, recoveryDeadline))
+                    isMeaningfulImprovement(best.medianMs, step.medianMs) &&
+                    isMeaningfulImprovement(previous.medianMs, step.medianMs)
                 ) {
-                    this._abortUnverifiedSpeed(session);
-                    return;
+                    best = step;
+                    plateauCount = 0;
+                } else if (isSignificantSlowdown(best.medianMs, probe.medianMs)) {
+                    stopReason = "slowdown";
+                    break;
+                } else if (++plateauCount >= MAX_PLATEAU_STEPS) {
+                    stopReason = "plateau";
+                    break;
                 }
-                locked = verifiedSteps[0];
-                stopReason = "restore_failed";
+                if (this._hardMaxKhz !== null && probe.effectiveKhz >= this._hardMaxKhz) {
+                    stopReason = "driver_clamped";
+                    break;
+                }
             }
-        }
-        const chain = [];
-        for (const step of verifiedSteps) {
-            if (step.effectiveKhz <= locked.effectiveKhz && !chain.includes(step.effectiveKhz)) {
-                chain.push(step.effectiveKhz);
+
+            if (session.stopped || session.connectionFailed) return;
+            let locked = best;
+            if (
+                currentEffectiveKhz !== best.effectiveKhz ||
+                currentReportedKhz !== best.effectiveKhz ||
+                !session.tcl.connected
+            ) {
+                const recoveryDeadline = this.clock.monotonicMs() + this._budgetMs();
+                const restored =
+                    stopReason !== "restore_failed" &&
+                    (await this._restoreSpeed(session, best.effectiveKhz, baselineInfo, recoveryDeadline));
+                if (session.stopped || session.connectionFailed) return;
+                if (!restored) {
+                    if (
+                        best.effectiveKhz === baseKhz ||
+                        !(await this._restoreSpeed(session, baseKhz, baselineInfo, recoveryDeadline))
+                    ) {
+                        this._abortUnverifiedSpeed(session);
+                        return;
+                    }
+                    locked = verifiedSteps[0];
+                    stopReason = "restore_failed";
+                }
             }
+            const chain = [];
+            for (const step of verifiedSteps) {
+                if (step.effectiveKhz <= locked.effectiveKhz && !chain.includes(step.effectiveKhz)) {
+                    chain.push(step.effectiveKhz);
+                }
+            }
+            chain.sort((a, b) => a - b);
+            this.verifiedChain = chain.length ? chain : [baseKhz];
+            this._chainIndex = this.verifiedChain.length - 1;
+            this.effectiveKhz = locked.effectiveKhz;
+            this.requestedKhz = locked.requestedKhz;
+            this.state = locked.effectiveKhz > baseKhz ? "tuned" : "unchanged";
+            this.reason = stopReason || (locked.effectiveKhz > baseKhz ? "fastest_verified" : "baseline_optimal");
+            return frame && frame.epoch === session.sampleEpoch ? locked.frameDurationMs : null;
+        } finally {
+            this.probingActive = false;
         }
-        chain.sort((a, b) => a - b);
-        this.verifiedChain = chain.length ? chain : [baseKhz];
-        this._chainIndex = this.verifiedChain.length - 1;
-        this.effectiveKhz = locked.effectiveKhz;
-        this.requestedKhz = locked.requestedKhz;
-        this.state = locked.effectiveKhz > baseKhz ? "tuned" : "unchanged";
-        this.reason = stopReason || (locked.effectiveKhz > baseKhz ? "fastest_verified" : "baseline_optimal");
-        return frame && frame.epoch === session.sampleEpoch ? locked.frameDurationMs : null;
     }
 
     canStepDown() {

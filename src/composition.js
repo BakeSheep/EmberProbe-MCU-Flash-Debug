@@ -306,6 +306,7 @@ function createWorkspaceServices(host, context, vscode, fullAccess) {
         isSafeCfg: openocdRunner.isSafeCfg,
         beforeChange: (values) => host._assertConnectionEditable(values),
         onChanged: async () => {
+            host.connectionConfigurationChanged();
             await host._elfView.refreshBindings();
             host.updateView();
             for (const entry of host._livePanels.values()) host._syncGraphTarget(entry);

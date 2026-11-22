@@ -188,8 +188,8 @@ class FakeOpenOcdServer {
                     const requested = Number(speedMatch[1]);
                     this._requestedSpeedKhz = requested;
                     const mapped = this.speedMap ? this.speedMap(requested) : null;
-                    if (mapped?.reject) return { ok: false, response: "unable to set adapter speed" };
                     if (mapped?.logLine) this.onSpeedLog?.(mapped.logLine);
+                    if (mapped?.reject) return { ok: false, response: "unable to set adapter speed" };
                     this.adapterSpeedKhz = mapped?.actualKhz ?? requested;
                     this._reportedSpeedKhz = mapped?.reportedKhz ?? this.adapterSpeedKhz;
                 }

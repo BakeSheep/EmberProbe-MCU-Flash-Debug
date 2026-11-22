@@ -1517,6 +1517,114 @@ function stlinkV3Table(requestedKhz) {
         }
     });
 
+    await scenario("CMSIS-DAP CMD_DAP_SWJ_CLOCK rejection and restore window logs do not abort tuning", async () => {
+        const ctx = await createTunedSession({
+            probe: "cmsis-dap.cfg",
+            initialKhz: 1000,
+            unlimited: true,
+            speedMap: (khz) => {
+                if (khz >= 14000) {
+                    return {
+                        reject: true,
+                        logLine: "Error: CMSIS-DAP command CMD_DAP_SWJ_CLOCK failed."
+                    };
+                }
+                return { actualKhz: khz };
+            },
+            speedReadBehavior: (actualKhz) => ({
+                advanceMs: Math.max(2, Math.round(48000 / Math.max(1000, actualKhz)))
+            })
+        });
+        try {
+            const origRestore = ctx.session._speedTuner._restoreSpeed.bind(ctx.session._speedTuner);
+            ctx.session._speedTuner._restoreSpeed = async (session, targetKhz, info, deadline) => {
+                ctx.session._fakeServerLog?.("Error: target communication error");
+                return origRestore(session, targetKhz, info, deadline);
+            };
+            await ctx.session.start();
+            assert.strictEqual(ctx.session.connectionFailed, false);
+            assert.strictEqual(ctx.disconnects.length, 0);
+            assert.strictEqual(ctx.session.stats().adaptiveSpeed.state, "tuned");
+            assert.strictEqual(ctx.session.stats().adapterSpeedKhz, 12000);
+        } finally {
+            await ctx.close();
+        }
+    });
+
+    await scenario("Startup tuning blocks premature _sampleTick and tolerates NULL pointer diagnostics", async () => {
+        const ptrWatch = [
+            {
+                name: "g_ptr.value",
+                address: RAM_BASE + 0x100,
+                size: 4,
+                type: "u32",
+                runtimeRanges: RAM_RANGES,
+                runtimeSegments: [{ kind: "member", name: "value" }],
+                runtimeLayout: {
+                    root: 0,
+                    types: [
+                        { kind: "pointer", byteSize: 4, target: 1 },
+                        { kind: "scalar", byteSize: 4, watchType: "u32" }
+                    ]
+                }
+            }
+        ];
+        const ctx = await createTunedSession({
+            probe: "cmsis-dap.cfg",
+            initialKhz: 1000,
+            unlimited: false,
+            watch: ptrWatch,
+            speedReadBehavior: (_actualKhz, requestedKhz) => ({
+                advanceMs: requestedKhz >= 4000 ? 10 : 40
+            })
+        });
+        try {
+            ctx.fake.seed(RAM_BASE + 0x100, [0, 0, 0, 0]);
+            let scheduledDuringStart = false;
+            ctx.session._scheduleNext = ManagedOpenOcdSession.prototype._scheduleNext.bind(ctx.session);
+            const origTune = ctx.session._speedTuner.tune.bind(ctx.session._speedTuner);
+            ctx.session._speedTuner.tune = async (session) => {
+                session.setIntervalMs(20);
+                scheduledDuringStart = session.timer !== null;
+                return origTune(session);
+            };
+            await ctx.session.start();
+            assert.strictEqual(scheduledDuringStart, false, "no tick timer scheduled while start() is still tuning");
+            assert.strictEqual(ctx.session.stats().adaptiveSpeed.state, "tuned");
+        } finally {
+            await ctx.close();
+        }
+    });
+
+    await scenario("Pre-cycle stepDown with MultiRatePlan does not emit an empty 0-item cycle", async () => {
+        const ctx = await createTunedSession({
+            probe: "cmsis-dap.cfg",
+            initialKhz: 1000,
+            unlimited: false,
+            speedReadBehavior: (_actualKhz, requestedKhz) => ({
+                advanceMs: requestedKhz >= 4000 ? 2 : 10
+            })
+        });
+        try {
+            await ctx.session.start();
+            ctx.session.setIntervalMs(20);
+            for (let i = 0; i < 4; i++) {
+                ctx.addMonoMs(100);
+                await ctx.session._sampleTick();
+            }
+            assert.strictEqual(ctx.session.effectiveIntervalMs, 20);
+            ctx.session._speedTuner.requestStepDown();
+            const batches = [];
+            ctx.session.handlers.onSample = (samples) => batches.push(samples);
+            ctx.addMonoMs(25);
+            await ctx.session._sampleTick();
+            assert.strictEqual(batches.length, 1);
+            assert.strictEqual(batches[0].length, 1, "due graph item is read immediately after pre-cycle stepDown");
+        } finally {
+            await ctx.close();
+        }
+    });
+
     console.log("Adaptive sampling speed tests passed");
 })().catch((error) => {
     console.error(error);

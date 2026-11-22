@@ -25,7 +25,7 @@ function isProbeCommunicationFailure(text) {
         /error (?:writing|reading) (?:usb )?data\b|hid_(?:write|read)(?:_timeout)?(?:\/|(?:\(\))?\s*(?::|failed|error))|libusb_error_(?:io|pipe)/i.test(
             output
         ) ||
-        /\berror (?:submitting usb (?:read|write)|handling usb events|reading adapter response)\b|\b(?:command write usb|usb write) timeout @\s*\d+|cmsis[-_]dap (?:command|transfer count) mismatch\b|cmsis[-_]dap command\b[^\n]*\bfailed\b/i.test(
+        /\berror (?:submitting usb (?:read|write)|handling usb events|reading adapter response)\b|\b(?:command write usb|usb write) timeout @\s*\d+|cmsis[-_]dap (?:command|transfer count) mismatch\b|cmsis[-_]dap command\b(?!\s+cmd_dap_swj_clock\b)[^\n]*\bfailed\b/i.test(
             output
         )
     );

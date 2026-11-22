@@ -122,6 +122,7 @@ class ManagedOpenOcdSession {
         // One-shot transactions keep their own plan; only target/connection changes invalidate them.
         this.targetEpoch = 0;
         this._reconnectPromise = null;
+        this._starting = false;
         this._startCompleted = false;
         this.scatterReads = false;
         this._scatterFailures = 0;
@@ -249,14 +250,18 @@ class ManagedOpenOcdSession {
         };
     }
 
-    _warmUp(frameDurationMs = null) {
+    _warmUp(frameDurationMs = null, retimePlan = true) {
         this._samplingThroughput.reset();
         const interval = this.unlimitedActive
             ? 0
             : frameDurationMs === null
               ? Math.max(100, this.targetIntervalMs)
               : intervalForReadCost(this.targetIntervalMs, frameDurationMs);
-        this.ratePlan?.retime(this.effectiveIntervalMs, interval);
+        if (retimePlan) this.ratePlan?.retime(this.effectiveIntervalMs, interval);
+        else if (this.ratePlan && interval !== this.effectiveIntervalMs) {
+            this.ratePlan.graphTicks = [];
+            this.ratePlan.sidebarTicks = [];
+        }
         this.effectiveIntervalMs = interval;
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
@@ -301,7 +306,7 @@ class ManagedOpenOcdSession {
 
     _scheduleNext(delayMs) {
         this._clearSamplingTimer();
-        if (this.tcl.held) return;
+        if (this.tcl.held || this._starting) return;
         if (!this.samplingEnabled || this.stopped || this._hostHold || !this.tcl.connected) return;
         if (this.unlimitedActive) {
             delayMs = 0;
@@ -496,7 +501,12 @@ class ManagedOpenOcdSession {
 
     async _ensureTclConnected(timeoutMs = 1000) {
         if (this.tcl.connected || this.stopped || this.connectionFailed) return;
-        this.tcl.attach(await this._connectWithRetry(clampInteger(this.options.port, 6666, 1, 65535), timeoutMs));
+        const sock = await this._connectWithRetry(clampInteger(this.options.port, 6666, 1, 65535), timeoutMs);
+        if (this.stopped || this.connectionFailed) {
+            sock.destroy();
+            return;
+        }
+        this.tcl.attach(sock);
     }
 
     _recordCycle(durationMs, success = true, timestamp = this.clock.now()) {
@@ -632,6 +642,7 @@ class ManagedOpenOcdSession {
 
         // If the child process exits while start() runs, _abortConnection rejects this promise through _startReject and
         // the caller reports it once, so onDisconnect and start() do not both notify.
+        this._starting = true;
         try {
             this.tcl.hold();
             await new Promise((resolve, reject) => {
@@ -644,11 +655,7 @@ class ManagedOpenOcdSession {
                     .then(() => this._connectWithRetry(port, 1000))
                     .then(async (sock) => {
                         if (this.stopped) {
-                            try {
-                                sock.destroy();
-                            } catch (e) {
-                                /* ignore */
-                            }
+                            sock.destroy();
                             reject(this.connectionError || new Error("OpenOCD exited during connection startup"));
                             return;
                         }
@@ -665,6 +672,8 @@ class ManagedOpenOcdSession {
                             ? await this._speedTuner.tune(this)
                             : null;
                         if (this.stopped) throw this.connectionError || new Error("Stopped");
+                        this._starting = false;
+                        this._startCompleted = true;
                         this._status({ key: "lw.connected" });
                         if (this._samplingRequested) {
                             this.samplingEnabled = true;
@@ -677,6 +686,7 @@ class ManagedOpenOcdSession {
                     .catch(reject);
             });
         } finally {
+            this._starting = false;
             this.tcl.release();
             this._startReject = null;
         }
@@ -864,11 +874,7 @@ class ManagedOpenOcdSession {
                 try {
                     const socket = await this._connectWithRetry(port, 400);
                     if (this.stopped || !this.server.child) {
-                        try {
-                            socket.destroy();
-                        } catch {
-                            /* ignore */
-                        }
+                        socket.destroy();
                         return false;
                     }
                     this.connectionFailed = false;
@@ -926,13 +932,7 @@ class ManagedOpenOcdSession {
             this._releaseTimerResolution();
             this.tcl.rejectAll(err);
             this.tcl.close();
-            if (this.connectingSocket && !this.connectingSocket.destroyed) {
-                try {
-                    this.connectingSocket.destroy();
-                } catch (e) {
-                    /* ignore */
-                }
-            }
+            this.connectingSocket?.destroy();
             this.connectingSocket = null;
             this._status({ key: "live.debugTclDegraded" });
             this._reconnectDebugTcl();
@@ -946,13 +946,7 @@ class ManagedOpenOcdSession {
         this._releaseTimerResolution();
         this.tcl.rejectAll(err);
         this.tcl.close();
-        if (this.connectingSocket && !this.connectingSocket.destroyed) {
-            try {
-                this.connectingSocket.destroy();
-            } catch (e) {
-                /* ignore */
-            }
-        }
+        this.connectingSocket?.destroy();
         this.connectingSocket = null;
         this.server.kill();
         // While start() is still running, rejecting its promise is the only notification, so onDisconnect does not
@@ -961,11 +955,8 @@ class ManagedOpenOcdSession {
             const reject = this._startReject;
             this._startReject = null;
             reject(err);
-        } else if (this.handlers.onDisconnect) {
-            this.handlers.onDisconnect(err);
-        } else {
-            this._error(err.message);
-        }
+        } else if (this.handlers.onDisconnect) this.handlers.onDisconnect(err);
+        else this._error(err.message);
     }
 
     async _detectScatter() {
@@ -1238,8 +1229,14 @@ class ManagedOpenOcdSession {
                 budget.bytes + bytes <= (budget.maxBytes || RUNTIME_CYCLE_BYTES) &&
                 budget.commands + commands <= (budget.maxReads || RUNTIME_CYCLE_READS)
             ) {
-                const blocks = await this._scatterRanges(plan, guard);
-                if (blocks) prefetched = plan.map((read, index) => ({ address: read.address, bytes: blocks[index] }));
+                try {
+                    const blocks = await this._scatterRanges(plan, guard);
+                    if (blocks)
+                        prefetched = plan.map((read, index) => ({ address: read.address, bytes: blocks[index] }));
+                } catch (error) {
+                    this._runtimePlans.delete(item);
+                    throw error;
+                }
             }
         }
         const reader = new RuntimeObjectReader(
@@ -1248,6 +1245,7 @@ class ManagedOpenOcdSession {
             () => this._assertReadGuard(guard),
             budget,
             {
+                clock: this.clock,
                 prefetched,
                 readMany: this.scatterReads ? (ranges) => this._scatterRanges(ranges, guard) : null
             }
@@ -1501,7 +1499,7 @@ class ManagedOpenOcdSession {
     }
 
     async _sampleTick(fromScheduler = false) {
-        if (this.tcl.held || this.tcl.probing) return;
+        if (this.tcl.held || this.tcl.probing || this._starting) return;
         if (!this.samplingEnabled || this.stopped || this._hostHold || !this.tcl.connected) return;
         if (!this.watch.length) return;
         if (!this._tryAcquireExclusive()) {
@@ -1610,13 +1608,7 @@ class ManagedOpenOcdSession {
         const stoppedError = new Error("采样Stopped");
         this._rejectExclusiveWaiters(stoppedError);
         this.tcl.rejectAll(stoppedError);
-        if (this.connectingSocket && !this.connectingSocket.destroyed) {
-            try {
-                this.connectingSocket.destroy();
-            } catch (e) {
-                /* ignore */
-            }
-        }
+        this.connectingSocket?.destroy();
         this.connectingSocket = null;
         const sendShutdown = this.tcl.shutdown();
         this._stopPromise = (async () => {

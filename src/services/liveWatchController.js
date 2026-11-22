@@ -492,6 +492,24 @@ class LiveWatchController {
     }
     clearAdaptiveSpeedMemory() {
         this.lastAdaptiveSpeedKhz = null;
+        this._savedSamplingSpeedKhz = null;
+    }
+    shouldClearAdaptiveSpeedOnConfigChange(samplingSpeedOnly = false) {
+        if (!samplingSpeedOnly) return true;
+        if (this.savingSamplingSpeed) return false;
+        if (this._savedSamplingSpeedKhz !== null && this._savedSamplingSpeedKhz !== undefined) {
+            const cfg = this._vscode?.workspace?.getConfiguration?.("emberprobe");
+            let current = 0;
+            try {
+                current = normalizeAdapterSpeed(cfg?.get?.("samplingAdapterSpeedKhz", 0) ?? 0);
+            } catch {
+                current = 0;
+            }
+            const expected = this._savedSamplingSpeedKhz;
+            this._savedSamplingSpeedKhz = null;
+            if (current === expected) return false;
+        }
+        return true;
     }
     samplingSpeedState() {
         const cfg = this._vscode?.workspace?.getConfiguration?.("emberprobe");
@@ -567,6 +585,7 @@ class LiveWatchController {
             this.lastManualSpeedKhz = targetKhz;
             await this.host._context.workspaceState.update(MANUAL_SAMPLING_SPEED_STATE_KEY, targetKhz);
         }
+        this._savedSamplingSpeedKhz = targetKhz;
         this.savingSamplingSpeed = true;
         try {
             await this._vscode.workspace
@@ -1007,6 +1026,7 @@ class LiveWatchController {
     }
     async _start(intervalMs, interactive, generation) {
         if (this.host._externalDebug?.active && this.host._debugBridge.hasSession) {
+            this.lastDisconnect = null;
             this.intent = true;
             this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, true);
             this.host._postConsumerStatuses(this.host._debugBridge.status());
@@ -1057,6 +1077,7 @@ class LiveWatchController {
         }
         if (generation !== this._startGeneration) return;
         {
+            this.lastDisconnect = null;
             this.intent = true;
             this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, true);
         }
@@ -1212,7 +1233,8 @@ class LiveWatchController {
                 }
             );
             this.session = session;
-            this.lastAdaptiveSpeedKhz = null;
+            this.clearAdaptiveSpeedMemory();
+            this.broadcastSamplingSpeedState();
             if (generation !== this._startGeneration) return;
             this.applySamplingPlan(session, this.activeReadPlan());
             this.session = session;
