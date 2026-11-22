@@ -3676,6 +3676,66 @@ async function remoteHistory() {
     await scenario("Zoom gesture, follow, sparse segment and time-label regressions", zoomRegressions);
     await scenario("Viewport arithmetic", viewportArithmetic);
     await scenario("Y fit modes, automatic stability, keyboard menu and view undo", fitAndUndo);
+    await scenario("Hiding a curve immediately refits automatic raw Y but preserves manual Y", async () => {
+        const clock = new FakeClock();
+        const page = render(
+            getLiveWatchContent({}, "en"),
+            {},
+            {
+                clock,
+                beforeParse(window) {
+                    window.performance.now = clock.now;
+                }
+            }
+        );
+        try {
+            const { window: w, document } = page;
+            const { chartState: chart } = w;
+            const host = chartHistoryHost(page);
+            const toggleLarge = () => document.querySelector('[data-reorder-key="large"] .curve-toggle').click();
+            page.send({
+                type: "watchList",
+                items: [
+                    { name: "small", type: "f32", address: 0x20000000, size: 4 },
+                    { name: "large", type: "f32", address: 0x20000004, size: 4 }
+                ]
+            });
+            page.send({ type: "liveStatus", running: true });
+            host.samples([
+                { name: "small", value: 1, t: 1000 },
+                { name: "small", value: 2, t: 2000 },
+                { name: "large", value: 1e6, t: 1000 },
+                { name: "large", value: 2e6, t: 2000 }
+            ]);
+            host.draw(clock.now());
+            assert.ok(chart.smoothFollowing);
+            assert.ok(chart.y.max > 2e6);
+            const x = { ...chart.x };
+
+            toggleLarge();
+            await clock.advance(16);
+            w.draw(clock.now());
+            assert.deepStrictEqual({ ...chart.y }, { min: 0.92, max: 2.08 }, "refit before the next history reply");
+            assert.deepStrictEqual({ ...chart.x }, x);
+            assert.equal(chart.autoY, true);
+
+            host.pump();
+            toggleLarge();
+            host.draw(clock.now());
+            w.viewportController.fit("fill", false);
+            host.draw(clock.now());
+            const manualY = { ...chart.y };
+            assert.ok(manualY.max > 2e6);
+
+            toggleLarge();
+            await clock.advance(16);
+            w.draw(clock.now());
+            assert.deepStrictEqual({ ...chart.y }, manualY);
+            assert.equal(chart.autoY, false);
+        } finally {
+            page.close();
+        }
+    });
     await scenario("Timeline split-button short/long left/right gestures and cancellation", fitButtonGestures);
     await scenario("Drag, overscan, overview, atomic follow, revision throttling and memoization", viewportRequests);
     await scenario(

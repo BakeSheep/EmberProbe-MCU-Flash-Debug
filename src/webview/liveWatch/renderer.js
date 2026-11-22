@@ -485,6 +485,7 @@ function toggleCurve(name) {
     analysis.previousHidden = analysis.focused = null;
     state.hidden[name] = !state.hidden[name];
     if (chartState.heldFitX && chartState.autoY) chartState.fitRequested = true;
+    chartState.fastDirty = true;
     saveUi();
     renderVars();
 }
@@ -1440,7 +1441,7 @@ var chartState = {
     pointer: null,
     drag: null,
     geometry: null,
-    visibleKey: "",
+    visibleKey: "[]",
     fastDirty: false
 };
 function resetChartView() {
@@ -1460,7 +1461,6 @@ function resetChartView() {
     chartState.timelineDrag = false;
     chartState.pointer = null;
     chartState.drag = null;
-    chartState.visibleKey = "";
     chartState.curveGeometry = null;
     chartState.prepared = null;
     chartState.hits = [];
@@ -1641,8 +1641,8 @@ canvas.addEventListener("click", function (e) {
         return;
     if (Inspection.hit(chartState.curveGeometry.value, point).length) freezeChart();
 });
-function chartData(range, width) {
-    return historyViewport.compose(range, width);
+function chartData(range, width, config) {
+    return historyViewport.compose(range, width, config);
 }
 function retainedTimeBounds() {
     return state.remoteHistory.status && state.remoteHistory.status.bounds;
@@ -1840,7 +1840,8 @@ function draw(now) {
         canvasHeight = size.h;
     if (!canvasWidth || !canvasHeight) return;
     var hasBounds = syncTimeBounds(),
-        series = chartData(chartState.x, canvasWidth),
+        config = chartHistoryConfig(),
+        series = chartData(chartState.x, canvasWidth, config),
         bodyStyle = viewportController.themeStyle();
     chartState.selectedName = chartState.hoverName;
     window.EmberProbeChart.paint({
@@ -1851,6 +1852,7 @@ function draw(now) {
         jitterBands,
         backgroundIcon: chartBackground.bitmap(bodyStyle),
         series: seriesGain.project(series),
+        visibleNames: config.names,
         hasBounds,
         pixelRatio: window.devicePixelRatio * EmberProbePageZoom.scale(document),
         style: bodyStyle,
@@ -1873,23 +1875,13 @@ function draw(now) {
     var loadingText = t("lw.historyLoading");
     if (historyLoading.textContent !== loadingText) historyLoading.textContent = loadingText;
     historyLoading.hidden =
-        !state.watch.some(function (item) {
-            return !state.hidden[item.name] && !isComposite(item);
-        }) ||
+        !config.names.length ||
         !(
             state.remoteHistory.operation ||
-            ([state.remoteHistory.pending, state.remoteHistory.inFlight].some(function (request) {
-                return request && request.configKey === chartHistoryConfig().configKey;
-            }) &&
-                state.watch.some(function (item) {
-                    return (
-                        !state.hidden[item.name] &&
-                        !isComposite(item) &&
-                        !series.some(function (part) {
-                            return part.item.name === item.name && part.arr.length;
-                        })
-                    );
-                }))
+            ([state.remoteHistory.pending, state.remoteHistory.inFlight].some(
+                (request) => request?.configKey === config.configKey
+            ) &&
+                config.names.some((name) => !series.some((part) => part.item.name === name && part.arr.length)))
         );
     if (!historyLoading.hidden && !series.length) {
         $("chartEmpty").textContent = loadingText;
@@ -2387,7 +2379,6 @@ $("norm").onclick = function () {
     chartState.autoY = mode.autoY;
     chartState.fitMode = mode.fitMode || "fill";
     chartState.fitRequested = mode.autoY;
-    chartState.visibleKey = "";
     $("norm").classList.toggle("ghost", !norm);
     saveUi();
     chartState.fastDirty = true;

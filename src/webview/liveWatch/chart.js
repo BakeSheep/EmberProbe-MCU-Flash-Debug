@@ -55,6 +55,7 @@
         jitterBands,
         backgroundIcon,
         series,
+        visibleNames,
         hasBounds,
         pixelRatio,
         style,
@@ -74,6 +75,13 @@
     }) {
         const $ = (id) => elements[id];
         const sourceSeries = series;
+        // Selection changes invalidate the fit independently of history commits and curve segments.
+        const visibleKey = visibleNames && JSON.stringify(visibleNames.slice().sort());
+        if (visibleKey != null && chartState.visibleKey !== visibleKey) {
+            chartState.visibleKey = visibleKey;
+            chartState.rangeStats = chartState.fitHold = null;
+            if (!norm && chartState.autoY) chartState.fitRequested = true;
+        }
         const heldX = chartState.heldFitX;
         if (chartState.fitRequested || (heldX && (heldX.min !== chartState.x?.min || heldX.max !== chartState.x?.max)))
             chartState.heldFitX = null;
@@ -214,20 +222,8 @@
                 ph = Math.max(10, h - padT - padB),
                 total = 0,
                 vMin = Infinity,
-                vMax = -Infinity,
-                visibleKey =
-                    (norm ? "n:" : "r:") +
-                    String(prepared.origin) +
-                    ":" +
-                    series
-                        .map(function (s) {
-                            return s.item.name;
-                        })
-                        .join("|");
+                vMax = -Infinity;
             chartState.geometry = { padL: padL, padR: padR, padT: padT, padB: padB, pw: pw, ph: ph, w: w, h: h };
-            if (chartState.visibleKey !== visibleKey) {
-                chartState.visibleKey = visibleKey;
-            }
             const statsKey = chartState.smoothFollowing
                 ? chartState.smoothCommit
                 : JSON.stringify([norm, chartState.x]);

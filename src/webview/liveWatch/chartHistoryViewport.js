@@ -22,10 +22,9 @@
     }) {
         const history = state.remoteHistory;
 
-        function request(range, width) {
+        function request(range, width, config = configFor()) {
             history.refreshAt = Infinity;
             if (clearPending()) return;
-            const config = configFor();
             if (!config.names.length) {
                 history.view = history.overview = null;
                 history.pending = history.target = null;
@@ -197,11 +196,11 @@
             return parts;
         }
 
-        function compose(range, width) {
-            request(range, width);
+        function compose(range, width, config = configFor()) {
+            request(range, width, config);
             // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
             // arrives, but only for curves whose type/address identity is unchanged.
-            const configKey = configFor().configKey,
+            const { configKey } = config,
                 view = history.view,
                 overview = history.overview,
                 cached = history.composed,
