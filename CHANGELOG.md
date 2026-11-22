@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-11-22
+
 ### 采样与波形 / Sampling and waveforms
 
 - 独立限速采样优先维持波形频率，侧栏专属变量在探针有空档时刷新。波形与侧栏同时采样时，自适应时钟按波形读计划选频，侧栏改动影响该计划时重新评估。采样周期保留小数毫秒，速率按有效新读数计算。
@@ -14,10 +16,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 降低 Windows 采样 Worker 的等待开销。自动纵轴动画复用曲线和包络数据，拖动时只查询视口所需的极值，数据停止推进后停止重绘。
 - Reduce sampling worker idle CPU on Windows. Reuse curves and envelopes during vertical-axis animation, limit range calculations to the viewport while dragging, and stop redrawing once the view settles.
 
+- 原值模式下切换曲线显隐时，自动纵轴按当前可见曲线重新适配。
+- In raw-value mode, the automatic Y axis refits when curve visibility changes.
+
 ### 变量与调试 / Variables and debugging
 
 - 侧栏 ELF 变量列表和波形导入弹窗按嵌套树逐层展开结构体、数组和运行时对象，支持勾选分支批量添加成员或单独添加子分支，并在查看列表中按所选分支归组展示；嵌套运行时容器保留自身配方与类型名，移除和拖拽同步联动其子项。
 - Expand structs, arrays, and runtime objects as nested member trees in the sidebar ELF picker and waveform import dialog, with branch selection, grouped branch watch cards, preserved nested runtime container recipes and types, and linked child removal and reordering.
+
+- 变量选择器按页加载搜索结果和数组成员，观察卡片在展开时按需渲染成员，减少浏览大型 ELF 和容器时的等待。
+- Load variable search results and array members in pages and render watch card members on expansion to improve responsiveness with large ELF files and containers.
 
 - 修复跨编译单元的 DWARF 描述仅缺少模板参数记录时，同一 C++ 对象被判为类型歧义、成员无法展开的问题。实际布局或已知实参冲突仍会停用绑定。
 - Fix rejected C++ member expansion when one DWARF description omits template parameter records for the same object across compilation units. Conflicting layouts or known arguments still block binding.
@@ -38,6 +46,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 增加 1 MiB 版 AT32F403A/F407/F407A 和 F435/F437 的双 Bank 配置、工程识别和整镜像预检。
 - Add dual-bank target configurations, project detection, and complete image validation for supported 1 MiB AT32F403A/F407/F407A and F435/F437 parts.
+
+### 分发 / Distribution
+
+- 稳定版发布流程将同一份经过校验的 VSIX 发布到 GitHub、VS Code Marketplace 和 Open VSX。
+- The stable release workflow publishes the same verified VSIX to GitHub, VS Code Marketplace, and Open VSX.
 
 ## [0.9.3] - 2026-11-20
 
