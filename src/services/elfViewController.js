@@ -34,7 +34,11 @@ class ElfViewController {
         try {
             if (this.host._context.workspaceState.get(CACHE_KEYS.elfPath)) {
                 const result = await this.host._elfService.ready();
-                await this.hydrateSelectedLayouts(result);
+                const version = this.version(result);
+                const generation = this.host._elfService.generation;
+                await this.hydrateSelectedLayouts(result, (name, layout) =>
+                    this.postMemberLayout(name, layout, version, generation)
+                );
                 await this.rebindWatchLists(result.symbols);
             }
         } finally {
@@ -57,7 +61,10 @@ class ElfViewController {
     // Name resolution failures are left to the later planning step.
     async prepareLayouts(requests, options = {}) {
         const result = await this.host._elfService.ready();
+        const version = this.version(result);
+        const generation = this.host._elfService.generation;
         const resolveSymbol = elfSymbols.createSymbolResolver(result.symbols);
+        const broadcast = options.broadcast ? new Set() : null;
         for (const request of Array.isArray(requests) ? requests : []) {
             const name = typeof request === "string" ? request : request?.name;
             const parsed = elfSymbols.parseMemberPath(name);
@@ -68,15 +75,35 @@ class ElfViewController {
             } catch {
                 continue;
             }
-            if ((!symbol.isComposite && !symbol.hasRuntimeLayout) || symbol.compositeLayout) continue;
-            try {
-                await this.host._elfService.layout(symbol.name);
-            } catch (error) {
-                if (!options.layoutErrors) throw error;
-                options.layoutErrors.set(symbol.name, error);
+            if (!symbol.isComposite && !symbol.hasRuntimeLayout) continue;
+            let layout = symbol.compositeLayout;
+            if (!layout) {
+                try {
+                    layout = await this.host._elfService.layout(symbol.name);
+                } catch (error) {
+                    if (!options.layoutErrors) throw error;
+                    options.layoutErrors.set(symbol.name, error);
+                    continue;
+                }
+            }
+            if (broadcast && parsed?.segments.length && layout && !broadcast.has(symbol.name)) {
+                broadcast.add(symbol.name);
+                this.postMemberLayout(symbol.name, layout, version, generation);
             }
         }
         return result;
+    }
+    postMemberLayout(name, layout, version, generation) {
+        if (generation !== this.host._elfService?.generation) return;
+        const message = {
+            type: "compositeLayoutResult",
+            name,
+            version,
+            layout,
+            ...this.layoutExpansionSnapshot(name)
+        };
+        this.host._webviewView?.webview.postMessage(message);
+        for (const entry of this.host._livePanels?.values() || []) if (entry.ready) entry.post(message);
     }
     async resolveLiveVariable(message, post) {
         const service = this.host._elfService;
@@ -131,6 +158,7 @@ class ElfViewController {
             }
         }
         if (generation !== service.generation || version !== this.version(service.cache)) return;
+        const root = found;
         if (path) {
             const name = found.name + message.name.trim().slice(path.base.length);
             const entry = runtimeWatchEntry(name, found, path.segments);
@@ -138,6 +166,7 @@ class ElfViewController {
             found = entry;
         }
         post({ type: "addResolved", ...reply, symbol: found });
+        if (path && root.compositeLayout) this.postMemberLayout(root.name, root.compositeLayout, version, generation);
     }
     version(result) {
         const sha256 = result?.elf?.sha256 || "";
@@ -240,7 +269,10 @@ class ElfViewController {
             sidebarPost({ type: "availableTypesDone", version, warnings: displayWarnings(result) });
             for (const post of graphPosts)
                 post({ type: "variableTypesDone", version, warnings: displayWarnings(result) });
-            this.rebindPromise = this.hydrateSelectedLayouts(result)
+            const generation = this.host._elfService?.generation;
+            this.rebindPromise = this.hydrateSelectedLayouts(result, (name, layout) =>
+                this.postMemberLayout(name, layout, version, generation)
+            )
                 .then(() => this.rebindWatchLists(result.symbols))
                 .then(() => {
                     this.host._syncSidebarTarget(sidebarPost, true);
@@ -264,15 +296,18 @@ class ElfViewController {
                 });
         }
     }
-    async hydrateSelectedLayouts(result) {
+    async hydrateSelectedLayouts(result, onMemberLayout) {
         const names = new Set();
+        const memberRoots = new Set();
         const keys = [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList, CACHE_KEYS.watchList];
         for (const entry of this.host._livePanels.values()) keys.push(entry.watchKey);
         for (const key of keys) {
             for (const item of this.host._context.workspaceState.get(key) || []) {
                 const parsed = elfSymbols.parseMemberPath(item?.name);
-                if (parsed) names.add(parsed.base);
-                else if (item?.name) names.add(item.name);
+                if (parsed) {
+                    names.add(parsed.base);
+                    if (parsed.segments.length && key !== CACHE_KEYS.sidebarWriteList) memberRoots.add(parsed.base);
+                } else if (item?.name) names.add(item.name);
             }
         }
         const byName = new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
@@ -280,7 +315,8 @@ class ElfViewController {
             const symbol = byName.get(name);
             if (!symbol?.isComposite && !symbol?.hasRuntimeLayout) continue;
             try {
-                await this.host._elfService.layout(name);
+                const layout = await this.host._elfService.layout(name);
+                if (layout && memberRoots.has(name)) onMemberLayout?.(name, layout);
             } catch (error) {
                 result.warnings.push(`${symbol.displayName || name}: ${error.message}`);
             }

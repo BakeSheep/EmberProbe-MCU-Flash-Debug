@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const zlib = require("zlib");
+const { scenario } = require("./helpers/scenario");
 const dwarf = require("../src/dwarf");
 const elf = require("../src/elfSymbols");
 const { ElfService } = require("../src/services/elfService");
@@ -70,6 +71,10 @@ function setup(sidebar, lang, initialState = {}) {
             if (!sidebar) view.document.getElementById("import").click();
             view.send({ type: sidebar ? "availableVariables" : "variablesList", symbols });
             view.document.querySelector(sidebar ? ".av-arrow" : ".imp-arrow").click();
+        },
+        expandPickerBranches() {
+            const arrow = () => view.document.querySelector(".picker-branch button[aria-expanded=false]");
+            while (arrow()) arrow().click();
         },
         raw(name = "motor") {
             view.document.querySelector('.raw-members-toggle[data-variable-name="' + name + '"]').click();
@@ -226,10 +231,11 @@ for (const version of [4, 5]) {
                     );
 
                     view.variables(symbols.filter((symbol) => ["motor", "counterPtr"].includes(symbol.name)));
+                    view.expandPickerBranches();
                     assert.strictEqual(view.document.querySelectorAll(view.listSelector).length, 12);
                     assert.ok(
                         [...view.document.querySelectorAll(sidebar ? ".av-leaf-name" : ".imp-leaf-name")].some(
-                            (cell) => cell.textContent === ".state"
+                            (cell) => cell.textContent === "state"
                         )
                     );
                     const search = view.document.getElementById(sidebar ? "varSearch" : "impFilter");
@@ -244,6 +250,7 @@ for (const version of [4, 5]) {
                     search.dispatchEvent(new view.window.Event("input"));
 
                     view.raw();
+                    view.expandPickerBranches();
                     assert.strictEqual(view.document.querySelectorAll(view.rowSelector).length, 26);
                     assert.strictEqual(view.document.querySelectorAll(view.listSelector).length, 26);
                     assert.ok(view.row(managerPath), "raw expansion restores the manager row");
@@ -305,6 +312,57 @@ for (const version of [4, 5]) {
             view.close();
         }
     }
+
+    scenario(
+        `DWARF ${version}: summarized members of a pointer-bearing object without STL stay top-level scalars`,
+        () => {
+            const stateLeaf = leaf(statePath);
+            const callbackLeaf = leaf(callbackPath);
+            const watched = [
+                {
+                    name: statePath,
+                    displayName: "motor.state",
+                    address: stateLeaf.address,
+                    size: 4,
+                    type: stateLeaf.type
+                },
+                {
+                    name: callbackPath,
+                    displayName: "motor.callback",
+                    address: callbackLeaf.address,
+                    size: 4,
+                    type: callbackLeaf.type,
+                    isPointer: true,
+                    typeName: callbackLeaf.typeName
+                }
+            ];
+            for (const sidebar of [false, true]) {
+                const view = setup(sidebar, "en");
+                try {
+                    assert.ok(motor.runtimeLayout, "fixture has a runtime graph for its pointer members");
+                    view.send({ type: sidebar ? "availableVariables" : "variablesList", symbols: [motor] });
+                    view.watch(watched);
+                    assert.strictEqual(
+                        view.document.querySelector("[data-watch-group]"),
+                        null,
+                        "summarized atomic/function leaves must not expand into raw internal DWARF groups"
+                    );
+                    assert.strictEqual(
+                        view.document.querySelectorAll(sidebar ? "#liveValues > .value-row" : "#vars .var-card").length,
+                        2
+                    );
+                    assert.strictEqual(
+                        view.window.eval("valueTree").selectionLeaves(motor, true).length,
+                        12,
+                        "selectionLeaves falls back to static leaves when no STL container is present"
+                    );
+                    view.assertHealthy();
+                } finally {
+                    view.close();
+                }
+            }
+        }
+    );
 }
 
 // A followed pointer has no own value: retain the address row and nest its pointee.
@@ -567,12 +625,13 @@ for (const sidebar of [false, true]) {
         view.sample(mixedTree, mixed.name);
         view.variables([mixed]);
         const labels = [...view.document.querySelectorAll(sidebar ? ".av-leaf-name" : ".imp-leaf-name")];
-        assert.ok(labels.some((cell) => cell.textContent === ".state"));
-        assert.ok(labels.some((cell) => cell.textContent === ".callback"));
+        assert.ok(labels.some((cell) => cell.textContent === "state"));
+        assert.ok(labels.some((cell) => cell.textContent === "callback"));
         assert.ok(!labels.some((cell) => /_M_|hidden/.test(cell.textContent)));
         if (sidebar)
             assert.ok([...view.document.querySelectorAll(".available-row.leaf .av-write")].every((b) => b.disabled));
         view.raw(mixed.name);
+        view.expandPickerBranches();
         assert.ok(
             [...view.document.querySelectorAll(sidebar ? ".av-leaf-name" : ".imp-leaf-name")].some((cell) =>
                 cell.textContent.includes("_M_manager")

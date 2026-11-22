@@ -230,6 +230,35 @@ const { writePlan } = require("../src/services/agentPlans");
     await cached._elfView.rebindPromise;
     assert.notStrictEqual(cached._symbolNameIndex(symbols), enriched, "DWARF completion also invalidates the index");
 
+    await scenario("Send the type layouts of restored nested watches before rebinding them", async () => {
+        const owner = { name: "drive", isComposite: true };
+        const layout = { kind: "struct", typeName: "Drive", byteSize: 16, members: [] };
+        const sidebar = [];
+        const graph = [];
+        const host = Object.create(loadProvider().prototype);
+        host._context = { workspaceState: { get: () => [{ name: "drive.axes[0].speed" }] } };
+        host._elfService = {
+            generation: 3,
+            symbolByName: new Map([[owner.name, owner]]),
+            layout: async () => layout
+        };
+        host._webviewView = { webview: { postMessage: (message) => sidebar.push(message) } };
+        host._livePanels = new Map([[1, { ready: true, watchKey: "graph", post: (message) => graph.push(message) }]]);
+        host._elfView.rebindWatchLists = async () => {
+            assert.strictEqual(sidebar.at(-1).layout, layout);
+            assert.strictEqual(graph.at(-1).layout, layout);
+        };
+        host._syncSidebarTarget = () => {};
+        host._syncGraphTarget = () => {};
+        host._sampling.refreshSamplingPlan = async () => {};
+        host._elfView.onElfChange("dwarfReady", { symbols: [owner], elf: { sha256: "cold" }, warnings: [] });
+        await host._elfView.rebindPromise;
+        for (const messages of [sidebar, graph])
+            assert.deepStrictEqual(messages.slice(1), [
+                { type: "compositeLayoutResult", name: owner.name, version: "cold", layout }
+            ]);
+    });
+
     await scenario("Reject bitfield write plans", async () => {
         const symbol = { name: "sensor", address: 0x20000000, size: 4 };
         const layout = {

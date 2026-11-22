@@ -8,6 +8,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 变量与调试 / Variables and debugging
 
+- 侧栏 ELF 变量列表和波形导入弹窗按嵌套树逐层展开结构体、数组和运行时对象，支持勾选分支批量添加成员或单独添加子分支，并在查看列表中按所选分支归组展示；嵌套运行时容器保留自身配方与类型名，移除和拖拽同步联动其子项。
+- Expand structs, arrays, and runtime objects as nested member trees in the sidebar ELF picker and waveform import dialog, with branch selection, grouped branch watch cards, preserved nested runtime container recipes and types, and linked child removal and reordering.
+
 - 修复跨编译单元的 DWARF 描述仅缺少模板参数记录时，同一 C++ 对象被判为类型歧义、成员无法展开的问题。实际布局或已知实参冲突仍会停用绑定。
 - Fix rejected C++ member expansion when one DWARF description omits template parameter records for the same object across compilation units. Conflicting layouts or known arguments still block binding.
 

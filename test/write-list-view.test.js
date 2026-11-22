@@ -150,12 +150,9 @@ try {
         pointerView.send({ type: "liveStatus", running: true, canRead: true, canWrite: true });
         const pointerBox = pointerView.document.getElementById("availableVars");
         pointerBox.querySelector(".av-arrow").click();
-        const writeButton = (label) =>
-            [...pointerBox.querySelectorAll(".available-row.leaf")]
-                .find((row) => row.textContent.includes(label))
-                ?.querySelector(".av-write");
-        assert.strictEqual(writeButton(".count").disabled, false);
-        assert.strictEqual(writeButton(".next").disabled, true, "pointer members cannot be added to the write list");
+        const writeButton = (name) => pointerBox.querySelector(`[data-picker-path="holder.${name}"] .av-write`);
+        assert.strictEqual(writeButton("count").disabled, false);
+        assert.strictEqual(writeButton("next").disabled, true, "pointer members cannot be added to the write list");
         pointerView.assertHealthy();
     } finally {
         pointerView.close();

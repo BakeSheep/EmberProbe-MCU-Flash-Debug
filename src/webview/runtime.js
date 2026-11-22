@@ -4,11 +4,12 @@
     const runtime = factory(
         commonJs ? require("./elfDiagnostics") : root.EmberProbeElfDiagnostics,
         commonJs ? require("./notice") : root.EmberProbeNotice,
-        commonJs ? require("./runtimeWatchPath") : root.EmberProbeRuntimeWatchPath
+        commonJs ? require("./runtimeWatchPath") : root.EmberProbeRuntimeWatchPath,
+        commonJs ? require("./variableNotices") : root.EmberProbeVariableNotices
     );
     if (commonJs) module.exports = runtime;
     else root.EmberProbeRuntime = runtime;
-})(typeof globalThis === "object" ? globalThis : this, function (elfDiagnostics, notice, createRuntimeWatchEntry) {
+})(globalThis, function (elfDiagnostics, notice, createRuntimeWatchEntry, variableNotices) {
     const MAX_COMPOSITE_DEPTH = 32;
     const MAX_TYPE_ALIASES = 256;
     const MAX_LAYOUT_PATH_DEPTH = 256;
@@ -70,6 +71,20 @@
             }
         }
         return name;
+    }
+    function relativeMemberParts(name, base) {
+        return name
+            .slice(base.length)
+            .split(/(?=\.|\[)/)
+            .filter(Boolean);
+    }
+    // True when `path` is a member or element strictly under `ancestor` (never matching `foo.0` under `foo`).
+    function isDescendantPath(path, ancestor) {
+        if (typeof path !== "string" || !ancestor || !path.startsWith(ancestor)) return false;
+        const next = path[ancestor.length];
+        if (next === "[") return true;
+        if (next !== ".") return false;
+        return !/^\.\d+(?=\.|\[|$)/.test(path.slice(ancestor.length));
     }
     function variableDisplayName(item, symbols) {
         const name = item.name || "";
@@ -421,187 +436,19 @@
         walk(node);
         return count;
     }
-    let variableNoticeSequence = 0;
-    // Opened notice groups, by footer state key and group, so a re-rendered card keeps them open.
-    const openNoticeGroups = new Set();
-    // A render root owns its footer even while detached. Nested member rows route to that root;
-    // inline pointee bodies can own independent scopes so a sample only replaces their own state.
-    // stateKey (the variable name) keeps opened notice groups across re-renders of the same card.
-    function createVariableNotices(root, t, footer, onCopy, stateKey) {
-        let inherited;
-        for (
-            let current = root.parentElement || root.variableNoticeParent;
-            current;
-            current = current.parentElement || current.variableNoticeParent
-        ) {
-            if (current.variableNotices) {
-                inherited = current.variableNotices;
-                break;
-            }
-        }
-        if (!footer && inherited) {
-            root.variableNotices = {
-                root,
-                footer: inherited.footer,
-                area: inherited.area,
-                shared: inherited.shared,
-                prefix: inherited.prefix + ++variableNoticeSequence + "-",
-                ownsFooter: false
-            };
-            return inherited.footer;
-        }
-        footer ||= root.ownerDocument.createElement("div");
-        footer.classList.add("variable-notices");
-        const groupKey = (key) => JSON.stringify([stateKey, key]);
-        const area = notice.createNoticeArea(footer, {
-            t,
-            onAction: (action) => action.run?.(),
-            onCopy,
-            isGroupOpen: (key) => stateKey != null && openNoticeGroups.has(groupKey(key)),
-            onGroupToggle: (key, open) => {
-                if (stateKey == null) return;
-                if (open) openNoticeGroups.add(groupKey(key));
-                else openNoticeGroups.delete(groupKey(key));
-            }
-        });
-        // shared: notice id -> (owning scope prefix -> payload). Card-wide states (waiting, hidden
-        // members, partial layout) are shown once per footer however many pointee scopes report them.
-        const scope = {
-            root,
-            footer,
-            area,
-            shared: new Map(),
-            prefix: "variable-" + ++variableNoticeSequence + "-",
-            ownsFooter: true
-        };
-        root.variableNotices = scope;
-        return footer;
-    }
-    function showSharedNotice(scope, id) {
-        const payloads = [...scope.shared.get(id).values()];
-        const merged = payloads[0].merge ? payloads[0].merge(payloads) : payloads[0];
-        return scope.area.set(id, { level: "info", compact: true, dismissible: false, ...merged });
-    }
-    function variableNoticeScope(container, t) {
-        for (let current = container; current; current = current.parentElement || current.variableNoticeParent)
-            if (current.variableNotices) return current.variableNotices;
-        createVariableNotices(container, t);
-        container.append(container.variableNotices.footer);
-        return container.variableNotices;
-    }
-    function resetVariableNotices(root, t, onCopy) {
-        if (!root.variableNotices) createVariableNotices(root, t, undefined, onCopy);
-        const scope = root.variableNotices;
-        if (scope.ownsFooter) {
-            scope.shared.clear();
-            scope.area.clearAll();
-            return;
-        }
-        for (const id of scope.area.ids()) if (id.startsWith(scope.prefix)) scope.area.clear(id);
-        // A shared notice stays while another scope still reports it.
-        for (const [id, owners] of scope.shared) {
-            const before = owners.size;
-            for (const prefix of [...owners.keys()]) if (prefix.startsWith(scope.prefix)) owners.delete(prefix);
-            if (owners.size === before) continue;
-            if (owners.size) showSharedNotice(scope, id);
-            else {
-                scope.shared.delete(id);
-                scope.area.clear(id);
-            }
-        }
-    }
-    function finishVariableNotices(root) {
-        const footer = root.variableNotices?.footer;
-        // External card footers stay outside the collapsible body; inline scopes append locally.
-        if (root.variableNotices?.ownsFooter && footer && (!footer.parentElement || footer.parentElement === root))
-            root.append(footer);
-    }
-    // An untitled notice describes the whole card, so it is shared: a pointee body that reports the
-    // same text adds no second box. Titled notices name a path; equal ones fold into one group.
-    // options.shared forces sharing under an explicit id (its payload may merge the reports).
-    function renderVariableNotice(container, message, t, id, options = {}) {
-        const scope = variableNoticeScope(container, t);
-        const payload = typeof message === "string" ? { text: message } : message;
-        const key = id || JSON.stringify([payload.title, payload.text]);
-        let node;
-        if (options.shared || (!id && !payload.title)) {
-            const sharedId = "shared:" + key;
-            if (!scope.shared.has(sharedId)) scope.shared.set(sharedId, new Map());
-            scope.shared.get(sharedId).set(scope.prefix, payload);
-            node = showSharedNotice(scope, sharedId);
-        } else {
-            const level = payload.level || "info";
-            node = scope.area.set(scope.prefix + key, {
-                level,
-                compact: true,
-                dismissible: false,
-                // A loading row stays on its own, beside the group it came from.
-                group: payload.title && !payload.busy ? JSON.stringify([level, payload.text]) : "",
-                ...payload
-            });
-        }
-        // All presentation comes from notice.css; callers may retain semantic query hooks.
-        finishVariableNotices(scope.root);
-        return node;
-    }
-    function renderMemberVisibility(container, node, name, showRaw, t, toggle) {
-        const hidden = showRaw ? 0 : hiddenMemberCount(node);
-        if (!showRaw && !hidden) return;
-        // Pointee bodies share their card's raw-member switch, so their counts join one notice.
-        const base = variableBaseName(name);
-        renderVariableNotice(
-            container,
-            {
-                text: { key: showRaw ? "lw.rawMembersVisible" : "lw.hiddenMembers", params: { n: hidden } },
-                actions: [{ label: { key: showRaw ? "lw.hideRawMembers" : "lw.showRawMembers" }, run: toggle }],
-                merge: (payloads) => ({
-                    ...payloads[0],
-                    text: {
-                        ...payloads[0].text,
-                        params: { n: payloads.reduce((sum, entry) => sum + entry.text.params.n, 0) }
-                    }
-                }),
-                decorate: (row) => {
-                    row.classList.add("member-visibility");
-                    row.querySelector(".notice-text").classList.add("hidden-members");
-                    const button = row.querySelector(".notice-action");
-                    button.classList.add("raw-members-toggle");
-                    button.dataset.variableName = base;
-                    button.setAttribute("aria-pressed", String(!!showRaw));
-                }
-            },
-            t,
-            "members:" + base,
-            { shared: true }
-        );
-    }
-    // Static array rows start at 16 elements; each click reveals the next page.
-    const ARRAY_PAGE = 64;
-    function arrayShownCount(total, shown) {
-        return Math.min(Number(total) || 0, Math.max(16, Number(shown) || 0));
-    }
-    function renderArrayMore(container, remaining, t, more, path = "", displayPath = path) {
-        renderVariableNotice(
-            container,
-            {
-                title: displayPath,
-                text: { key: "lw.arrayMore", params: { n: remaining } },
-                actions: [
-                    {
-                        label: { key: "lw.arrayShowMore", params: { n: Math.min(remaining, ARRAY_PAGE) } },
-                        run: () => more(ARRAY_PAGE)
-                    }
-                ],
-                decorate: (row) => row.classList.add("array-more")
-            },
-            t,
-            "array:" + path
-        );
-    }
+    const {
+        createVariableNotices,
+        resetVariableNotices,
+        finishVariableNotices,
+        renderVariableNotice,
+        renderMemberVisibility,
+        arrayShownCount,
+        renderArrayMore
+    } = variableNotices({ notice, hiddenMemberCount, variableBaseName });
     // Display-only collection. Bulk chart collection keeps pointers and raw internals out.
     function displayLayoutLeaves(symbol, layout, name, baseAddr, options = {}) {
         const out = [];
-        const { showRaw = false, includePointers = false, maxArray = 16 } = options;
+        const { showRaw = false, includePointers = false, maxArray = 16, onBranch } = options;
         const maxDepth = symbol?.layoutExpansions ? MAX_LAYOUT_PATH_DEPTH : MAX_COMPOSITE_DEPTH;
         let visits = 0;
         const walk = (node, path, offset, labelPath, depth = 0, flags = {}) => {
@@ -616,6 +463,9 @@
                 });
                 return;
             }
+            const layout = node.compositeLayout || node;
+            if (onBranch && (node.compositeLayout || node.kind === "array" || node.members))
+                onBranch(labelPath, node.typeName || layout.typeName, layout.kind);
             if (node.compositeLayout) {
                 walk(node.compositeLayout, path, offset, labelPath, depth, flags);
             } else if (node.kind === "array") {
@@ -671,7 +521,7 @@
         walk(layout, name, 0, name);
         return out;
     }
-    function displayRuntimeSelection(symbol, tree, showRaw = false, allowDynamicLeaf = false) {
+    function displayRuntimeSelection(symbol, tree, showRaw = false, allowDynamicLeaf = false, onBranch) {
         const selection = runtimeSelection(symbol, tree, allowDynamicLeaf);
         if (!selection) return null;
         const metadata = new Map();
@@ -725,6 +575,7 @@
         const walk = (node, path, role, depth = 0, segments = []) => {
             if (!node || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
             metadata.set(path, { ...node, memberRole: role || node.memberRole });
+            if (node.members || node.elements) onBranch?.(path, node.typeName, node.kind);
             promote(node, segments, role || node.memberRole);
             for (const member of node.members || [])
                 walk(
@@ -745,6 +596,7 @@
         const walkType = (id, path, role, depth = 0, segments = []) => {
             const type = runtimeType(graph, id);
             if (!type || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
+            if (type.fields || type.stl || type.kind === "array") onBranch?.(path, type.typeName, type.kind);
             metadata.set(path, {
                 memberRole: role,
                 isPointer: type.kind === "pointer",
@@ -753,6 +605,13 @@
             if (type.stdSummary) {
                 summaryVisits = 0;
                 promote(summaryType(id), segments, role);
+            }
+            if (type.kind === "reference") {
+                if (!type.pointerTarget || type.pointerTarget === "data") {
+                    onBranch?.(path, type.typeName, type.kind);
+                    walkType(type.target, path, role, depth + 1, segments);
+                }
+                return;
             }
             if (type.stl) return;
             for (const field of type.fields || [])
@@ -832,7 +691,11 @@
             } else
                 for (let index = (node.members || []).length - 1; index >= 0; index--) {
                     const member = node.members[index];
-                    pending.push({ node: member, depth: current.depth, path: layoutMemberPath(current.path, member) });
+                    pending.push({
+                        node: member,
+                        depth: current.depth,
+                        path: layoutMemberPath(current.path, member)
+                    });
                 }
         }
         return rows;
@@ -1059,8 +922,7 @@
     }
     // Entries nested below `name`: its own pointee chain (`name.value`, `name.value.x.value`...).
     function isPointeeDescendant(item, name) {
-        const text = String(item?.name || "");
-        return isPointeeEntry(item) && text.startsWith(name) && /^[.[]/.test(text.slice(name.length));
+        return isPointeeEntry(item) && isDescendantPath(String(item?.name || ""), name);
     }
     // Disclosure toggle placed first in a pointer row; the pointee body follows the row.
     function renderPointerToggle(row, path, open, t, onToggle, displayPath = path) {
@@ -1095,7 +957,7 @@
             ...(symbol.isReference ? { isReference: true } : {}),
             ...(symbol.isBoolean ? { isBoolean: true } : {}),
             ...(symbol.derefPath ? { derefPath: true } : {}),
-            ...(symbol.typeName && (symbol.isPointer || symbol.isReference || symbol.derefPath)
+            ...(symbol.typeName && (symbol.isComposite || symbol.isPointer || symbol.isReference || symbol.derefPath)
                 ? { typeName: symbol.typeName }
                 : {}),
             ...(runtimeLayout
@@ -1514,6 +1376,8 @@
         typeByteLength,
         defaultType,
         variableBaseName,
+        relativeMemberParts,
+        isDescendantPath,
         variableScope,
         scopedVariableName,
         variableDisplayName,

@@ -21,7 +21,12 @@ for (const language of ["en", "zh"]) {
                 if (!sidebar) doc.getElementById("import").click();
                 page.send({ type: prefix + "Done", version: "v1" });
                 page.send({ type: sidebar ? "availableTypesDone" : "variableTypesDone", version: "v1" });
-                doc.querySelector(container + (sidebar ? " .av-arrow" : " .imp-arrow")).click();
+                const expand = (path) =>
+                    doc.querySelector(container + ` [data-picker-path="${path}"] button[aria-expanded]`).click();
+                expand("axes");
+                assert.strictEqual(doc.querySelectorAll(container + " .layout-expand").length, 0);
+                for (const path of ["axes[0]", "axes[0].a", "axes[1]", "axes[1].a"]) expand(path);
+                if (hasRuntime) for (const path of ["axes[0].a.b", "axes[1].a.b"]) expand(path);
                 assert.strictEqual(doc.querySelectorAll(container + " .layout-expand").length, 2);
                 const button = () => doc.querySelector(container + ' .layout-expand[data-path="axes[0].a.b"]');
                 button().click();
@@ -57,7 +62,7 @@ for (const language of ["en", "zh"]) {
                 assert(
                     !Array.from(
                         doc.querySelectorAll(container + (sidebar ? " .available-row.leaf" : " .imp-row.leaf"))
-                    ).some((row) => row.textContent.includes(".gain"))
+                    ).some((row) => row.dataset.pickerPath === "axes[0].a.b.gain")
                 );
                 page.send({ ...request, type: "layoutExpansionResult", layout: f.sublayout });
                 assert.strictEqual(button(), null);
@@ -72,9 +77,7 @@ for (const language of ["en", "zh"]) {
                 );
                 const gain = "axes[0].a.b.gain";
                 if (sidebar) {
-                    const row = Array.from(doc.querySelectorAll(container + " .available-row.leaf")).find((row) =>
-                        row.textContent.includes(".gain")
-                    );
+                    const row = doc.querySelector(container + ` [data-picker-path="${gain}"]`);
                     if (hasRuntime) assert.strictEqual(row.querySelector(".av-write").disabled, true);
                     assert.match(row.textContent, /gain/);
                     row.querySelector(".av-watch").click();
@@ -84,8 +87,8 @@ for (const language of ["en", "zh"]) {
                     );
                 } else {
                     const checkbox = doc.querySelector('input[data-leaf-path="' + gain + '"]');
-                    assert.strictEqual(Number(checkbox.dataset.leafAddr), f.symbol.address + 52);
-                    checkbox.checked = true;
+                    assert.strictEqual(checkbox.leafEntry.address, f.symbol.address + 52);
+                    checkbox.click();
                     doc.getElementById("impAdd").click();
                     assert.strictEqual(
                         page.messages.findLast((message) => message.type === "saveWatch").items[0].name,
@@ -98,7 +101,8 @@ for (const language of ["en", "zh"]) {
                 nestedButton.click();
                 const nestedRequest = requests().at(-1);
                 page.send({ ...nestedRequest, type: "layoutExpansionResult", layout: f.nested });
-                assert.match(doc.querySelector(container).textContent, /@base0.gain/);
+                expand("axes[0].a.b.c.@base0");
+                assert(doc.querySelector(container + ' [data-picker-path="axes[0].a.b.c.@base0.gain"]'));
                 // Selected composite trees use the same map and concrete index controls.
                 const expandedSymbol = {
                     ...f.symbol,

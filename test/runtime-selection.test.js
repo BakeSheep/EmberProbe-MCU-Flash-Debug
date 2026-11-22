@@ -142,7 +142,7 @@ function openVariables(view, sidebar, symbols, version = "selection") {
                 const selector = sidebar ? "#availableVars .av-arrow" : "#impList .imp-arrow";
                 [...view.document.querySelectorAll(selector)].forEach((arrow) => arrow.click());
                 const labels = [...view.document.querySelectorAll(sidebar ? ".av-leaf-name" : ".imp-leaf-name")];
-                assert.ok(labels.some((node) => node.textContent === ".value"));
+                assert.ok(labels.some((node) => node.textContent === "value"));
                 assert.ok(labels.every((node) => !/_M_|@base|_vptr/.test(node.textContent)));
                 assert.ok(view.document.querySelector(sidebar ? ".av-children .sb-note" : ".imp-children .comp-note"));
                 if (sidebar)
@@ -165,10 +165,10 @@ function openVariables(view, sidebar, symbols, version = "selection") {
                     layout: unique.compositeLayout
                 });
                 assert.ok(
-                    view.document.querySelector(sidebar ? ".av-leaf-name" : ".imp-leaf-name").textContent === ".value"
+                    view.document.querySelector(sidebar ? ".av-leaf-name" : ".imp-leaf-name").textContent === "value"
                 );
                 if (!sidebar) {
-                    view.document.querySelector("#impList input[data-idx]").checked = true;
+                    view.document.querySelector("#impList input[data-symbol-name]").click();
                     view.document.getElementById("impAdd").click();
                 }
                 const saved = view.messages.findLast((m) => m.type === (sidebar ? "saveSidebarWatch" : "saveWatch"));

@@ -452,12 +452,9 @@ var wantImportOpen = false,
     impWarnings = [],
     impError = "",
     impTypesReady = true,
-    // Checkbox changes made since the import dialog opened; other rows mirror the current watch list.
-    impPicks = new Map(),
     impLayoutPending = new Set(),
     // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
     pointerLayoutWaiters = new Set(),
-    impIndexByName = new Map(),
     impTypeChunks = 0;
 // Watch list, ELF symbols, readings, curve and view settings; the value tree reads them too.
 const state = {
@@ -498,6 +495,7 @@ const state = {
     version: "",
     generation: null,
     importExpanded: Object.create(null),
+    importPicks: new Map(),
     symbols: new Map()
 };
 // The value panel shows its cards in two columns from this width on.
@@ -550,7 +548,7 @@ const valueTree = EmberProbeValueTree.create({
     radix: (name) => state.numberBases[name] || 10,
     formatValue: seriesGain.format,
     savedPointers: saved && { pointers: saved.lastPointers, version: saved.lastPointersVersion },
-    displayName: (path) => displayNameFor({ name: path }),
+    displayName: (path, item) => displayNameFor(item || { name: path }),
     save: () => saveUi(),
     rerender: () => renderVars(),
     rerenderPicker: () => {
@@ -856,13 +854,10 @@ function addSymbol(sym, resolved = false) {
     saveUi();
     state.dirty = true;
 }
-function removeVar(name) {
+function removeVar(name, members) {
     var rmv = state.watch.filter(function (w) {
-        return (
-            w.name === name ||
-            EmberProbeRuntime.variableBaseName(w.name) === name ||
-            EmberProbeRuntime.isPointeeDescendant(w, name)
-        );
+        if (members) return valueTree.selectedWatchMember(w, members);
+        return w.name === name || EmberProbeRuntime.isDescendantPath(w.name, name);
     });
     state.watch = state.watch.filter(function (w) {
         return rmv.indexOf(w) < 0;
@@ -885,15 +880,18 @@ function removeVar(name) {
         delete state.latestPointer[w.name];
         delete state.hidden[w.name];
     });
-    [state.expanded, state.arrayShown, state.numberBases].forEach(function (paths) {
-        Object.keys(paths).forEach(function (path) {
-            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete paths[path];
-        });
-    });
-    seriesGain.forget(name);
-    delete state.dispSpec[name];
-    delete state.rawMembers[name];
-    valueTree.pointers.forget(name);
+    const removedPaths = members ? rmv.map((item) => item.name) : [name, ...rmv.map((item) => item.name)];
+    valueTree.forgetPaths(
+        [state.expanded, state.arrayShown, state.numberBases],
+        removedPaths,
+        members ? name : undefined
+    );
+    for (const removed of new Set(removedPaths)) {
+        seriesGain.forget(removed);
+        delete state.dispSpec[removed];
+        delete state.rawMembers[removed];
+        valueTree.pointers.forget(removed);
+    }
     renderVars();
     saveWatch();
     saveUi();
@@ -935,17 +933,6 @@ function renderVars() {
     variableCards = [];
     box.classList.remove("independent-columns");
     valueCells = Object.create(null);
-    // Expanded pointees render inside their pointer rows while cards are built.
-    const topLevel = state.watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
-    const cards = new Map();
-    topLevel.filter(isComposite).forEach(function (item) {
-        const holder = document.createElement("div");
-        renderCompositeCard(item, state.watch.indexOf(item), holder);
-        cards.set(item.name, [...holder.childNodes]);
-    });
-    topLevel.forEach(function (item) {
-        if (!isComposite(item) && !valueTree.isLeafChild(item.name)) cards.set(item.name, renderScalarCard(item));
-    });
     if (!state.watch.length) {
         $("count").textContent = "0";
         var empty = document.createElement("div");
@@ -954,29 +941,13 @@ function renderVars() {
         box.appendChild(empty);
         return;
     }
-    topLevel.forEach(function (item) {
-        const nodes = cards.get(item.name) || [];
-        if (nodes[0])
-            EmberProbeCardReorder.decorate(nodes[0], item.name, t("lw.dragToReorder", { name: displayNameFor(item) }));
-        box.append(...nodes);
+    valueTree.renderWatchRows(box, {
+        scalar: renderScalarCard,
+        composite: renderCompositeCard,
+        decorate: EmberProbeCardReorder.decorate,
+        dragKey: "lw.dragToReorder"
     });
-    // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
-    state.watch
-        .filter(EmberProbeRuntime.isPointeeEntry)
-        .sort((a, b) => a.name.length - b.name.length)
-        .forEach(function (item) {
-            if (valueTree.placed.has(item.name)) return;
-            valueTree.fallback.add(item.name);
-            if (isComposite(item)) renderCompositeCard(item, state.watch.indexOf(item), box);
-            else box.append(...renderScalarCard(item));
-        });
-    // A member card drawn before its pointee tree was rendered is shown by that tree instead.
-    cards.forEach(function (nodes, name) {
-        const item = state.watch.find((w) => w.name === name);
-        if (!item || isComposite(item) || !valueTree.isLeafChild(name)) return;
-        nodes.forEach((node) => node.remove());
-        if (valueCells[name]?.isConnected === false) delete valueCells[name];
-    });
+    for (const [name, cell] of Object.entries(valueCells)) if (!cell.isConnected) delete valueCells[name];
     $("count").textContent = String(
         state.watch.filter(function (it) {
             return !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name);
@@ -1012,12 +983,7 @@ var varReorder = EmberProbeCardReorder.attach($("vars"), {
         var next =
             target === null
                 ? state.watch
-                : EmberProbeCardReorder.moveBlock(state.watch, name, target, after, function (w, base) {
-                      return (
-                          EmberProbeRuntime.variableBaseName(w.name) === base ||
-                          EmberProbeRuntime.isPointeeDescendant(w, base)
-                      );
-                  });
+                : EmberProbeCardReorder.moveBlock(state.watch, name, target, after, valueTree.attachedWatchEntry);
         if (next === state.watch && !moved) return;
         var reordered = next !== state.watch;
         state.watch = next;
@@ -1156,50 +1122,50 @@ function togglePointee(entry) {
     saveUi();
 }
 
-function renderCompositeCard(item, idx, box) {
+function renderCompositeCard(item, box) {
     var card = document.createElement("div");
-    card.className = "var-card composite" + (state.expanded[item.name] ? " open" : "");
+    card.className = "var-card composite" + (valueTree.compositeOpen(item) ? " open" : "");
     var rm = document.createElement("button");
     rm.className = "remove";
     rm.textContent = "×";
     rm.title = t("lw.removeVar");
-    rm.setAttribute("aria-label", t("lw.removeVarName", { name: displayNameFor(item) }));
+    rm.setAttribute("aria-label", t("lw.removeVarName", { name: valueTree.compositeTitle(item) }));
     rm.onclick = function (e) {
         e.stopPropagation();
-        removeVar(item.name);
+        removeVar(item.name, item.selectedMembers);
     };
     var content = document.createElement("div");
     content.className = "comp-content";
     var head = document.createElement("div");
     head.className = "comp-head";
     var arrow = document.createElement("span");
-    arrow.className = "comp-arrow" + (state.expanded[item.name] ? " open" : "");
+    arrow.className = "comp-arrow" + (valueTree.compositeOpen(item) ? " open" : "");
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
-    EmberProbeRuntime.renderVariableName(nm, displayNameFor(item), item.name);
-    var lay = item.compositeLayout || {};
+    EmberProbeRuntime.renderVariableName(nm, valueTree.compositeTitle(item), item.name);
     var ty = document.createElement("span");
     ty.className = "comp-type";
-    ty.textContent = item.typeName || lay.typeName || "";
-    ty.title =
-        (ty.textContent ? ty.textContent + " · " : "") + (Number(item.size) || 0) + "B · " + fmtAddr(item.address);
+    ty.textContent = valueTree.compositeType(item);
+    ty.title = item.selectedMembers
+        ? ty.textContent
+        : (ty.textContent ? ty.textContent + " · " : "") + (Number(item.size) || 0) + "B · " + fmtAddr(item.address);
     head.append(arrow, nm, ty);
     var body = document.createElement("div");
     body.className = "comp-body";
     head.onclick = function () {
-        state.expanded[item.name] = !state.expanded[item.name];
-        card.classList.toggle("open", state.expanded[item.name]);
-        arrow.classList.toggle("open", state.expanded[item.name]);
+        const open = valueTree.toggleComposite(item);
+        card.classList.toggle("open", open);
+        arrow.classList.toggle("open", open);
         saveUi();
         state.dirty = true;
     };
     const footer = valueTree.renderCompositeBody(body, item, state.dispSpec[item.name]);
-    if (controls) controls.decorate(card, item.name);
+    if (controls && !item.selectedMembers) controls.decorate(card, item.name);
     content.append(head, body, footer);
     card.append(rm, content);
     box.appendChild(card);
-    valueTree.updateComposite(item.name);
+    if (!item.selectedMembers) valueTree.updateComposite(item.name);
 }
 function addLeafWatch(path, address, watchType, node) {
     if (
@@ -1253,15 +1219,9 @@ function onCompositeSamples(samples) {
         }
     });
     if (refreshImport && !$("overlay").classList.contains("hidden")) renderImport();
-    // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card.
-    // A re-rendered tree can also now show members that still have their own chart card.
-    if (
-        [...valueTree.fallback].some((name) => valueTree.placed.has(name)) ||
-        state.watch.some(
-            (it) => !isComposite(it) && valueCells[it.name]?.closest(".var-card") && valueTree.isLeafChild(it.name)
-        )
-    )
-        renderVars();
+    // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card,
+    // or members that still have their own chart card.
+    if (valueTree.needsWatchRerender()) renderVars();
     valueRefresh.schedule();
     state.dirty = true;
 }
@@ -1402,7 +1362,9 @@ const importPicker = EmberProbeSymbolPicker.create({
     typesReady: () => impTypesReady,
     post: api && ((message) => post(message)),
     active: () => !$("overlay").classList.contains("hidden"),
-    childrenClass: "imp-children"
+    childrenClass: "imp-children",
+    arrowClass: "imp-arrow",
+    branchStyle: { rowClass: "imp-row", nameWrapClass: "imp-name-wrap", nameClass: "imp-name" }
 });
 function applyImportUserOnly() {
     const button = $("impUserOnly");
@@ -1415,23 +1377,21 @@ function importCell(className, text) {
     cell.textContent = text;
     return cell;
 }
-function importCheckbox(name, checked) {
+function importCheckbox(symbol, checked) {
     var cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.dataset.idx = String(impIndexByName.get(name));
-    cb.dataset.symbolName = name;
+    cb.dataset.symbolName = symbol.name;
+    cb.setAttribute("aria-label", displayNameFor(symbol));
     cb.checked = checked;
     return cb;
 }
-function importCompositeRow(s, open, toggle, checked) {
+function importCompositeRow(s, arrow, checked) {
     var row = document.createElement("div");
     row.className = "imp-row";
-    var cb = importCheckbox(s.name, checked);
+    var cb = importCheckbox(s, checked);
     cb.title = t("lw.compositeExpandable");
     var nmWrap = document.createElement("span");
     nmWrap.className = "imp-name-wrap";
-    var arrow = importCell("imp-arrow", "\u25B6");
-    if (open) arrow.classList.add("open");
     var nm = importCell("imp-name", "");
     EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
     nmWrap.append(arrow, nm);
@@ -1442,9 +1402,21 @@ function importCompositeRow(s, open, toggle, checked) {
         importCell("address", fmtAddr(s.address)),
         importCell("size", s.size + "B")
     );
-    arrow.onclick = toggle;
-    nm.onclick = toggle;
-    return { row: row, arrow: arrow };
+    nm.onclick = () => arrow.click();
+    return row;
+}
+function importBranchControls(leaves, path, typeName, composite, checked) {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "imp-branch-checkbox";
+    checkbox.memberEntries = leaves;
+    checkbox.disabled = !leaves.length;
+    checkbox.title = t("lw.selectBranchMembers", { name: path, n: leaves.length });
+    checkbox.setAttribute("aria-label", checkbox.title);
+    EmberProbeSymbolPicker.updateBranchCheckbox(checkbox, checked);
+    const type = importCell("ty", typeName);
+    type.title = typeName;
+    return { selection: checkbox, columns: [type, importCell("address", composite ? fmtAddr(composite.address) : "")] };
 }
 function importLeafRow(lf, checked) {
     var lr = document.createElement("label");
@@ -1453,21 +1425,19 @@ function importLeafRow(lf, checked) {
     lcb.type = "checkbox";
     lcb.dataset.leafPath = lf.path;
     lcb.checked = checked;
-    lcb.dataset.leafAddr = String(lf.address);
-    lcb.dataset.leafType = lf.type;
-    if (lf.runtimeLayout) lcb.runtimeEntry = lf;
-    else lcb.leafEntry = lf;
+    lcb.leafEntry = lf;
     var ln = importCell("imp-leaf-name", lf.label);
     ln.title = displayNameFor(lf.runtimeLayout ? lf : { name: lf.displayPath || lf.path });
+    lcb.setAttribute("aria-label", ln.title);
+    var wrap = importCell("imp-name-wrap", "");
+    wrap.append(lcb, ln);
     lr.append(
-        lcb,
-        ln,
+        wrap,
         importCell(
             "ty",
             (lf.isPointer || lf.isReference ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "")
         ),
-        importCell("address", fmtAddr(lf.address)),
-        importCell("size", "")
+        importCell("address", fmtAddr(lf.address))
     );
     return lr;
 }
@@ -1476,7 +1446,7 @@ function importScalarRow(s, checked) {
     var row = document.createElement("label");
     row.className = "imp-row";
     if (noLayout) row.title = s.unsupportedReason || t("lw.compositeNoLayout");
-    var cb = importCheckbox(s.name, checked);
+    var cb = importCheckbox(s, checked);
     cb.disabled = noLayout;
     var nm = importCell("imp-name", "");
     EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
@@ -1489,23 +1459,22 @@ function importScalarRow(s, checked) {
     );
     return row;
 }
+function importChecked() {
+    const watched = new Set(state.watch.map((item) => item.name));
+    return (name) => (state.importPicks.has(name) ? !!state.importPicks.get(name) : watched.has(name));
+}
 function renderImport() {
     renderElfDiagnostics();
     var f = ($("impFilter").value || "").trim().toLowerCase(),
         box = $("impList");
-    var watchedNames = new Set(
-        state.watch.map(function (item) {
-            return item.name;
-        })
-    );
-    var checked = function (name) {
-        return impPicks.has(name) ? impPicks.get(name) : watchedNames.has(name);
-    };
+    const checked = importChecked();
     box.textContent = "";
     var result = importPicker.render(box, f, {
-        composite: function (s, open, toggle) {
-            return importCompositeRow(s, open, toggle, checked(s.name));
+        composite: function (s, arrow) {
+            return importCompositeRow(s, arrow, checked(s.name));
         },
+        branchControls: (leaves, path, typeName, composite) =>
+            importBranchControls(leaves, path, typeName, composite, checked),
         leaf: function (lf) {
             return importLeafRow(lf, checked(lf.path));
         },
@@ -1520,7 +1489,7 @@ function renderImport() {
         (result.matching.length > result.list.length ? t("lw.showingFirst", { n: result.list.length }) : "");
 }
 function openImport() {
-    impPicks.clear();
+    state.importPicks.clear();
     $("impFilter").value = "";
     renderImport();
     $("overlay").classList.remove("hidden");
@@ -1539,30 +1508,15 @@ const variableEntry = EmberProbeVariableEntry.create({
     noticeArea: (id) => noticeArea(id)
 });
 function importSelected() {
-    var leafCbs = [],
-        syms = [];
-    $("impList")
-        .querySelectorAll("input:checked")
-        .forEach(function (cb) {
-            if (cb.dataset.leafPath) leafCbs.push(cb);
-            else if (cb.dataset.idx) {
-                var s = state.allSymbols[parseInt(cb.dataset.idx, 10)];
-                if (s) syms.push(s);
-            }
-        });
-    var changed = false;
-    leafCbs.forEach(function (cb) {
-        if (cb.runtimeEntry) addSymbol(cb.runtimeEntry, true);
-        else if (
-            addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType, cb.leafEntry)
-        ) {
-            hidePointerCurve(cb.leafEntry && { ...cb.leafEntry, name: cb.dataset.leafPath });
+    let changed = false;
+    for (const [name, entry] of state.importPicks) {
+        if (entry === true) addSymbol(state.symbols.get(name));
+        else if (entry?.runtimeLayout) addSymbol(entry, true);
+        else if (entry && addLeafWatch(name, entry.address, entry.type, entry)) {
+            hidePointerCurve({ ...entry, name });
             changed = true;
         }
-    });
-    syms.forEach(function (s) {
-        addSymbol(s);
-    });
+    }
     if (changed) {
         renderVars();
         saveWatch();
@@ -2287,6 +2241,7 @@ window.EmberProbeMessages.connect(window, {
         }
         valueTree.runtimeExpansionsReady();
         renderVars();
+        if (!$("overlay").classList.contains("hidden")) renderImport();
         state.dirty = true;
     },
     variablesList: function (m) {
@@ -2296,7 +2251,6 @@ window.EmberProbeMessages.connect(window, {
         state.allSymbols = m.symbols || [];
         impTypesReady = true;
         state.symbols = new Map(state.allSymbols.map((symbol) => [symbol.name, symbol]));
-        impIndexByName = new Map(state.allSymbols.map((symbol, index) => [symbol.name, index]));
         renderVars();
         if (wantImportOpen) {
             wantImportOpen = false;
@@ -2324,6 +2278,8 @@ window.EmberProbeMessages.connect(window, {
         impError = "";
         renderElfDiagnostics();
         importPicker.cancelSearch();
+        if ((m.version || "") !== state.version || (m.generation ?? null) !== state.generation)
+            state.importPicks.clear();
         state.version = m.version || "";
         state.generation = m.generation ?? null;
         if (valueTree.pointers.expire()) saveUi();
@@ -2337,7 +2293,6 @@ window.EmberProbeMessages.connect(window, {
         variableEntry.hide();
         state.symbols.clear();
         renderVars();
-        impIndexByName.clear();
         impTypeChunks = 0;
         impLayoutPending.clear();
         if (!$("overlay").classList.contains("hidden")) renderImport();
@@ -2346,7 +2301,6 @@ window.EmberProbeMessages.connect(window, {
         if (m.version !== state.version) return;
         const symbols = m.symbols || [];
         for (const symbol of symbols) {
-            impIndexByName.set(symbol.name, state.allSymbols.length);
             state.allSymbols.push(symbol);
             state.symbols.set(symbol.name, symbol);
         }
@@ -2408,6 +2362,7 @@ window.EmberProbeMessages.connect(window, {
         } else {
             symbol.layoutError = m.error || t("lw.compositeNoLayout");
         }
+        if (m.layout && valueTree.hasWatchedBase(m.name)) renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     addResolved: function (m) {
@@ -2474,9 +2429,7 @@ $("import").onclick = function () {
 applyImportUserOnly();
 $("impFilter").oninput = renderImport;
 $("impList").addEventListener("change", function (e) {
-    var cb = e.target;
-    var name = cb && cb.type === "checkbox" && (cb.dataset.leafPath || cb.dataset.symbolName);
-    if (name) impPicks.set(name, cb.checked);
+    EmberProbeSymbolPicker.rememberCheckboxSelection($("impList"), e.target, state.importPicks, importChecked());
 });
 $("impFilterClear").onclick = function () {
     $("impFilter").value = "";

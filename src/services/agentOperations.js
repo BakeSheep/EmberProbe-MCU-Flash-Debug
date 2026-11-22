@@ -222,7 +222,7 @@ class AgentOperations {
             throw Object.assign(new Error("destination must be sidebar, chart, or both"), {
                 code: "INVALID_DESTINATION"
             });
-        await this.host._elfView.prepareLayouts(names);
+        await this.host._elfView.prepareLayouts(names, { broadcast: true });
         const resolveSymbol = elfSymbols.createSymbolResolver(this.host.readElfSymbols().symbols);
         const resolved = [];
         const resolvedNames = new Set();

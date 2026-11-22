@@ -133,8 +133,7 @@
             },
             forget(name) {
                 for (const path of Object.keys(pointers))
-                    if (path === name || path.startsWith(name + ".") || path.startsWith(name + "["))
-                        delete pointers[path];
+                    if (path === name || runtime.isDescendantPath(path, name)) delete pointers[path];
             },
             // Drops every remembered target but keeps the ELF version they belong to.
             clear() {
@@ -192,6 +191,8 @@
         let bodies = Object.create(null);
         let placed = new Set();
         let fallback = new Set();
+        let renderedScalars = new Set();
+        const watchGroups = new Map();
         let runtimeExpansionsLoaded = false;
         let sentRuntimeExpansions = null;
 
@@ -347,12 +348,12 @@
             runtime.setValueCell(value, scalarDisplay(item));
         }
 
-        function renderLeaf(container, label, typeName, path, watchType, address, node, renderInline) {
+        function renderLeaf(container, label, typeName, path, watchType, address, node, renderInline, watched) {
             const row = element("div", classes.row);
             row.dataset.path = path;
             const name = element("span", classes.name);
             name.textContent = label;
-            name.title = page.displayName(node?.displayPath || path);
+            name.title = page.displayName(node?.displayPath || path, watched);
             name.setAttribute("aria-label", name.title);
             const type = element("span", classes.type);
             type.textContent = typeName || watchType || "";
@@ -361,12 +362,16 @@
             value.displayNode = node;
             value.summaryPath = node?.summaryPath;
             copyOnClick(value);
-            cells[path] = value;
+            if (watched) page.scalarCell(value, path);
+            else cells[path] = value;
             row.append(page.decorateLeaf(row, name, { path, address, watchType, node }), type, value);
             container.appendChild(row);
             const host = node?.isPointer && pointerPointee(row, path, label, node, renderInline);
             if (host) container.appendChild(host);
-            runtime.setValueCell(value, formatNode(withLastPointer(node, path), path));
+            runtime.setValueCell(
+                value,
+                watched ? scalarDisplay(watched) : formatNode(withLastPointer(node, path), path)
+            );
         }
         // Collapsible head and body of a nested composite; returns the body to render into.
         function nestShell(container, fieldName, typeName, path, displayPath = path) {
@@ -393,6 +398,203 @@
             wrap.append(head, body);
             container.appendChild(wrap);
             return body;
+        }
+
+        function compositeTitle(item) {
+            if (item.selectedMembers) return item.displayName;
+            const base = baseName(item.name);
+            if (base === item.name || runtime.isPointeeEntry(item)) return page.displayName(item.name, item);
+            return branchTitle(base, item.name);
+        }
+        function compositeType(item) {
+            return item.typeName || (item.runtimeSegments?.length ? "" : item.compositeLayout?.typeName) || "";
+        }
+        function branchTitle(base, path) {
+            const { prefix } = runtime.variableNameParts(page.displayName(base));
+            return prefix + runtime.relativeMemberParts(path, base).at(-1).replace(/^\./, "");
+        }
+        function compositeOpen(item) {
+            return state.expanded[item.selectedMembers ? "\0" + item.name : item.name] ?? !!item.selectedMembers;
+        }
+        function toggleComposite(item) {
+            const key = item.selectedMembers ? "\0" + item.name : item.name;
+            return (state.expanded[key] = !compositeOpen(item));
+        }
+        function forgetPaths(collections, names, groupName) {
+            const hasOwner = (path) =>
+                state.watch.some(
+                    (item) =>
+                        item.name === path ||
+                        runtime.isDescendantPath(item.name, path) ||
+                        (isComposite(item) && runtime.isDescendantPath(path, item.name))
+                );
+            for (const paths of collections)
+                for (const path of Object.keys(paths)) {
+                    const isGroup = path.startsWith("\0");
+                    const clean = isGroup ? path.slice(1) : path;
+                    const removed =
+                        (isGroup && groupName && clean === groupName) ||
+                        names.some((name) => clean === name || runtime.isDescendantPath(clean, name));
+                    const orphaned =
+                        paths === state.expanded &&
+                        (isGroup
+                            ? !state.watch.some((item) => runtime.isDescendantPath(item.name, clean))
+                            : names.some((name) => runtime.isDescendantPath(name, clean)) && !hasOwner(clean));
+                    if (removed || orphaned) delete paths[path];
+                }
+        }
+
+        function renderSelectedLeaf(container, item, label) {
+            const info = displayInfo(item);
+            const typeName = info.typeName || item.type || t("lw.unknownType");
+            renderLeaf(container, label, typeName, item.name, item.type, item.address, info, null, item);
+        }
+        function selectedMemberGroups(items, roots) {
+            const metadata = new Map();
+            const groups = new Map();
+            const hasRoot = (path) =>
+                roots.has(path) || [...roots].some((root) => runtime.isDescendantPath(path, root));
+            for (const item of items) {
+                const base = baseName(item.name);
+                if (base === item.name || hasRoot(base) || hasRoot(item.name)) continue;
+                if (!metadata.has(base)) {
+                    const symbol = state.symbols.get(base);
+                    const types = new Map();
+                    const selection = symbol && runtime.runtimeSelection(symbol, state.latest[symbol.name]);
+                    const leaves = symbol && selectionLeaves(symbol, selection, types);
+                    const aliases = new Map((leaves || []).map((leaf) => [leaf.path, leaf.displayPath || leaf.path]));
+                    metadata.set(base, { types, aliases });
+                }
+                const { types, aliases } = metadata.get(base);
+                const path = aliases.get(item.name) || item.name;
+                const parts = runtime.relativeMemberParts(path, base);
+                if (parts.length < 2) continue;
+                const key = base + parts[0];
+                if (!groups.has(key)) groups.set(key, { base, types, entries: [] });
+                groups.get(key).entries.push({ item, parts });
+            }
+            return groups.values();
+        }
+        function selectedMemberCard(group) {
+            const { base, types, entries } = group;
+            // The common branch is the card header. Its ancestors only identify it in the ELF.
+            const [first] = entries;
+            let depth = first.parts.length - 1;
+            for (const { parts } of entries) {
+                depth = Math.min(depth, parts.length - 1);
+                for (let index = 0; index < depth; index++) {
+                    if (parts[index] === first.parts[index]) continue;
+                    depth = index;
+                    break;
+                }
+            }
+            const name = base + first.parts.slice(0, depth).join("");
+            return {
+                name,
+                displayName: branchTitle(base, name),
+                typeName: types.get(name) || t("lw.compositeType"),
+                selectedMembers: new Set(entries.map(({ item }) => item.name)),
+                group
+            };
+        }
+        function renderSelectedMembers(body, card) {
+            const { base, types, entries } = card.group;
+            const bodies = new Map([[card.name, body]]);
+            const depth = runtime.relativeMemberParts(card.name, base).length;
+            for (const { item, parts } of entries) {
+                if (isLeafChild(item.name)) continue;
+                let path = card.name;
+                let target = body;
+                for (const part of parts.slice(depth, -1)) {
+                    path += part;
+                    if (!bodies.has(path))
+                        bodies.set(path, nestShell(target, part.replace(/^\./, ""), types.get(path), path));
+                    target = bodies.get(path);
+                }
+                renderedScalars.add(item.name);
+                renderSelectedLeaf(target, item, parts.at(-1).replace(/^\./, ""));
+            }
+        }
+
+        function renderWatchRows(container, { scalar, composite, decorate, dragKey }) {
+            const items = state.watch.filter((item) => !runtime.isPointeeEntry(item));
+            const roots = new Set(items.filter(isComposite).map((item) => item.name));
+            const rows = new Map();
+            const titles = new Map();
+            const renderCard = (item, target) => {
+                if (isComposite(item)) composite(item, target);
+                else target.append(...scalar(item));
+            };
+            for (const item of items.filter(isComposite)) {
+                const nodes = document.createDocumentFragment();
+                renderCard(item, nodes);
+                rows.set(item.name, nodes);
+                titles.set(item.name, compositeTitle(item));
+            }
+            const scalars = items.filter((item) => !isComposite(item) && !isLeafChild(item.name));
+            const groups = [...selectedMemberGroups(scalars, roots)];
+            const grouped = new Set(groups.flatMap((group) => group.entries.map(({ item }) => item.name)));
+            for (const item of scalars) {
+                if (grouped.has(item.name)) continue;
+                renderedScalars.add(item.name);
+                const nodes = document.createDocumentFragment();
+                renderCard(item, nodes);
+                rows.set(item.name, nodes);
+                titles.set(item.name, page.displayName(item.name, item));
+            }
+            // Selected member cards build their own body footer before rendering pointer rows inside them.
+            for (const group of groups) {
+                group.entries = group.entries.filter(({ item }) => !isLeafChild(item.name));
+                if (!group.entries.length) continue;
+                const card = selectedMemberCard(group);
+                const anchor = group.entries[0].item.name;
+                const holder = document.createDocumentFragment();
+                composite(card, holder);
+                holder.firstElementChild.dataset.watchGroup = card.name;
+                watchGroups.set(anchor, card.selectedMembers);
+                rows.set(anchor, holder);
+                titles.set(anchor, card.displayName);
+            }
+            const fallbacks = document.createDocumentFragment();
+            // The pointer rows above place their pointees first. Targets without a row stay stand-alone.
+            for (const item of state.watch
+                .filter(runtime.isPointeeEntry)
+                .sort((a, b) => a.name.length - b.name.length)) {
+                if (placed.has(item.name)) continue;
+                fallback.add(item.name);
+                renderCard(item, fallbacks);
+            }
+            for (const item of items) {
+                const nodes = rows.get(item.name);
+                if (!nodes || (!isComposite(item) && isLeafChild(item.name))) continue;
+                decorate(nodes.firstElementChild, item.name, t(dragKey, { name: titles.get(item.name) }));
+                container.append(nodes);
+            }
+            container.append(fallbacks);
+        }
+        function watchGroupContains(entry, anchor) {
+            const members = watchGroups.get(anchor);
+            return !!members && selectedWatchMember(entry, members);
+        }
+        function attachedWatchEntry(entry, name) {
+            return runtime.isDescendantPath(entry.name, name) || watchGroupContains(entry, name);
+        }
+        function hasWatchedBase(name) {
+            return state.watch.some((item) => baseName(item.name) === name);
+        }
+        function needsWatchRerender() {
+            return (
+                [...fallback].some((name) => placed.has(name)) ||
+                state.watch.some(
+                    (item) => !isComposite(item) && renderedScalars.has(item.name) && isLeafChild(item.name)
+                )
+            );
+        }
+        function selectedWatchMember(entry, members) {
+            if (members.has(entry.name)) return true;
+            if (!runtime.isPointeeEntry(entry)) return false;
+            for (const name of members) if (runtime.isPointeeDescendant(entry, name)) return true;
+            return false;
         }
         function renderNest(container, layout, fieldName, path, baseAddr, offset, displayPath = path) {
             const body = nestShell(container, fieldName, layout.typeName, path, displayPath);
@@ -665,23 +867,20 @@
             body.dataset.runtimeShape = shape;
             if (tree?.truncated) note(body, t("lw.layoutPartial"), "warning");
             const symbol = layoutSymbol(name);
-            renderRawMembersUi(body, sampled || symbol?.compositeLayout, name);
+            const rootLayout = symbol?.name === name ? symbol.compositeLayout : null;
+            renderRawMembersUi(body, sampled || rootLayout || tree, name);
             renderRuntimeTree(body, tree, name);
-            for (const entry of runtime.displayUnavailableRows(
-                symbol?.compositeLayout,
-                name,
-                64,
-                symbol,
-                showRaw(name)
-            ))
-                page.layoutExpansion().render(body, entry, name, t);
+            if (rootLayout)
+                for (const entry of runtime.displayUnavailableRows(rootLayout, name, 64, symbol, showRaw(name)))
+                    page.layoutExpansion().render(body, entry, name, t);
             if (!sampled) note(body, t("lw.waitSamples"));
             runtime.finishVariableNotices(body);
         }
         // Fills the body of a composite watch card and returns the notices footer that follows it.
         function renderCompositeBody(body, item, range) {
             const footer = runtime.createVariableNotices(body, t, element("div"), page.copy, item.name);
-            if (item.runtimeLayout) {
+            if (item.selectedMembers) renderSelectedMembers(body, item);
+            else if (item.runtimeLayout) {
                 bodies[item.name] = body;
                 renderRuntimeBody(body, state.latest[item.name], item.name);
             } else {
@@ -724,38 +923,47 @@
         }
         // A member watch shown by its composite's tree, or an expanded pointee's, instead of its own row.
         function isLeafChild(name) {
+            if (!cells[name]) return false;
             const rootName = baseName(name);
             if (rootName === name) return false;
-            const watch = state.watch;
-            const parent = watch.find((item) => item.name === rootName && isComposite(item));
-            if (parent)
-                return (
-                    !!cells[name] && !(parent.runtimeLayout && watch.find((item) => item.name === name)?.layoutExpanded)
-                );
-            return (
-                !!cells[name] &&
-                watch.some(
-                    (item) => item.runtimeLayout && isComposite(item) && runtime.runtimeMemberRoute(name, item.name)
-                )
+            const watched = state.watch.find((item) => item.name === name);
+            if (runtime.isPointeeEntry(watched)) return false;
+            return state.watch.some(
+                (item) =>
+                    isComposite(item) &&
+                    runtime.isDescendantPath(name, item.name) &&
+                    !(item.runtimeLayout && watched?.layoutExpanded)
             );
         }
         function collectLeaves(layout, name, baseAddr, options = {}) {
             return runtime.displayLayoutLeaves(layoutSymbol(name), layout, name, baseAddr, options);
         }
-        function selectionLeaves(symbol, runtimeSelected) {
+        function selectionLeaves(symbol, runtimeSelected, branchTypes) {
             const showRawMembers = showRaw(symbol.name);
+            const namedBranches = branchTypes && new Set();
+            const onBranch =
+                branchTypes &&
+                ((path, typeName, kind) => {
+                    if (namedBranches.has(path)) return;
+                    if (typeName) namedBranches.add(path);
+                    if (typeName || !branchTypes.has(path))
+                        branchTypes.set(path, typeName || t(kind === "array" ? "lw.arrayType" : "lw.compositeType"));
+                });
             const statics = collectLeaves(symbol.compositeLayout, symbol.name, symbol.address, {
                 showRaw: showRawMembers,
-                includePointers: true
+                includePointers: true,
+                onBranch
             });
             if (!runtimeSelected) return statics.filter((leaf) => !leaf.isReference);
             const visible = runtime.displayRuntimeSelection(
                 symbol,
                 state.latest[symbol.name],
                 showRawMembers,
-                page.sampleOpenTreesOnly === true
+                page.sampleOpenTreesOnly === true,
+                onBranch
             );
-            const entries = visible?.entries || [];
+            if (!visible) return statics.filter((leaf) => !leaf.isReference);
+            const entries = visible.entries;
             const listed = new Set(entries.map((leaf) => leaf.path));
             const references = runtime.runtimeContainsReference(runtime.runtimeGraph(symbol));
             return entries.concat(
@@ -808,9 +1016,20 @@
             pointerPointee,
             renderLayout,
             renderCompositeBody,
+            compositeTitle,
+            compositeType,
+            compositeOpen,
+            toggleComposite,
+            forgetPaths,
             updateComposite,
             treeSampled,
             isLeafChild,
+            needsWatchRerender,
+            renderWatchRows,
+            watchGroupContains,
+            attachedWatchEntry,
+            hasWatchedBase,
+            selectedWatchMember,
             collectLeaves,
             selectionLeaves,
             syncRuntimeExpansions,
@@ -824,6 +1043,8 @@
                 bodies = Object.create(null);
                 placed = new Set();
                 fallback = new Set();
+                renderedScalars = new Set();
+                watchGroups.clear();
             },
             get cells() {
                 return cells;

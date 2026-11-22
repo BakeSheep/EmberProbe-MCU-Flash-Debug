@@ -1248,10 +1248,17 @@ input[type="number"]::-webkit-outer-spin-button {
     display: inline-block;
     flex: none;
     width: 12px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: start;
     font-size: 9px;
     color: var(--vscode-descriptionForeground);
     transition: transform 0.15s;
     cursor: pointer;
+}
+.imp-arrow:hover {
+    background: transparent;
 }
 .imp-arrow.open {
     transform: rotate(90deg);
@@ -1278,8 +1285,21 @@ input[type="number"]::-webkit-outer-spin-button {
 .imp-row.leaf {
     background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-focusBorder) 8%);
 }
+.imp-row[data-picker-member] > .imp-name-wrap {
+    grid-column: 2;
+    padding-inline-start: var(--picker-indent, 0px);
+}
+.imp-row.leaf > .imp-name-wrap {
+    padding-inline-start: calc(16px + var(--picker-indent, 0px));
+}
+.imp-name-wrap > input[type="checkbox"] {
+    flex: none;
+    margin: 0;
+}
+.picker-member-notice {
+    padding-inline-start: var(--picker-indent, 0px);
+}
 .imp-leaf-name {
-    padding-left: 18px;
     overflow: hidden;
     color: var(--vscode-foreground);
     font: 11px var(--vscode-editor-font-family);

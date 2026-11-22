@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const { JSDOM } = require("jsdom");
+const { scenario } = require("./helpers/scenario");
 const { render } = require("./helpers/render-webview");
 const { fixture } = require("./helpers/layout-expansion-fixture");
 const { getModernWebviewContent } = require("../src/modernView");
@@ -290,4 +291,125 @@ for (const language of ["en", "zh"]) {
     );
     dom.window.close();
 }
+
+scenario("Expanded pointer pointees inside a selected-member card route notices to the external card footer", () => {
+    const outer = {
+        name: "outer",
+        displayName: "outer",
+        isComposite: true,
+        address: 0x20000000,
+        size: 8,
+        compositeLayout: {
+            kind: "struct",
+            typeName: "Outer",
+            byteSize: 8,
+            members: [
+                {
+                    name: "group",
+                    offset: 0,
+                    byteSize: 4,
+                    compositeLayout: {
+                        kind: "struct",
+                        typeName: "Group",
+                        byteSize: 4,
+                        members: [
+                            {
+                                name: "ptr",
+                                offset: 0,
+                                byteSize: 4,
+                                watchType: "u32",
+                                isPointer: true,
+                                typeName: "Target *",
+                                pointerTarget: "data"
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        runtimeLayout: {
+            root: 3,
+            types: [
+                { kind: "scalar", watchType: "u32", byteSize: 4 },
+                {
+                    kind: "class",
+                    typeName: "Target",
+                    byteSize: 8,
+                    fields: [
+                        { name: "val", type: 0, offset: 0 },
+                        { name: "_hidden", type: 0, offset: 4, memberRole: "internal" }
+                    ]
+                },
+                { kind: "pointer", typeName: "Target *", target: 1, byteSize: 4, pointerTarget: "data" },
+                {
+                    kind: "class",
+                    typeName: "Outer",
+                    byteSize: 8,
+                    fields: [{ name: "group", type: 4, offset: 0 }]
+                },
+                {
+                    kind: "class",
+                    typeName: "Group",
+                    byteSize: 4,
+                    fields: [{ name: "ptr", type: 2, offset: 0 }]
+                }
+            ]
+        }
+    };
+    const ptrWatch = {
+        name: "outer.group.ptr",
+        address: 0x20000000,
+        size: 4,
+        type: "u32",
+        isPointer: true,
+        typeName: "Target *",
+        pointerTarget: "data"
+    };
+    const pointeeWatch = runtime.pointerDerefEntry("outer.group.ptr", outer);
+    for (const language of ["en", "zh"]) {
+        for (const sidebar of [true, false]) {
+            const page = render(sidebar ? getModernWebviewContent({}, language) : getLiveWatchContent({}, language));
+            try {
+                const doc = page.document;
+                const translate = (key) => t(language, key);
+                page.send({ type: sidebar ? "availableVariables" : "variablesList", symbols: [outer] });
+                page.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [ptrWatch, pointeeWatch] });
+                const card = doc.querySelector('[data-watch-group="outer.group"]');
+                assert.ok(card, "pointer member renders in a selected-member card");
+                const body = card.querySelector(sidebar ? ".sb-body" : ".comp-body");
+                const footer = sidebar ? card.lastElementChild : card.querySelector(".comp-content").lastElementChild;
+                const pointee = body.querySelector(".pointer-pointee");
+                assert.ok(pointee, "expanded pointee renders inside the card body");
+                assert.ok(footer.matches(".variable-notices.notice-area"));
+                assert.strictEqual(body.contains(footer), false, "footer stays outside the collapsible body");
+                assert.strictEqual(pointee.querySelector(".variable-notices"), null, "no local footer inside pointee");
+                assert.strictEqual(body.querySelector(".notice"), null, "no notices inside the collapsible body");
+                assert.ok(footer.textContent.includes(translate("lw.waitSamples")));
+                page.send({
+                    type: "liveCompositeSample",
+                    samples: [
+                        {
+                            name: pointeeWatch.name,
+                            tree: {
+                                kind: "class",
+                                members: [
+                                    { name: "val", kind: "scalar", type: "u32", value: 42 },
+                                    { name: "_hidden", kind: "scalar", type: "u32", memberRole: "internal", value: 1 }
+                                ]
+                            }
+                        }
+                    ]
+                });
+                assert.strictEqual(footer.textContent.includes(translate("lw.waitSamples")), false);
+                assert.ok(footer.querySelector(".hidden-members"), "pointee notices update the external card footer");
+                assert.strictEqual(pointee.querySelector(".variable-notices"), null);
+                assert.strictEqual(body.querySelector(".notice"), null);
+                page.assertHealthy();
+            } finally {
+                page.close();
+            }
+        }
+    }
+});
+
 console.log("Variable card notice severity, footer placement, loading, refresh, names, language and actions passed");

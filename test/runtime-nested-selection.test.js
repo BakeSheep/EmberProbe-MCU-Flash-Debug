@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const zlib = require("zlib");
+const { scenario } = require("./helpers/scenario");
 const fixtures = require("./fixtures/runtime-layouts.json");
 const dwarf = require("../src/dwarf");
 const elf = require("../src/elfSymbols");
@@ -88,12 +89,11 @@ function segments(name) {
                     const hint = view.document.querySelector(sidebar ? ".sb-note" : ".comp-note").textContent;
                     assert.match(hint, language === "zh" ? /可单独添加/ : /individual members/);
                     assert.doesNotMatch(hint, language === "zh" ? /先添加|启动采样/ : /start sampling/);
-                    const member = [...view.document.querySelectorAll(sidebar ? ".av-leaf-name" : ".imp-leaf-name")]
-                        .find((node) => node.textContent === ".marker[1]")
-                        .closest(sidebar ? ".available-row" : ".imp-row");
+                    view.document.querySelector('[data-picker-path="packet.marker"] button[aria-expanded]').click();
+                    const member = view.document.querySelector('[data-picker-path="packet.marker[1]"]');
                     if (sidebar) member.querySelector(".av-watch").click();
                     else {
-                        member.querySelector("input").checked = true;
+                        member.querySelector("input").click();
                         view.document.getElementById("impAdd").click();
                     }
                     const saved = view.messages.findLast(
@@ -257,10 +257,25 @@ function segments(name) {
                     const labels = () => [
                         ...view.document.querySelectorAll(sidebar ? ".av-leaf-name" : ".imp-leaf-name")
                     ];
-                    assert.ok(labels().some((node) => node.textContent === prefix));
+                    if (item === array)
+                        view.document
+                            .querySelector(`[data-picker-path="${array.name}[0]"] button[aria-expanded]`)
+                            .click();
+                    assert.ok(labels().some((node) => node.textContent === "values"));
                     assert.ok(labels().every((node) => !/_M_|@base|_vptr/.test(node.textContent)));
                     view.send({ type: "liveCompositeSample", samples: [{ name: item.name, tree }] });
-                    const member = labels().find((node) => node.textContent === prefix + "[1]");
+                    const branch = view.document.querySelector(`[data-picker-path="${item.name + prefix}"]`);
+                    assert(branch.classList.contains("picker-branch"));
+                    const selectionControl = branch.querySelector(
+                        sidebar ? ".av-branch-watch" : ".imp-branch-checkbox"
+                    );
+                    assert.deepStrictEqual(
+                        Array.from(selectionControl.memberEntries, (entry) => entry.path || entry.name),
+                        [item.name + prefix],
+                        "a selectable runtime container retains its own recipe"
+                    );
+                    branch.querySelector("button[aria-expanded]").click();
+                    const member = labels().find((node) => node.textContent === "[1]");
                     assert.ok(member);
                     if (sidebar) {
                         assert.ok(
@@ -270,7 +285,7 @@ function segments(name) {
                         );
                         member.closest(".available-row").querySelector(".av-watch").click();
                     } else {
-                        member.closest(".imp-row").querySelector("input").checked = true;
+                        member.closest(".imp-row").querySelector("input").click();
                         view.document.getElementById("impAdd").click();
                     }
                     const saved = view.messages.findLast(
@@ -279,6 +294,33 @@ function segments(name) {
                     assert.strictEqual(saved.items[0].name, item.name + prefix + "[1]");
                     assert.strictEqual(saved.items[0].address, item.address);
                     assert.ok(saved.items[0].runtimeLayout);
+                    const containerName = item.name + prefix;
+                    const watchType = sidebar ? "sidebarWatchList" : "watchList";
+                    view.send({ type: watchType, items: [recipe(item, containerName)] });
+                    const title = view.document.querySelector(`[data-raw-name="${containerName}"]`);
+                    assert(title);
+                    const card = title.closest(sidebar ? ".value-row.composite" : ".var-card.composite");
+                    assert(card.querySelector(sidebar ? ".watch-remove" : ".remove"));
+                    assert.strictEqual(
+                        title.querySelector(".variable-name-leaf")?.textContent || title.textContent,
+                        "values"
+                    );
+                    const containerBody = card.querySelector(sidebar ? ".sb-body" : ".comp-body");
+                    assert.strictEqual(card.classList.contains("open"), false);
+                    title.click();
+                    assert.strictEqual(card.classList.contains("open"), true);
+                    view.send({
+                        type: "liveCompositeSample",
+                        samples: [
+                            {
+                                name: containerName,
+                                tree: await new RuntimeObjectReader(recipe(item, containerName), read).sample()
+                            }
+                        ]
+                    });
+                    const element = view.document.querySelector(`[data-path="${containerName}[1]"]`);
+                    assert(containerBody.contains(element));
+                    assert.strictEqual(element.querySelector(sidebar ? ".sb-mval" : ".member-value").textContent, "32");
                     view.assertHealthy();
                 } finally {
                     view.close();
@@ -312,6 +354,110 @@ function segments(name) {
         assert.strictEqual(
             (await new RuntimeObjectReader(recipe(holder, "holder.values[1]"), read).sample()).value,
             99
+        );
+
+        await scenario(
+            `DWARF ${version}: nested runtime container avoids duplicate cards, keeps typeName, isolates root layout, and owns child items`,
+            async () => {
+                assert.strictEqual(runtime.isDescendantPath("holder.values[1]", "holder.values"), true);
+                assert.strictEqual(runtime.isDescendantPath("holder.counter", "holder.values"), false);
+                assert.strictEqual(runtime.isDescendantPath("foo.0", "foo"), false);
+                assert.strictEqual(runtime.isDescendantPath("foo.0.bar", "foo.0"), true);
+                const noisyHolder = {
+                    ...holder,
+                    compositeLayout: {
+                        ...holderLayout,
+                        typeName: "Holder",
+                        members: [
+                            ...holderLayout.members,
+                            { name: "_internal", offset: 0, byteSize: 4, watchType: "u32", memberRole: "internal" },
+                            {
+                                name: "deep",
+                                offset: 0,
+                                byteSize: 4,
+                                unobservable: "depth-limit",
+                                expansionHandle: "h1"
+                            }
+                        ]
+                    }
+                };
+                const containerEntry = recipe(noisyHolder, "holder.values");
+                const elemEntry = recipe(noisyHolder, "holder.values[1]");
+                const counterEntry = recipe(noisyHolder, "holder.counter");
+                const containerTree = await new RuntimeObjectReader(containerEntry, read).sample();
+                const expectedType = containerEntry.typeName;
+                assert.ok(expectedType && expectedType !== "Holder");
+                for (const sidebar of [true, false]) {
+                    const view = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+                    try {
+                        const { document: doc } = view;
+                        const watchType = sidebar ? "sidebarWatchList" : "watchList";
+                        const watchBox = doc.getElementById(sidebar ? "liveValues" : "vars");
+                        const cards = () =>
+                            doc.querySelectorAll(sidebar ? "#liveValues > .value-row" : "#vars .var-card");
+                        const compTypeSelector = sidebar ? ".sb-comp-type" : ".comp-type";
+                        const removeSelector = sidebar ? ".watch-remove" : ".remove";
+                        if (sidebar) {
+                            view.send({ type: "availableVariables", symbols: [noisyHolder] });
+                        } else {
+                            view.send({ type: "variablesListReset", version });
+                            view.send({ type: "variablesListChunk", version, symbols: [noisyHolder] });
+                            view.send({ type: "variableTypesDone", version });
+                            // Importing the nested runtime container through the import dialog preserves its typeName.
+                            doc.getElementById("import").click();
+                            view.send({ type: "variablesListDone", version });
+                            doc.querySelector(".imp-arrow").click();
+                            doc.querySelector('[data-picker-path="holder.values"] input').click();
+                            doc.getElementById("impAdd").click();
+                            assert.strictEqual(watchBox.querySelector(compTypeSelector).textContent, expectedType);
+                        }
+                        // Watching both holder.values and holder.values[1] never creates a duplicate values card.
+                        view.send({ type: watchType, items: [containerEntry, elemEntry, counterEntry] });
+                        assert.strictEqual(watchBox.querySelector("[data-watch-group]"), null);
+                        assert.strictEqual(watchBox.querySelectorAll(compTypeSelector).length, 1);
+                        assert.strictEqual(watchBox.querySelector(compTypeSelector).textContent, expectedType);
+                        // Root holder's hidden/unobservable members do not leak onto holder.values.
+                        assert.strictEqual(watchBox.querySelector(".hidden-members"), null);
+                        assert.strictEqual(watchBox.querySelector(".layout-expansion-row"), null);
+                        // Sampling holder.values folds holder.values[1] into the container card with no duplicate node.
+                        view.send({
+                            type: "liveCompositeSample",
+                            samples: [{ name: "holder.values", tree: containerTree }]
+                        });
+                        assert.strictEqual(watchBox.querySelectorAll('[data-path="holder.values[1]"]').length, 1);
+                        assert.strictEqual(cards().length, 2, "only holder.values and holder.counter remain as cards");
+                        assert.strictEqual(watchBox.querySelector(".hidden-members"), null);
+                        assert.strictEqual(watchBox.querySelector(".layout-expansion-row"), null);
+                        // Reordering holder.values moves its child watch holder.values[1] as one block.
+                        const reordered = view.window.EmberProbeCardReorder.moveBlock(
+                            view.window.eval("state").watch,
+                            "holder.values",
+                            "holder.counter",
+                            true,
+                            view.window.eval("valueTree").attachedWatchEntry
+                        );
+                        assert.deepStrictEqual(
+                            reordered.map((item) => item.name),
+                            ["holder.counter", "holder.values", "holder.values[1]"]
+                        );
+                        // Removing holder.values removes its element child and keeps sibling holder.counter.
+                        doc.querySelector('[data-raw-name="holder.values"]')
+                            .closest(sidebar ? ".value-row.composite" : ".var-card.composite")
+                            .querySelector(removeSelector)
+                            .click();
+                        const afterRemove = view.messages.findLast(
+                            (m) => m.type === (sidebar ? "saveSidebarWatch" : "saveWatch")
+                        );
+                        assert.deepStrictEqual(
+                            afterRemove.items.map((item) => item.name),
+                            ["holder.counter"]
+                        );
+                        view.assertHealthy();
+                    } finally {
+                        view.close();
+                    }
+                }
+            }
         );
     }
     console.log(

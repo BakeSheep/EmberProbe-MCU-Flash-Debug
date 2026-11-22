@@ -9,6 +9,7 @@ const { FakeClock } = require("./helpers/fake-clock");
 const { chartHistoryHost } = require("./helpers/chart-history-host");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { normalizeWatchList } = require("../src/validation");
 const { loadProvider } = require("./helpers/load-provider");
 
 const provider = Object.create(loadProvider().prototype);
@@ -371,6 +372,248 @@ try {
 }
 console.log("ELF progressive live-watch import and lazy member rendering tests passed");
 
+scenario("Add a nested branch or one member without adding its parent in either picker", () => {
+    const field = (name, offset) => ({ name, offset, kind: "scalar", byteSize: 4, watchType: "u32" });
+    const element = { kind: "struct", typeName: "Axis", byteSize: 8, members: [field("low", 0), field("high", 4)] };
+    const symbol = {
+        name: "drive",
+        displayName: "lab::drive",
+        typeName: "Drive",
+        address: 0x20000000,
+        size: 20,
+        isComposite: true,
+        compositeLayout: {
+            kind: "struct",
+            byteSize: 20,
+            members: [
+                {
+                    name: "axes",
+                    offset: 4,
+                    byteSize: 16,
+                    compositeLayout: {
+                        kind: "array",
+                        typeName: "Axis[2]",
+                        byteSize: 16,
+                        totalElements: 2,
+                        dimensions: [2],
+                        elementType: { byteSize: 8, compositeLayout: element }
+                    }
+                },
+                field("flags", 0)
+            ]
+        }
+    };
+    for (const sidebar of [true, false]) {
+        const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+        try {
+            const { document: doc } = page;
+            const row = (path) => doc.querySelector(`[data-picker-path="${path}"]`);
+            const arrow = (path) => row(path).querySelector("button[aria-expanded]");
+            const control = (path) => row(path).querySelector(sidebar ? ".av-watch" : "input");
+            const pickerType = sidebar ? ".available-type" : ".ty";
+            const watchType = sidebar ? ".sb-comp-type" : ".comp-type";
+            const group = (document, path) => document.querySelector(`[data-watch-group="${path}"]`);
+            const head = (document, path) =>
+                group(document, path).querySelector(sidebar ? ".sb-comp-head" : ".comp-head");
+            const remove = sidebar ? ".watch-remove" : ".remove";
+            const savedItems = () =>
+                normalizeWatchList(
+                    page.messages.findLast((m) => m.type === (sidebar ? "saveSidebarWatch" : "saveWatch")).items,
+                    [symbol]
+                );
+            const saved = () => savedItems().map(({ name, address }) => [name, address]);
+            const branch = "drive.axes[1]";
+            if (!sidebar) doc.getElementById("import").click();
+            const listType = sidebar ? "availableVariables" : "variablesList";
+            page.send({ type: listType, symbols: [symbol] });
+            arrow("drive").click();
+            assert.strictEqual(row("drive.axes").querySelector(pickerType).textContent, "Axis[2]");
+            assert.strictEqual(arrow("drive.axes").getAttribute("aria-expanded"), "false");
+            assert.strictEqual(row(branch), null);
+            arrow("drive.axes").click();
+            assert.strictEqual(row(branch).querySelector(pickerType).textContent, "Axis");
+            assert.strictEqual(row(branch + ".low"), null);
+            arrow(branch).click();
+            assert.strictEqual(row(branch + ".low").style.getPropertyValue("--picker-indent"), "36px");
+            assert.strictEqual(row("drive.axes[0].low"), null);
+            const leaf = row(branch + ".low");
+            if (sidebar) {
+                assert.deepStrictEqual(
+                    Array.from(leaf.querySelector(".av-name-cell").children, (element) => element.className),
+                    ["av-write", "av-watch", "av-leaf-name"]
+                );
+            } else {
+                assert.strictEqual(arrow(branch).nextElementSibling, control(branch));
+                assert(control(branch).nextElementSibling.classList.contains("imp-name"));
+                assert(control(branch + ".low").nextElementSibling.classList.contains("imp-leaf-name"));
+                assert.strictEqual(control(branch + ".low").parentElement, leaf.querySelector(".imp-name-wrap"));
+            }
+            control(branch + ".low").click();
+            if (sidebar) {
+                assert.deepStrictEqual(saved(), [[branch + ".low", symbol.address + 12]]);
+                assert.strictEqual(control(branch).getAttribute("aria-pressed"), "mixed");
+                arrow("drive.axes").click();
+                arrow("drive.axes").click();
+                assert.strictEqual(control(branch).getAttribute("aria-pressed"), "mixed");
+            } else {
+                assert.strictEqual(control(branch).indeterminate, true);
+                arrow("drive.axes").click();
+                assert.strictEqual(row(branch), null);
+                const filter = doc.getElementById("impFilter");
+                filter.value = "flags";
+                filter.dispatchEvent(new page.window.Event("input"));
+                doc.getElementById("impAdd").click();
+                assert.deepStrictEqual(saved(), [[branch + ".low", symbol.address + 12]]);
+                doc.getElementById("import").click();
+                page.send({ type: listType, symbols: [symbol] });
+                arrow("drive.axes").click();
+            }
+            control(branch).click();
+            if (!sidebar) {
+                assert.strictEqual(control("drive").checked, false);
+                assert.strictEqual(control("drive.axes[0]").checked, false);
+                arrow("drive").click();
+                doc.getElementById("impAdd").click();
+            }
+            assert.deepStrictEqual(saved(), [
+                [branch + ".low", symbol.address + 12],
+                [branch + ".high", symbol.address + 16]
+            ]);
+            const heading = head(doc, branch);
+            assert.strictEqual(group(doc, "drive"), null);
+            assert.strictEqual(group(doc, "drive.axes"), null);
+            assert.strictEqual(heading.querySelector(watchType).textContent, "Axis");
+            assert.strictEqual(heading.querySelector(".variable-name-prefix").textContent, "lab::");
+            assert.strictEqual(heading.querySelector(".variable-name-leaf").textContent, "[1]");
+            assert.strictEqual(group(doc, "drive.axes[0]"), null);
+            const memberRow = sidebar ? ".sb-mrow" : ".member-row";
+            const memberValue = sidebar ? ".sb-mval" : ".member-value";
+            const watched = group(doc, branch);
+            assert(watched.matches(sidebar ? ".value-row.composite" : ".var-card.composite"));
+            assert.strictEqual(watched.querySelectorAll(remove).length, 1);
+            assert.strictEqual(watched.querySelectorAll(".value-row, .var-card").length, 0);
+            assert.strictEqual(watched.querySelectorAll(memberRow).length, 2);
+            for (const member of watched.querySelectorAll(memberRow)) {
+                const classes = Array.from(member.children, (child) => child.className);
+                assert.deepStrictEqual(
+                    classes,
+                    sidebar ? ["sb-mname", "sb-mtype", "sb-mval"] : ["curve-toggle", "member-type", "member-value"]
+                );
+            }
+            page.send({
+                type: sidebar ? "liveSample" : "chartValues",
+                samples: [{ name: branch + ".low", value: 23 }]
+            });
+            if (sidebar) page.window.refreshDisplayedValues();
+            else page.window.updateValues();
+            assert.strictEqual(watched.querySelector(`[data-path="${branch}.low"] ${memberValue}`).textContent, "23");
+            head(doc, branch).click();
+            assert.strictEqual(watched.classList.contains("open"), false);
+            const restored = render(
+                sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"),
+                page.getState()
+            );
+            try {
+                const { compositeLayout, ...metadata } = symbol;
+                restored.send({ type: listType + "Reset", version: "restored" });
+                restored.send({ type: listType + "Chunk", version: "restored", symbols: [metadata] });
+                restored.send({
+                    type: "compositeLayoutResult",
+                    name: symbol.name,
+                    version: "restored",
+                    layout: compositeLayout
+                });
+                restored.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: savedItems() });
+                const restoredHead = head(restored.document, branch);
+                assert.strictEqual(group(restored.document, branch).classList.contains("open"), false);
+                assert.strictEqual(restoredHead.querySelector(watchType).textContent, "Axis");
+                restoredHead.click();
+                assert.strictEqual(group(restored.document, branch).classList.contains("open"), true);
+                const restoredDoc = restored.document;
+                if (sidebar) {
+                    for (const path of ["drive", "drive.axes", branch])
+                        restoredDoc.querySelector(`[data-picker-path="${path}"] .av-arrow`).click();
+                    restoredDoc.querySelector(`[data-picker-path="${branch}.low"] .av-watch`).click();
+                } else {
+                    restoredDoc
+                        .querySelector(`[data-series-name="${branch}.low"]`)
+                        .dispatchEvent(new restored.window.MouseEvent("contextmenu", { bubbles: true }));
+                    restoredDoc.getElementById("seriesRemove").click();
+                }
+                const { items } = restored.messages.findLast(
+                    (message) => message.type === (sidebar ? "saveSidebarWatch" : "saveWatch")
+                );
+                assert.deepStrictEqual(
+                    items.map((item) => item.name),
+                    [branch + ".high"]
+                );
+                restored.send({
+                    type: sidebar ? "sidebarWatchList" : "watchList",
+                    items: normalizeWatchList([...items, { name: "drive.flags" }], [symbol])
+                });
+                group(restoredDoc, branch).querySelector(remove).click();
+                const savedAfterClose = restored.messages.findLast(
+                    (message) => message.type === (sidebar ? "saveSidebarWatch" : "saveWatch")
+                );
+                assert.deepStrictEqual(
+                    savedAfterClose.items.map((item) => item.name),
+                    ["drive.flags"]
+                );
+                assert.strictEqual(group(restoredDoc, branch), null);
+                restored.assertHealthy();
+            } finally {
+                restored.close();
+            }
+            if (!sidebar) {
+                doc.getElementById("import").click();
+                page.send({ type: listType, symbols: [symbol] });
+                arrow("drive").click();
+                control("drive.flags").click();
+                arrow("drive").click();
+                const saveCount = page.messages.filter((message) => message.type === "saveWatch").length;
+                page.send({ type: "variablesListReset", version: "replacement", generation: 2 });
+                doc.getElementById("impAdd").click();
+                assert.strictEqual(page.messages.filter((message) => message.type === "saveWatch").length, saveCount);
+            }
+            page.assertHealthy();
+        } finally {
+            page.close();
+        }
+    }
+});
+
+scenario("A summarized ELF root keeps its display name and canonical member path", () => {
+    const symbol = {
+        name: "counter",
+        address: 0x20000000,
+        size: 4,
+        isComposite: true,
+        compositeLayout: {
+            kind: "class",
+            byteSize: 4,
+            stdSummary: { kind: "atomic", targets: ["_M_i"] },
+            members: [{ name: "_M_i", offset: 0, byteSize: 4, watchType: "i32", memberRole: "internal" }]
+        }
+    };
+    const page = render(getLiveWatchContent({}, "en"));
+    try {
+        const { document: doc } = page;
+        doc.getElementById("import").click();
+        page.send({ type: "variablesList", symbols: [symbol] });
+        doc.querySelector(".imp-arrow").click();
+        assert.strictEqual(doc.querySelector(".imp-leaf-name").textContent, symbol.name);
+        doc.querySelector('input[data-leaf-path="counter._M_i"]').click();
+        doc.getElementById("impAdd").click();
+        assert.strictEqual(
+            page.messages.findLast((message) => message.type === "saveWatch").items[0].name,
+            "counter._M_i"
+        );
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+});
+
 (async () => {
     const layout = {
         kind: "struct",
@@ -413,11 +656,11 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             doc.getElementById("import").click();
             page.send({ type: "variablesList", symbols: [symbol, { name: "other", watchType: "u32" }] });
             search(" GAIN ");
-            assert.equal(doc.querySelectorAll(".imp-children.open").length, 1, "matching members open their parent");
-            assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".settings.gain");
+            assert.equal(doc.querySelectorAll(".imp-children.open").length, 2, "matching members open their ancestors");
+            assert.equal(doc.querySelector(".imp-leaf-name").textContent, "gain");
             assert.equal(doc.querySelector(".imp-leaf-name").title, "ns::device.settings.gain");
             search("ns::device.samples[2]");
-            assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".samples[2]");
+            assert.equal(doc.querySelector(".imp-leaf-name").textContent, "[2]");
             search("missing");
             assert.equal(doc.querySelector(".imp-row"), null);
             doc.getElementById("impFilterClear").click();
@@ -427,7 +670,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             doc.getElementById("impFilterClear").click();
             assert.equal(doc.querySelectorAll(".imp-children.open").length, 1, "manual expansion is retained");
             search("gain");
-            doc.querySelector("input[data-leaf-path]").checked = true;
+            doc.querySelector("input[data-leaf-path]").click();
             doc.getElementById("impAdd").click();
             const imported = page.messages.findLast((m) => m.type === "saveWatch").items[0];
             assert.equal(
@@ -476,7 +719,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
                     }
                 ]
             });
-            assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".telemetry[2]");
+            assert.equal(doc.querySelector(".imp-leaf-name").textContent, "[2]");
             assert.ok(doc.querySelector(".imp-children.open"), "runtime shape changes update an active member search");
             assert.equal(
                 page.window.eval("state").importExpanded[symbol.name],
@@ -525,7 +768,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         lazy.send({ type: "compositeLayoutResult", version: "stale", name: "device0", layout });
         assert.equal(doc.querySelector(".imp-leaf-name"), null, "ignore stale ELF layouts");
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device0", layout });
-        assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".settings.gain");
+        assert.equal(doc.querySelector(".imp-leaf-name").textContent, "gain");
         doc.querySelector("input[data-leaf-path]").click();
         await clock.advance(220);
         assert.equal(requests().length, 5, "continue searching when a slot becomes free");
@@ -658,6 +901,227 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             graph.close();
         }
     });
+
+    scenario("Removing a collapsed selected-member card clears its collapse and nested branch state", () => {
+        const field = (name, offset) => ({ name, offset, kind: "scalar", byteSize: 4, watchType: "u32" });
+        const element = { kind: "struct", typeName: "Axis", byteSize: 8, members: [field("low", 0), field("high", 4)] };
+        const symbol = {
+            name: "drive",
+            displayName: "lab::drive",
+            typeName: "Drive",
+            address: 0x20000000,
+            size: 20,
+            isComposite: true,
+            compositeLayout: {
+                kind: "struct",
+                byteSize: 20,
+                members: [
+                    {
+                        name: "axes",
+                        offset: 4,
+                        byteSize: 16,
+                        compositeLayout: {
+                            kind: "array",
+                            typeName: "Axis[2]",
+                            byteSize: 16,
+                            totalElements: 2,
+                            dimensions: [2],
+                            elementType: { byteSize: 8, compositeLayout: element }
+                        }
+                    },
+                    field("flags", 0)
+                ]
+            }
+        };
+        for (const sidebar of [true, false]) {
+            const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+            try {
+                const { document: doc } = page;
+                const listType = sidebar ? "availableVariables" : "variablesList";
+                const watchType = sidebar ? "sidebarWatchList" : "watchList";
+                const head = (path) =>
+                    doc.querySelector(`[data-watch-group="${path}"] ${sidebar ? ".sb-comp-head" : ".comp-head"}`);
+                const remove = (path) =>
+                    doc.querySelector(`[data-watch-group="${path}"] ${sidebar ? ".watch-remove" : ".remove"}`);
+                const expanded = () => page.window.eval("state").expanded;
+                page.send({ type: listType, symbols: [symbol] });
+                const branch = "drive.axes[1]";
+                const branchItems = normalizeWatchList(
+                    [{ name: branch + ".low" }, { name: branch + ".high" }],
+                    [symbol]
+                );
+                page.send({ type: watchType, items: branchItems });
+                assert.strictEqual(
+                    doc.querySelector(`[data-watch-group="${branch}"]`).classList.contains("open"),
+                    true
+                );
+                head(branch).click();
+                assert.strictEqual(expanded()["\0" + branch], false);
+                assert.strictEqual(
+                    doc.querySelector(`[data-watch-group="${branch}"]`).classList.contains("open"),
+                    false
+                );
+                remove(branch).click();
+                assert.strictEqual(expanded()["\0" + branch], undefined, "closing card forgets collapsed group key");
+                const savedExpanded = page.getState()[sidebar ? "sbExpanded" : "expanded"] || {};
+                assert.strictEqual(savedExpanded["\0" + branch], undefined);
+                page.send({ type: watchType, items: branchItems });
+                assert.strictEqual(
+                    doc.querySelector(`[data-watch-group="${branch}"]`).classList.contains("open"),
+                    true,
+                    "re-added branch card opens by default"
+                );
+                // Nested sub-branches inside a selected-member card clear when the card is closed.
+                const twoAxes = normalizeWatchList(
+                    [{ name: "drive.axes[0].low" }, { name: "drive.axes[1].low" }],
+                    [symbol]
+                );
+                page.send({ type: watchType, items: twoAxes });
+                const nestedHead = doc.querySelector(
+                    `[data-watch-group="drive.axes"] ${sidebar ? ".sb-body .sb-comp-head" : ".comp-body .comp-head"}`
+                );
+                nestedHead.click();
+                assert.strictEqual(expanded()["drive.axes[0]"], true);
+                head("drive.axes").click();
+                assert.strictEqual(expanded()["\0drive.axes"], false);
+                remove("drive.axes").click();
+                assert.strictEqual(expanded()["\0drive.axes"], undefined);
+                assert.strictEqual(expanded()["drive.axes[0]"], undefined);
+                // Removing a leaf watch does not clear branch expansion owned by a watched root composite.
+                page.send({
+                    type: watchType,
+                    items: normalizeWatchList([{ name: "drive" }, { name: "drive.axes[1].low" }], [symbol])
+                });
+                expanded()["drive.axes[1]"] = true;
+                if (sidebar) page.window.sbRemove("drive.axes[1].low", false);
+                else page.window.removeVar("drive.axes[1].low");
+                assert.strictEqual(expanded()["drive.axes[1]"], true);
+                page.assertHealthy();
+            } finally {
+                page.close();
+            }
+        }
+    });
+
+    await scenario(
+        "Late compositeLayoutResult and host layout preparation refresh watched nested members",
+        async () => {
+            const field = (name, offset) => ({ name, offset, kind: "scalar", byteSize: 4, watchType: "u32" });
+            const layout = {
+                kind: "struct",
+                typeName: "Drive",
+                byteSize: 20,
+                members: [
+                    {
+                        name: "axes",
+                        offset: 4,
+                        byteSize: 16,
+                        compositeLayout: {
+                            kind: "array",
+                            typeName: "Axis[2]",
+                            byteSize: 16,
+                            totalElements: 2,
+                            dimensions: [2],
+                            elementType: {
+                                byteSize: 8,
+                                compositeLayout: {
+                                    kind: "struct",
+                                    typeName: "Axis",
+                                    byteSize: 8,
+                                    members: [field("low", 0), field("high", 4)]
+                                }
+                            }
+                        }
+                    }
+                ]
+            };
+            const metadata = { name: "drive", displayName: "drive", address: 0x20000000, size: 20, isComposite: true };
+            const member = { name: "drive.axes[1].low", address: 0x2000000c, size: 4, type: "u32" };
+            for (const sidebar of [true, false]) {
+                const page = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+                try {
+                    const { document: doc } = page;
+                    const listType = sidebar ? "availableVariables" : "variablesList";
+                    const watchType = sidebar ? "sidebarWatchList" : "watchList";
+                    const watchTypeEl = () =>
+                        doc.querySelector(
+                            `[data-watch-group="drive.axes[1]"] ${sidebar ? ".sb-comp-type" : ".comp-type"}`
+                        );
+                    page.send({ type: listType + "Reset", version: "late-1" });
+                    page.send({ type: listType + "Chunk", version: "late-1", symbols: [{ ...metadata }] });
+                    page.send({ type: watchType, items: [member] });
+                    assert.strictEqual(watchTypeEl().textContent, "object", "fallback type before layout arrives");
+                    page.send({ type: "compositeLayoutResult", version: "late-1", name: "drive", layout });
+                    assert.strictEqual(watchTypeEl().textContent, "Axis", "late layout redraws watched nested members");
+                    page.assertHealthy();
+                } finally {
+                    page.close();
+                }
+            }
+            // Host refreshBindings and broadcast prepareLayouts both forward compositeLayoutResult to ready views.
+            const { CACHE_KEYS } = require("../src/cacheKeys");
+            const P = loadProvider();
+            const p = Object.create(P.prototype);
+            const sidebarMessages = [];
+            const panelMessages = [];
+            const symbol = { ...metadata };
+            const elfResult = { elf: { sha256: "v-host" }, symbols: [symbol], warnings: [], dwarfReady: true };
+            p._context = {
+                workspaceState: {
+                    get: (key) =>
+                        key === CACHE_KEYS.elfPath ? "app.elf" : key === CACHE_KEYS.sidebarWatchList ? [member] : []
+                }
+            };
+            p._elfService = {
+                generation: 3,
+                cache: elfResult,
+                symbolByName: new Map([[symbol.name, symbol]]),
+                invalidate() {},
+                ready: async () => elfResult,
+                layout: async (name) => {
+                    if (name !== "drive") return null;
+                    symbol.compositeLayout = layout;
+                    return layout;
+                }
+            };
+            p._watchLists = { invalidate() {}, rebind: async () => new Map() };
+            p._sampling.invalidateRuntimeRam = () => {};
+            p._sampling.refreshSamplingPlan = async () => {};
+            p._latestSidebarSamples = new Map();
+            p._webviewView = { webview: { postMessage: (msg) => sidebarMessages.push(msg) } };
+            p._livePanels = new Map([
+                ["1", { ready: true, watchKey: "g1", latestSamples: new Map(), post: (msg) => panelMessages.push(msg) }]
+            ]);
+            p._syncSidebarTarget = () => {};
+            p._syncGraphTarget = () => {};
+            p._scalarWatchList = () => [];
+            p._watchListWithDisplayNames = () => [];
+            await p._elfView.refreshBindings();
+            assert.ok(
+                sidebarMessages.some(
+                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                )
+            );
+            assert.ok(
+                panelMessages.some(
+                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                )
+            );
+            sidebarMessages.length = 0;
+            panelMessages.length = 0;
+            await p._elfView.prepareLayouts(["drive.axes[1].low"], { broadcast: true });
+            assert.ok(
+                sidebarMessages.some(
+                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                )
+            );
+            assert.ok(
+                panelMessages.some(
+                    (m) => m.type === "compositeLayoutResult" && m.name === "drive" && m.layout === layout
+                )
+            );
+        }
+    );
 
     console.log("Live-watch recursive member search and bounded lazy layout tests passed");
 })().catch((error) => {

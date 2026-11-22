@@ -95,7 +95,7 @@ const valueTree = EmberProbeValueTree.create({
     },
     state,
     savedPointers: { pointers: uiState.sbLastPointers, version: uiState.sbLastPointersVersion },
-    displayName: (path) => sbDisplayName({ name: path }),
+    displayName: (path, item) => sbDisplayName(item || { name: path }),
     save: () => saveSbUi(),
     sampleOpenTreesOnly: true,
     rerender: () => renderValues(),
@@ -139,16 +139,17 @@ const writes = EmberProbeWriteList.create({
     }
 });
 // Members and pointees follow their card when it is dragged to a new place.
-function sbAttachedEntry(entry, name) {
-    return (
-        EmberProbeRuntime.variableBaseName(entry.name) === name || EmberProbeRuntime.isPointeeDescendant(entry, name)
-    );
-}
 const sbWatchReorder =
     liveBox &&
     EmberProbeCardReorder.attach(liveBox, {
         onMove: (name, target, after) => {
-            const next = EmberProbeCardReorder.moveBlock(state.watch, name, target, after, sbAttachedEntry);
+            const next = EmberProbeCardReorder.moveBlock(
+                state.watch,
+                name,
+                target,
+                after,
+                valueTree.attachedWatchEntry
+            );
             if (next === state.watch) return;
             state.watch = next;
             renderValues();
@@ -646,20 +647,21 @@ function saveSideWatch() {
 function sbDisplayName(item) {
     return writes.displayName(item);
 }
-function sbRemove(name, isComp) {
-    if (isComp) {
-        state.watch = state.watch.filter((w) => w.name !== name && EmberProbeRuntime.variableBaseName(w.name) !== name);
-        delete state.rawMembers[name];
-        for (const paths of [state.expanded, state.arrayShown])
-            Object.keys(paths).forEach((key) => {
-                if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete paths[key];
-            });
-    } else {
-        const removed = state.watch.filter((w) => EmberProbeRuntime.isPointeeDescendant(w, name));
-        state.watch = state.watch.filter((w) => w.name !== name && !removed.includes(w));
-        removed.forEach((w) => sbForgetValues(w.name));
-    }
-    sbForgetValues(name);
+function sbRemove(name, isComp, members) {
+    const removed = state.watch.filter((w) =>
+        members
+            ? valueTree.selectedWatchMember(w, members)
+            : w.name === name ||
+              (isComp
+                  ? EmberProbeRuntime.isDescendantPath(w.name, name)
+                  : EmberProbeRuntime.isPointeeDescendant(w, name))
+    );
+    state.watch = state.watch.filter((w) => !removed.includes(w));
+    if (isComp && !members) delete state.rawMembers[name];
+    const removedNames = members ? removed.map((w) => w.name) : [name, ...removed.map((w) => w.name)];
+    valueTree.forgetPaths([state.expanded, state.arrayShown], removedNames, members ? name : undefined);
+    for (const w of removed) sbForgetValues(w.name);
+    if (!members) sbForgetValues(name);
 }
 function sbForgetValues(name) {
     writes.forget(name);
@@ -669,33 +671,29 @@ function sbForgetValues(name) {
     delete state.latestEnum[name];
     delete state.latestPointer[name];
 }
-function sbToggle(entry) {
-    if (state.watch.some((w) => w.name === entry.name)) {
-        sbRemove(entry.name, !!entry.isComposite);
+function sbToggleEntries(entries) {
+    const watched = new Set(state.watch.map((item) => item.name));
+    if (entries.every((entry) => watched.has(entry.name))) {
+        for (const entry of entries) sbRemove(entry.name, !!entry.isComposite);
     } else {
-        state.watch.push(entry);
-        if (entry.isComposite) state.expanded[entry.name] = true;
+        for (const entry of entries) {
+            if (watched.has(entry.name)) continue;
+            state.watch.push(entry);
+            if (entry.isComposite) state.expanded[entry.name] = true;
+        }
     }
     renderValues();
     updateAvailableSelections();
     saveSideWatch();
     saveSbUi();
 }
+function sbToggle(entry) {
+    sbToggleEntries([entry]);
+}
 function renderValues() {
     writes.sync();
     valueTree.reset();
     liveBox.textContent = "";
-    // Expanded pointees render inside their pointer rows while composites and rows are built.
-    const topLevel = state.watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
-    const rows = new Map();
-    topLevel.filter(isComposite).forEach((item) => {
-        sbRenderComposite(item);
-        rows.set(item.name, [liveBox.lastChild]);
-    });
-    liveBox.textContent = "";
-    topLevel.forEach((item) => {
-        if (!isComposite(item) && !valueTree.isLeafChild(item.name)) rows.set(item.name, sbRenderScalarRow(item));
-    });
     if (!state.watch.length) {
         document.getElementById("watchCount").textContent = "0";
         const e = document.createElement("div");
@@ -704,22 +702,12 @@ function renderValues() {
         liveBox.appendChild(e);
         return;
     }
-    topLevel.forEach((item) => {
-        const nodes = rows.get(item.name) || [];
-        if (nodes[0])
-            EmberProbeCardReorder.decorate(nodes[0], item.name, t("sb.dragToReorder", { name: sbDisplayName(item) }));
-        liveBox.append(...nodes);
+    valueTree.renderWatchRows(liveBox, {
+        scalar: sbRenderScalarRow,
+        composite: sbRenderComposite,
+        decorate: EmberProbeCardReorder.decorate,
+        dragKey: "sb.dragToReorder"
     });
-    // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
-    state.watch
-        .filter(EmberProbeRuntime.isPointeeEntry)
-        .sort((a, b) => a.name.length - b.name.length)
-        .forEach((item) => {
-            if (valueTree.placed.has(item.name)) return;
-            valueTree.fallback.add(item.name);
-            if (isComposite(item)) sbRenderComposite(item);
-            else liveBox.append(...sbRenderScalarRow(item));
-        });
     document.getElementById("watchCount").textContent = String(
         state.watch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
     );
@@ -752,6 +740,7 @@ function sbRenderScalarRow(item) {
         renderValues();
         updateAvailableSelections();
         saveSideWatch();
+        saveSbUi();
     };
     val.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -797,7 +786,9 @@ const variablePicker = EmberProbeSymbolPicker.create({
     pending: availableLayoutPending,
     typesReady: () => availableTypesReady,
     post: api && ((message) => api.postMessage(message)),
-    childrenClass: "av-children"
+    childrenClass: "av-children",
+    arrowClass: "av-arrow",
+    branchStyle: { rowClass: "available-row", nameWrapClass: "av-name-wrap", nameClass: "available-name" }
 });
 function availableOriginTitle(symbol) {
     const lines = [];
@@ -838,36 +829,11 @@ function sbToggleAvailable(sym, entry = sbAvailableEntry(sym)) {
     availableLayoutPending.add(sym.name);
     api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: state.version });
 }
-// The watch and write entry of one member row.
-function sbLeafEntry(lf) {
-    const { runtimeLayout, runtimeSegments, runtimeLeaf, runtimeStaticPointers, compositeLayout, isComposite } = lf;
-    return {
-        name: lf.path,
-        displayName: sbDisplayName({ name: lf.displayPath || lf.path, displayName: lf.displayName }),
-        address: lf.address,
-        size: lf.size || EmberProbeRuntime.typeByteLength(lf.type),
-        type: lf.type,
-        ...(lf.isPointer ? { isPointer: true, typeName: lf.typeName, pointerTarget: lf.pointerTarget } : {}),
-        ...(lf.layoutExpanded ? { layoutExpanded: true, staticRuntimeStorage: lf.staticRuntimeStorage } : {}),
-        ...(lf.isBoolean ? { isBoolean: true } : {}),
-        ...(Number.isInteger(lf.bitSize) ? { bitSize: lf.bitSize, bitOffset: lf.bitOffset } : {}),
-        ...(lf.isConst ? { isConst: true } : {}),
-        ...(lf.isReference ? { isReference: true, typeName: lf.typeName } : {}),
-        ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
-        ...(lf.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
-        ...(runtimeLayout
-            ? { runtimeLayout, runtimeSegments, runtimeLeaf, runtimeStaticPointers, compositeLayout, isComposite }
-            : {})
-    };
-}
-function sbCompositeRow(sym, open, toggle, on) {
+function sbCompositeRow(sym, arrow, on) {
     const row = document.createElement("div");
     row.className = "available-row comp";
     const wrap = document.createElement("span");
     wrap.className = "av-name-wrap";
-    const arrow = document.createElement("span");
-    arrow.className = "av-arrow" + (open ? " open" : "");
-    arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "available-name";
     EmberProbeRuntime.renderSymbolName(nm, sbDisplayName(sym), sym);
@@ -886,19 +852,29 @@ function sbCompositeRow(sym, open, toggle, on) {
     ty.className = "available-type";
     ty.textContent = sym.typeName || t("lw.unknownType");
     row.append(wrap, ty);
-    arrow.onclick = toggle;
-    nm.onclick = (event) => {
-        if (!sym.compositeLayout && !sym.runtimeLayout) return toggle(event);
+    nm.onclick = () => {
+        if (!sym.compositeLayout && !sym.runtimeLayout) return arrow.click();
         sbToggleAvailable(sym);
     };
-    return { row, arrow };
+    return row;
+}
+function sbBranchControls(leaves, _path, typeName) {
+    const type = document.createElement("span");
+    type.className = "available-type";
+    type.textContent = type.title = typeName;
+    if (!leaves.length) return { columns: [type] };
+    const entries = leaves.map((leaf) => EmberProbeSymbolPicker.watchMember(leaf, sbDisplayName));
+    const selection = mkAvBtn("av-watch av-branch-watch", "", false, false, "", () => sbToggleEntries(entries));
+    selection.memberEntries = entries;
+    EmberProbeSymbolPicker.updateBranchButton(selection, new Set(state.watch.map((item) => item.name)), t);
+    return { selection, columns: [type] };
 }
 function sbLeafRow(lf) {
     const lb = document.createElement("div");
     lb.className = "available-row leaf";
     const cell = document.createElement("span");
     cell.className = "av-name-cell";
-    const leafEntry = sbLeafEntry(lf);
+    const leafEntry = EmberProbeSymbolPicker.watchMember(lf, sbDisplayName);
     cell.appendChild(mkWriteBtn(leafEntry));
     cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
     const ln = document.createElement("span");
@@ -967,7 +943,8 @@ function renderAvailableContents(content) {
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
     const selected = new Set(state.watch.map((w) => w.name));
     const { matching, list } = variablePicker.render(content, query, {
-        composite: (sym, open, toggle) => sbCompositeRow(sym, open, toggle, selected.has(sym.name)),
+        composite: (sym, arrow) => sbCompositeRow(sym, arrow, selected.has(sym.name)),
+        branchControls: sbBranchControls,
         leaf: (lf) => sbLeafRow(lf),
         scalar: (sym) => sbScalarRow(sym, selected.has(sym.name))
     });
@@ -1022,6 +999,9 @@ function mkWatchBtn(name, disabled, reason, handler) {
 function updateAvailableSelections() {
     const watched = new Set(state.watch.map((item) => item.name));
     const written = new Set(state.writeList.map((item) => item.name));
+    availableBox
+        .querySelectorAll(".av-branch-watch")
+        .forEach((button) => EmberProbeSymbolPicker.updateBranchButton(button, watched, t));
     availableBox.querySelectorAll("[data-selection-name]").forEach((button) => {
         if (button.disabled) return;
         const isWrite = button.classList.contains("av-write");
@@ -1069,22 +1049,21 @@ function saveSbUi() {
     valueTree.syncRuntimeExpansions();
 }
 
-function sbRenderComposite(item) {
+function sbRenderComposite(item, box) {
     const row = document.createElement("div");
-    row.className = "value-row composite" + (state.expanded[item.name] ? " open" : "");
+    row.className = "value-row composite" + (valueTree.compositeOpen(item) ? " open" : "");
     const head = document.createElement("div");
     head.className = "sb-comp-head";
-    dataBreakpoints.decorate(head, item.name);
+    if (!item.selectedMembers) dataBreakpoints.decorate(head, item.name);
     const arrow = document.createElement("span");
-    arrow.className = "sb-arrow" + (state.expanded[item.name] ? " open" : "");
+    arrow.className = "sb-arrow" + (valueTree.compositeOpen(item) ? " open" : "");
     arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
-    EmberProbeRuntime.renderVariableName(nm, sbDisplayName(item), item.name);
-    const lay = item.compositeLayout || {};
+    EmberProbeRuntime.renderVariableName(nm, valueTree.compositeTitle(item), item.name);
     const ty = document.createElement("span");
     ty.className = "sb-comp-type";
-    ty.textContent = item.typeName || lay.typeName || "";
+    ty.textContent = valueTree.compositeType(item);
     const sp = document.createElement("span");
     sp.className = "sb-comp-sp";
     const rm = document.createElement("button");
@@ -1093,7 +1072,7 @@ function sbRenderComposite(item) {
     rm.title = t("sb.removeFromWatch");
     rm.onclick = (e) => {
         e.stopPropagation();
-        sbRemove(item.name, true);
+        sbRemove(item.name, true, item.selectedMembers);
         renderValues();
         updateAvailableSelections();
         saveSideWatch();
@@ -1103,15 +1082,15 @@ function sbRenderComposite(item) {
     const body = document.createElement("div");
     body.className = "sb-body";
     head.onclick = () => {
-        state.expanded[item.name] = !state.expanded[item.name];
-        row.classList.toggle("open", state.expanded[item.name]);
-        arrow.classList.toggle("open", state.expanded[item.name]);
+        const open = valueTree.toggleComposite(item);
+        row.classList.toggle("open", open);
+        arrow.classList.toggle("open", open);
         saveSbUi();
     };
     const footer = valueTree.renderCompositeBody(body, item);
     row.append(head, body, footer);
-    liveBox.appendChild(row);
-    valueTree.updateComposite(item.name);
+    box.appendChild(row);
+    if (!item.selectedMembers) valueTree.updateComposite(item.name);
 }
 function sbOnComposite(samples) {
     writes.sampled(samples);
@@ -1131,8 +1110,9 @@ function sbOnComposite(samples) {
         }
     });
     if (refreshAvailable) renderAvailable();
-    // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card.
-    if ([...valueTree.fallback].some((name) => valueTree.placed.has(name))) renderValues();
+    // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card,
+    // or members that still have their own scalar row.
+    if (valueTree.needsWatchRerender()) renderValues();
     valueRefresh.schedule();
 }
 function updateValues(samples) {
@@ -1604,12 +1584,12 @@ window.EmberProbeMessages.connect(window, {
             symbol.unsupportedReason = symbol.layoutError;
         }
         if (symbol.isReference && !symbol.runtimeLayout) symbol.layoutError ||= t("lw.compositeNoLayout");
-        if (
+        const added =
             availableAddPending.delete(m.name) &&
             !symbol.layoutError &&
-            !state.watch.some((item) => item.name === m.name)
-        )
-            sbToggle(sbAvailableEntry(symbol));
+            !state.watch.some((item) => item.name === m.name);
+        if (added) sbToggle(sbAvailableEntry(symbol));
+        else if (m.layout && valueTree.hasWatchedBase(m.name)) renderValues();
         renderAvailable();
     },
     debugSessionChanged: function () {

@@ -24,6 +24,7 @@ const SHARED_PRELUDE = [
     "notice.js",
     "elfDiagnostics.js",
     "runtimeWatchPath.js",
+    "variableNotices.js",
     "runtime.js",
     "valueTree.js",
     "symbolPicker.js",

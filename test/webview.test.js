@@ -721,8 +721,8 @@ console.log("Live-watch keyboard autocomplete tests passed");
             assert.equal(doc.querySelectorAll(".av-children.open").length, 0);
             search("GAIN");
             assert.equal(doc.querySelectorAll(".available-row.comp").length, 1);
-            assert.equal(doc.querySelectorAll(".av-children.open").length, 1, "member matches open their parent");
-            assert.equal(doc.querySelector(".av-leaf-name").textContent, ".settings.gain");
+            assert.equal(doc.querySelectorAll(".av-children.open").length, 2, "member matches open their ancestors");
+            assert.equal(doc.querySelector(".av-leaf-name").textContent, "gain");
             assert.equal(doc.querySelector(".av-leaf-name").title, "ns::device.settings.gain");
             assert.ok(doc.querySelector(".available-row.leaf .av-write").disabled, "const remains read-only");
             doc.querySelector(".available-row.leaf .av-watch").click();
@@ -731,7 +731,7 @@ console.log("Live-watch keyboard autocomplete tests passed");
             assert.equal(saved.address, 0x2000000c);
             assert.equal(saved.isConst, true);
             search("ns::device.samples[2]");
-            assert.equal(doc.querySelector(".av-leaf-name").textContent, ".samples[2]");
+            assert.equal(doc.querySelector(".av-leaf-name").textContent, "[2]");
             search("missing");
             assert.equal(doc.querySelector(".available-row"), null);
             search("");
@@ -777,7 +777,7 @@ console.log("Live-watch keyboard autocomplete tests passed");
                     }
                 ]
             });
-            assert.equal(doc.querySelector(".av-leaf-name").textContent, ".telemetry[2]");
+            assert.equal(doc.querySelector(".av-leaf-name").textContent, "[2]");
             assert.ok(doc.querySelector(".av-children.open"), "new sampled members update active search results");
             view.assertHealthy();
         } finally {
@@ -808,7 +808,7 @@ console.log("Live-watch keyboard autocomplete tests passed");
         lazy.send({ type: "compositeLayoutResult", name: "device0", version: "stale-elf", layout });
         assert.equal(doc.querySelector(".av-leaf-name"), null, "ignore stale ELF results");
         lazy.send({ type: "compositeLayoutResult", name: "device0", version: "elf-1", layout });
-        assert.equal(doc.querySelector(".av-leaf-name").textContent, ".settings.gain");
+        assert.equal(doc.querySelector(".av-leaf-name").textContent, "gain");
         await clock.advance(220);
         assert.equal(requests().length, 5, "continue searching remaining composites as slots become free");
         search("");
