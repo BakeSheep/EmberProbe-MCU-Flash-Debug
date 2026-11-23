@@ -107,8 +107,7 @@ button {
     position: sticky;
     top: 0;
     z-index: 10;
-    background: rgb(255 255 255 / 92%);
-    backdrop-filter: blur(8px);
+    background: var(--paper);
     border-bottom: 1px solid var(--line);
 }
 .header-row {
@@ -161,6 +160,17 @@ button {
     transform: scaleX(0);
     transform-origin: left;
 }
+@supports (animation-timeline: scroll(root block)) {
+    .motion .scroll-progress {
+        animation: reading-progress linear both;
+        animation-timeline: scroll(root block);
+    }
+    @keyframes reading-progress {
+        to {
+            transform: scaleX(1);
+        }
+    }
+}
 .header-links {
     display: flex;
     gap: 24px;
@@ -186,15 +196,32 @@ button {
 .hero-grid {
     position: absolute;
     inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+.hero-grid::before,
+.hero-grid-light {
+    position: absolute;
     background-image: radial-gradient(circle at 1px 1px, #b9b9c2 1px, transparent 0);
     background-size: 22px 22px;
-    pointer-events: none;
-    -webkit-mask-image:
-        radial-gradient(460px 340px at var(--gx, 50%) var(--gy, 120px), #000 0, transparent 100%),
-        linear-gradient(rgb(0 0 0 / 28%), transparent 420px);
+}
+.hero-grid::before {
+    content: "";
+    inset: 0;
     mask-image:
-        radial-gradient(460px 340px at var(--gx, 50%) var(--gy, 120px), #000 0, transparent 100%),
+        radial-gradient(460px 340px at 50% 120px, #000 0, transparent 100%),
         linear-gradient(rgb(0 0 0 / 28%), transparent 420px);
+}
+.hero-grid-light {
+    display: none;
+    /* Keep the moving grid aligned with the stationary one. */
+    left: -440px;
+    top: -330px;
+    width: 880px;
+    height: 660px;
+    mask-image: radial-gradient(closest-side, #000, transparent);
+    opacity: 0;
+    transition: opacity 280ms var(--ease);
 }
 .hero-row {
     position: relative;
@@ -207,6 +234,8 @@ button {
 }
 .hero-copy {
     grid-area: copy;
+    /* The oversized preview extends into this column. Keep the links clickable. */
+    z-index: 1;
 }
 .hero-copy h1 {
     margin-top: 0;
@@ -342,17 +371,20 @@ h1 {
     transition: transform 0.7s var(--ease);
 }
 /* Recording stage */
-.float {
+.clip-frame {
+    min-width: 0;
+}
+.clip-flight {
     position: relative;
 }
 .float-shadow {
     position: absolute;
-    inset: 6% 5% -3%;
-    border-radius: 24px;
-    background: rgb(24 24 27 / 26%);
-    filter: blur(38px);
+    inset: 34px 36px 36px;
+    border-radius: 22px;
+    box-shadow:
+        0 24px 56px 14px rgb(24 24 27 / 24%),
+        0 8px 22px 2px rgb(24 24 27 / 14%);
     pointer-events: none;
-    will-change: transform;
 }
 .stage {
     position: relative;
@@ -363,35 +395,80 @@ h1 {
     overflow: hidden;
     background: var(--tint);
     transform-origin: 50% 60%;
-    will-change: transform;
-}
-/* A light on the frame's edge that follows the pointer. */
-.stage::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    padding: 1.5px;
-    border-radius: inherit;
-    background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 50%), var(--accent), transparent 72%);
-    opacity: var(--rim, 0);
-    pointer-events: none;
-    -webkit-mask:
-        linear-gradient(#000 0 0) content-box,
-        linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask:
-        linear-gradient(#000 0 0) content-box,
-        linear-gradient(#000 0 0);
-    mask-composite: exclude;
 }
 .screen {
+    position: relative;
     aspect-ratio: var(--clip);
 }
-.screen video {
+.screen video,
+.clip-poster {
     display: block;
     width: 100%;
     height: 100%;
+}
+.clip-poster {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+.frame-ready .clip-poster {
+    opacity: 0;
+    visibility: hidden;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .frame-ready .clip-poster {
+        transition:
+            opacity 180ms ease-out,
+            visibility 0s 180ms;
+    }
+}
+.motion .clip-frame:not(.clip-shown, .deck-on *) > .clip-flight {
+    opacity: 0;
+}
+.clip-frame:has(.stage:fullscreen) > .clip-flight {
+    opacity: 1 !important;
+}
+.clip-rim {
+    display: none;
+}
+@media (min-width: 901px) and (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+    .motion .hero-grid-light {
+        display: block;
+    }
+    .hero-grid-light.lit {
+        opacity: 0.6;
+    }
+    .motion .stage:not(:fullscreen) .clip-rim {
+        display: block;
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        overflow: hidden;
+        padding: 1.5px;
+        border-radius: inherit;
+        -webkit-mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+        -webkit-mask-composite: xor;
+        mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+        mask-composite: exclude;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+    }
+    .motion .stage:not(:fullscreen) .clip-rim.lit {
+        visibility: visible;
+    }
+    .clip-rim-glow {
+        position: absolute;
+        left: -250px;
+        top: -250px;
+        width: 500px;
+        height: 500px;
+        background: radial-gradient(circle closest-side, var(--accent), transparent);
+    }
 }
 .controls {
     display: flex;
@@ -432,7 +509,6 @@ h1 {
 }
 .stage:fullscreen {
     transform: none !important;
-    opacity: 1 !important;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -440,12 +516,16 @@ h1 {
     border-radius: 0;
     background: var(--paper);
 }
+.stage:fullscreen .clip-rim {
+    display: none !important;
+}
 .stage:fullscreen .screen {
     flex: 1;
     min-height: 0;
     aspect-ratio: auto;
 }
-.stage:fullscreen video {
+.stage:fullscreen video,
+.stage:fullscreen .clip-poster {
     object-fit: contain;
 }
 
@@ -557,8 +637,53 @@ h1 {
     transform: translateY(-1px);
 }
 .support-note {
+    margin-top: 12px;
     color: var(--muted);
     font-size: 13px;
+}
+
+.chip-support {
+    margin-top: 48px;
+}
+.chip-support h3 {
+    margin-bottom: 20px;
+    color: var(--ink);
+    font-size: 24px;
+    font-weight: 600;
+}
+.chip-vendors {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+.chip-vendor {
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--paper);
+}
+.chip-vendor:first-child {
+    grid-column: span 2;
+}
+.chip-vendor h4 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    margin-bottom: 12px;
+    color: var(--ink);
+    font-size: 16px;
+}
+.chip-vendor h4 span {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 400;
+}
+.chip-vendor .pills li {
+    padding: 3px 9px;
+}
+.chapter-shot {
+    margin: 14px 0 0;
 }
 
 /* A chapter with a full-width recording: its steps run in columns underneath. */
@@ -596,7 +721,7 @@ h1 {
 }
 .client-logos {
     display: grid;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
+    grid-template-columns: repeat(9, minmax(0, 1fr));
     gap: 24px 12px;
     margin: 0;
     padding: 28px 0;
@@ -741,7 +866,7 @@ h1 {
 }
 @media (max-width: 1000px) {
     .client-logos {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         row-gap: 28px;
     }
     .capability-grid {
@@ -752,9 +877,6 @@ h1 {
     .agent-detail {
         gap: 36px;
         margin-top: 40px;
-    }
-    .client-logos {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .capability-grid {
         grid-template-columns: minmax(0, 1fr);
@@ -819,7 +941,6 @@ h1 {
     top: 0;
     width: var(--card);
     margin-left: calc(var(--card) / -2);
-    will-change: transform, opacity;
 }
 .deck-on .tool-copy {
     text-align: center;
@@ -875,6 +996,84 @@ h1 {
 }
 .footer a:hover {
     color: var(--ink);
+}
+
+/* Install redirect */
+.install-page {
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 24px 16px;
+    background: var(--tint);
+}
+.install-card {
+    width: min(100%, 520px);
+    padding: 36px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--paper);
+    box-shadow: 0 24px 48px -32px rgb(24 24 27 / 24%);
+}
+.install-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+.install-lang {
+    color: var(--muted);
+    font-size: 14px;
+}
+.install-lang:hover,
+.install-foot a:hover {
+    color: var(--ink);
+}
+.install-card h1 {
+    margin-top: 24px;
+    font-size: 28px;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+}
+.install-lead {
+    margin-top: 10px;
+    color: var(--text);
+    font-size: 15px;
+}
+.install-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 24px;
+}
+.install-command {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+}
+.install-command code {
+    display: block;
+    overflow-x: auto;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--tint);
+    color: var(--ink);
+    font: 500 13px/1.5 var(--mono);
+    user-select: all;
+}
+.install-foot {
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 14px;
+}
+@media (max-width: 600px) {
+    .install-card {
+        padding: 24px;
+    }
 }
 
 /* Guided tour */
@@ -1202,6 +1401,10 @@ body:not(.tour-on) .tour {
         transform 0.8s var(--ease);
     transition-delay: calc(var(--i, 0) * 70ms);
 }
+.motion [data-reveal].shown {
+    opacity: 1;
+    transform: none;
+}
 .motion .hero [data-reveal] {
     filter: blur(6px);
     transition:
@@ -1210,14 +1413,8 @@ body:not(.tour-on) .tour {
         filter 0.9s var(--ease);
     transition-delay: calc(var(--i, 0) * 70ms);
 }
-.motion [data-reveal].shown {
-    opacity: 1;
+.motion .hero [data-reveal].shown {
     filter: none;
-    transform: none;
-}
-.motion .stage,
-.motion .float-shadow {
-    opacity: 0;
 }
 .motion .title-letters span {
     animation:
@@ -1875,6 +2072,14 @@ body:not(.tour-on) .tour {
 }
 
 /* Zone motion: the scope trace draws itself in. */
+[data-ambient] {
+    --ambient-play-state: paused;
+}
+@media (prefers-reduced-motion: no-preference) {
+    [data-ambient].ambient-playing {
+        --ambient-play-state: running;
+    }
+}
 /* A dash longer than the path: with a non-scaling stroke the browser measures the dash slightly short, and a dash of
    exactly 1 left the trace's end undrawn. */
 .motion .scope-trace {
@@ -1893,7 +2098,7 @@ body:not(.tour-on) .tour {
     opacity: 0.22;
 }
 
-/* Then a sweep keeps running along it: a brighter stretch of trace under a moving cursor, as on a scope screen. The
+/* Then a sweep runs along it: a brighter stretch of trace under a moving cursor, as on a scope screen. The
    band and the cursor share one timing, so they stay together. */
 .scope {
     position: relative;
@@ -1921,8 +2126,9 @@ body:not(.tour-on) .tour {
     top: 0;
     bottom: 0;
     left: 0;
-    width: 1px;
-    background: linear-gradient(transparent, rgb(11 138 126 / 55%) 30%, rgb(11 138 126 / 55%) 70%, transparent);
+    width: 100%;
+    background: linear-gradient(transparent, rgb(11 138 126 / 55%) 30%, rgb(11 138 126 / 55%) 70%, transparent) left /
+        1px 100% no-repeat;
     opacity: 0;
 }
 .motion .scope-band {
@@ -1930,9 +2136,11 @@ body:not(.tour-on) .tour {
 }
 .motion .shown .scope-band {
     animation: scope-band 6s linear 2.4s infinite;
+    animation-play-state: var(--ambient-play-state);
 }
 .motion .shown .scope-cursor::before {
     animation: scope-cursor 6s linear 2.4s infinite;
+    animation-play-state: var(--ambient-play-state);
 }
 @keyframes scope-band {
     0% {
@@ -1951,7 +2159,7 @@ body:not(.tour-on) .tour {
 }
 @keyframes scope-cursor {
     0% {
-        left: 0;
+        transform: translateX(0);
         opacity: 0;
     }
     6%,
@@ -1960,7 +2168,7 @@ body:not(.tour-on) .tour {
     }
     72%,
     100% {
-        left: 100%;
+        transform: translateX(100%);
         opacity: 0;
     }
 }
@@ -1979,7 +2187,7 @@ body:not(.tour-on) .tour {
 }
 
 /* Silent sampling keeps recording: its dot pings like a record light. */
-.motion .mode-silent::after {
+.motion .mode-silent.shown::after {
     content: "";
     position: absolute;
     left: 20px;
@@ -1990,6 +2198,7 @@ body:not(.tour-on) .tour {
     border: 1.5px solid var(--sampling-accent);
     border-radius: 50%;
     animation: ping 2.4s ease-out infinite;
+    animation-play-state: var(--ambient-play-state);
 }
 @keyframes ping {
     from {
@@ -2003,8 +2212,8 @@ body:not(.tour-on) .tour {
     }
 }
 
-/* Each state comes in along its rail: the colour runs down, the mark pops, the numeral slides in, and the mark keeps
-   acting out its state: a trace drawing, Continue nudging forward, a breakpoint pulsing. */
+/* Each state comes in along its rail: the colour runs down, the mark pops and the numeral slides in. While visible,
+   the mark acts out its state: a trace drawing, Continue nudging forward, a breakpoint pulsing. */
 .motion .state-copy {
     border-left-color: var(--state-tint);
 }
@@ -2047,10 +2256,12 @@ body:not(.tour-on) .tour {
 .motion .state-1 .shown .state-mark path {
     stroke-dasharray: 1;
     animation: icon-trace 3.2s ease-in-out 1s infinite;
+    animation-play-state: var(--ambient-play-state);
 }
 .motion .state-2 .shown .state-mark path + path {
     transform-box: fill-box;
     animation: icon-nudge 2.4s ease-in-out 1s infinite;
+    animation-play-state: var(--ambient-play-state);
 }
 .motion .state-3 .state-mark::after {
     content: "";
@@ -2062,6 +2273,7 @@ body:not(.tour-on) .tour {
 }
 .motion .state-3 .shown .state-mark::after {
     animation: icon-ring 2.4s ease-out 1s infinite;
+    animation-play-state: var(--ambient-play-state);
 }
 @keyframes icon-trace {
     0% {
@@ -2183,6 +2395,9 @@ body:not(.tour-on) .tour {
 }
 
 @media (max-width: 900px) {
+    .chip-vendors {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
     .mode-cards,
     .mode-silent,
     .chart-shots,
@@ -2218,6 +2433,12 @@ body:not(.tour-on) .tour {
 }
 
 @media (max-width: 760px) {
+    .chip-vendors {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .chip-vendor:first-child {
+        grid-column: auto;
+    }
     .zone-sampling {
         padding-bottom: 48px;
     }

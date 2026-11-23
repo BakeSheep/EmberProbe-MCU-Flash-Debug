@@ -1,8 +1,6 @@
 "use strict";
 
-// Page motion: recordings tilt toward the pointer and settle as they scroll in, and the tools deck moves with
-// scrolling. All of it is decoration: without JavaScript, or with reduced
-// motion, the page renders complete (see the "motion" class in <head>).
+// The hero and recordings respond to the pointer with spring physics, and the tools deck follows scrolling.
 (() => {
     if (!document.documentElement.classList.contains("motion")) return;
 
@@ -15,99 +13,82 @@
     const HOVER_LIFT = 8; // pixels
     const STIFFNESS = 7;
     const DECK_MARGIN = 0.4; // card positions before the first card's middle and after the last one's
+    const FLOAT_MARGIN = `${TILT_REACH + 80}px 0px`;
+    const POSE_KEYS = ["rx", "ry", "lift", "scale", "opacity", "rim"];
+
+    const NEUTRAL_POSE = { rx: 0, ry: 0, lift: 0, scale: 1, opacity: 1, rim: 0 };
+    const BOTTOM_ENTRY_POSE = { rx: ENTRY_TILT, ry: 0, lift: ENTRY_LIFT, scale: 0.965, opacity: 0, rim: 0 };
+    const TOP_EXIT_POSE = { rx: -ENTRY_TILT * 0.6, ry: 0, lift: 0, scale: 1, opacity: 1, rim: 0 };
 
     const fine = window.matchMedia("(hover: hover) and (pointer: fine)");
     const wide = window.matchMedia("(min-width: 901px)");
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const bar = window.CSS?.supports("animation-timeline: scroll(root block)")
+        ? null
+        : document.querySelector(".scroll-progress");
     const pointer = { x: 0, y: 0, seen: false, moved: -Infinity, onControls: false };
-    const grid = document.querySelector(".hero-grid");
-    const heroSection = document.querySelector("[data-hero]");
-    const bar = document.querySelector(".scroll-progress");
-    const started = performance.now();
     let frame = 0;
-    let previous = 0;
+    let previous = null;
+    let idleTimer = 0;
 
     const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
     const smooth = (t) => t * t * (3 - 2 * t);
 
-    const floats = [...document.querySelectorAll("[data-float]")].map((element) => ({
-        element,
-        stage: element.querySelector(".stage"),
-        shadow: element.querySelector(".float-shadow"),
-        rx: ENTRY_TILT,
-        ry: 0,
-        lift: ENTRY_LIFT,
-        scale: 0.965,
-        opacity: 0,
-        rim: 0
-    }));
-
-    // Keep the hero at its native layout size; only its viewing angle changes, without a persistent bitmap hint.
-    const heroScene = document.querySelector("[data-hero-scene]");
-    const heroCard = heroScene?.querySelector("[data-hero-card]");
-    if (heroCard) {
-        heroScene.addEventListener("pointermove", (event) => {
-            if (!fine.matches || !wide.matches) return;
-            const box = heroScene.getBoundingClientRect();
-            const x = clamp(((event.clientX - box.left) / box.width - 0.5) * 2, -1, 1);
-            const y = clamp(((event.clientY - box.top) / box.height - 0.5) * 2, -1, 1);
-            heroCard.style.setProperty("--hero-rx", `${(-y).toFixed(2)}deg`);
-            heroCard.style.setProperty("--hero-ry", `${(28 + x * 2).toFixed(2)}deg`);
+    // Sample only the hovered surface once per input frame.
+    function trackPointer(surface, move, reset) {
+        let point;
+        let update = 0;
+        const leave = () => {
+            if (update) cancelAnimationFrame(update);
+            update = 0;
+            reset();
+        };
+        surface.addEventListener("pointermove", (event) => {
+            if (!fine.matches || !wide.matches || reduced.matches || event.pointerType === "touch") return;
+            point = event;
+            if (update) return;
+            update = requestAnimationFrame(() => {
+                update = 0;
+                move(point);
+            });
         });
-        heroScene.addEventListener("pointerleave", () => {
+        surface.addEventListener("pointerleave", leave);
+        surface.addEventListener("pointercancel", leave);
+        return leave;
+    }
+
+    const hero = document.querySelector("[data-hero]");
+    const heroScene = hero?.querySelector("[data-hero-scene]");
+    const heroCard = heroScene?.querySelector("[data-hero-card]");
+    const gridLight = hero?.querySelector(".hero-grid-light");
+    if (heroCard && gridLight) {
+        function resetHeroTilt() {
             heroCard.style.removeProperty("--hero-rx");
             heroCard.style.removeProperty("--hero-ry");
-        });
-    }
-
-    // How far a stage has scrolled in, 0 to 1.
-    function entry(box) {
-        const height = window.innerHeight;
-        return clamp((height * 0.96 - box.top) / (height * 0.46), 0, 1);
-    }
-
-    function targets(item, box, now) {
-        const shown = entry(box);
-        const height = window.innerHeight;
-        const leaving = clamp((-box.top - height * 0.2) / (height * 0.8), 0, 1);
-        const next = {
-            rx: (1 - shown) * ENTRY_TILT - leaving * ENTRY_TILT * 0.6,
-            ry: 0,
-            lift: (1 - shown) * ENTRY_LIFT,
-            scale: 0.965 + shown * 0.035,
-            opacity: Math.min(1, shown * 1.6),
-            rim: 0
-        };
-        if (!pointer.seen || !fine.matches) return next;
-        const nearX = Math.max(box.left - pointer.x, 0, pointer.x - box.right);
-        const nearY = Math.max(box.top - pointer.y, 0, pointer.y - box.bottom);
-        const near = Math.hypot(nearX, nearY);
-        next.rim = clamp(1 - near / RIM_REACH, 0, 1);
-        // Buttons stay still under the pointer; a resting pointer leaves the text flat and sharp.
-        const idle = now - pointer.moved > IDLE_MS;
-        if (idle || pointer.onControls || box.bottom < 0 || box.top > height) return next;
-        const weight = clamp(1 - near / TILT_REACH, 0, 1);
-        const offsetX = clamp((pointer.x - box.left - box.width / 2) / (box.width / 2), -1, 1);
-        const offsetY = clamp((pointer.y - box.top - box.height / 2) / (box.height / 2), -1, 1);
-        next.rx -= offsetY * MAX_TILT * weight;
-        next.ry += offsetX * MAX_TILT * weight;
-        next.lift -= HOVER_LIFT * weight;
-        return next;
-    }
-
-    function paint(item, box) {
-        const { stage, shadow } = item;
-        const flat =
-            Math.abs(item.rx) < 0.02 && Math.abs(item.ry) < 0.02 && Math.abs(item.lift) < 0.1 && item.scale > 0.9995;
-        // Dropping the transform when flat puts the video back on the pixel grid.
-        stage.style.transform = flat
-            ? ""
-            : `perspective(1800px) translate3d(0,${item.lift.toFixed(2)}px,0) rotateX(${item.rx.toFixed(3)}deg) rotateY(${item.ry.toFixed(3)}deg) scale(${item.scale.toFixed(4)})`;
-        stage.style.opacity = item.opacity.toFixed(3);
-        shadow.style.opacity = item.opacity.toFixed(3);
-        shadow.style.transform = `translate3d(${(-item.ry * 7).toFixed(1)}px,${(item.rx * 5 + Math.abs(item.lift) * 0.5).toFixed(1)}px,0)`;
-        stage.style.setProperty("--rim", item.rim.toFixed(3));
-        stage.style.setProperty("--mx", `${(pointer.x - box.left).toFixed(0)}px`);
-        stage.style.setProperty("--my", `${(pointer.y - box.top).toFixed(0)}px`);
+        }
+        trackPointer(
+            hero,
+            (point) => {
+                const heroBox = hero.getBoundingClientRect();
+                const scene = heroScene.contains(point.target) ? heroScene.getBoundingClientRect() : null;
+                const x = Math.round((point.clientX - heroBox.left) / 22) * 22;
+                const y = Math.round((point.clientY - heroBox.top) / 22) * 22;
+                gridLight.style.transform = `translate(${x}px, ${y}px)`;
+                if (!gridLight.classList.contains("lit")) gridLight.classList.add("lit");
+                if (scene) {
+                    const skewX = clamp(((point.clientX - scene.left) / scene.width - 0.5) * 2, -1, 1);
+                    const skewY = clamp(((point.clientY - scene.top) / scene.height - 0.5) * 2, -1, 1);
+                    heroCard.style.setProperty("--hero-rx", `${(-skewY).toFixed(2)}deg`);
+                    heroCard.style.setProperty("--hero-ry", `${(28 + skewX * 2).toFixed(2)}deg`);
+                } else {
+                    resetHeroTilt();
+                }
+            },
+            () => {
+                resetHeroTilt();
+                gridLight.classList.remove("lit");
+            }
+        );
     }
 
     // The tools deck: scrolling through the track moves every card along one path, from a stack on the right through
@@ -115,11 +96,198 @@
     const track = document.querySelector("[data-deck]");
     const deck = track && {
         track,
+        grid: track.querySelector(".tool-grid"),
         cards: [...track.querySelectorAll("[data-card]")],
         dots: [...track.querySelectorAll("[data-dot]")],
         front: -1,
-        on: false
+        on: false,
+        near: !("IntersectionObserver" in window),
+        metrics: null,
+        progress: null
     };
+    const deckIndices = new Map(deck ? deck.cards.map((card, i) => [card, i]) : []);
+
+    const floats = [...document.querySelectorAll(".clip-frame")].map((element) => ({
+        element,
+        flight: element.querySelector(".clip-flight"),
+        stage: element.querySelector(".stage"),
+        shadow: element.querySelector(".float-shadow"),
+        rimNode: element.querySelector(".clip-rim"),
+        rimGlow: element.querySelector(".clip-rim-glow"),
+        deckIndex: deckIndices.get(element.closest("[data-card]")) ?? -1,
+        rx: ENTRY_TILT,
+        ry: 0,
+        lift: ENTRY_LIFT,
+        scale: 0.965,
+        opacity: 0,
+        rim: 0,
+        lastStageTransform: "",
+        lastShadowTransform: "",
+        lastOpacity: null,
+        lastRimOpacity: "",
+        lastRimPos: "",
+        lit: false,
+        shown: false
+    }));
+    const floatByElement = new Map(floats.map((item) => [item.element, item]));
+    const nearby = new Set("IntersectionObserver" in window ? [] : floats);
+
+    function setItemPose(item, pose) {
+        for (const key of POSE_KEYS) item[key] = pose[key];
+    }
+
+    function isNeutral(item) {
+        return (
+            item.rx === 0 &&
+            item.ry === 0 &&
+            item.lift === 0 &&
+            item.scale === 1 &&
+            item.opacity === 1 &&
+            item.rim === 0
+        );
+    }
+
+    function hideRim(item) {
+        if (item.lit) {
+            item.rimNode?.classList.remove("lit");
+            item.lit = false;
+        }
+        if (item.lastRimOpacity !== "") {
+            if (item.rimNode) item.rimNode.style.opacity = "";
+            item.lastRimOpacity = "";
+        }
+    }
+
+    function clearItemStyles(item) {
+        if (item.lastStageTransform !== "") {
+            item.stage.style.transform = "";
+            item.lastStageTransform = "";
+        }
+        if (item.shadow && item.lastShadowTransform !== "") {
+            item.shadow.style.transform = "";
+            item.lastShadowTransform = "";
+        }
+        if (item.flight && item.lastOpacity !== "") {
+            item.flight.style.opacity = "";
+            item.lastOpacity = "";
+        }
+        if (!item.shown) {
+            item.element.classList.add("clip-shown");
+            item.shown = true;
+        }
+        hideRim(item);
+    }
+
+    function targets(item, box, now) {
+        const inDeck = item.deckIndex >= 0 && deck?.on;
+        const height = window.innerHeight || 0;
+        let next;
+        if (inDeck) {
+            next = { ...NEUTRAL_POSE };
+        } else {
+            const shown = height > 0 ? clamp((height * 0.96 - box.top) / (height * 0.46), 0, 1) : 1;
+            const leaving = height > 0 ? clamp((-box.top - height * 0.2) / (height * 0.8), 0, 1) : 0;
+            next = {
+                rx: (1 - shown) * ENTRY_TILT - leaving * ENTRY_TILT * 0.6,
+                ry: 0,
+                lift: (1 - shown) * ENTRY_LIFT,
+                scale: 0.965 + shown * 0.035,
+                opacity: Math.min(1, shown * 1.6),
+                rim: 0
+            };
+        }
+        let hoverActive = false;
+        if (
+            pointer.seen &&
+            fine.matches &&
+            wide.matches &&
+            !reduced.matches &&
+            (!inDeck || item.deckIndex === deck.front) &&
+            box.width > 0 &&
+            box.height > 0
+        ) {
+            const nearX = Math.max(box.left - pointer.x, 0, pointer.x - box.right);
+            const nearY = Math.max(box.top - pointer.y, 0, pointer.y - box.bottom);
+            const near = Math.hypot(nearX, nearY);
+            next.rim = clamp(1 - near / RIM_REACH, 0, 1);
+            // Buttons stay still under the pointer; a resting pointer leaves the video flat and sharp.
+            const idle = now - pointer.moved > IDLE_MS;
+            if (!idle && !pointer.onControls && box.bottom >= 0 && box.top <= height) {
+                const weight = clamp(1 - near / TILT_REACH, 0, 1);
+                if (weight > 0) {
+                    const offsetX = clamp((pointer.x - box.left - box.width / 2) / (box.width / 2), -1, 1);
+                    const offsetY = clamp((pointer.y - box.top - box.height / 2) / (box.height / 2), -1, 1);
+                    next.rx -= offsetY * MAX_TILT * weight;
+                    next.ry += offsetX * MAX_TILT * weight;
+                    next.lift -= HOVER_LIFT * weight;
+                    hoverActive = true;
+                }
+            }
+        }
+        return { next, hoverActive };
+    }
+
+    function paint(item, box) {
+        const flat =
+            Math.abs(item.rx) < 0.02 && Math.abs(item.ry) < 0.02 && Math.abs(item.lift) < 0.1 && item.scale > 0.9995;
+        // Dropping the transform when flat puts the video back on the pixel grid.
+        const stageTransform = flat
+            ? ""
+            : `perspective(1800px) translate3d(0,${item.lift.toFixed(2)}px,0) rotateX(${item.rx.toFixed(3)}deg) rotateY(${item.ry.toFixed(3)}deg) scale(${item.scale.toFixed(4)})`;
+        if (stageTransform !== item.lastStageTransform) {
+            item.stage.style.transform = stageTransform;
+            item.lastStageTransform = stageTransform;
+        }
+
+        const isShown = item.opacity >= 0.999;
+        if (isShown !== item.shown) {
+            item.element.classList.toggle("clip-shown", isShown);
+            item.shown = isShown;
+        }
+        if (item.flight) {
+            const opacity = isShown ? "" : item.opacity.toFixed(3);
+            if (opacity !== item.lastOpacity) {
+                item.flight.style.opacity = opacity;
+                item.lastOpacity = opacity;
+            }
+        }
+
+        if (item.shadow) {
+            const sx = -item.ry * 7;
+            const sy = item.rx * 5 + Math.abs(item.lift) * 0.5;
+            const shadowTransform =
+                Math.abs(sx) < 0.08 && Math.abs(sy) < 0.08
+                    ? ""
+                    : `translate3d(${sx.toFixed(1)}px,${sy.toFixed(1)}px,0)`;
+            if (shadowTransform !== item.lastShadowTransform) {
+                item.shadow.style.transform = shadowTransform;
+                item.lastShadowTransform = shadowTransform;
+            }
+        }
+
+        if (item.rimNode) {
+            if (item.rim <= 0.001) {
+                hideRim(item);
+            } else {
+                if (!item.lit) {
+                    item.rimNode.classList.add("lit");
+                    item.lit = true;
+                }
+                const rimOpacity = item.rim.toFixed(3);
+                if (rimOpacity !== item.lastRimOpacity) {
+                    item.rimNode.style.opacity = rimOpacity;
+                    item.lastRimOpacity = rimOpacity;
+                }
+                if (item.rimGlow && pointer.seen) {
+                    const pos = `translate3d(${Math.round(pointer.x - box.left)}px,${Math.round(pointer.y - box.top)}px,0)`;
+                    if (pos !== item.lastRimPos) {
+                        item.rimGlow.style.transform = pos;
+                        item.lastRimPos = pos;
+                    }
+                }
+            }
+        }
+    }
 
     // A cover-flow path. d < 0: waiting on the right; d > 0: passed, on the left. Stacked cards share one angle and
     // depth, their outer edge toward the reader and their inner edge turned away. Each stacked card shows as a strip
@@ -152,44 +320,53 @@
     // The largest share of the gap and strips that keeps the outermost card's outer edge, which is turned toward the
     // reader and so drawn larger, inside the deck.
     function deckFit(width) {
-        const grid = deck.track.querySelector(".tool-grid");
-        const perspective = parseFloat(getComputedStyle(grid).perspective) || 1800;
-        const half = grid.getBoundingClientRect().width / 2 - SIDE_MARGIN;
+        const perspective = parseFloat(getComputedStyle(deck.grid).perspective) || 1800;
+        const half = deck.grid.clientWidth / 2 - SIDE_MARGIN;
         const edgeZ = -SIDE_DEPTH + (width / 2) * Math.sin((SIDE_ANGLE * Math.PI) / 180);
         const reach = (half * (perspective - edgeZ)) / perspective - (width / 2) * SIDE_COS;
         const deepest = Math.max(0, deck.cards.length - 2 + DECK_MARGIN);
         return clamp((reach / width - SIDE_BASE) / (SIDE_FIRST + sideGaps(deepest)), 0.2, 1);
     }
 
-    // Scroll range of the track as card positions: the first card is on its way in from the right at the top, the
-    // last is on its way out to the left at the bottom.
-    function deckProgress() {
-        const box = deck.track.getBoundingClientRect();
-        const range = Math.max(1, box.height - window.innerHeight);
-        const count = deck.cards.length;
-        return -DECK_MARGIN + clamp(-box.top / range, 0, 1) * (count - 1 + 2 * DECK_MARGIN);
+    function updateDeckMode() {
+        if (!deck || wide.matches === deck.on) return;
+        deck.on = wide.matches;
+        deck.track.classList.toggle("deck-on", deck.on);
+        if (deck.on) {
+            for (const item of floats) {
+                if (item.deckIndex < 0) continue;
+                setItemPose(item, NEUTRAL_POSE);
+                clearItemStyles(item);
+            }
+            notifyFront(0);
+        } else {
+            for (const item of deck.cards) {
+                item.style.transform = "";
+                item.style.zIndex = "";
+                item.style.removeProperty("--front");
+            }
+            notifyFront(-2);
+        }
     }
 
-    function layoutDeck() {
-        const on = wide.matches;
-        if (on !== deck.on) {
-            deck.on = on;
-            deck.track.classList.toggle("deck-on", on);
-            if (!on) {
-                for (const item of deck.cards) {
-                    item.style.transform = "";
-                    item.style.zIndex = "";
-                    item.style.removeProperty("--front");
-                }
-                deck.front = -1;
-                notifyFront(-2);
-                return;
-            }
+    function readDeckTop() {
+        if (!deck?.on || !deck.near || !deck.cards.length) return null;
+        if (!deck.metrics) {
+            const width = deck.cards[0].offsetWidth;
+            deck.metrics = {
+                width,
+                fit: deckFit(width),
+                range: Math.max(1, deck.track.offsetHeight - window.innerHeight)
+            };
         }
-        if (!on) return;
-        const progress = deckProgress();
-        const width = deck.cards[0].offsetWidth;
-        const fit = deckFit(width);
+        return deck.track.getBoundingClientRect().top;
+    }
+
+    function applyDeck(top) {
+        const { width, fit, range } = deck.metrics;
+        const progress = -DECK_MARGIN + clamp(-top / range, 0, 1) * (deck.cards.length - 1 + 2 * DECK_MARGIN);
+        if (progress === deck.progress) return false;
+        deck.progress = progress;
         deck.cards.forEach((item, index) => {
             const d = progress - index;
             const pose = cardPose(d, width, fit);
@@ -198,14 +375,14 @@
             item.style.setProperty("--front", pose.front.toFixed(3));
         });
         const front = clamp(Math.round(progress), 0, deck.cards.length - 1);
-        if (front !== deck.front) {
-            deck.front = front;
-            notifyFront(front);
-        }
+        if (front === deck.front) return false;
+        notifyFront(front);
+        return true;
     }
 
     // Plays the middle card's recording and pauses the rest; -2 hands every clip back to its own visibility.
     function notifyFront(front) {
+        deck.front = front;
         deck.cards.forEach((item, index) => {
             item.querySelector("[data-clip]")?.dispatchEvent(
                 new CustomEvent("deck:front", { detail: front === -2 || index === front })
@@ -217,16 +394,40 @@
         });
     }
 
-    function step(now) {
+    function step(timestamp) {
         frame = 0;
-        const blend = 1 - Math.exp((-Math.min(34, now - previous) / 1000) * STIFFNESS);
+        if (document.hidden) {
+            previous = null;
+            return;
+        }
+        const now = typeof timestamp === "number" ? timestamp : performance.now();
+        const dt = previous === null ? 16 : Math.min(34, Math.max(0, now - previous));
+        const blend = 1 - Math.exp((-dt / 1000) * STIFFNESS);
         previous = now;
-        let moving = now - pointer.moved <= IDLE_MS + 100 || now - started < 400;
-        for (const item of floats) {
-            if (document.fullscreenElement === item.stage) continue;
-            const box = item.element.getBoundingClientRect();
-            const next = targets(item, box, now);
-            for (const key of Object.keys(next)) {
+
+        // Phase 1 (READ ONLY): measure geometry before mutating styles.
+        const range = bar ? document.documentElement.scrollHeight - window.innerHeight : 0;
+        const deckTop = readDeckTop();
+        const activeItems = [];
+        if (!reduced.matches) {
+            for (const item of nearby) {
+                if (document.fullscreenElement === item.stage) continue;
+                const inDeck = item.deckIndex >= 0 && deck?.on;
+                if (inDeck && item.deckIndex !== deck.front && isNeutral(item)) continue;
+                activeItems.push({ item, box: item.element.getBoundingClientRect() });
+            }
+        }
+
+        // Phase 2 (WRITE ONLY): apply deck layout, progress bar, and floating physics.
+        const deckFrontChanged = deckTop !== null ? applyDeck(deckTop) : false;
+        if (bar) bar.style.transform = `scaleX(${range > 0 ? clamp(window.scrollY / range, 0, 1) : 0})`;
+
+        let moving = false;
+        let needIdleWake = false;
+        for (const { item, box } of activeItems) {
+            const { next, hoverActive } = targets(item, box, now);
+            if (hoverActive) needIdleWake = true;
+            for (const key of POSE_KEYS) {
                 const gap = next[key] - item[key];
                 item[key] += gap * blend;
                 if (Math.abs(gap) > (key === "scale" ? 0.0002 : 0.004)) moving = true;
@@ -234,51 +435,103 @@
             }
             paint(item, box);
         }
-        if (moving) schedule();
+
+        if (moving || deckFrontChanged) {
+            schedule();
+        } else {
+            previous = null;
+            if (needIdleWake && !idleTimer) {
+                const wait = Math.max(16, IDLE_MS - (now - pointer.moved) + 16);
+                idleTimer = setTimeout(() => {
+                    idleTimer = 0;
+                    schedule();
+                }, wait);
+            }
+        }
     }
 
     function schedule() {
-        if (!frame) frame = requestAnimationFrame(step);
-    }
-
-    function showProgress() {
-        const range = document.documentElement.scrollHeight - window.innerHeight;
-        if (bar) bar.style.transform = `scaleX(${range > 0 ? clamp(window.scrollY / range, 0, 1) : 0})`;
+        if (frame || document.hidden) return;
+        if (!bar && !(deck?.on && deck.near) && (reduced.matches || nearby.size === 0)) return;
+        frame = requestAnimationFrame(step);
     }
 
     window.addEventListener(
         "pointermove",
         (event) => {
-            if (event.pointerType === "touch") return;
+            if (!fine.matches || !wide.matches || reduced.matches || event.pointerType === "touch") return;
             pointer.x = event.clientX;
             pointer.y = event.clientY;
             pointer.seen = true;
             pointer.moved = performance.now();
-            pointer.onControls = Boolean(event.target.closest?.(".controls"));
-            if (grid) {
-                const box = heroSection.getBoundingClientRect();
-                grid.style.setProperty("--gx", `${(pointer.x - box.left).toFixed(0)}px`);
-                grid.style.setProperty("--gy", `${(pointer.y - box.top).toFixed(0)}px`);
+            pointer.onControls = Boolean(event.target?.closest?.(".controls"));
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = 0;
             }
-            schedule();
+            if (nearby.size > 0) schedule();
         },
         { passive: true }
     );
-    window.addEventListener(
-        "scroll",
-        () => {
-            showProgress();
-            if (deck) layoutDeck();
-            schedule();
-        },
-        { passive: true }
-    );
+    const clearPointer = () => {
+        pointer.seen = false;
+        pointer.onControls = false;
+        if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = 0;
+        }
+        if (nearby.size > 0) schedule();
+    };
+    document.documentElement.addEventListener("pointerleave", clearPointer);
+    window.addEventListener("blur", clearPointer);
+    window.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", () => {
-        showProgress();
-        if (deck) layoutDeck();
+        updateDeckMode();
+        if (deck) {
+            deck.metrics = null;
+            deck.progress = null;
+        }
         schedule();
     });
-    document.addEventListener("visibilitychange", schedule);
+    document.addEventListener("fullscreenchange", () => {
+        for (const item of floats) {
+            if (document.fullscreenElement === item.stage) {
+                setItemPose(item, NEUTRAL_POSE);
+                clearItemStyles(item);
+            }
+        }
+        schedule();
+    });
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+            if (frame) cancelAnimationFrame(frame);
+            frame = 0;
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = 0;
+            }
+            previous = null;
+        } else {
+            schedule();
+        }
+    });
+    reduced.addEventListener?.("change", () => {
+        if (reduced.matches) {
+            if (frame) cancelAnimationFrame(frame);
+            frame = 0;
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = 0;
+            }
+            previous = null;
+            for (const item of floats) {
+                setItemPose(item, NEUTRAL_POSE);
+                clearItemStyles(item);
+            }
+        } else {
+            schedule();
+        }
+    });
 
     if (deck) {
         // A dot scrolls to the point where its card sits in the middle.
@@ -290,21 +543,81 @@
                 window.scrollTo({ top: window.scrollY + box.top + range * share, behavior: "smooth" });
             })
         );
-        layoutDeck();
+        updateDeckMode();
+        if ("IntersectionObserver" in window) {
+            const deckNearby = new IntersectionObserver(
+                ([entry]) => {
+                    deck.near = entry.isIntersecting;
+                    if (deck.near) schedule();
+                },
+                { rootMargin: "200px 0px" }
+            );
+            deckNearby.observe(track);
+        }
     }
 
     if ("IntersectionObserver" in window) {
+        const floatObserver = new IntersectionObserver(
+            (entries) => {
+                let woke = false;
+                for (const entry of entries) {
+                    const item = floatByElement.get(entry.target);
+                    if (!item) continue;
+                    if (entry.isIntersecting) {
+                        if (!nearby.has(item)) {
+                            nearby.add(item);
+                            if (item.deckIndex >= 0 && deck?.on) {
+                                setItemPose(item, NEUTRAL_POSE);
+                                clearItemStyles(item);
+                            } else if (entry.boundingClientRect?.bottom < 0) {
+                                setItemPose(item, TOP_EXIT_POSE);
+                            } else if (
+                                entry.boundingClientRect &&
+                                entry.boundingClientRect.top > (window.innerHeight || 0)
+                            ) {
+                                setItemPose(item, BOTTOM_ENTRY_POSE);
+                            }
+                            woke = true;
+                        }
+                    } else {
+                        nearby.delete(item);
+                        item.rim = 0;
+                        hideRim(item);
+                    }
+                }
+                if (woke) schedule();
+            },
+            { rootMargin: FLOAT_MARGIN }
+        );
+        for (const item of floats) floatObserver.observe(item.element);
+
+        const ambientVisible = new Set();
+        function syncAmbient() {
+            const playing = !document.hidden && !document.fullscreenElement;
+            for (const target of ambientVisible) target.classList.toggle("ambient-playing", playing);
+        }
+
         const reveal = new IntersectionObserver(
             (entries) => {
-                for (const { isIntersecting, target } of entries) {
-                    if (!isIntersecting) continue;
-                    target.classList.add("shown");
-                    reveal.unobserve(target);
+                for (const { isIntersecting, intersectionRatio, target } of entries) {
+                    const ambient = target.hasAttribute("data-ambient");
+                    if (ambient) {
+                        if (isIntersecting && intersectionRatio >= 0.12) ambientVisible.add(target);
+                        else {
+                            ambientVisible.delete(target);
+                            target.classList.remove("ambient-playing");
+                        }
+                    }
+                    if (isIntersecting && !target.classList.contains("shown")) target.classList.add("shown");
+                    if (isIntersecting && !ambient) reveal.unobserve(target);
                 }
+                syncAmbient();
             },
             { threshold: 0.12 }
         );
         document.querySelectorAll("[data-reveal]").forEach((element) => reveal.observe(element));
+        document.addEventListener("visibilitychange", syncAmbient);
+        document.addEventListener("fullscreenchange", syncAmbient);
 
         const links = new Map([...document.querySelectorAll(".header nav a")].map((a) => [a.hash.slice(1), a]));
         const marker = document.querySelector(".nav-marker");
@@ -328,6 +641,5 @@
         document.querySelectorAll("[data-reveal]").forEach((element) => element.classList.add("shown"));
     }
 
-    showProgress();
     schedule();
 })();

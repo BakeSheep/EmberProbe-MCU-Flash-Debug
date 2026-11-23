@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { content, links, agentClients, mcpTools } = require("./content");
+const { content, links, extensionId, chipVendors, agentClients, mcpTools } = require("./content");
 
 const origin = "https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/";
 const heroImage = { file: "hero.png", width: 2559, height: 1527 };
@@ -36,36 +36,47 @@ ${demo ? '<meta name="robots" content="noindex">' : `<link rel="alternate" hrefl
 <link rel="stylesheet" href="${prefix}assets/site.css">${demo ? "" : MOTION_FLAG}${demo ? `<script src="${prefix}assets/tour-data.js" defer></script>` : ""}<script src="${prefix}assets/${demo ? "demo" : "site"}.js" defer></script>${motion}</head>`;
 }
 
-// A clip stays unloaded until it nears the viewport; site.js picks the poster and starts it.
+// site.js loads a poster near the viewport and attaches a video source when the clip is selected to play.
 function clip(c, prefix, lang, scene, alt) {
     const data = timeline[scene];
     const file = `${prefix}assets/media/${scene}-${lang}`;
-    const narrow = data.narrow ? `<source src="${file}-narrow.mp4" media="(max-width: 760px)" type="video/mp4">` : "";
-    const poster = `data-poster="${file}.webp"`;
-    const narrowPoster = data.narrow ? `data-poster-narrow="${file}-narrow.webp"` : "";
+    const narrowVideo = data.narrow ? ` data-src-narrow="${file}-narrow.mp4"` : "";
+    const narrowPoster = data.narrow ? ` data-poster-narrow="${file}-narrow.webp"` : "";
     const size = data.narrow || [data.width, data.height];
-    return `<div class="float" data-float><div class="float-shadow" aria-hidden="true"></div><figure class="stage" data-clip data-steps="${data.steps.join(",")}" data-duration="${data.duration}" style="--clip-narrow: ${size[0]} / ${size[1]}; --clip: ${data.width} / ${data.height}">
-<div class="screen"><video muted loop playsinline preload="none" ${poster} ${narrowPoster} width="${data.width}" height="${data.height}" aria-label="${escape(alt)}">${narrow}<source src="${file}.mp4" type="video/mp4"></video></div>
-<div class="controls"><button type="button" class="toggle" data-toggle data-play="${c.player.play}" data-pause="${c.player.pause}">${c.player.play}</button><div class="progress" aria-hidden="true">${data.steps.map((start, i) => `<span style="flex-grow:${(data.steps[i + 1] ?? data.duration) - start}"><i></i></span>`).join("")}</div><button type="button" class="enlarge" data-enlarge data-enter="${c.player.enlarge}" data-exit="${c.player.exit}">${c.player.enlarge}</button></div></figure></div>`;
+    return `<div class="clip-frame"><div class="clip-flight"><div class="float-shadow" aria-hidden="true"></div><figure class="stage" data-clip data-steps="${data.steps.join(",")}" data-duration="${data.duration}" style="--clip-narrow: ${size[0]} / ${size[1]}; --clip: ${data.width} / ${data.height}">
+<div class="screen"><video muted loop playsinline preload="none" data-src="${file}.mp4"${narrowVideo} width="${data.width}" height="${data.height}" aria-label="${escape(alt)}"></video><img class="clip-poster" alt="" decoding="async" data-poster="${file}.webp"${narrowPoster}></div>
+<div class="controls"><button type="button" class="toggle" data-toggle data-play="${c.player.play}" data-pause="${c.player.pause}">${c.player.play}</button><div class="progress" aria-hidden="true">${data.steps.map((start, i) => `<span style="flex-grow:${(data.steps[i + 1] ?? data.duration) - start}"><i></i></span>`).join("")}</div><button type="button" class="enlarge" data-enlarge data-enter="${c.player.enlarge}" data-exit="${c.player.exit}">${c.player.enlarge}</button></div><span class="clip-rim" aria-hidden="true"><i class="clip-rim-glow"></i></span></figure></div></div>`;
 }
 
-// A chapter's side says what the visitor gets: short points, or for setup the probes and chips it works with.
-function chapterSide(section) {
+const pills = (items, more = false) =>
+    `<ul class="pills">${items.map((item) => `<li>${escape(item)}</li>`).join("")}${more ? '<li aria-hidden="true">…</li>' : ""}</ul>`;
+
+function chipSupport(title) {
+    return `<section class="chip-support" id="supported-chips" aria-labelledby="supported-chips-title">
+<h3 id="supported-chips-title" data-reveal>${escape(title)}</h3>
+<div class="chip-vendors">${chipVendors.map(([vendor, family, series], i) => `<article class="chip-vendor" data-reveal style="--i:${i % 3}"><h4><strong>${escape(family)}</strong><span>${escape(vendor)}</span></h4>${pills(series)}</article>`).join("")}</div>
+</section>`;
+}
+
+function chapterSide(section, prefix, lang) {
     if (section.support) {
-        const { title, probes, chips, systems, note } = section.support;
-        const group = (item, i, more = true) =>
-            `<div class="support-group" data-reveal style="--i:${i}"><h4>${escape(item.label)}</h4><ul class="pills">${item.items.map((name) => `<li>${escape(name)}</li>`).join("")}${more ? '<li aria-hidden="true">…</li>' : ""}</ul></div>`;
-        return `<div class="chapter-side support"><h3 class="support-title" data-reveal>${escape(title)}</h3>${group(probes, 1)}${group(chips, 2)}${group(systems, 3, false)}<p class="support-note" data-reveal style="--i:4">${escape(note)}</p></div>`;
+        const { title, probes, systems, note } = section.support;
+        const group = (item, i, more) =>
+            `<div class="support-group" data-reveal style="--i:${i}"><h4>${escape(item.label)}</h4>${pills(item.items, more)}${more ? `<p class="support-note">${escape(note)}</p>` : ""}</div>`;
+        return `<div class="chapter-side support"><h3 class="support-title" data-reveal>${escape(title)}</h3>${group(probes, 1, true)}${group(systems, 2)}</div>`;
     }
     if (!section.points?.length) return "";
-    return `<div class="chapter-side"><ul class="points" style="--count:${section.points.length}">${section.points.map(([title, text], i) => `<li data-reveal style="--i:${i}"><strong>${escape(title)}</strong><span>${escape(text)}</span></li>`).join("")}</ul></div>`;
+    const shot = section.shot
+        ? `<figure class="chapter-shot shot-frame" data-reveal>${still(prefix, lang, section.shot.id, section.shot.alt)}</figure>`
+        : "";
+    return `<div class="chapter-side"><ul class="points" style="--count:${section.points.length}">${listItems(section.points)}</ul>${shot}</div>`;
 }
 
 function chapter(c, prefix, lang, section) {
-    const side = chapterSide(section);
+    const side = chapterSide(section, prefix, lang);
     return `<section class="chapter${section.wide ? " wide" : ""}" id="${section.id}"><div class="wrap"><header class="chapter-head" data-reveal><h2>${escape(section.title)}</h2><p>${escape(section.lead)}</p></header>
-<div class="chapter-body${side ? "" : " solo"}">${clip(c, prefix, lang, section.id, section.alt)}
-${side}</div>${section.id === "agent" ? agentDetail(c.agent, prefix) : ""}</div></section>`;
+<div class="chapter-body${side ? "" : " solo"}">${clip(c, prefix, lang, section.clip || section.id, section.alt)}
+${side}</div>${section.support ? chipSupport(section.support.chips) : ""}${section.id === "agent" ? agentDetail(c.agent, prefix) : ""}</div></section>`;
 }
 
 // A cropped still of the real UI at the size it was recorded, so its text matches the frontend's.
@@ -91,7 +102,7 @@ function scopeTrace() {
     const d = points.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join("");
     // With motion, a sweep runs along the trace: a brighter copy of it shows through a band that moves with a cursor.
     const band = `<linearGradient id="scope-fade"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff"/></linearGradient><mask id="scope-sweep" maskUnits="userSpaceOnUse" x="-300" y="-20" width="${width + 600}" height="120"><rect class="scope-band" x="-260" y="-20" width="260" height="120" fill="url(#scope-fade)"/></mask>`;
-    return `<div class="scope" aria-hidden="true" data-reveal><svg viewBox="0 0 ${width} 80" preserveAspectRatio="none"><defs>${band}</defs><path class="scope-glow" d="${d}"/><path class="scope-trace" pathLength="1" d="${d}"/><path class="scope-hot" mask="url(#scope-sweep)" d="${d}"/></svg><span class="scope-cursor"></span></div>`;
+    return `<div class="scope" aria-hidden="true" data-reveal data-ambient><svg viewBox="0 0 ${width} 80" preserveAspectRatio="none"><defs>${band}</defs><path class="scope-glow" d="${d}"/><path class="scope-trace" pathLength="1" d="${d}"/><path class="scope-hot" mask="url(#scope-sweep)" d="${d}"/></svg><span class="scope-cursor"></span></div>`;
 }
 
 const listItems = (items) =>
@@ -134,7 +145,7 @@ function modeCard(prefix, lang, card, index) {
 }
 
 function silentSampling(silent) {
-    return `<aside class="mode-silent" aria-labelledby="silent-title"><div><h4 id="silent-title">${escape(silent.title)}<span>${escape(silent.scope)}</span></h4><p>${escape(silent.text)}</p></div><ol class="silent-flow">${silent.steps.map((step, i) => `<li>${featureIcon(["hidden", "record", "export"][i])}<span>${escape(step)}</span></li>`).join("")}</ol></aside>`;
+    return `<aside class="mode-silent" aria-labelledby="silent-title" data-reveal data-ambient><div><h4 id="silent-title">${escape(silent.title)}<span>${escape(silent.scope)}</span></h4><p>${escape(silent.text)}</p></div><ol class="silent-flow">${silent.steps.map((step, i) => `<li>${featureIcon(["hidden", "record", "export"][i])}<span>${escape(step)}</span></li>`).join("")}</ol></aside>`;
 }
 
 // One mark per target state: a free-running trace, the debugger's Continue, a breakpoint.
@@ -149,7 +160,7 @@ function samplingStates(c, prefix, lang, states) {
     const rows = states.items
         .map(
             (item, i) =>
-                `<li class="state state-${i + 1}"><div class="state-copy" data-reveal><span class="state-mark" aria-hidden="true"><svg viewBox="0 0 24 24">${STATE_ICONS[i]}</svg></span><p class="state-index">${String(i + 1).padStart(2, "0")}</p><h4>${escape(item.name)}</h4><p class="state-tag">${escape(item.tag)}</p><p class="state-text">${escape(item.text)}</p></div>
+                `<li class="state state-${i + 1}"><div class="state-copy" data-reveal data-ambient><span class="state-mark" aria-hidden="true"><svg viewBox="0 0 24 24">${STATE_ICONS[i]}</svg></span><p class="state-index">${String(i + 1).padStart(2, "0")}</p><h4>${escape(item.name)}</h4><p class="state-tag">${escape(item.tag)}</p><p class="state-text">${escape(item.text)}</p></div>
 <div class="state-clip">${clip(c, prefix, lang, item.id, item.alt)}</div></li>`
         )
         .join("");
@@ -201,7 +212,7 @@ function samplingZone(c, prefix, lang, section) {
 <div class="wrap zone-intro"><header class="zone-head"><h2 data-reveal>${escape(zone.title)}</h2></header>${scopeTrace()}<ul class="zone-stats">${stats}</ul></div>
 <div class="zone-part" id="${modes.id}"><div class="wrap">${partHead(modes)}<div class="mode-cards">${modes.cards.map((card, i) => modeCard(prefix, lang, card, i)).join("")}</div>${silentSampling(modes.silent)}</div></div>
 <div class="zone-part" id="${states.id}"><div class="wrap">${partHead(states)}${samplingStates(c, prefix, lang, states)}</div></div>
-<div class="zone-part" id="${types.id}"><div class="wrap">${partHead(types)}<div class="chapter-body">${clip(c, prefix, lang, "variables", types.alt)}<div class="chapter-side"><ul class="points">${listItems(types.points)}</ul></div></div>${typeGrid(prefix, lang, types.gallery)}</div></div>
+<div class="zone-part" id="${types.id}"><div class="wrap">${partHead(types)}${typeGrid(prefix, lang, types.gallery)}</div></div>
 <div class="zone-part" id="${chart.id}"><div class="wrap">${partHead(chart)}<div class="chapter-body wide-body">${clip(c, prefix, lang, "waveform", chart.alt)}</div><ul class="feature-grid">${features}</ul><div class="chart-shots">${shots}</div></div></div>
 </section>`;
 }
@@ -250,7 +261,7 @@ function heroVisual(c, prefix) {
 function heroCopy(c, links, demo) {
     const letters = [..."EmberProbe"].map((letter, i) => `<span style="--i:${i}">${letter}</span>`).join("");
     return `<div class="hero-copy"><h1><span class="visually-hidden">EmberProbe</span><span class="title-letters" aria-hidden="true">${letters}</span></h1><p class="subtitle" data-reveal style="--i:3">${escape(c.subtitle)}</p>
-<div class="hero-actions" data-reveal style="--i:5"><a class="button primary" href="${links.install}">${c.install}</a><a class="button" href="${demo}" hidden>${c.tour}</a></div></div>`;
+<div class="hero-actions" data-reveal style="--i:5"><a class="button primary" href="${links.install}">${escape(c.install)}</a><a class="button" href="${links.marketplace}">${escape(c.marketplace)}</a><a class="button" href="${demo}" hidden>${c.tour}</a></div></div>`;
 }
 
 function home(lang, version) {
@@ -263,7 +274,7 @@ function home(lang, version) {
 <nav aria-label="${c.navLabel}"><i class="nav-marker" aria-hidden="true"></i>${[...c.chapters, c.tools].map((s) => `<a href="#${s.id}">${s.nav}</a>`).join("")}</nav>
 <div class="header-links"><a data-language href="${lang === "en" ? "../" : "./en/"}" lang="${lang === "en" ? "zh-CN" : "en"}">${c.language}</a><a href="${links.github}">GitHub</a></div></div><i class="scroll-progress" aria-hidden="true"></i></header>
 <main id="main">
-<section class="hero" data-hero><div class="hero-grid" aria-hidden="true"></div><div class="wrap hero-row">${heroCopy(c, links, demo)}${heroVisual(c, prefix)}</div></section>
+<section class="hero" data-hero><div class="hero-grid" aria-hidden="true"><i class="hero-grid-light"></i></div><div class="wrap hero-row">${heroCopy(c, links, demo)}${heroVisual(c, prefix)}</div></section>
 ${c.chapters.map((section) => (section.zone ? samplingZone(c, prefix, lang, section) : chapter(c, prefix, lang, section))).join("\n")}
 ${toolsChapter(c, prefix, lang)}
 </main>
@@ -303,4 +314,27 @@ function demoPage(lang = "zh") {
     return `${head(lang, "../", true)}<body class="demo-page" data-lang="${lang}"><header class="demo-header"><a class="brand" id="demo-back" href="${lang === "en" ? "../en/" : "../"}"><img src="../assets/icon.png" width="24" height="24" alt="">EmberProbe<span id="back-label">${c.back}</span></a><span id="simulation-label">${c.simulation}</span><div><button type="button" id="tour-resume">${c.tourResume}</button><a id="demo-language" href="?lang=${lang === "en" ? "zh" : "en"}">${c.language}</a><button type="button" id="reset-demo">${c.reset}</button></div></header><main><aside class="tour" aria-labelledby="tour-heading"><div class="tour-head"><h1 id="tour-heading">${c.tourTitle}</h1><button type="button" id="tour-exit">${c.tourExit}</button></div><ol id="tour-chapters"></ol></aside><div class="mobile-note"><p id="mobile-hint">${c.mobileHint}</p><a id="mobile-link" href="${lang === "en" ? "../en/" : "../"}">${c.mobileLink}</a></div><div class="editor-stage" id="editor-stage"><div class="editor-scroll"><iframe id="demo-editor" title="${c.demoTitle}" src="editor/?lang=${lang}&amp;theme=light" allow="clipboard-write"></iframe></div><div class="tour-layer" aria-hidden="true"><i id="tour-spot" hidden></i></div><p class="tour-wait" id="tour-preparing">${c.tourPreparing}</p></div><noscript>${c.noScript}</noscript></main><script type="application/json" id="demo-translations">${JSON.stringify(translations)}</script></body></html>`;
 }
 
-module.exports = { home, demoPage, origin };
+function installPage(lang = "zh") {
+    const c = content[lang];
+    const isEn = lang === "en";
+    const prefix = isEn ? "../../" : "../";
+    const canonical = origin + (isEn ? "en/install/" : "install/");
+    const switchHref = isEn ? "../../install/" : "../en/install/";
+    const switchLang = isEn ? "zh-CN" : "en";
+    return `<!doctype html><html lang="${c.htmlLang}"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(c.installTitle)}</title><meta name="description" content="${escape(c.installDescription)}">
+<meta name="theme-color" content="#ffffff"><link rel="icon" href="${prefix}assets/icon.png">
+<link rel="canonical" href="${canonical}">
+<meta name="robots" content="noindex">
+<link rel="preload" as="font" type="font/woff2" href="${prefix}assets/fonts/inter.woff2" crossorigin>
+<link rel="stylesheet" href="${prefix}assets/site.css"><noscript><meta http-equiv="refresh" content="0;url=${escape(links.install)}"></noscript><script src="${prefix}assets/install.js" defer></script></head>
+<body class="install-page"><main class="install-card"><header class="install-top"><a class="brand" href="../"><img src="${prefix}assets/icon.png" width="24" height="24" alt="">EmberProbe</a><a class="install-lang" href="${switchHref}" lang="${switchLang}">${escape(c.language)}</a></header>
+<h1>${escape(c.installHeading)}</h1>
+<p class="install-lead">${escape(c.installLead)}</p>
+<div class="install-actions"><a id="install-open" class="button primary" href="${escape(links.install)}">${escape(c.install)}</a><a class="button" href="${links.marketplace}">${escape(c.marketplace)}</a></div>
+<div class="install-command"><p>${escape(c.installCommandHint)}</p><code>ext install ${escape(extensionId)}</code></div>
+<p class="install-foot"><a href="../">${escape(c.back)}</a></p></main></body></html>`;
+}
+
+module.exports = { home, demoPage, installPage, origin };

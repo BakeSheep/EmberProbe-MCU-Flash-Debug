@@ -2,7 +2,7 @@
 
 EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，集成固件烧录、断点调试、实时变量观测与 Agent 辅助开发。
 
-> [官网](https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/) | [English documentation](README_EN.md) | [使用教程](#使用教程)
+> [安装到 VS Code](https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/install/) | [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=BakeSheep.emberprobe) | [官网](https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/) | [English documentation](README_EN.md) | [使用教程](#使用教程)
 
 ![实时采样：C++ PID 变量、波形历史与写入控制](docs/images/live-watch-waveform.png)
 

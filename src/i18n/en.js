@@ -545,7 +545,7 @@ module.exports = Object.freeze({
     "peripheral.enableHint": "Choose an SVD under Other Configuration to browse registers.",
     "peripheral.needSampling": "Start sampling or debugging before accessing peripheral registers",
     "peripheral.sampling": "Sampling active · open registers refresh at up to 20 Hz",
-    "peripheral.running": "Target running · access without halting",
+    "peripheral.running": "Debugging · writable, pause to update",
     "peripheral.paused": "Target paused · select a register to read it",
     "peripheral.unavailable":
         "Peripheral access unavailable · check the connection or pause an unsupported debug target",

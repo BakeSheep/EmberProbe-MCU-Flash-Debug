@@ -10,13 +10,21 @@ const { origin } = require("./template");
 function checkSite(directory) {
     const base = new URL(origin);
     let references = 0;
-    for (const name of ["index.html", "en/index.html", "demo/index.html", "demo/editor/index.html"]) {
+    for (const name of [
+        "index.html",
+        "en/index.html",
+        "install/index.html",
+        "en/install/index.html",
+        "demo/index.html",
+        "demo/editor/index.html"
+    ]) {
         const dom = new JSDOM(fs.readFileSync(path.join(directory, name), "utf8"));
         const document = dom.window.document;
         assert.ok(document.title, `${name}: missing title`);
-        const linked = "[src], [srcset], [poster], [data-poster], [data-poster-narrow], link[href], a[href]";
+        const media = ["src", "srcset", "poster", "data-poster", "data-poster-narrow", "data-src", "data-src-narrow"];
+        const linked = [...media.map((attribute) => `[${attribute}]`), "link[href]", "a[href]"].join(", ");
         const links = [...document.querySelectorAll(linked)].flatMap((element) =>
-            ["src", "href", "poster", "data-poster", "data-poster-narrow", "srcset"]
+            [...media, "href"]
                 .map((name) => element.getAttribute(name))
                 .filter(Boolean)
                 // A srcset lists "url width" candidates; each url is checked.

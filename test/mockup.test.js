@@ -120,6 +120,11 @@ function testSimulatorAndRegisters() {
     assert.ok(simulator.write("g_target_rpm", 2000));
     simulator.tick();
     assert.equal(simulator.scalarSamples(["g_target_rpm"], 1)[0].value, 2000);
+    assert.ok(simulator.write("g_active_sensor.value.value", 26.5));
+    const pointee = simulator.compositeSample("g_active_sensor.value", 1).tree.members[1];
+    assert.equal(pointee.value, 26.5);
+    assert.equal(pointee.address, 0x20000210);
+    assert.equal(simulator.compositeSample("g_sensors", 1).tree.elements[1].members[1].value, 26.5);
     for (let tick = 0; tick < 300; tick++) simulator.tick();
     assert.ok(
         Math.abs(simulator.scalarSamples(["g_motor_rpm"], 1)[0].value - 2000) < 200,
@@ -717,16 +722,30 @@ function testTypeShowcase() {
     const sidebar = env.frame((message) => view.send(message));
     const host = env.root.EmberProbeSidebarHost.create(sidebar, { simulator });
     try {
-        const names = ["g_app_state", "g_active_sensor", "g_on_fault", "g_pending", "g_motor"];
+        const names = [
+            "g_app_state",
+            "g_active_sensor",
+            "g_on_fault",
+            "g_pending",
+            "g_motor",
+            "g_target_rpm_ref",
+            "g_rpm_history",
+            "g_speed_limit"
+        ];
         env.deliver(sidebar, { type: "saveSidebarWatch", items: names.map((name) => sidebarData.watchItem(name)) });
         env.deliver(sidebar, { type: "initCheck" });
         env.deliver(sidebar, { type: "liveToggle" });
         env.advance(600);
-        view.document.querySelector("#liveValues .sb-comp-head").click();
+        for (const head of view.document.querySelectorAll("#liveValues .composite:not(.open) .sb-comp-head"))
+            head.click();
         const text = view.document.getElementById("liveValues").textContent;
         for (const expected of [".Active / .Ready(3)", "&g_sensors[1]", "fault_handler()", "NULL", '"left-wheel"'])
             assert.ok(text.includes(expected), expected);
         assert.match(text, /已隐藏 \d+ 个内部成员/);
+        const card = (name) => view.document.querySelector(`#liveValues [data-reorder-key="${name}"]`).textContent;
+        assert.match(card("g_target_rpm_ref"), /uint16_t &1500/);
+        assert.match(card("g_rpm_history"), /std::vector<uint16_t>.*1635/);
+        assert.match(card("g_speed_limit"), /std::optional<uint16_t>.*2400/);
         view.assertHealthy();
     } finally {
         host.destroy();

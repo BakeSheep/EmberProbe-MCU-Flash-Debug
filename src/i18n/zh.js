@@ -501,7 +501,7 @@ module.exports = Object.freeze({
     "peripheral.enableHint": "请先在“其他配置”中选择 SVD 文件。",
     "peripheral.needSampling": "请先开始采样或启动调试，再读写外设寄存器",
     "peripheral.sampling": "采样中 · 已展开的寄存器最高按 20 Hz 刷新",
-    "peripheral.running": "目标运行中 · 无需暂停即可访问",
+    "peripheral.running": "调试运行中 · 可写入，暂停以更新",
     "peripheral.paused": "目标已暂停 · 点击寄存器可读取",
     "peripheral.unavailable": "外设访问不可用 · 检查连接，或暂停不支持运行中访问的调试目标",
     "peripheral.readbackDifferent": "写命令已完成，但回读值不同；固件或硬件可能已更新寄存器。",

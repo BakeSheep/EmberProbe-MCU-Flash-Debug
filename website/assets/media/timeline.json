@@ -285,12 +285,12 @@
     "type-stl": {
         "still": true,
         "zh": {
-            "width": 443,
-            "height": 384
+            "width": 429,
+            "height": 189
         },
         "en": {
-            "width": 443,
-            "height": 384
+            "width": 429,
+            "height": 189
         }
     },
     "rtt": {
@@ -304,5 +304,16 @@
         "steps": [
             0
         ]
+    },
+    "write-member": {
+        "still": true,
+        "zh": {
+            "width": 429,
+            "height": 203
+        },
+        "en": {
+            "width": 429,
+            "height": 203
+        }
     }
 }

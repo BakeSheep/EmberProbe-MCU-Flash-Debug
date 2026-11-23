@@ -99,10 +99,6 @@ const dereference = (name) => (session) =>
         if (!toggle.classList.contains("open")) toggle.click();
     }, name);
 
-// The containers in mock/shell-data.js, and the rows clicked open (or, for the default g_history, shut) for the still.
-const STL_ROWS = ["g_history", "g_fw_version", "g_params", "g_rx_queue", "g_offset", "g_driver", "g_last_error"];
-const STL_TOGGLES = ["g_history", "g_fw_version", "g_params", "g_params.[1]", "g_offset", "g_driver"];
-
 // One card type on the website's type gallery: these variables, sampled, cropped to the list.
 function typeStill(names, ...after) {
     return {
@@ -499,27 +495,56 @@ const scenes = {
         expand("g_sensors", ["g_sensors[1]"])
     ),
     "type-enum": typeStill(["g_motor_mode", "g_app_state"]),
-    "type-pointer": typeStill(
-        ["g_active_sensor", "g_on_fault", "g_banner", "g_pending"],
-        dereference("g_active_sensor")
-    ),
+    "type-pointer": {
+        ...typeStill(["g_active_sensor", "g_target_rpm_ref", "g_on_fault", "g_banner"], dereference("g_active_sensor")),
+        async verify({ sb }) {
+            await sb.locator(".pointer-pointee.open").getByText("MODE_RUN(1)").waitFor();
+            await sb.locator('[data-reorder-key="g_target_rpm_ref"]').getByText("1500", { exact: true }).waitFor();
+        }
+    },
     "type-class": typeStill(["g_motor"], expand("g_motor")),
-    // STL containers belong to the built-in debugger: its Variables view while paused, cropped to the container rows.
     "type-stl": {
-        still: true,
-        window: { width: 800, height: 760, sidebar: 440 },
-        poster: 1,
-        cursor: [700, 700],
-        cropTo: { on: "page", to: STL_ROWS.map((name) => `#debugVariables [data-var-path^="${name}"]`), pad: 2 },
-        async prepare(session) {
-            await session.page.evaluate((paths) => {
-                document.querySelector('.activity-item[data-view="debug"]').click();
-                for (const path of paths)
-                    document.querySelector(`#debugVariables [data-var-path="${CSS.escape(path)}"]`).click();
-            }, STL_TOGGLES);
-            await session.page.clock.runFor(200);
-        },
-        operations: []
+        ...typeStill(["g_rpm_history", "g_speed_limit"], expand("g_rpm_history"), expand("g_speed_limit")),
+        cropTo: { on: "sb", to: [".section-label:has(#watchCount)", "#liveValues"], pad: 4 },
+        async verify({ sb }) {
+            const vector = sb.locator('[data-reorder-key="g_rpm_history"]');
+            const optional = sb.locator('[data-reorder-key="g_speed_limit"]');
+            await vector.getByText("std::vector<uint16_t>", { exact: true }).waitFor();
+            await vector.getByText("1635", { exact: true }).waitFor();
+            await optional.getByText("std::optional<uint16_t>", { exact: true }).waitFor();
+            await optional.getByText("2400", { exact: true }).waitFor();
+        }
+    },
+    "write-member": {
+        ...typeStill(["g_active_sensor"], dereference("g_active_sensor"), async (session) => {
+            const name = "g_active_sensor.value.value";
+            const selector = `#liveValues [data-breakpoint-path="${name}"]`;
+            await session.page.clock.runFor(300);
+            await session.sb.evaluate(() => {
+                for (const button of document.querySelectorAll("#writeValues .watch-remove")) button.click();
+            });
+            await session.sb.locator(selector).click({ button: "right" });
+            await session.sb.locator(".watch-write-action:enabled").click();
+            const input = session.sb.locator(`#writeValues [data-reorder-key="${name}"] .write-input`);
+            await input.evaluate((field) => {
+                field.focus();
+                field.value = "26.5";
+                field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+            });
+            await session.page.clock.runFor(400);
+            const value = await session.sb.locator(`${selector} .sb-mval`).innerText();
+            const verified = await session.sb
+                .locator(`#writeValues [data-reorder-key="${name}"] .write-dot.ok`)
+                .count();
+            if (Number(value) !== 26.5 || !verified) {
+                const notice = await session.sb.locator("#noticeWrite").textContent();
+                throw new Error(`Expected a verified read-back of 26.5, got ${value}. ${notice}`);
+            }
+            await session.sb.evaluate(() => {
+                document.activeElement.blur();
+            });
+        }),
+        cropTo: { on: "sb", to: [".section-label:has(#watchCount)", "#writeValues"], pad: 4 }
     },
     // The waveform window's series menu and CSV export, each cropped to the dialog.
     "chart-menu": chartStill(

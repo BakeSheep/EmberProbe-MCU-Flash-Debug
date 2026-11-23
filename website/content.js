@@ -1,13 +1,46 @@
 "use strict";
 
+const { publisher, name } = require("../package.json");
+
 const repository = "https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug";
+const extensionId = `${publisher}.${name}`;
 
 const links = {
     github: repository,
-    install: "https://marketplace.visualstudio.com/items?itemName=BakeSheep.emberprobe",
+    install: `vscode:extension/${extensionId}`,
+    marketplace: `https://marketplace.visualstudio.com/items?itemName=${extensionId}`,
     docs: `${repository}/blob/master/docs/guide/getting-started.md`,
     docsEn: `${repository}/blob/master/README_EN.md`
 };
+
+// Representative series with matching scripts in the bundled OpenOCD.
+const chipVendors = [
+    [
+        "STMicroelectronics",
+        "STM32",
+        [
+            "STM32C0/C5",
+            "STM32F0/F1/F2/F3/F4/F7",
+            "STM32G0/G4",
+            "STM32H7",
+            "STM32L0/L1/L4/L5",
+            "STM32U0/U3/U5",
+            "STM32WB/WBA/WL",
+            "STM32MP13/MP15"
+        ]
+    ],
+    [
+        "GigaDevice",
+        "GD32",
+        ["GD32F101/F103", "GD32F130/F150", "GD32F303", "GD32F310/F330/F350", "GD32E23x", "GD32VF103"]
+    ],
+    ["Geehy", "APM32", ["APM32E030/E103", "APM32F0x/F1x/F4x"]],
+    ["Artery", "AT32", ["AT32F403A/F407/F407A", "AT32F413/F415", "AT32F421/F423/F425", "AT32F435/F437", "AT32WB415"]],
+    ["WCH", "CH32", ["CH32F103"]],
+    ["Raspberry Pi", "RP", ["RP2040", "RP2350"]],
+    ["Nordic Semiconductor", "nRF", ["nRF51", "nRF52"]],
+    ["Nuvoton", "NuMicro", ["NuMicro M0", "NuMicro M4"]]
+];
 
 const agentClients = [
     ["claudecode", "Claude Code"],
@@ -17,7 +50,8 @@ const agentClients = [
     ["githubcopilot", "GitHub Copilot"],
     ["cursor", "Cursor"],
     ["antigravity", "Antigravity"],
-    ["deepseek", "DeepSeek Harness"]
+    ["deepseek", "DeepSeek Harness"],
+    ["workbuddy", "WorkBuddy"]
 ];
 
 const mcpTools = {
@@ -49,7 +83,7 @@ const mcpTools = {
 };
 
 // Copy says what the visitor gets, not how to operate it or how it works; facts still follow docs/guide/.
-// `chapters` runs in the order of use. A chapter's id is also its recording in website/capture/scenes.js.
+// `chapters` runs in the order of use. A chapter's id defaults to its recording in website/capture/scenes.js.
 const content = {
     zh: {
         htmlLang: "zh-CN",
@@ -62,6 +96,12 @@ const content = {
         projectLabel: "项目链接",
         subtitle: "Agent 友好的现代化 STM32 调试插件",
         install: "安装到 VS Code",
+        marketplace: "在网页中查看",
+        installTitle: "安装到 VS Code · EmberProbe",
+        installDescription: "安装 EmberProbe 扩展，自动打开 VS Code 插件界面。",
+        installHeading: "正在打开 VS Code",
+        installLead: "正在打开 VS Code 中的 EmberProbe 扩展，不能自动打开时可点击按钮继续。",
+        installCommandHint: "也可在 VS Code 中输入命令安装：",
         tour: "打开引导教程",
         heroAlt: "EmberProbe 界面：侧栏实时读写 C++ 变量，波形图显示 PID 成员与采样历史",
         player: { pause: "暂停", play: "播放", enlarge: "放大", exit: "退出放大" },
@@ -88,24 +128,9 @@ const content = {
                             "KitProg"
                         ]
                     },
-                    chips: {
-                        label: "芯片",
-                        items: [
-                            "STM32F0/F1/F2/F3",
-                            "STM32F4/F7",
-                            "STM32G0/G4",
-                            "STM32H7",
-                            "STM32L0/L1/L4/L5",
-                            "STM32U0/U5",
-                            "STM32C0/C5",
-                            "STM32WB/WL",
-                            "GD32",
-                            "APM32",
-                            "RP2040/RP2350"
-                        ]
-                    },
+                    chips: "支持的芯片系列",
                     systems: { label: "操作系统", items: ["Windows", "Linux", "macOS"] },
-                    note: "以及 OpenOCD 支持的其他调试器和芯片"
+                    note: "还可使用其他 OpenOCD 接口脚本。"
                 }
             },
             {
@@ -211,14 +236,8 @@ const content = {
                     },
                     types: {
                         id: "variables",
-                        title: "看懂 C/C++ 的每一种类型",
-                        lead: "从固件的调试信息自动解析地址和类型，按名称搜索即可添加，无需任何配置。",
-                        alt: "搜索 g_target_rpm 并加入查看和写入列表，开始采样后写入 2400，转速随之上升",
-                        points: [
-                            ["自动解析", "从固件中读出全部变量与结构体成员，按名称搜索即可添加。"],
-                            ["随时写入", "输入新值立即写入，写完自动回读确认。"],
-                            ["同名变量", "不同文件里的同名 static 变量各自保留，并标出来源文件。"]
-                        ],
+                        title: "查看 C/C++ 变量",
+                        lead: "从固件的调试信息自动解析地址和类型，按名称搜索即可添加。同名 static 变量会标出来源文件。",
                         gallery: [
                             {
                                 id: "type-basic",
@@ -240,9 +259,9 @@ const content = {
                             },
                             {
                                 id: "type-pointer",
-                                name: "指针",
-                                text: "直接显示指针指向什么：数组元素、函数、字符串或 NULL。数据指针还能展开查看目标。",
-                                alt: "侧栏中 g_active_sensor 显示 &g_sensors[1] 并展开成员，g_on_fault 显示 fault_handler()，g_banner 显示字符串，g_pending 显示 NULL"
+                                name: "指针解引用与 C++ 引用",
+                                text: "侧栏和波形窗口可逐层展开数据指针。C++ 引用直接显示目标值或成员。函数指针显示函数名，字符串指针可直接查看文本。",
+                                alt: "侧栏中 g_active_sensor 展开为 g_sensors[1] 的成员，C++ 引用 g_target_rpm_ref 直接显示目标转速"
                             },
                             {
                                 id: "type-class",
@@ -253,8 +272,8 @@ const content = {
                             {
                                 id: "type-stl",
                                 name: "STL 容器",
-                                text: "断点暂停时，内置调试器的变量视图直接展开 string、vector、map、deque、list、optional、variant 和智能指针，显示长度和每个元素。",
-                                alt: "运行和调试视图的变量列表，std::vector、std::string、std::map、std::deque、std::optional、std::unique_ptr、std::variant 显示为长度和元素"
+                                text: "在 EmberProbe 查看列表中展开 vector 等容器，实时读出元素及当前值。optional 的值也可直接查看。",
+                                alt: "EmberProbe 侧栏查看列表中，g_rpm_history 的 vector 展开三个元素，g_speed_limit 的 optional 显示当前值"
                             }
                         ]
                     },
@@ -287,13 +306,30 @@ const content = {
                 }
             },
             {
+                id: "write",
+                clip: "variables",
+                nav: "写入",
+                title: "实时写入变量，自动回读",
+                lead: "实时写入变量，支持静态变量与动态成员。无需任何代码，更不用反复烧录",
+                alt: "侧栏搜索 g_target_rpm 并加入查看和写入列表，把目标转速改为 2400，观察实际转速上升",
+                points: [
+                    ["变量与对象成员", "输入新值或拖动滑块，调整全局变量和可写成员。"],
+                    ["运行时定位", "可写入指针所指对象、链表节点和部分容器的标量成员。"],
+                    ["回读确认", "写入前复核目标，写入后回读。动态目标的地址或类型变化时，对应的写入项会停用。"]
+                ],
+                shot: {
+                    id: "write-member",
+                    alt: "侧栏写入列表中，已修改 g_active_sensor 指向的对象成员并显示回读结果"
+                }
+            },
+            {
                 id: "agent",
                 nav: "Agent",
                 title: "赋予 Agent 强大能力",
                 lead: "内置 MCP 服务器，Agent 可以帮你烧录、读写变量、调试、查看外设和生成 CubeMX 代码。",
                 alt: "在侧栏为 Gemini CLI 安装 MCP 服务器，升级 Codex 配置，再查看完全允许 Agent 操作开关",
                 points: [
-                    ["MCP 一键接入", "在侧栏为常用 Agent 客户端一键安装，所有工程共用。"],
+                    ["MCP 一键接入", "在侧栏为常用 Agent 客户端安装 MCP，检测连接并查看工具数量。"],
                     ["敏感操作请求", "烧录、写入等操作先给出计划，你在对话中确认后才执行。"],
                     ["Skills 兼容", "附带现成的工作流 Skills，Agent 按成熟流程操作硬件。"]
                 ]
@@ -303,12 +339,12 @@ const content = {
             clientsTitle: "支持的 Agent 客户端",
             capabilitiesTitle: "MCP 能力",
             capabilities: [
-                ["config", "工程配置", "读取与更新工程配置，列出已连接的调试器。"],
+                ["config", "工程配置", "读取与更新工程配置，列出并选择已连接的调试器。"],
                 ["target", "芯片与运行状态", "读取芯片信息与故障现场，独立暂停、继续或复位目标。"],
                 ["flash", "固件烧录与校验", "烧录 ELF 固件、校验 Flash 内容，并复位运行。"],
-                ["variables", "变量读写", "搜索全局与静态变量，读取数值，写入 RAM 标量并回读。"],
+                ["variables", "变量读写", "搜索全局与静态变量，通过 C++ 引用或指针读取成员，写入可写标量并回读。"],
                 ["watch", "观测列表", "添加、查看或移除侧栏与波形窗口中的观测变量。"],
-                ["sampling", "实时采样与导出", "多次读取变量，控制持续采样、查看采样状态，导出波形历史 CSV。"],
+                ["sampling", "实时采样与导出", "多次读取变量、控制持续采样，并将波形历史导出为工作区 CSV 文件。"],
                 ["debug", "调试控制", "查看和选择会话，启动或附加调试，暂停、继续、单步、重启与停止。"],
                 ["inspect", "断点与现场查看", "管理断点与数据断点，暂停时查看线程、调用栈、变量与原始内存。"],
                 ["rtos", "FreeRTOS 任务", "查看 RTOS 支持状态，暂停时读取任务状态、优先级与栈使用。"],
@@ -408,6 +444,12 @@ const content = {
         projectLabel: "Project links",
         subtitle: "The modern, Agent-friendly STM32 debugging extension",
         install: "Install in VS Code",
+        marketplace: "View in Marketplace",
+        installTitle: "Install in VS Code · EmberProbe",
+        installDescription: "Install the EmberProbe extension by opening its Marketplace page directly in VS Code.",
+        installHeading: "Opening VS Code",
+        installLead: "Opening EmberProbe in VS Code. If it does not open automatically, use the buttons below.",
+        installCommandHint: "Or run in VS Code Quick Open (Ctrl+P):",
         tour: "Open the guided tour",
         heroAlt:
             "EmberProbe: live C++ variable reads and writes in the sidebar, with PID members and sampling history in the waveform view",
@@ -435,24 +477,9 @@ const content = {
                             "KitProg"
                         ]
                     },
-                    chips: {
-                        label: "Chips",
-                        items: [
-                            "STM32F0/F1/F2/F3",
-                            "STM32F4/F7",
-                            "STM32G0/G4",
-                            "STM32H7",
-                            "STM32L0/L1/L4/L5",
-                            "STM32U0/U5",
-                            "STM32C0/C5",
-                            "STM32WB/WL",
-                            "GD32",
-                            "APM32",
-                            "RP2040/RP2350"
-                        ]
-                    },
+                    chips: "Supported chip families",
                     systems: { label: "Operating systems", items: ["Windows", "Linux", "macOS"] },
-                    note: "plus the other probes and chips OpenOCD supports"
+                    note: "Additional OpenOCD interface scripts can be used."
                 }
             },
             {
@@ -567,20 +594,8 @@ const content = {
                     },
                     types: {
                         id: "variables",
-                        title: "Every C/C++ type, understood",
-                        lead: "Addresses and types come from the firmware's debug information. Search by name to add a variable, with nothing to configure.",
-                        alt: "g_target_rpm is found and added to the watch and write lists, sampling starts, 2400 is written, and the speed rises",
-                        points: [
-                            [
-                                "Parsed for you",
-                                "Every variable and struct member comes from the firmware. Search by name to add one."
-                            ],
-                            ["Write any time", "Type a new value to write it. Each write is read back to confirm."],
-                            [
-                                "Same-named variables",
-                                "Static variables that share a name across files are all kept, each marked with its source file."
-                            ]
-                        ],
+                        title: "Inspect C/C++ variables",
+                        lead: "Search variables by name using the firmware's debug information. Static variables with the same name show their source files.",
                         gallery: [
                             {
                                 id: "type-basic",
@@ -602,9 +617,9 @@ const content = {
                             },
                             {
                                 id: "type-pointer",
-                                name: "Pointers",
-                                text: "See what a pointer points to: an array element, a function, a string or NULL. Data pointers open onto their target.",
-                                alt: "In the sidebar, g_active_sensor shows &g_sensors[1] with its members open, g_on_fault shows fault_handler(), g_banner shows a string and g_pending shows NULL"
+                                name: "Pointer dereferencing and C++ references",
+                                text: "Expand data pointers one level at a time in the sidebar or waveform window. C++ references show their target values or members directly. Function pointers show names, and string pointers preview text.",
+                                alt: "The sidebar expands g_active_sensor into the fields of g_sensors[1] and shows the target speed directly through g_target_rpm_ref"
                             },
                             {
                                 id: "type-class",
@@ -615,8 +630,8 @@ const content = {
                             {
                                 id: "type-stl",
                                 name: "STL containers",
-                                text: "When paused, the built-in debugger's Variables view opens string, vector, map, deque, list, optional, variant and smart pointers, with lengths and every element.",
-                                alt: "The Run and Debug Variables view with std::vector, std::string, std::map, std::deque, std::optional, std::unique_ptr and std::variant shown as lengths and elements"
+                                text: "Expand vectors and other supported containers in the EmberProbe watch list to see their elements live. Inspect the current value of an optional directly.",
+                                alt: "The EmberProbe sidebar watch list expands three vector elements in g_rpm_history and shows the current optional value in g_speed_limit"
                             }
                         ]
                     },
@@ -664,6 +679,32 @@ const content = {
                 }
             },
             {
+                id: "write",
+                clip: "variables",
+                nav: "Write",
+                title: "Write live values and verify by reading back",
+                lead: "Write static variables and dynamic members live, without changing code or reflashing firmware.",
+                alt: "The sidebar adds g_target_rpm to the watch and write lists, sets it to 2400 and shows the measured speed rising",
+                points: [
+                    [
+                        "Variables and object members",
+                        "Enter a value or drag a slider to tune writable globals and members."
+                    ],
+                    [
+                        "Find members at runtime",
+                        "Write to mutable scalars reached through pointers, linked lists and supported containers."
+                    ],
+                    [
+                        "Read-back verification",
+                        "EmberProbe checks the target before writing and reads it back afterward. The write card is disabled if a dynamic target's address or type changes."
+                    ]
+                ],
+                shot: {
+                    id: "write-member",
+                    alt: "The sidebar Write list shows a changed member of the object pointed to by g_active_sensor and the value read back"
+                }
+            },
+            {
                 id: "agent",
                 nav: "Agent",
                 title: "Give your Agent real power",
@@ -672,7 +713,7 @@ const content = {
                 points: [
                     [
                         "One-click MCP setup",
-                        "Install for popular Agent clients from the sidebar, shared by all your projects."
+                        "Install MCP for popular Agent clients from the sidebar, then check the connection and tool count."
                     ],
                     [
                         "Sensitive operations ask first",
@@ -686,7 +727,11 @@ const content = {
             clientsTitle: "Supported Agent clients",
             capabilitiesTitle: "MCP capabilities",
             capabilities: [
-                ["config", "Workspace setup", "Read and update workspace settings, and list connected debug probes."],
+                [
+                    "config",
+                    "Workspace setup",
+                    "Read and update workspace settings, and list or select connected debug probes."
+                ],
                 [
                     "target",
                     "Chip and target state",
@@ -696,13 +741,13 @@ const content = {
                 [
                     "variables",
                     "Variable access",
-                    "Search global and static variables, read values, and write scalar RAM values with readback."
+                    "Find global and static variables, read members through C++ references or pointers, and write mutable scalars with readback."
                 ],
                 ["watch", "Watch lists", "Add, list, or remove watched variables in the sidebar and live charts."],
                 [
                     "sampling",
                     "Sampling and export",
-                    "Capture repeated reads, control persistent sampling, check its state, and export chart history as CSV."
+                    "Capture repeated reads, control persistent sampling, and export chart history to a CSV file in the workspace."
                 ],
                 [
                     "debug",
@@ -838,4 +883,4 @@ const content = {
     }
 };
 
-module.exports = { content, links, agentClients, mcpTools };
+module.exports = { content, links, extensionId, chipVendors, agentClients, mcpTools };

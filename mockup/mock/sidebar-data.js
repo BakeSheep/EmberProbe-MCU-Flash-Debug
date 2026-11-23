@@ -174,6 +174,33 @@
         );
     }
 
+    var RPM_TYPE = { kind: "scalar", typeName: "uint16_t", byteSize: 2, watchType: "u16" };
+    function rpmGraph(type) {
+        return { root: 1, types: [RPM_TYPE, type] };
+    }
+    function rpmContainer(name, address, byteSize, stl) {
+        var typeName = "std::" + stl + "<uint16_t>";
+        var runtimeLayout = rpmGraph({
+            kind: "class",
+            typeName: typeName,
+            byteSize: byteSize,
+            fields: [],
+            stl: stl,
+            args: [0]
+        });
+        var layout = {
+            kind: "class",
+            typeName: typeName,
+            byteSize: byteSize,
+            members: [],
+            runtimeLayout: runtimeLayout
+        };
+        return composite(name, address, byteSize, typeName, layout, {
+            hasRuntimeLayout: true,
+            runtimeLayout: runtimeLayout
+        });
+    }
+
     var SYMBOLS = [
         scalar("g_sensor_temp", 0x20000040, 4, "float", "f32"),
         scalar("g_motor_rpm", 0x20000044, 2, "uint16_t", "u16"),
@@ -230,6 +257,14 @@
             pointerTarget: "data",
             hasDwarfWriteType: false
         }),
+        scalar("g_target_rpm_ref", 0x20000230, 4, "uint16_t &", "u16", {
+            isReference: true,
+            hasRuntimeLayout: true,
+            hasDwarfWriteType: false,
+            runtimeLayout: rpmGraph({ kind: "reference", typeName: "uint16_t &", byteSize: 4, target: 0 })
+        }),
+        rpmContainer("g_rpm_history", 0x20000234, 12, "vector"),
+        rpmContainer("g_speed_limit", 0x20000240, 4, "optional"),
         composite("g_sensors", 0x20000200, 36, "sensor_t[3]", {
             kind: "array",
             typeName: "sensor_t[3]",
@@ -274,8 +309,9 @@
     SYMBOLS.forEach(function (symbol) {
         if (symbol.compositeLayout) collectLayoutTypes(symbol.compositeLayout, symbol.name);
     });
-    // A runtime object's visible scalar leaf; the extension sends its address with the sample.
+    // Visible runtime scalar leaves carry their sampled storage address.
     MEMBER_TYPES["g_motor.speed._M_fp"] = "f32";
+    MEMBER_TYPES["g_active_sensor.value.value"] = "f32";
 
     // The type phase the extension posts for both pages (src/services/elfViewController.js).
     function variableTypes() {
@@ -296,7 +332,8 @@
                 symbol.enumInfo ? { enumInfo: symbol.enumInfo, isEnum: true } : {},
                 symbol.isBoolean ? { isBoolean: true } : {},
                 symbol.isConst ? { isConst: true } : {},
-                symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {}
+                symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {},
+                symbol.isReference ? { isReference: true } : {}
             );
         });
     }
@@ -333,10 +370,11 @@
             );
         // The display fields the extension keeps on a watch item (src/validation.js).
         var extra = {};
-        ["enumInfo", "isBoolean", "isPointer", "pointerTarget"].forEach(function (key) {
+        ["enumInfo", "isBoolean", "isPointer", "pointerTarget", "isReference"].forEach(function (key) {
             if (symbol[key] !== undefined) extra[key] = symbol[key];
         });
-        if (symbol.isPointer) extra.typeName = symbol.typeName;
+        if (symbol.isPointer || symbol.isReference) extra.typeName = symbol.typeName;
+        if (symbol.isReference) extra.runtimeLayout = symbol.runtimeLayout;
         return Object.assign(
             {
                 name: symbol.name,
@@ -1102,6 +1140,7 @@
                 g_warn_count: state.warns,
                 g_state: Math.floor(state.now / 2000) % 4,
                 g_target_rpm: 1500,
+                g_target_rpm_ref: overrides.get("g_target_rpm") ?? 1500,
                 g_pid_kp: 1.85,
                 g_pid_ki: 0.42,
                 g_pid_kd: 0.06,
@@ -1157,11 +1196,11 @@
                     var symbol = symbolFor(name);
                     if (writeContext !== null && symbol && !symbol.isComposite) {
                         sample.writeContext = writeContext;
-                        sample.address = symbol.address;
+                        sample.address = symbol.isReference ? symbolFor("g_target_rpm").address : symbol.address;
                         sample.type = symbol.watchType;
                         sample.typeName = symbol.typeName;
                         if (symbol.isConst) sample.writeRestriction = "readOnly";
-                        else if (symbol.isPointer) sample.writeRestriction = "pointer";
+                        else if (symbol.isPointer || symbol.isReference) sample.writeRestriction = "pointer";
                         else if (!symbol.hasDwarfWriteType) sample.writeRestriction = "type";
                     }
                     return sample;
@@ -1175,7 +1214,7 @@
             var type = symbol && !symbol.isComposite ? symbol.watchType : MEMBER_TYPES[name];
             if (
                 !type ||
-                (symbol && (symbol.isConst || symbol.isComposite)) ||
+                (symbol && (symbol.isConst || symbol.isComposite || symbol.isReference)) ||
                 !Number.isFinite(value) ||
                 (symbol && symbol.isBoolean && value !== 0 && value !== 1)
             )
@@ -1190,7 +1229,7 @@
                 return false;
             var stored = type === "f32" ? Math.fround(value) : value;
             if (!Number.isFinite(stored)) return false;
-            overrides.set(name, stored);
+            overrides.set(name === "g_active_sensor.value.value" ? "g_sensors[1].value" : name, stored);
             return true;
         }
         // Member writes stay overrides too, so the next simulated sample shows the written value.
@@ -1304,21 +1343,62 @@
                     }
                 });
             }
-            if (name === "g_active_sensor.value")
+            if (name === "g_active_sensor.value") {
+                var members = sensorMembers(1);
+                var value = members.find(function (member) {
+                    return member.name === "value";
+                });
+                value.address = symbolFor("g_sensors").address + 12 + value.offset;
+                value.typeName = "float";
+                value.writeRestriction = "";
                 return treeResult({
                     name: name,
                     t: t,
-                    tree: { kind: "class", typeName: "sensor_t", members: sensorMembers(1) }
+                    tree: { kind: "class", typeName: "sensor_t", members: members }
                 });
+            }
             if (name === "g_motor") return treeResult({ name: name, t: t, tree: motorTree() });
+            if (name === "g_rpm_history") {
+                return {
+                    name: name,
+                    t: t,
+                    tree: {
+                        kind: "array",
+                        typeName: symbolFor(name).typeName,
+                        totalElements: 3,
+                        elements: [1420, 1510, 1635].map(function (value, index) {
+                            return { index: index, kind: "scalar", type: "u16", typeName: "uint16_t", value: value };
+                        })
+                    }
+                };
+            }
+            if (name === "g_speed_limit") {
+                return {
+                    name: name,
+                    t: t,
+                    tree: {
+                        kind: "class",
+                        typeName: symbolFor(name).typeName,
+                        members: [{ name: "value", kind: "scalar", type: "u16", typeName: "uint16_t", value: 2400 }]
+                    }
+                };
+            }
             return null;
         }
         // The sensors the firmware polls; sensor 1 is the one g_active_sensor points to.
         function sensorMembers(index) {
             var values = [state.temp, round(state.voltage, 2), round(state.current, 3)];
+            var override = overrides.get("g_sensors[" + index + "].value");
             return [
                 { name: "id", offset: 0, kind: "scalar", value: index + 1, valueText: null, type: "u16" },
-                { name: "value", offset: 4, kind: "scalar", value: values[index], valueText: null, type: "f32" },
+                {
+                    name: "value",
+                    offset: 4,
+                    kind: "scalar",
+                    value: override ?? values[index],
+                    valueText: null,
+                    type: "f32"
+                },
                 {
                     name: "mode",
                     offset: 8,

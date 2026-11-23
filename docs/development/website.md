@@ -1,6 +1,6 @@
 # 官网开发与发布
 
-官网源码在 `website/`，使用静态 HTML/CSS/JavaScript。中文在站点根路径，英文在 `en/`，引导教程在 `demo/`。默认项目地址是 https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/。
+官网源码在 `website/`，使用静态 HTML/CSS/JavaScript。中文在站点根路径，英文在 `en/`，安装跳转页在 `install/` 和 `en/install/`（供 GitHub README 等外部链接跳转到 `vscode:extension/...` 并提供网页兜底），引导教程在 `demo/`。默认项目地址是 https://bakesheep.github.io/EmberProbe-MCU-Flash-Debug/。
 
 ## 本地预览与校验
 
@@ -23,24 +23,27 @@ node test/mockup.test.js
 
 双语文案在 `website/content.js`，HTML 模板在 `website/template.js`，样式和交互在 `site.css`、`site.js`、`motion.js`。版本读取根 `package.json`，不在页面内复制版本号。文案写用户得到什么，不写操作步骤和实现细节（时序、协议、内部回退等留给 `docs/guide/`）；事实仍以 `docs/guide/` 为准。
 
-`content.js` 的章节 `id` 同时是 `website/capture/scenes.js` 中的场景名，录屏进度条的分段取自 `timeline.json` 中该场景的 `steps`。
+录屏场景默认按章节 `id` 查找，也可用 `clip` 指定。录屏进度条的分段取自 `timeline.json` 中该场景的 `steps`。配置区的厂家和芯片系列共用 `content.js` 的 `chipVendors`，按内置 OpenOCD 的目标配置维护。
 
 ### 采样专题区
 
-采样是核心功能，在首页是一个带 `zone` 字段的章节（`id: "sampling"`），由 `template.js` 的 `samplingZone` 渲染，顶部导航只占一个入口。区内直接展示四个小节，不另设子导航：
+采样在首页是一个带 `zone` 字段的章节（`id: "sampling"`），由 `template.js` 的 `samplingZone` 渲染，顶部导航只占一个入口。区内直接展示四个小节：
 
 - `modes`（`#sampling-modes`）：侧栏观测与波形图采样两张等宽对比卡，每张以真实界面截图（`mode-sidebar`、`mode-chart`）开头，按数据、记录、窗口三项对照。静默采样放在卡片下方独立的通栏区域，以隐藏、记录、重新显示三步说明，并注明只属于波形窗口。
 - `states`（`#sampling-states`）：独立运行、调试运行中、断点暂停时三行，每行有自己的录屏（`sampling-standalone`、`sampling-debug`、`sampling-break`）、图标、编号和颜色（青绿、琥珀、红），录屏左右交替。
-- `types`（`#variables`）：挂 `variables` 录屏，下方把各类型的真实界面截图（`type-*`）平铺成两列，按截图高度分列，让两列底部大致对齐。不放源码，也不做标签页。其中 `type-stl` 截的是内置调试器暂停时的变量视图（mockup 外壳 `shell-data.js` 的 `DEBUG.variables`，取值照 `src/debug/stl.js` 的摘要格式），文案写明属于调试器；实时采样不展开 vector、map 等容器。
+- `types`（`#variables`）：把各类型的 EmberProbe 侧栏截图（`type-*`）按高度平铺成两列。`type-pointer` 在同一卡片中展示数据指针解引用与 C++ 引用的直接读取。`type-stl` 展示查看列表中展开的 STL 容器成员。
 - `chart`（`#waveform`）：挂 `waveform` 录屏，另有功能网格和右键菜单、CSV 导出两张截图；截图保留替代文本，不显示图下注释。
 
 文案只写卖点。采样率不写具体档位：波形窗口的采样率可自定义，也可选不限速。
 
+变量写入是独立章节（`#write`）。`variables` 录屏展示调整目标转速，`write-member` 截图同时显示指针所指成员及写入后的回读值。
+
 专题区沿用全站的白底、灰色边框、中性截图背景和阴影，不另设绿色章节边界。开场只保留局部淡青绿光晕，标题略大于普通章节；其他小节沿用全站字号与间距。独立的 `--sampling-accent`（`#0b8a7e`）与 `--sampling-dark` 用于波形、采样率、功能图标和标记，不覆盖全站品牌色变量；导航和播放控件沿用橙色。区内的小动画都只在 `.motion` 下生效，减少动画模式下直接显示完整的静态页面：
 
-- 开头的波形先绘制出来，之后一条扫描光标循环扫过，光标后面的一段曲线加亮（SVG 遮罩 `#scope-sweep` 和 `.scope-cursor` 用同一套时序）。背景光晕保持静态，不再使用网格或指针照明。
-- 数字卖点进入视口时文字上扫过一次高光；静默采样的圆点持续向外扩散。
-- 三种状态进入时，色条自上而下画出，图标弹出，编号滑入；之后图标循环演示各自的状态：曲线反复绘制、继续按钮前推、断点向外脉冲。
+- 开头的波形入场后循环扫描，光标后面的一段曲线加亮（SVG 遮罩 `#scope-sweep` 和 `.scope-cursor` 用同一套时序）。背景光晕保持静态。
+- 数字卖点进入视口时扫过一次高光。静默采样的圆点在视口内循环扩散。
+- 三种状态进入时，色条自上而下画出，图标弹出，编号滑入。随后分别循环演示曲线绘制、继续按钮前推和断点脉冲。
+- 循环动效离开视口、进入全屏或切到后台标签页时暂停。
 - 支持悬停的设备上，卡片悬停时轻微上浮，方形标记转成菱形。上浮用 `translate`，不影响入场动画的 `transform`。
 
 新增文案出现新汉字时要重新生成字体子集，否则 `test/website.test.js` 会失败。源字体不在仓库中：
@@ -58,6 +61,10 @@ Logo 在 `website/assets/clients/`，来源版本、品牌说明与 MIT 许可�
 ## 录屏
 
 首页录屏全部来自 mockup 的真实前端，是提交到 `website/assets/media/` 的产物，CI 不录制。画面数据是模拟数据，不能作为硬件实测依据。前端或 mock 行为改变后需要重录对应场景。
+
+录屏封面接近视口时才加载。播放器在同一时间选择一段录屏，停止滚动后才加载并自动播放，手动点击播放则立即开始。封面保留到视频首帧出现，再淡出。切换到后台标签页时暂停播放，启用减少动画时可手动播放。
+
+录屏卡片只在视口附近时参与弹簧动画：入场和离场时跟随滚动倾斜，指针靠近或悬停时磁吸倾斜、上浮并联动独立浮影，靠近边框时点亮基于合成层位移的橙色光边；悬停控制栏或指针停稳 1.8 秒后画面自动摆正，收敛、离屏或后台时停止动画循环。桌面工具卡片只在滚动接近工具区时计算位置，且只有中间的当前卡片响应指针倾斜与光边。
 
 首页首图使用 `website/assets/media/hero.png`，与 README 的 `docs/images/live-watch-waveform.png` 是同一张原始截图。中英文页面与窄屏布局共用这张图，保留完整画面和原始比例；录制脚本生成的 `hero-<lang>.webp` 不替换当前首图。
 
@@ -78,7 +85,7 @@ LIB=<目录> node website/capture/record.js
 - “其他功能”的 `rtt` 场景先在侧栏启动 RTT 并开启保存日志，再收起侧栏，完整展示终端日志及 `status` 命令回应。桌面和窄屏各录一遍，中英文共四段；录制结束会检查保存状态和命令回应，防止把操作失败的画面导出。
 - 单段不超过 2 MB，全部不超过 60 MB。超出时先缩短时长，再提高场景的 `crf`。
 - `still: true` 的场景（首图）只在 `poster` 秒截一张无光标的图，输出 `hero-<lang>.webp` 和窄屏图，不编码视频。首图展示完整编辑器，首页保留整张截图的轻微 3D 透视和鼠标响应，不另加局部浮层，不持续缩放，也不设置常驻 `will-change: transform`。窄屏和减少动画模式关闭鼠标响应。
-- 带 `cropTo: {on, to, pad}` 的静态场景按海报帧上选择器匹配元素的外接框裁剪（`on` 是 `sb` 侧栏、`lw` 波形窗口或 `page`），中英文排版不同也能裁准。`timeline.json` 中这类条目按语言分别记录 `zh`/`en` 尺寸，输出 `<场景>-<lang>.webp`。专题区的场景截图（`mode-sidebar`、`mode-chart`）、类型截图（`type-*`）和波形截图（`chart-menu`、`chart-export`）都用这种方式，变量来自 mockup 的“ELF 全部变量”，默认查看列表不变；`type-stl` 在页面上按 `#debugVariables` 中容器所在的行裁剪。
+- 带 `cropTo: {on, to, pad}` 的静态场景按海报帧上选择器匹配元素的外接框裁剪（`on` 是 `sb` 侧栏、`lw` 波形窗口或 `page`）。`timeline.json` 中这类条目按语言记录 `zh`/`en` 尺寸，输出 `<场景>-<lang>.webp`。`mode-*`、侧栏的 `type-*`、`write-member` 和 `chart-*` 使用这一流程。
 - 社交分享图由 `website/capture/og.js` 生成，需要先构建站点。
 
 ## 引导教程
@@ -102,6 +109,6 @@ mockup 支持可选参数 `lang=zh|en` 和 `theme=light|dark`。非法语言回�
 
 独立的 Website workflow 在 PR 中构建和检查，相关文件推送到 `master` 后自动部署，也可手动触发。GitHub `github-pages` environment 仅允许 `master` 部署。站点不调用 Agent Bridge、不连接探针、不需要服务端密钥。
 
-首次部署后检查根首页、`en/`、`demo/?lang=en` 的直接访问与刷新，确认无资源 404，检查安装、文档、GitHub 链接，以及手机布局和减少动画设置。
+首次部署后检查根首页、`en/`、`install/`、`en/install/`、`demo/?lang=en` 的直接访问与刷新，确认无资源 404，检查安装、文档、GitHub 链接，以及手机布局和减少动画设置。
 
 回滚网站时，撤销造成问题的网站提交并推送，让 Pages 发布新产物；不要重定向已发布的扩展版本标签。官网发布与扩展 Release workflow 独立。

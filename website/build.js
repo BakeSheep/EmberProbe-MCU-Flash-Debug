@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { home, demoPage, origin } = require("./template");
+const { home, demoPage, installPage, origin } = require("./template");
 const { version } = require("../package.json");
 const root = path.resolve(__dirname, "..");
 const output = path.join(__dirname, "dist");
@@ -15,13 +15,20 @@ function buildSite() {
     fs.rmSync(output, { recursive: true, force: true });
     fs.mkdirSync(path.join(output, "assets"), { recursive: true });
     fs.mkdirSync(path.join(output, "en"), { recursive: true });
+    fs.mkdirSync(path.join(output, "install"), { recursive: true });
+    fs.mkdirSync(path.join(output, "en/install"), { recursive: true });
     fs.mkdirSync(path.join(output, "demo"), { recursive: true });
     fs.cpSync(path.join(root, "mockup/dist"), path.join(output, "demo/editor"), { recursive: true });
     fs.cpSync(path.join(__dirname, "assets"), path.join(output, "assets"), { recursive: true });
-    for (const name of ["site.css", "site.js", "motion.js", "tour-data.js", "demo.js"])
+    for (const name of ["site.css", "site.js", "motion.js", "tour-data.js", "demo.js", "install.js"])
         fs.copyFileSync(path.join(__dirname, name), path.join(output, "assets", name));
-    for (const lang of ["zh", "en"])
+    for (const lang of ["zh", "en"]) {
         fs.writeFileSync(path.join(output, lang === "en" ? "en/index.html" : "index.html"), home(lang, version));
+        fs.writeFileSync(
+            path.join(output, lang === "en" ? "en/install/index.html" : "install/index.html"),
+            installPage(lang)
+        );
+    }
     fs.writeFileSync(path.join(output, "demo/index.html"), demoPage());
     fs.writeFileSync(path.join(output, ".nojekyll"), "");
     fs.writeFileSync(path.join(output, "robots.txt"), `User-agent: *\nAllow: /\nSitemap: ${origin}sitemap.xml\n`);
