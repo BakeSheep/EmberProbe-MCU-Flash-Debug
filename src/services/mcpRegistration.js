@@ -5,7 +5,7 @@
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
-const { execFile, execFileSync } = require("child_process");
+const { execFile } = require("child_process");
 const { clientStatus, commitClientInstall, prepareClientInstall, prepareClientUninstall } = require("./mcpConfigFiles");
 
 const PROVIDER_ID = "emberprobe";
@@ -20,6 +20,8 @@ const {
 const CLI_TIMEOUT_MS = 30000;
 const NODE_PROBE_TIMEOUT_MS = 2000;
 const MIN_NODE_MAJOR = 18;
+const NATIVE_NODE_CLIENTS = new Set(["codex"]);
+const EPHEMERAL_NODE_DIR = /(?:^|[\\/])fnm_multishells(?:[\\/]|$)/i;
 const ERROR_TAIL = 300;
 // The buttons each client state offers in the sidebar card. A file that cannot be read can only be merged by hand.
 const STATE_ACTIONS = Object.freeze({
@@ -74,31 +76,88 @@ function parseNodeMajor(version) {
     return match ? Number(match[1]) : 0;
 }
 
-/**
- * Verifies a Windows node.exe candidate on PATH meets the MCP server's minimum Node version. Rejects .cmd/.bat shims
- * because external MCP stdio hosts spawn `command` directly without a shell.
- * @param {string} file
- * @param {typeof execFileSync} [run]
- * @returns {boolean}
- */
-function probeNodeExecutable(file, run = execFileSync) {
-    if (!file || !/\.exe$/i.test(file)) return false;
-    try {
-        const output = run(file, ["-v"], {
-            timeout: NODE_PROBE_TIMEOUT_MS,
-            windowsHide: true,
-            encoding: "utf8"
-        });
-        return parseNodeMajor(output) >= MIN_NODE_MAJOR;
-    } catch {
-        return false;
+function sanitizedNodeEnv(env = process.env) {
+    const clean = { ...env };
+    for (const key of Object.keys(clean)) {
+        if (/^(ELECTRON_RUN_AS_NODE|ELECTRON_NO_ATTACH_CONSOLE|NODE_OPTIONS)$/i.test(key)) delete clean[key];
     }
+    return clean;
 }
 
 /**
- * Launch command for external clients, using absolute paths. On Windows, prefer a verified native node.exe when
- * available so clients that strip ELECTRON_RUN_AS_NODE (such as Codex) do not launch the editor GUI; fall back to the
- * editor's Electron executable in the install root with ELECTRON_RUN_AS_NODE. POSIX goes through the wrapper script.
+ * Finds absolute Windows node.exe candidates on PATH, skipping relative entries, .cmd/.bat shims, and unresolvable
+ * ephemeral fnm multishell directories.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ statSync?: typeof fs.statSync, realpathSync?: (file: string) => string }} [options]
+ * @returns {Array<{ file: string, fingerprint: string }>}
+ */
+function findWindowsNodeCandidates(env = process.env, options = {}) {
+    const statSync = options.statSync || fs.statSync;
+    const realpathSync = options.realpathSync || fs.realpathSync.native || fs.realpathSync;
+    const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") || "PATH";
+    const dirs = String(env[pathKey] || "")
+        .split(";")
+        .map((dir) => dir.replace(/^"(.*)"$/, "$1").trim())
+        .filter((dir) => dir && path.win32.isAbsolute(dir));
+    const seen = new Set();
+    const candidates = [];
+    for (const dir of dirs) {
+        const candidate = path.win32.join(dir, "node.exe");
+        let file = candidate;
+        let stat;
+        try {
+            stat = statSync(file);
+            if (!stat.isFile()) continue;
+            if (EPHEMERAL_NODE_DIR.test(file)) {
+                file = realpathSync(file);
+                if (!file || EPHEMERAL_NODE_DIR.test(file) || !/\.exe$/i.test(file) || !path.win32.isAbsolute(file))
+                    continue;
+                stat = statSync(file);
+                if (!stat.isFile()) continue;
+            }
+        } catch {
+            continue;
+        }
+        const normalized = file.toLowerCase();
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+        candidates.push({ file, fingerprint: `${normalized}|${stat.mtimeMs}|${stat.size}` });
+    }
+    return candidates;
+}
+
+/**
+ * Asynchronously verifies a Windows node.exe candidate meets the MCP server's minimum Node version. Rejects .cmd/.bat
+ * shims and relative paths, and strips Electron/NODE_OPTIONS variables before probing.
+ * @param {string} file
+ * @param {{ execFile?: typeof execFile, env?: NodeJS.ProcessEnv }} [options]
+ * @returns {Promise<{ ok: boolean, transient?: boolean }>}
+ */
+function probeNodeExecutable(file, options = {}) {
+    if (!file || !/\.exe$/i.test(file) || !path.win32.isAbsolute(file)) return Promise.resolve({ ok: false });
+    const run = options.execFile || execFile;
+    const env = sanitizedNodeEnv(options.env || process.env);
+    return new Promise((resolve) => {
+        run(
+            file,
+            ["-v"],
+            { timeout: NODE_PROBE_TIMEOUT_MS, windowsHide: true, encoding: "utf8", env },
+            (error, stdout) => {
+                if (error) {
+                    const transient = !!(error.killed || error.code === "ETIMEDOUT");
+                    resolve(transient ? { ok: false, transient: true } : { ok: false });
+                    return;
+                }
+                resolve({ ok: parseNodeMajor(stdout) >= MIN_NODE_MAJOR });
+            }
+        );
+    });
+}
+
+/**
+ * Launch command for external clients, using absolute paths. Windows defaults to the editor's Electron executable in
+ * the install root with ELECTRON_RUN_AS_NODE, and uses `nodeRuntime` when supplied for clients that require a native
+ * Node runtime (currently Codex). POSIX goes through the wrapper script.
  * @param {{ platform: string, runtime: string, launcher: string, wrapper: string, nodeRuntime?: string }} options
  * @returns {{ command: string, args: string[], env: Record<string, string> }}
  */
@@ -189,7 +248,8 @@ class McpRegistration {
      *   isAvailable: () => boolean, isEnabled?: () => boolean, instanceId: () => string,
      *   onResolve: () => Promise<void>, onConfigured?: () => void, post?: (message: any) => void,
      *   platform?: string, runtime?: string, findExecutable?: (name: string) => string,
-     *   probeNode?: (file: string) => boolean,
+     *   findNodeCandidates?: () => Array<string | { file: string, fingerprint?: string }>,
+     *   probeNode?: (file: string) => Promise<boolean | { ok: boolean, transient?: boolean }> | boolean | { ok: boolean, transient?: boolean },
      *   runCli?: (file: string, args: string[]) => ReturnType<typeof runCli>,
      *   prepareInstall?: (client: string, snippet: string) => Promise<any>,
      *   prepareUninstall?: (client: string) => Promise<any>,
@@ -210,8 +270,10 @@ class McpRegistration {
         this.platform = options.platform || process.platform;
         this.runtime = options.runtime || process.execPath;
         this.findExecutable = options.findExecutable || ((name) => findExecutable(name, process.env, this.platform));
+        this.findNodeCandidates = options.findNodeCandidates || (() => findWindowsNodeCandidates(process.env));
         this.probeNode = options.probeNode || probeNodeExecutable;
-        this.nodeCache = { file: "", ok: false };
+        this.nodeCache = new Map();
+        this.nodeProbe = null;
         this.runCli = options.runCli || ((file, args) => runCli(file, args, { platform: this.platform }));
         this.prepareInstall = options.prepareInstall || prepareClientInstall;
         this.prepareUninstall = options.prepareUninstall || prepareClientUninstall;
@@ -248,24 +310,43 @@ class McpRegistration {
         return file;
     }
 
-    windowsNodeRuntime() {
-        if (this.platform !== "win32") return "";
-        const candidate = this.findExecutable("node");
-        if (!candidate || !/\.exe$/i.test(candidate)) return "";
-        if (this.nodeCache.file !== candidate) {
-            this.nodeCache = { file: candidate, ok: !!this.probeNode(candidate) };
+    async resolveWindowsNodeRuntime() {
+        for (const entry of this.findNodeCandidates() || []) {
+            const file = typeof entry === "string" ? entry : entry?.file || "";
+            if (!file || !/\.exe$/i.test(file) || !path.win32.isAbsolute(file)) continue;
+            const key = (typeof entry === "object" && entry?.fingerprint) || file.toLowerCase();
+            if (this.nodeCache.has(key)) {
+                if (this.nodeCache.get(key)) return file;
+                continue;
+            }
+            const raw = await this.probeNode(file);
+            const result = typeof raw === "boolean" ? { ok: raw } : raw || { ok: false };
+            if (!result.transient) this.nodeCache.set(key, !!result.ok);
+            if (result.ok) return file;
         }
-        return this.nodeCache.ok ? candidate : "";
+        return "";
+    }
+
+    async windowsNodeRuntime() {
+        if (this.platform !== "win32") return "";
+        if (!this.nodeProbe) {
+            this.nodeProbe = this.resolveWindowsNodeRuntime().finally(() => {
+                this.nodeProbe = null;
+            });
+        }
+        return this.nodeProbe;
     }
 
     // Launch command for external clients (call writeLauncher first).
-    serverSpec() {
+    async serverSpec(client = "") {
+        const nodeRuntime =
+            this.platform === "win32" && NATIVE_NODE_CLIENTS.has(client) ? await this.windowsNodeRuntime() : "";
         return serverCommand({
             platform: this.platform,
             runtime: this.runtime,
             launcher: this.launcherPath(),
             wrapper: this.wrapperPath(),
-            nodeRuntime: this.windowsNodeRuntime()
+            nodeRuntime
         });
     }
 
@@ -370,13 +451,18 @@ class McpRegistration {
     // The sidebar card's view of every client. Copilot uses the server VS Code gets from the provider, so it has nothing
     // to install; Cursor's own row is absent inside Cursor for the same reason.
     async clientStatuses(error) {
-        const spec = this.serverSpec();
+        const defaultSpec = await this.serverSpec();
+        const codexSpec = await this.serverSpec("codex");
         const builtin = { client: "copilot", state: "builtin", actions: STATE_ACTIONS.builtin, files: [] };
         return {
             type: "mcpClients",
             clients: [
                 ...(this.host === "vscode" ? [builtin] : []),
-                ...(await Promise.all(this.clients().map((client) => this.readClient(client, spec))))
+                ...(await Promise.all(
+                    this.clients().map((client) =>
+                        this.readClient(client, NATIVE_NODE_CLIENTS.has(client) ? codexSpec : defaultSpec)
+                    )
+                ))
             ],
             busy: this.busyClient,
             ...(error ? { error } : {})
@@ -397,7 +483,7 @@ class McpRegistration {
             const { checkMcpConnection } = require("./mcpConnectivity");
             this.connectionCheck = (async () => {
                 await this.writeLauncher();
-                return checkMcpConnection(this.serverSpec());
+                return checkMcpConnection(await this.serverSpec());
             })().finally(() => {
                 this.connectionCheck = null;
             });
@@ -444,7 +530,7 @@ class McpRegistration {
 
     async copy(choice) {
         await this.writeLauncher();
-        await this.vscode.env.clipboard.writeText(configSnippet(choice.client, this.serverSpec()));
+        await this.vscode.env.clipboard.writeText(configSnippet(choice.client, await this.serverSpec(choice.client)));
         this.onConfigured();
         const key = choice.client === "json" ? "mcp.configCopied" : `mcp.configCopied.${choice.client}`;
         this.vscode.window.showInformationMessage(this.t(key, { client: choice.label }));
@@ -469,7 +555,7 @@ class McpRegistration {
     async install(choice) {
         const window = this.vscode.window;
         await this.writeLauncher();
-        const spec = this.serverSpec();
+        const spec = await this.serverSpec(choice.client);
         const snippet = configSnippet(choice.client, spec);
         const label = choice.label;
         if (choice.client === "cursor") {
@@ -563,11 +649,13 @@ module.exports = {
     configSnippet,
     cursorInstallLink,
     findExecutable,
+    findWindowsNodeCandidates,
     installArgs,
     launcherSource,
     parseNodeMajor,
     probeNodeExecutable,
     runCli,
+    sanitizedNodeEnv,
     serverCommand,
     wrapperSource,
     PROVIDER_ID,
