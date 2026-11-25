@@ -16,9 +16,13 @@ const {
     configSnippet,
     cursorInstallLink,
     findExecutable,
+    findWindowsNodeCandidates,
     installArgs,
     launcherSource,
+    parseNodeMajor,
+    probeNodeExecutable,
     runCli,
+    sanitizedNodeEnv,
     serverCommand,
     wrapperSource
 } = require("../src/services/mcpRegistration");
@@ -106,6 +110,8 @@ function setup(vscodeExtra = {}, state = {}) {
         platform: state.platform || "win32",
         runtime: state.runtime || RUNTIME,
         findExecutable: (name) => (state.executables || {})[name] || "",
+        findNodeCandidates: () => state.nodeCandidates || [],
+        probeNode: state.probeNode,
         runCli: async (file, args) => {
             cli.push([file, ...args]);
             return (state.cliResults || []).shift() || { ok: true, stdout: "", stderr: "" };
@@ -295,18 +301,244 @@ function cursorApi() {
             assert.strictEqual(execFileSync(script, { encoding: "utf8", env }), "undefined");
         });
 
-        await scenario("Use absolute runtime paths instead of node on PATH", () => {
+        await scenario("Use absolute runtime paths and prefer native node.exe on Windows when available", () => {
             const common = { runtime: RUNTIME, launcher: "C:\\s\\mcp.js", wrapper: "/s/mcp" };
             assert.deepStrictEqual(serverCommand({ platform: "win32", ...common }), {
                 command: RUNTIME,
                 args: ["C:\\s\\mcp.js"],
                 env: { ELECTRON_RUN_AS_NODE: "1" }
             });
-            assert.deepStrictEqual(serverCommand({ platform: "darwin", ...common }), {
-                command: "/s/mcp",
-                args: [],
+            assert.deepStrictEqual(
+                serverCommand({ platform: "win32", ...common, nodeRuntime: "D:\\nodejs\\node.exe" }),
+                {
+                    command: "D:\\nodejs\\node.exe",
+                    args: ["C:\\s\\mcp.js"],
+                    env: {}
+                }
+            );
+            assert.deepStrictEqual(
+                serverCommand({ platform: "darwin", ...common, nodeRuntime: "/usr/local/bin/node" }),
+                {
+                    command: "/s/mcp",
+                    args: [],
+                    env: {}
+                }
+            );
+        });
+
+        await scenario("Discover, validate, scope and cache Windows node.exe candidates for Codex", async () => {
+            assert.strictEqual(parseNodeMajor("v24.16.0\n"), 24);
+            assert.strictEqual(parseNodeMajor("18.20.4"), 18);
+            assert.strictEqual(parseNodeMajor("invalid"), 0);
+
+            const cleanEnv = sanitizedNodeEnv({
+                PATH: "D:\\nodejs",
+                SYSTEMROOT: "C:\\Windows",
+                ELECTRON_RUN_AS_NODE: "1",
+                electron_no_attach_console: "1",
+                NODE_OPTIONS: "--require=evil.js"
+            });
+            assert.deepStrictEqual(cleanEnv, { PATH: "D:\\nodejs", SYSTEMROOT: "C:\\Windows" });
+
+            let seenEnv;
+            const fakeExec =
+                (stdout, err = null) =>
+                (_file, _args, options, cb) => {
+                    seenEnv = options.env;
+                    cb(err, stdout, "");
+                };
+            assert.deepStrictEqual(
+                await probeNodeExecutable("D:\\nodejs\\node.exe", {
+                    execFile: fakeExec("v22.11.0\r\n"),
+                    env: { PATH: "D:\\nodejs", ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: "--inspect" }
+                }),
+                { ok: true }
+            );
+            assert.deepStrictEqual(seenEnv, { PATH: "D:\\nodejs" });
+            assert.deepStrictEqual(
+                await probeNodeExecutable("D:\\nodejs\\node.exe", { execFile: fakeExec("v16.20.2\r\n") }),
+                { ok: false },
+                "Node older than v18 is rejected"
+            );
+            assert.deepStrictEqual(
+                await probeNodeExecutable("C:\\shims\\node.cmd", { execFile: fakeExec("v24.0.0\r\n") }),
+                { ok: false },
+                ".cmd shims are never passed as MCP stdio commands"
+            );
+            assert.deepStrictEqual(
+                await probeNodeExecutable("relative\\node.exe", { execFile: fakeExec("v24.0.0\r\n") }),
+                { ok: false },
+                "relative node.exe paths are rejected"
+            );
+            assert.deepStrictEqual(
+                await probeNodeExecutable("D:\\nodejs\\node.exe", {
+                    execFile: fakeExec("", Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
+                }),
+                { ok: false }
+            );
+            assert.deepStrictEqual(
+                await probeNodeExecutable("D:\\nodejs\\node.exe", {
+                    execFile: fakeExec("", Object.assign(new Error("timed out"), { killed: true }))
+                }),
+                { ok: false, transient: true }
+            );
+
+            const existingFiles = new Map([
+                ["c:\\shims\\node.cmd", { mtimeMs: 1, size: 10 }],
+                ["d:\\rel\\node.exe", { mtimeMs: 2, size: 20 }],
+                ["d:\\old-node\\node.exe", { mtimeMs: 3, size: 30 }],
+                ["d:\\nodejs\\node.exe", { mtimeMs: 4, size: 40 }],
+                ["c:\\users\\me\\appdata\\local\\fnm_multishells\\111_0\\node.exe", { mtimeMs: 5, size: 50 }],
+                ["c:\\users\\me\\appdata\\local\\fnm_multishells\\222_0\\node.exe", { mtimeMs: 6, size: 60 }],
+                [
+                    "c:\\users\\me\\appdata\\roaming\\fnm\\node-versions\\v22.0.0\\installation\\node.exe",
+                    { mtimeMs: 7, size: 70 }
+                ]
+            ]);
+            const candidates = findWindowsNodeCandidates(
+                {
+                    Path: [
+                        '"C:\\shims"',
+                        ".\\rel",
+                        "D:\\old-node",
+                        "D:\\nodejs",
+                        "d:\\nodejs\\",
+                        "C:\\Users\\me\\AppData\\Local\\fnm_multishells\\111_0",
+                        "C:\\Users\\me\\AppData\\Local\\fnm_multishells\\222_0"
+                    ].join(";")
+                },
+                {
+                    statSync: (file) => {
+                        const meta = existingFiles.get(file.toLowerCase());
+                        if (!meta) throw new Error("ENOENT");
+                        return { isFile: () => true, ...meta };
+                    },
+                    realpathSync: (file) => {
+                        if (file.includes("111_0")) throw new Error("gone");
+                        return "C:\\Users\\me\\AppData\\Roaming\\fnm\\node-versions\\v22.0.0\\installation\\node.exe";
+                    }
+                }
+            );
+            assert.deepStrictEqual(
+                candidates.map((item) => item.file),
+                [
+                    "D:\\old-node\\node.exe",
+                    "D:\\nodejs\\node.exe",
+                    "C:\\Users\\me\\AppData\\Roaming\\fnm\\node-versions\\v22.0.0\\installation\\node.exe"
+                ]
+            );
+
+            let probes = [];
+            let currentCandidates = [
+                { file: "C:\\shims\\node.cmd", fingerprint: "cmd|1" },
+                { file: "relative\\node.exe", fingerprint: "rel|1" },
+                { file: "D:\\old-node\\node.exe", fingerprint: "old|1" },
+                { file: "D:\\nodejs\\node.exe", fingerprint: "good|1" }
+            ];
+            const withNode = setup(
+                {},
+                {
+                    platform: "win32",
+                    nodeCandidates: currentCandidates,
+                    probeNode: async (file) => {
+                        probes.push(file);
+                        await Promise.resolve();
+                        return file === "D:\\nodejs\\node.exe";
+                    }
+                }
+            );
+            const [codexFirst, codexConcurrent] = await Promise.all([
+                withNode.registration.serverSpec("codex"),
+                withNode.registration.serverSpec("codex")
+            ]);
+            assert.deepStrictEqual(codexFirst, {
+                command: "D:\\nodejs\\node.exe",
+                args: [withNode.registration.launcherPath()],
                 env: {}
             });
+            assert.deepStrictEqual(codexConcurrent, codexFirst);
+            assert.deepStrictEqual(probes, ["D:\\old-node\\node.exe", "D:\\nodejs\\node.exe"]);
+            assert.deepStrictEqual(await withNode.registration.serverSpec("codex"), codexFirst);
+            assert.strictEqual(probes.length, 2, "cached non-transient results avoid re-probing");
+
+            for (const other of ["claude", "gemini", "opencode", "antigravity", "dsh", "workbuddy", ""]) {
+                assert.deepStrictEqual(
+                    await withNode.registration.serverSpec(other),
+                    {
+                        command: RUNTIME,
+                        args: [withNode.registration.launcherPath()],
+                        env: { ELECTRON_RUN_AS_NODE: "1" }
+                    },
+                    `non-Codex client ${other || "<default>"} keeps bundled Electron`
+                );
+            }
+
+            // Fingerprint change (e.g. symlink switch or in-place upgrade) invalidates the cache.
+            currentCandidates[3] = { file: "D:\\nodejs\\node.exe", fingerprint: "good|2" };
+            await withNode.registration.serverSpec("codex");
+            assert.deepStrictEqual(probes, ["D:\\old-node\\node.exe", "D:\\nodejs\\node.exe", "D:\\nodejs\\node.exe"]);
+
+            // Transient timeouts are never cached as permanent failures.
+            let attempts = 0;
+            const timeoutThenOk = setup(
+                {},
+                {
+                    platform: "win32",
+                    nodeCandidates: [{ file: "D:\\nodejs\\node.exe", fingerprint: "node|1" }],
+                    probeNode: async () => {
+                        attempts++;
+                        return attempts === 1 ? { ok: false, transient: true } : { ok: true };
+                    }
+                }
+            );
+            assert.deepStrictEqual(await timeoutThenOk.registration.serverSpec("codex"), {
+                command: RUNTIME,
+                args: [timeoutThenOk.registration.launcherPath()],
+                env: { ELECTRON_RUN_AS_NODE: "1" }
+            });
+            assert.deepStrictEqual(await timeoutThenOk.registration.serverSpec("codex"), {
+                command: "D:\\nodejs\\node.exe",
+                args: [timeoutThenOk.registration.launcherPath()],
+                env: {}
+            });
+            assert.strictEqual(attempts, 2);
+
+            // End-to-end sidebar status & upgrade: only Codex upgrades to node.exe while Claude stays installed.
+            const upgradeSetup = setup(
+                {},
+                {
+                    platform: "win32",
+                    nodeCandidates: [{ file: "D:\\nodejs\\node.exe", fingerprint: "node|1" }],
+                    probeNode: async () => ({ ok: true })
+                }
+            );
+            const electronSpec = {
+                command: RUNTIME,
+                args: [upgradeSetup.registration.launcherPath()],
+                env: { ELECTRON_RUN_AS_NODE: "1" }
+            };
+            await commitClientInstall(
+                await prepareClientInstall("codex", configSnippet("codex", electronSpec), {
+                    home: upgradeSetup.clientHome,
+                    env: {}
+                })
+            );
+            await commitClientInstall(
+                await prepareClientInstall("claude", configSnippet("claude", electronSpec), {
+                    home: upgradeSetup.clientHome,
+                    env: {}
+                })
+            );
+            const beforeUpgrade = await upgradeSetup.registration.clientStatuses();
+            assert.strictEqual(beforeUpgrade.clients.find((c) => c.client === "codex").state, "outdated");
+            assert.strictEqual(beforeUpgrade.clients.find((c) => c.client === "claude").state, "installed");
+            await upgradeSetup.registration.runClientAction("codex", "upgrade");
+            const afterUpgrade = await upgradeSetup.registration.clientStatuses();
+            assert.strictEqual(afterUpgrade.clients.find((c) => c.client === "codex").state, "installed");
+            const codexToml = fs.readFileSync(path.join(upgradeSetup.clientHome, ".codex", "config.toml"), "utf8");
+            assert.ok(codexToml.includes("D:\\\\nodejs\\\\node.exe"));
+            assert.ok(!codexToml.includes("ELECTRON_RUN_AS_NODE"));
+            assert.ok(!codexToml.includes("[mcp_servers.emberprobe.env]"));
         });
 
         await scenario("Generate per-client install commands, links and configuration", () => {
@@ -618,7 +850,9 @@ function cursorApi() {
                 );
                 const result = await registration.installClient();
                 assert.strictEqual(result.ok, true);
-                assert.deepStrictEqual(cli, [["/usr/bin/gemini", ...installArgs("gemini", registration.serverSpec())]]);
+                assert.deepStrictEqual(cli, [
+                    ["/usr/bin/gemini", ...installArgs("gemini", await registration.serverSpec("gemini"))]
+                ]);
                 assert.deepStrictEqual(clipboard, []);
             }
         );

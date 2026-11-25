@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Agent 与 MCP / Agent and MCP
+
+- Windows 下为 Codex 生成和升级 MCP 配置时，在 `PATH` 中存在已验证的 Node.js ≥ 18 原生 `node.exe` 时优先直接使用该运行时启动（避免清理环境变量后按完整 VS Code GUI 启动弹窗），其余外部客户端保持使用编辑器内置运行时；未检测到合规 `node.exe` 时仍回退到内置运行时。
+- On Windows, Codex MCP configurations prefer a verified native Node.js ≥ 18 `node.exe` on `PATH` when available (preventing stripped-environment launches from opening the VS Code GUI), while other external clients keep using the editor runtime; falls back to the editor runtime when no compliant `node.exe` is found.
+
 ## [0.9.4] - 2026-11-22
 
 ### 采样与波形 / Sampling and waveforms

@@ -9,6 +9,7 @@ const { CLIENTS, SERVER_NAME } = require("./mcpClientConfig");
 // Older releases wrote this binding into user-level configuration, which sent every project to one window. Merging
 // removes it, and the entry reads as outdated until then.
 const STALE_BINDING = "EMBERPROBE_WORKSPACE";
+const ELECTRON_NODE_ENV = "ELECTRON_RUN_AS_NODE";
 const LENIENT_JSON = new Set(["opencode", "cursor", "workbuddy"]);
 
 function invalid(format) {
@@ -67,7 +68,20 @@ function editJson(text, client, snippet) {
             for (const [name, item] of Object.entries(value)) set([envKey, name], item);
         } else set([key], value);
     }
+    const currentTree = jsonTree(next, client);
+    const hadStaleEnv =
+        !!jsonc.findNodeAtLocation(currentTree, [...location, envKey, STALE_BINDING]) ||
+        (!desired[envKey]?.[ELECTRON_NODE_ENV] &&
+            !!jsonc.findNodeAtLocation(currentTree, [...location, envKey, ELECTRON_NODE_ENV]));
     set([envKey, STALE_BINDING], undefined);
+    if (!desired[envKey]?.[ELECTRON_NODE_ENV]) set([envKey, ELECTRON_NODE_ENV], undefined);
+    if (hadStaleEnv && !desired[envKey]) {
+        const remainingEnv = jsonc.findNodeAtLocation(jsonTree(next, client), [...location, envKey]);
+        if (remainingEnv && !remainingEnv.children?.length) {
+            const rawEnv = next.slice(remainingEnv.offset, remainingEnv.offset + remainingEnv.length);
+            if (!/\/\/|\/\*/.test(rawEnv)) set([envKey], undefined);
+        }
+    }
     jsonTree(next, client);
     return next;
 }
@@ -153,6 +167,9 @@ function setToml(text, keys, value) {
             const index = exact.parent.body.indexOf(exact.node);
             if (index < exact.parent.body.length - 1) end = exact.parent.body[index + 1].range[0];
             else if (index > 0) start = exact.parent.body[index - 1].range[1];
+        } else if (start === 0 || text[start - 1] === "\n") {
+            const lineRest = /^[ \t]*\r?\n/.exec(text.slice(end));
+            if (lineRest) end += lineRest[0].length;
         }
         return text.slice(0, start) + text.slice(end);
     }
@@ -185,6 +202,41 @@ function setToml(text, keys, value) {
     return `${suffix([])} = ${tomlValue(value)}${eol}${text}`;
 }
 
+function removeEmptyTomlEnv(text, root) {
+    const ast = parseToml(text);
+    const { assignments, tables } = tomlAssignments(ast);
+    const envPath = [...root, "env"];
+    const envTable = tables.find((table) => isDeepStrictEqual(table.resolvedKey, envPath));
+    if (envTable && !envTable.body.length) {
+        const hasChildTable = tables.some(
+            (table) =>
+                table !== envTable &&
+                table.resolvedKey.length > envPath.length &&
+                startsWith(table.resolvedKey, envPath)
+        );
+        const lineEnd = text.indexOf("\n", envTable.range[1]);
+        const spanEnd = lineEnd < 0 ? text.length : lineEnd + 1;
+        const hasComment = (ast.comments || []).some(
+            (comment) => comment.range[0] >= envTable.range[0] && comment.range[1] <= spanEnd
+        );
+        if (!hasChildTable && !hasComment) {
+            let [start, end] = envTable.range;
+            const trailing = /^[ \t]*\r?\n/.exec(text.slice(end));
+            if (trailing) end += trailing[0].length;
+            const blankBefore = /(\r?\n)\1$/.exec(text.slice(0, start));
+            if (blankBefore && (!text.slice(end).trim() || /^[ \t]*\[/.test(text.slice(end)))) {
+                start -= blankBefore[1].length;
+            }
+            return text.slice(0, start) + text.slice(end);
+        }
+    }
+    const inlineEnv = assignments.find(
+        (entry) => isDeepStrictEqual(entry.keys, envPath) && entry.node.value.type === "TOMLInlineTable"
+    );
+    if (inlineEnv && !inlineEnv.node.value.body.length) return setToml(text, envPath, undefined);
+    return text;
+}
+
 function editToml(text, snippet) {
     const ast = parseToml(text);
     const config = toml.getStaticTOMLValue(ast);
@@ -212,7 +264,15 @@ function editToml(text, snippet) {
             for (const [name, item] of Object.entries(value)) next = setToml(next, [...root, key, name], item);
         } else next = setToml(next, [...root, key], value);
     }
-    next = setToml(next, [...root, "env", STALE_BINDING], undefined);
+    let removedEnvKey = false;
+    for (const key of [STALE_BINDING, ...(!desired.env?.[ELECTRON_NODE_ENV] ? [ELECTRON_NODE_ENV] : [])]) {
+        const updated = setToml(next, [...root, "env", key], undefined);
+        if (updated !== next) {
+            removedEnvKey = true;
+            next = updated;
+        }
+    }
+    if (removedEnvKey && !desired.env) next = removeEmptyTomlEnv(next, root);
     parseToml(next);
     return next;
 }
@@ -279,6 +339,7 @@ function editDsh(text, snippet) {
         const config = { ...current.config, ...desired.config, env: { ...current.config.env, ...desired.config.env } };
         for (const key of ["url", "headers"]) delete config[key];
         delete config.env[STALE_BINDING];
+        if (!desired.config.env?.[ELECTRON_NODE_ENV]) delete config.env[ELECTRON_NODE_ENV];
         if (!Object.keys(config.env).length) delete config.env;
         const merged = { ...current, config, ...(current.disabled !== undefined ? { disabled: false } : {}) };
         if (isDeepStrictEqual(current, merged)) return text;

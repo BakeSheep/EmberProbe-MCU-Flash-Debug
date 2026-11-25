@@ -250,4 +250,92 @@ scenario("Refuse DSH duplicate servers, id collisions, aliases and tagged manage
         assert.throws(() => editConfig("dsh", text, snippet("dsh")), /DSH YAML/);
 });
 
+scenario("Remove stale ELECTRON_RUN_AS_NODE when upgrading to a native node.exe spec", () => {
+    const nodeSpec = { command: "D:\\nodejs\\node.exe", args: ["C:\\用户\\mcp.js"], env: {} };
+    const nodeSnippet = (client) => configSnippet(client, nodeSpec);
+
+    const jsonBefore = editConfig(
+        "antigravity",
+        '{"mcpServers":{"emberprobe":{"command":"old","env":{"CUSTOM":"keep","ELECTRON_RUN_AS_NODE":"1"}}}}',
+        snippet("antigravity")
+    );
+    const jsonUpgraded = editConfig("antigravity", jsonBefore, nodeSnippet("antigravity"));
+    const jsonParsed = JSON.parse(jsonUpgraded);
+    assert.strictEqual(jsonParsed.mcpServers.emberprobe.command, nodeSpec.command);
+    assert.deepStrictEqual(jsonParsed.mcpServers.emberprobe.env, { CUSTOM: "keep" });
+    assert.strictEqual(editConfig("antigravity", jsonUpgraded, nodeSnippet("antigravity")), jsonUpgraded);
+
+    const jsonOnlyElectron = editConfig("claude", "{}", snippet("claude"));
+    const jsonClean = editConfig("claude", jsonOnlyElectron, nodeSnippet("claude"));
+    assert.ok(!Object.hasOwn(JSON.parse(jsonClean).mcpServers.emberprobe, "env"));
+    assert.strictEqual(editConfig("claude", jsonClean, nodeSnippet("claude")), jsonClean);
+
+    // Pre-existing empty env without stale keys is preserved so status does not report outdated endlessly.
+    const jsonEmptyEnv = '{"mcpServers":{"emberprobe":{"command":"old","env":{}}}}';
+    const jsonEmptyPreserved = editConfig("claude", jsonEmptyEnv, nodeSnippet("claude"));
+    assert.deepStrictEqual(JSON.parse(jsonEmptyPreserved).mcpServers.emberprobe.env, {});
+    assert.strictEqual(editConfig("claude", jsonEmptyPreserved, nodeSnippet("claude")), jsonEmptyPreserved);
+
+    // OpenCode uses `environment` and allows JSONC comments.
+    const openCodeBefore =
+        '{\n  // keep header\n  "mcp": {\n    "emberprobe": {\n      "type": "local",\n      "command": ["old"],\n      "environment": {\n        "ELECTRON_RUN_AS_NODE": "1"\n      }\n    }\n  }\n}\n';
+    const openCodeUpgraded = editConfig("opencode", openCodeBefore, nodeSnippet("opencode"));
+    assert.ok(openCodeUpgraded.includes("// keep header"));
+    assert.ok(!Object.hasOwn(jsonc.parse(openCodeUpgraded).mcp.emberprobe, "environment"));
+    assert.strictEqual(editConfig("opencode", openCodeUpgraded, nodeSnippet("opencode")), openCodeUpgraded);
+
+    const openCodeCommentedEnv =
+        '{\n  "mcp": {\n    "emberprobe": {\n      "type": "local",\n      "command": ["old"],\n      "environment": {\n        /* keep comment */\n      }\n    }\n  }\n}\n';
+    const openCodeKeptComment = editConfig("opencode", openCodeCommentedEnv, nodeSnippet("opencode"));
+    assert.ok(openCodeKeptComment.includes("/* keep comment */"));
+    assert.deepStrictEqual(jsonc.parse(openCodeKeptComment).mcp.emberprobe.environment, {});
+    assert.strictEqual(editConfig("opencode", openCodeKeptComment, nodeSnippet("opencode")), openCodeKeptComment);
+
+    // Codex TOML: default Electron config (no custom env) drops [mcp_servers.emberprobe.env] completely.
+    const tomlDefaultBefore = editConfig("codex", "", snippet("codex"));
+    const tomlDefaultUpgraded = editConfig("codex", tomlDefaultBefore, nodeSnippet("codex"));
+    assert.ok(!tomlDefaultUpgraded.includes("[mcp_servers.emberprobe.env]"));
+    assert.ok(!tomlDefaultUpgraded.endsWith("\n\n"));
+    assert.ok(!Object.hasOwn(parseToml(tomlDefaultUpgraded).mcp_servers.emberprobe, "env"));
+    assert.strictEqual(editConfig("codex", tomlDefaultUpgraded, nodeSnippet("codex")), tomlDefaultUpgraded);
+
+    // Codex TOML followed by another table removes the blank-separated env table without extra empty lines.
+    const tomlWithOther = editConfig("codex", '[mcp_servers.other]\ncommand = "keep"\n', snippet("codex"));
+    const tomlWithOtherUpgraded = editConfig("codex", tomlWithOther, nodeSnippet("codex"));
+    assert.ok(!tomlWithOtherUpgraded.includes("[mcp_servers.emberprobe.env]"));
+    assert.strictEqual(parseToml(tomlWithOtherUpgraded).mcp_servers.other.command, "keep");
+    assert.strictEqual(editConfig("codex", tomlWithOtherUpgraded, nodeSnippet("codex")), tomlWithOtherUpgraded);
+
+    // Codex TOML inline env & dotted env forms.
+    const tomlInline = 'mcp_servers = { emberprobe = { command = "old", env = { ELECTRON_RUN_AS_NODE = "1" } } }\n';
+    const tomlInlineUpgraded = editConfig("codex", tomlInline, nodeSnippet("codex"));
+    assert.ok(!Object.hasOwn(parseToml(tomlInlineUpgraded).mcp_servers.emberprobe, "env"));
+    assert.strictEqual(editConfig("codex", tomlInlineUpgraded, nodeSnippet("codex")), tomlInlineUpgraded);
+
+    const tomlDotted = '[mcp_servers]\nemberprobe.command = "old"\nemberprobe.env.ELECTRON_RUN_AS_NODE = "1"\n';
+    const tomlDottedUpgraded = editConfig("codex", tomlDotted, nodeSnippet("codex"));
+    assert.ok(!Object.hasOwn(parseToml(tomlDottedUpgraded).mcp_servers.emberprobe, "env"));
+    assert.strictEqual(editConfig("codex", tomlDottedUpgraded, nodeSnippet("codex")), tomlDottedUpgraded);
+
+    // Codex TOML with custom env retains custom variables.
+    const tomlBefore = editConfig("codex", '[mcp_servers.emberprobe.env]\nCUSTOM = "keep"\n', snippet("codex"));
+    const tomlUpgraded = editConfig("codex", tomlBefore, nodeSnippet("codex"));
+    const tomlParsed = parseToml(tomlUpgraded);
+    assert.strictEqual(tomlParsed.mcp_servers.emberprobe.command, nodeSpec.command);
+    assert.deepStrictEqual(tomlParsed.mcp_servers.emberprobe.env, { CUSTOM: "keep" });
+    assert.strictEqual(editConfig("codex", tomlUpgraded, nodeSnippet("codex")), tomlUpgraded);
+
+    // Pre-existing empty [mcp_servers.emberprobe.env] without stale keys is preserved.
+    const tomlPreEmpty = '[mcp_servers.emberprobe]\ncommand = "old"\n[mcp_servers.emberprobe.env]\n';
+    const tomlPreEmptyUpgraded = editConfig("codex", tomlPreEmpty, nodeSnippet("codex"));
+    assert.ok(tomlPreEmptyUpgraded.includes("[mcp_servers.emberprobe.env]"));
+
+    const dshBefore = editConfig("dsh", "", snippet("dsh"));
+    const dshUpgraded = editConfig("dsh", dshBefore, nodeSnippet("dsh"));
+    const dshEntry = yamlTargets(dshUpgraded).targets[0].toJSON();
+    assert.strictEqual(dshEntry.config.command, nodeSpec.command);
+    assert.ok(!Object.hasOwn(dshEntry.config, "env"));
+    assert.strictEqual(editConfig("dsh", dshUpgraded, nodeSnippet("dsh")), dshUpgraded);
+});
+
 console.log("MCP native configuration edit tests passed");

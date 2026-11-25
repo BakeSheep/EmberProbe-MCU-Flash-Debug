@@ -45,9 +45,9 @@ DSH 多 profile 先全部校验再写入，中途失败回滚已写文件；若�
 
 ### 启动命令
 
-启动命令全部是绝对路径，不依赖 PATH 中的 `node`：
+启动命令全部是绝对路径：
 
-- Windows：`command` 为编辑器自带的 Electron（安装根目录的 `Code.exe` / `Cursor.exe`，升级后路径不变），`env` 带 `ELECTRON_RUN_AS_NODE=1`，`args` 为稳定路径的启动器 `<globalStorage>/mcp/emberprobe-mcp.js`；
+- Windows：默认使用编辑器自带的 Electron（安装根目录的 `Code.exe` / `Cursor.exe`，升级后路径不变），`env` 带 `ELECTRON_RUN_AS_NODE=1`，`args` 为稳定路径的启动器 `<globalStorage>/mcp/emberprobe-mcp.js`。对于会剥离 `ELECTRON_RUN_AS_NODE` 等环境变量的 Codex，扩展异步遍历 `PATH` 中的绝对路径目录查找原生 `node.exe`（忽略 `.cmd`/`.bat` 与未解析的 `fnm_multishells` 瞬态目录，清理 `ELECTRON_*`/`NODE_OPTIONS` 后验证版本 ≥ Node 18，按路径和文件指纹缓存非瞬态结果且不缓存超时），可用时直接以 `{ command: nodePath, args: [launcher], env: {} }` 启动并在升级配置时清理残留的 `ELECTRON_RUN_AS_NODE` 与空 `env` 表；未检测到合规 `node.exe` 时回退到编辑器 Electron；
 - macOS / Linux / 远程：`command` 为包装脚本 `<globalStorage>/mcp/emberprobe-mcp`，它以 `ELECTRON_RUN_AS_NODE=1` 用编辑器运行时执行启动器；运行时已不存在时（例如远程服务端升级后尚未重新打开窗口）才回退到 PATH 中的 `node`。
 
 启动器和包装脚本在每次激活时重写为当前安装的扩展与运行时路径，因此扩展或编辑器升级后无需修改客户端配置。远程窗口（Remote-SSH、WSL）中路径属于远端，只适用于同样运行在远端的客户端。

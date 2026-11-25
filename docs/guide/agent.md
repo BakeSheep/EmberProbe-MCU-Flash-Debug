@@ -178,6 +178,7 @@ Agent 也可以在内置调试器暂停时设置、启停和删除[数据断点]
 | 长操作超时                             | 检查客户端超时：Codex 用 `tool_timeout_sec`（秒），Gemini 和 OpenCode 用 `timeout`（毫秒）          |
 | Cursor 中看不到服务器                  | 确认工作区受信任且已启用 Agent 访问                                                                 |
 | DSH 没有出现 `mcp__emberprobe__*`      | 检查 patch 是否由该 profile 加载，查看启动日志                                                      |
+| Windows 下 Codex 弹出 VS Code 报错窗口 | 安装 Node.js ≥ 18 并加入 `PATH`，重启编辑器后在侧栏为 Codex 点击“升级”                              |
 
 ## CubeMX 代码生成
 
