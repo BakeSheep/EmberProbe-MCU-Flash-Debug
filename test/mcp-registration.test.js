@@ -18,6 +18,8 @@ const {
     findExecutable,
     installArgs,
     launcherSource,
+    parseNodeMajor,
+    probeNodeExecutable,
     runCli,
     serverCommand,
     wrapperSource
@@ -106,6 +108,7 @@ function setup(vscodeExtra = {}, state = {}) {
         platform: state.platform || "win32",
         runtime: state.runtime || RUNTIME,
         findExecutable: (name) => (state.executables || {})[name] || "",
+        probeNode: state.probeNode,
         runCli: async (file, args) => {
             cli.push([file, ...args]);
             return (state.cliResults || []).shift() || { ok: true, stdout: "", stderr: "" };
@@ -295,17 +298,105 @@ function cursorApi() {
             assert.strictEqual(execFileSync(script, { encoding: "utf8", env }), "undefined");
         });
 
-        await scenario("Use absolute runtime paths instead of node on PATH", () => {
+        await scenario("Use absolute runtime paths and prefer native node.exe on Windows when available", () => {
             const common = { runtime: RUNTIME, launcher: "C:\\s\\mcp.js", wrapper: "/s/mcp" };
             assert.deepStrictEqual(serverCommand({ platform: "win32", ...common }), {
                 command: RUNTIME,
                 args: ["C:\\s\\mcp.js"],
                 env: { ELECTRON_RUN_AS_NODE: "1" }
             });
-            assert.deepStrictEqual(serverCommand({ platform: "darwin", ...common }), {
-                command: "/s/mcp",
-                args: [],
+            assert.deepStrictEqual(
+                serverCommand({ platform: "win32", ...common, nodeRuntime: "D:\\nodejs\\node.exe" }),
+                {
+                    command: "D:\\nodejs\\node.exe",
+                    args: ["C:\\s\\mcp.js"],
+                    env: {}
+                }
+            );
+            assert.deepStrictEqual(
+                serverCommand({ platform: "darwin", ...common, nodeRuntime: "/usr/local/bin/node" }),
+                {
+                    command: "/s/mcp",
+                    args: [],
+                    env: {}
+                }
+            );
+        });
+
+        await scenario("Probe, validate and cache Windows node.exe candidates before falling back to Electron", () => {
+            assert.strictEqual(parseNodeMajor("v24.16.0\n"), 24);
+            assert.strictEqual(parseNodeMajor("18.20.4"), 18);
+            assert.strictEqual(parseNodeMajor("invalid"), 0);
+
+            assert.strictEqual(
+                probeNodeExecutable("D:\\nodejs\\node.exe", () => "v22.11.0\r\n"),
+                true
+            );
+            assert.strictEqual(
+                probeNodeExecutable("D:\\nodejs\\node.exe", () => "v16.20.2\r\n"),
+                false,
+                "Node older than v18 is rejected"
+            );
+            assert.strictEqual(
+                probeNodeExecutable("C:\\shims\\node.cmd", () => "v24.0.0\r\n"),
+                false,
+                ".cmd shims are never passed as MCP stdio commands"
+            );
+            assert.strictEqual(
+                probeNodeExecutable("D:\\nodejs\\node.exe", () => {
+                    throw new Error("ENOENT");
+                }),
+                false
+            );
+
+            let probes = 0;
+            const withNode = setup(
+                {},
+                {
+                    platform: "win32",
+                    executables: { node: "D:\\nodejs\\node.exe" },
+                    probeNode: (file) => {
+                        probes++;
+                        return file === "D:\\nodejs\\node.exe";
+                    }
+                }
+            );
+            const firstSpec = withNode.registration.serverSpec();
+            const secondSpec = withNode.registration.serverSpec();
+            assert.deepStrictEqual(firstSpec, {
+                command: "D:\\nodejs\\node.exe",
+                args: [withNode.registration.launcherPath()],
                 env: {}
+            });
+            assert.deepStrictEqual(secondSpec, firstSpec);
+            assert.strictEqual(probes, 1, "probed node.exe result is cached");
+
+            const withCmdShim = setup(
+                {},
+                {
+                    platform: "win32",
+                    executables: { node: "C:\\shims\\node.cmd" },
+                    probeNode: () => true
+                }
+            );
+            assert.deepStrictEqual(withCmdShim.registration.serverSpec(), {
+                command: RUNTIME,
+                args: [withCmdShim.registration.launcherPath()],
+                env: { ELECTRON_RUN_AS_NODE: "1" }
+            });
+
+            const withOldNode = setup(
+                {},
+                {
+                    platform: "win32",
+                    executables: { node: "C:\\old-node\\node.exe" },
+                    probeNode: () => false
+                }
+            );
+            assert.deepStrictEqual(withOldNode.registration.serverSpec(), {
+                command: RUNTIME,
+                args: [withOldNode.registration.launcherPath()],
+                env: { ELECTRON_RUN_AS_NODE: "1" }
             });
         });
 

@@ -9,6 +9,7 @@ const { CLIENTS, SERVER_NAME } = require("./mcpClientConfig");
 // Older releases wrote this binding into user-level configuration, which sent every project to one window. Merging
 // removes it, and the entry reads as outdated until then.
 const STALE_BINDING = "EMBERPROBE_WORKSPACE";
+const ELECTRON_NODE_ENV = "ELECTRON_RUN_AS_NODE";
 const LENIENT_JSON = new Set(["opencode", "cursor", "workbuddy"]);
 
 function invalid(format) {
@@ -68,6 +69,11 @@ function editJson(text, client, snippet) {
         } else set([key], value);
     }
     set([envKey, STALE_BINDING], undefined);
+    if (!desired[envKey]?.[ELECTRON_NODE_ENV]) {
+        set([envKey, ELECTRON_NODE_ENV], undefined);
+        const remainingEnv = jsonc.findNodeAtLocation(jsonTree(next, client), [...location, envKey]);
+        if (!desired[envKey] && remainingEnv && !remainingEnv.children?.length) set([envKey], undefined);
+    }
     jsonTree(next, client);
     return next;
 }
@@ -213,6 +219,7 @@ function editToml(text, snippet) {
         } else next = setToml(next, [...root, key], value);
     }
     next = setToml(next, [...root, "env", STALE_BINDING], undefined);
+    if (!desired.env?.[ELECTRON_NODE_ENV]) next = setToml(next, [...root, "env", ELECTRON_NODE_ENV], undefined);
     parseToml(next);
     return next;
 }
@@ -279,6 +286,7 @@ function editDsh(text, snippet) {
         const config = { ...current.config, ...desired.config, env: { ...current.config.env, ...desired.config.env } };
         for (const key of ["url", "headers"]) delete config[key];
         delete config.env[STALE_BINDING];
+        if (!desired.config.env?.[ELECTRON_NODE_ENV]) delete config.env[ELECTRON_NODE_ENV];
         if (!Object.keys(config.env).length) delete config.env;
         const merged = { ...current, config, ...(current.disabled !== undefined ? { disabled: false } : {}) };
         if (isDeepStrictEqual(current, merged)) return text;

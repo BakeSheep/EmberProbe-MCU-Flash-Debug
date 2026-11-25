@@ -5,7 +5,7 @@
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 const { clientStatus, commitClientInstall, prepareClientInstall, prepareClientUninstall } = require("./mcpConfigFiles");
 
 const PROVIDER_ID = "emberprobe";
@@ -18,6 +18,8 @@ const {
     installArgs
 } = require("./mcpClientConfig");
 const CLI_TIMEOUT_MS = 30000;
+const NODE_PROBE_TIMEOUT_MS = 2000;
+const MIN_NODE_MAJOR = 18;
 const ERROR_TAIL = 300;
 // The buttons each client state offers in the sidebar card. A file that cannot be read can only be merged by hand.
 const STATE_ACTIONS = Object.freeze({
@@ -67,14 +69,44 @@ function wrapperSource(runtime, launcher) {
     ].join("\n");
 }
 
+function parseNodeMajor(version) {
+    const match = /^v?(\d+)\.\d+\.\d+/.exec(String(version || "").trim());
+    return match ? Number(match[1]) : 0;
+}
+
 /**
- * Launch command for external clients, using absolute paths. Windows runs the editor's Electron directly (the exe in
- * the install root, stable across upgrades) with ELECTRON_RUN_AS_NODE; POSIX goes through the wrapper script.
- * @param {{ platform: string, runtime: string, launcher: string, wrapper: string }} options
+ * Verifies a Windows node.exe candidate on PATH meets the MCP server's minimum Node version. Rejects .cmd/.bat shims
+ * because external MCP stdio hosts spawn `command` directly without a shell.
+ * @param {string} file
+ * @param {typeof execFileSync} [run]
+ * @returns {boolean}
+ */
+function probeNodeExecutable(file, run = execFileSync) {
+    if (!file || !/\.exe$/i.test(file)) return false;
+    try {
+        const output = run(file, ["-v"], {
+            timeout: NODE_PROBE_TIMEOUT_MS,
+            windowsHide: true,
+            encoding: "utf8"
+        });
+        return parseNodeMajor(output) >= MIN_NODE_MAJOR;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Launch command for external clients, using absolute paths. On Windows, prefer a verified native node.exe when
+ * available so clients that strip ELECTRON_RUN_AS_NODE (such as Codex) do not launch the editor GUI; fall back to the
+ * editor's Electron executable in the install root with ELECTRON_RUN_AS_NODE. POSIX goes through the wrapper script.
+ * @param {{ platform: string, runtime: string, launcher: string, wrapper: string, nodeRuntime?: string }} options
  * @returns {{ command: string, args: string[], env: Record<string, string> }}
  */
-function serverCommand({ platform, runtime, launcher, wrapper }) {
-    if (platform === "win32") return { command: runtime, args: [launcher], env: { ELECTRON_RUN_AS_NODE: "1" } };
+function serverCommand({ platform, runtime, launcher, wrapper, nodeRuntime = "" }) {
+    if (platform === "win32") {
+        if (nodeRuntime) return { command: nodeRuntime, args: [launcher], env: {} };
+        return { command: runtime, args: [launcher], env: { ELECTRON_RUN_AS_NODE: "1" } };
+    }
     return { command: wrapper, args: [], env: {} };
 }
 
@@ -157,6 +189,7 @@ class McpRegistration {
      *   isAvailable: () => boolean, isEnabled?: () => boolean, instanceId: () => string,
      *   onResolve: () => Promise<void>, onConfigured?: () => void, post?: (message: any) => void,
      *   platform?: string, runtime?: string, findExecutable?: (name: string) => string,
+     *   probeNode?: (file: string) => boolean,
      *   runCli?: (file: string, args: string[]) => ReturnType<typeof runCli>,
      *   prepareInstall?: (client: string, snippet: string) => Promise<any>,
      *   prepareUninstall?: (client: string) => Promise<any>,
@@ -177,6 +210,8 @@ class McpRegistration {
         this.platform = options.platform || process.platform;
         this.runtime = options.runtime || process.execPath;
         this.findExecutable = options.findExecutable || ((name) => findExecutable(name, process.env, this.platform));
+        this.probeNode = options.probeNode || probeNodeExecutable;
+        this.nodeCache = { file: "", ok: false };
         this.runCli = options.runCli || ((file, args) => runCli(file, args, { platform: this.platform }));
         this.prepareInstall = options.prepareInstall || prepareClientInstall;
         this.prepareUninstall = options.prepareUninstall || prepareClientUninstall;
@@ -213,13 +248,24 @@ class McpRegistration {
         return file;
     }
 
+    windowsNodeRuntime() {
+        if (this.platform !== "win32") return "";
+        const candidate = this.findExecutable("node");
+        if (!candidate || !/\.exe$/i.test(candidate)) return "";
+        if (this.nodeCache.file !== candidate) {
+            this.nodeCache = { file: candidate, ok: !!this.probeNode(candidate) };
+        }
+        return this.nodeCache.ok ? candidate : "";
+    }
+
     // Launch command for external clients (call writeLauncher first).
     serverSpec() {
         return serverCommand({
             platform: this.platform,
             runtime: this.runtime,
             launcher: this.launcherPath(),
-            wrapper: this.wrapperPath()
+            wrapper: this.wrapperPath(),
+            nodeRuntime: this.windowsNodeRuntime()
         });
     }
 
@@ -519,6 +565,8 @@ module.exports = {
     findExecutable,
     installArgs,
     launcherSource,
+    parseNodeMajor,
+    probeNodeExecutable,
     runCli,
     serverCommand,
     wrapperSource,

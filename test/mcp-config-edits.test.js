@@ -250,4 +250,39 @@ scenario("Refuse DSH duplicate servers, id collisions, aliases and tagged manage
         assert.throws(() => editConfig("dsh", text, snippet("dsh")), /DSH YAML/);
 });
 
+scenario("Remove stale ELECTRON_RUN_AS_NODE when upgrading to a native node.exe spec", () => {
+    const nodeSpec = { command: "D:\\nodejs\\node.exe", args: ["C:\\用户\\mcp.js"], env: {} };
+    const nodeSnippet = (client) => configSnippet(client, nodeSpec);
+
+    const jsonBefore = editConfig(
+        "antigravity",
+        '{"mcpServers":{"emberprobe":{"command":"old","env":{"CUSTOM":"keep","ELECTRON_RUN_AS_NODE":"1"}}}}',
+        snippet("antigravity")
+    );
+    const jsonUpgraded = editConfig("antigravity", jsonBefore, nodeSnippet("antigravity"));
+    const jsonParsed = JSON.parse(jsonUpgraded);
+    assert.strictEqual(jsonParsed.mcpServers.emberprobe.command, nodeSpec.command);
+    assert.deepStrictEqual(jsonParsed.mcpServers.emberprobe.env, { CUSTOM: "keep" });
+    assert.strictEqual(editConfig("antigravity", jsonUpgraded, nodeSnippet("antigravity")), jsonUpgraded);
+
+    const jsonOnlyElectron = editConfig("claude", "{}", snippet("claude"));
+    const jsonClean = editConfig("claude", jsonOnlyElectron, nodeSnippet("claude"));
+    assert.ok(!Object.hasOwn(JSON.parse(jsonClean).mcpServers.emberprobe, "env"));
+    assert.strictEqual(editConfig("claude", jsonClean, nodeSnippet("claude")), jsonClean);
+
+    const tomlBefore = editConfig("codex", '[mcp_servers.emberprobe.env]\nCUSTOM = "keep"\n', snippet("codex"));
+    const tomlUpgraded = editConfig("codex", tomlBefore, nodeSnippet("codex"));
+    const tomlParsed = parseToml(tomlUpgraded);
+    assert.strictEqual(tomlParsed.mcp_servers.emberprobe.command, nodeSpec.command);
+    assert.deepStrictEqual(tomlParsed.mcp_servers.emberprobe.env, { CUSTOM: "keep" });
+    assert.strictEqual(editConfig("codex", tomlUpgraded, nodeSnippet("codex")), tomlUpgraded);
+
+    const dshBefore = editConfig("dsh", "", snippet("dsh"));
+    const dshUpgraded = editConfig("dsh", dshBefore, nodeSnippet("dsh"));
+    const dshEntry = yamlTargets(dshUpgraded).targets[0].toJSON();
+    assert.strictEqual(dshEntry.config.command, nodeSpec.command);
+    assert.ok(!Object.hasOwn(dshEntry.config, "env"));
+    assert.strictEqual(editConfig("dsh", dshUpgraded, nodeSnippet("dsh")), dshUpgraded);
+});
+
 console.log("MCP native configuration edit tests passed");
