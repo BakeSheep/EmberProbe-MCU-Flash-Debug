@@ -10,10 +10,12 @@
 const fs = require("fs");
 const path = require("path");
 const { JSDOM, VirtualConsole } = require("jsdom");
+const { FakeClock } = require("../test/helpers/fake-clock");
 
 const dist = path.join(__dirname, "dist");
 const sidebarData = require("./mock/sidebar-data.js");
 const liveWatchData = require("./mock/livewatch-data.js");
+const shellData = require("./shell/shell-data.js");
 
 if (!fs.existsSync(path.join(dist, "index.html"))) {
     console.error("mockup/dist is missing. Run `node mockup/build.js` first.");
@@ -87,6 +89,26 @@ async function testSidebar() {
     const { window } = dom;
     await sleep(120);
 
+    const doc = window.document;
+    check("chip info section starts open", doc.getElementById("chipInfoSection")?.open === true);
+    check(
+        "chip info starts unread before reading",
+        !!doc.querySelector("#chipBody .empty") && !doc.querySelector("#chipBody .chip-hero")
+    );
+    check(
+        "secondary sidebar sections start collapsed",
+        [
+            "mcuConfigSection",
+            "agentConfigSection",
+            "memoryAnalysisSection",
+            "liveValuesSection",
+            "variableBrowser",
+            "rttSection",
+            "peripheralSection",
+            "rtosSection"
+        ].every((id) => doc.getElementById(id)?.open === false)
+    );
+
     const send = (message) => push(window, message);
     send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
     send({ type: "skillStatus", state: "installed", busy: false, scopes: { workspace: { state: "installed" } } });
@@ -125,9 +147,6 @@ async function testSidebar() {
         key: "sb.sampling"
     });
     await sleep(80);
-
-    const doc = window.document;
-    check("OpenOCD notice cleared when ready", !doc.querySelector("[data-notice-id='openocd']"));
     send({
         type: "mcpClients",
         busy: "",
@@ -139,6 +158,7 @@ async function testSidebar() {
             { client: "json", state: "manual", actions: ["copy"], files: [] }
         ]
     });
+    check("OpenOCD notice cleared when ready", !doc.querySelector("[data-notice-id='openocd']"));
     check("MCP clients listed", doc.querySelectorAll("#mcpClientList .mcp-client").length === 5);
     check("MCP outdated row offers upgrade", !!doc.querySelector(".mcp-client-outdated [data-action='upgrade']"));
     check("MCP built-in client has no action", !doc.querySelector(".mcp-client-builtin button"));
@@ -283,7 +303,7 @@ function testShellAssets() {
 
 async function testShell() {
     console.log("index.html shell behaviour");
-    const shellData = require("./shell/shell-data.js");
+    const clock = new FakeClock();
     let html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
     html = html.replace(/src="(?:sidebar|livewatch|rtt-panel)\.(?:zh|en)\.html"/g, 'src="about:blank"');
     html = html.replace(
@@ -298,10 +318,14 @@ async function testShell() {
         runScripts: "dangerously",
         pretendToBeVisual: true,
         url: "file:///" + path.join(dist, "index.html").replace(/\\/g, "/"),
-        virtualConsole
+        virtualConsole,
+        beforeParse(window) {
+            window.setTimeout = (fn, ms = 0, ...args) => clock.schedule(() => fn(...args), ms);
+            window.clearTimeout = clock.cancel;
+        }
     });
     const { window } = dom;
-    await sleep(900);
+    await clock.advance(900);
 
     const doc = window.document;
     const lineCount = shellData.FILES["main.c"].content.split("\n").length;
@@ -309,9 +333,9 @@ async function testShell() {
     check("gutter lines rendered", doc.querySelectorAll("#gutter .gutter-line").length === lineCount);
     check("tabs rendered", doc.querySelectorAll(".tab").length === 4);
     check("waveform is initially active", !!doc.querySelector('[data-tab="livewatch"].active'));
-    check("panel initially hidden", doc.getElementById("panel").classList.contains("collapsed"));
+    check("panel initially open", !doc.getElementById("panel").classList.contains("collapsed"));
     check("no initial execution highlight", !doc.querySelector(".code-line.active-line"));
-    check("breakpoint marker", !!doc.querySelector("#gutter .breakpoint"));
+    check("no preset breakpoints on startup", !doc.querySelector("#gutter .breakpoint"));
     check("debug toolbar initially hidden", doc.getElementById("debug-toolbar").classList.contains("hidden"));
     check("variable tree rendered", doc.querySelectorAll("#debugVariables .tree-row").length > 8);
     check(
@@ -320,8 +344,11 @@ async function testShell() {
             cell.textContent.includes("vector length 10, capacity 16")
         )
     );
-    check("call stack rendered", doc.querySelectorAll("#debugCallStack .stack-row").length === 3);
-    check("terminal rendered", doc.querySelectorAll("#terminalBody span").length === shellData.TERMINAL_LINES.length);
+    check("no initial stack frames", !doc.querySelector("#debugCallStack .stack-row"));
+    check(
+        "PowerShell uses the demo workspace",
+        doc.getElementById("terminalPrompt").textContent.includes("EmberProbeDemo")
+    );
     check("problems rendered", doc.querySelectorAll("#problemsList .problem-row").length === 2);
 
     doc.getElementById("commandCenter").click();
@@ -346,8 +373,9 @@ async function testShell() {
     await sleep(20);
     check("debug waits before showing the toolbar", doc.getElementById("debug-toolbar").classList.contains("hidden"));
     check("pending debug prevents repeated clicks", doc.getElementById("debugStartButton").disabled);
-    await sleep(2300);
+    await clock.advance(2520);
     check("start shows debug toolbar", !doc.getElementById("debug-toolbar").classList.contains("hidden"));
+    check("default debug stops at main", doc.querySelector("#code .active-line")?.textContent.includes("HAL_Init();"));
 
     check("no shell script errors", errors.length === 0);
     if (errors.length) console.error(errors.join("\n"));

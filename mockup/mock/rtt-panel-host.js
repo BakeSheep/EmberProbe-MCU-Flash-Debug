@@ -10,40 +10,6 @@
     var MAX_SCROLLBACK = 256 * 1024;
     var MAX_HISTORY = 100;
 
-    function pad(value, width) {
-        var text = String(value);
-        while (text.length < (width || 2)) text = "0" + text;
-        return text;
-    }
-
-    // src/rttLineFormatter.js formatTimestamp: the host's local time when a line's first byte arrived.
-    function stamp(ms) {
-        var date = new Date(ms);
-        return (
-            pad(date.getHours()) +
-            ":" +
-            pad(date.getMinutes()) +
-            ":" +
-            pad(date.getSeconds()) +
-            "." +
-            pad(date.getMilliseconds(), 3)
-        );
-    }
-
-    function utf8Length(text) {
-        var bytes = 0;
-        for (var i = 0; i < text.length; i++) {
-            var code = text.charCodeAt(i);
-            if (code < 0x80) bytes += 1;
-            else if (code < 0x800) bytes += 2;
-            else if (code >= 0xd800 && code <= 0xdbff) {
-                bytes += 4;
-                i++;
-            } else bytes += 3;
-        }
-        return bytes;
-    }
-
     function createRttPanelHost(iframe, options) {
         options = options || {};
         var simulator = options.simulator;
@@ -55,7 +21,12 @@
         var stopped = false;
         var ready = false;
         var state = "stopped";
-        var timestamps = false;
+        const { createRttFormatter, AnsiStripper } = root.EmberProbeMockRttFormatter;
+        const bytes = (text) => Uint8Array.from(new TextEncoder().encode(text));
+        let settings = root.EmberProbeMockRttSettings.defaults;
+        let logFile = "";
+        const logs = new Map();
+        const rawInput = new Map();
         var targetRunning = true;
         var channels = new Map(); // up channel index -> { index, name, active, down, scrollback, lineStart, booted }
         var history = {};
@@ -88,7 +59,7 @@
             return {
                 type: "rttPanelStatus",
                 state: state,
-                inputMode: "line",
+                inputMode: settings["input.mode"],
                 history: history,
                 channels: channelList(false)
             };
@@ -103,23 +74,45 @@
             if (ready) send({ type: "rttOutput", channel: channel.index, text: text });
         }
 
-        // Firmware output goes through the line formatter: with timestamps on, each line starts with the host time.
-        function emit(channel, text) {
-            if (!timestamps) {
-                for (var j = 0; j < text.length; j++) channel.lineStart = text[j] === "\n";
-                return append(channel, text);
+        function writeLog(channel, chunk) {
+            if (!logFile || !chunk.length) return;
+            let log = logs.get(channel.index);
+            if (!log) {
+                log = { chunks: [], length: 0, previous: null };
+                logs.set(channel.index, log);
             }
-            var out = "";
-            for (var i = 0; i < text.length; i++) {
-                var ch = text[i];
-                if (channel.lineStart && ch !== "\r" && ch !== "\n") {
-                    out += "[" + stamp(Date.now()) + "] ";
-                    channel.lineStart = false;
+            const max = settings["logFile.maxBytes"];
+            for (let start = 0; start < chunk.length;) {
+                if (log.length >= max) {
+                    log.previous = log.chunks;
+                    log.chunks = [];
+                    log.length = 0;
                 }
-                out += ch;
-                if (ch === "\n") channel.lineStart = true;
+                const copy = chunk.slice(start, start + max - log.length);
+                log.chunks.push(copy);
+                log.length += copy.length;
+                start += copy.length;
             }
-            append(channel, out);
+        }
+
+        function flushLogs() {
+            for (const [index, log] of logs) {
+                const name = logFile.split(/[\\/]/).at(-1);
+                const file = logs.size > 1 ? name.replace(/(\.[^.]+)$/, "-ch" + index + "$1") : name;
+                if (log.previous) options.saveLog?.(file + ".1", log.previous);
+                options.saveLog?.(file, log.chunks);
+            }
+            logs.clear();
+        }
+
+        function emit(channel, text) {
+            const chunk = typeof text === "string" ? bytes(text) : text;
+            const rendered = channel.formatter.push(chunk, channel.offset);
+            channel.offset += chunk.length;
+            if (settings["logFile.raw"]) writeLog(channel, chunk);
+            else if (logFile)
+                writeLog(channel, bytes(settings["logFile.stripAnsi"] ? channel.ansi.push(rendered) : rendered));
+            if (rendered) append(channel, rendered);
         }
 
         function sample(name) {
@@ -197,7 +190,11 @@
         // The sidebar host's RTT state: { state, channels: [{ index, name, down }], timestamps, targetRunning }.
         function sync(next) {
             next = next || {};
-            timestamps = next.timestamps === true;
+            if (next.logFile !== undefined && next.logFile !== logFile) {
+                flushLogs();
+                logFile = next.logFile;
+            }
+            settings = next.settings || settings;
             targetRunning = next.targetRunning !== false;
             var nextState = next.state || "stopped";
             if (nextState === "running") {
@@ -209,17 +206,28 @@
                         channel = {
                             index: item.index,
                             scrollback: "",
-                            lineStart: true,
-                            booted: false
+                            booted: false,
+                            ansi: new AnsiStripper()
                         };
                         channels.set(item.index, channel);
                     }
                     channel.name = item.name || "";
                     channel.down = item.down || 0;
+                    channel.downChannel = item.downChannel ?? item.index;
+                    const format = item.format || "text";
+                    const encoding = item.encoding || settings.encoding;
+                    const virtualTerminals = settings.virtualTerminals && item.index === 0;
+                    const formatKey = JSON.stringify([format, encoding, virtualTerminals]);
+                    if (!channel.active || channel.formatKey !== formatKey) {
+                        channel.formatter = createRttFormatter({ format, encoding, virtualTerminals });
+                        channel.formatKey = formatKey;
+                        channel.offset = 0;
+                    }
+                    channel.formatter.setTimestamps(next.timestamps === true);
                     channel.active = true;
                 });
                 channels.forEach(function (channel) {
-                    if (!wanted.has(channel.index) && channel.active) stopChannel(channel);
+                    if (!wanted.has(channel.index)) channels.delete(channel.index);
                 });
                 // Keep the tab order of the real view: ascending channel index.
                 channels = new Map(
@@ -229,7 +237,7 @@
                 );
             } else if (state === "running") {
                 channels.forEach(function (channel) {
-                    if (channel.active) stopChannel(channel);
+                    if (channel.active) stopChannel(channel, nextState);
                 });
             }
             var started = nextState === "running" && state !== "running";
@@ -242,9 +250,13 @@
             ensureTimer();
         }
 
-        function stopChannel(channel) {
+        function stopChannel(channel, nextState) {
             channel.active = false;
-            append(channel, (channel.lineStart ? "" : "\r\n") + "\r\n" + tr("rtt.termStopped") + "\r\n");
+            const tail = channel.formatter.flush();
+            if (tail) append(channel, tail);
+            const note = nextState === "pending-host" ? "rtt.termPending" : "rtt.termStopped";
+            append(channel, "\r\n" + tr(note) + "\r\n");
+            rawInput.clear();
             channel.lineStart = true;
         }
 
@@ -299,21 +311,31 @@
         }
 
         // src/services/rttTerminalService.js sendInput: refused when it cannot reach a down buffer or does not fit.
-        function sendInput(index, text) {
+        function sendInput(index, text, raw) {
             if (state !== "running") return { ok: false, message: tr("rtt.err.notRunning") };
             var channel = channels.get(index);
             if (!channel || !channel.active || !channel.down)
                 return { ok: false, message: tr("rtt.inputUnavailable", { channel: index }) };
-            var bytes = utf8Length(text + "\n");
-            var max = channel.down - 1;
-            if (bytes > max) return { ok: false, message: tr("rtt.inputTooLong", { bytes: bytes, max: max }) };
-            append(channel, "\x1b[2m> " + text + "\x1b[0m\r\n");
-            remember(index, text);
-            postStatus();
-            if (targetRunning)
-                setTimeout(function () {
-                    if (!stopped && channel.active) reply(channel, text);
-                }, 40);
+            const ending = root.EmberProbeMockRttSettings.endings[settings["input.lineEnding"]];
+            const data = raw ? text : text + ending;
+            const length = bytes(data).length;
+            const max = Math.min(channel.down - 1, 1024);
+            if (length > max) return { ok: false, message: tr("rtt.inputTooLong", { bytes: length, max }) };
+            if (!raw) {
+                append(channel, "\x1b[2m> " + text + "\x1b[0m\r\n");
+                if (logFile && !settings["logFile.raw"]) writeLog(channel, bytes(text + "\r\n"));
+                remember(index, text);
+                postStatus();
+            }
+            if (targetRunning && channel.downChannel === 0) {
+                const lines = ((rawInput.get(0) || "") + data).split(/\r\n|\r|\n/);
+                rawInput.set(0, lines.pop().slice(-channel.down));
+                const terminal = channels.get(0);
+                for (const line of lines)
+                    setTimeout(() => {
+                        if (!stopped && terminal?.active) reply(terminal, line);
+                    }, 40);
+            }
             return { ok: true };
         }
 
@@ -323,7 +345,7 @@
             send({
                 type: "rttPanelSnapshot",
                 state: state,
-                inputMode: "line",
+                inputMode: settings["input.mode"],
                 history: history,
                 channels: channelList(true)
             });
@@ -338,12 +360,30 @@
                 case "rttSend": {
                     var valid =
                         Number.isSafeInteger(message.channel) &&
+                        message.channel >= 0 &&
+                        message.channel <= 255 &&
                         typeof message.text === "string" &&
-                        !/[\x00-\x1f\x7f]/.test(message.text);
+                        !/[\x00-\x1f\x7f]/.test(message.text) &&
+                        bytes(message.text).length <= 1022;
                     var result = valid
                         ? sendInput(message.channel, message.text)
                         : { ok: false, message: tr("rtt.input.invalid") };
                     send({ type: "rttSendResult", id: message.id, ok: result.ok, message: result.message });
+                    break;
+                }
+                case "rttSendRaw": {
+                    const { channel, data } = message;
+                    const valid =
+                        Number.isInteger(channel) &&
+                        channel >= 0 &&
+                        channel <= 255 &&
+                        typeof data === "string" &&
+                        data.length &&
+                        bytes(data).length <= 1024;
+                    const result = valid
+                        ? sendInput(channel, data, true)
+                        : { ok: false, message: tr("rtt.input.invalid") };
+                    if (!result.ok) send({ type: "rttInputProblem", channel, message: result.message });
                     break;
                 }
                 case "rttClear": {
@@ -367,6 +407,10 @@
 
         return {
             sync: sync,
+            setInputMode(next) {
+                settings = next;
+                postStatus();
+            },
             // A page that loaded before this host listened has sent its ready already.
             sendSnapshot: sendSnapshot,
             isReady: function () {

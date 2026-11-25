@@ -226,8 +226,79 @@
         "> 本页面是界面复刻演示，所有数据均为模拟值。"
     ].join("\n");
 
+    var PID_C = [
+        "/**",
+        " * @file    pid.c",
+        " * @brief   Discrete PID controller implementation",
+        " */",
+        "",
+        '#include "pid.h"',
+        "",
+        "void pid_init(PID_HandleTypeDef *h, float kp, float ki, float kd, float dt)",
+        "{",
+        "    h->kp = kp;",
+        "    h->ki = ki;",
+        "    h->kd = kd;",
+        "    h->dt = dt;",
+        "    h->integral = 0.0f;",
+        "    h->prev_error = 0.0f;",
+        "    h->output = 0.0f;",
+        "}",
+        "",
+        "float pid_update(PID_HandleTypeDef *h, float setpoint, float measured)",
+        "{",
+        "    float error = setpoint - measured;",
+        "    h->integral += h->ki * error * h->dt;",
+        "    float deriv = (error - h->prev_error) / h->dt;",
+        "    h->prev_error = error;",
+        "    h->output = h->kp * error + h->integral + h->kd * deriv;",
+        "    return h->output;",
+        "}"
+    ].join("\n");
+
+    var TASKS_C = [
+        "/**",
+        " * @file    tasks.c",
+        " * @brief   FreeRTOS kernel task scheduler (excerpt)",
+        " */",
+        "",
+        '#include "FreeRTOS.h"',
+        '#include "task.h"',
+        "",
+        "static void prvCheckTasksWaitingTermination(void)",
+        "{",
+        "    BaseType_t deleted = pdFALSE;",
+        "    if (uxDeletedTasksWaitingCleanUp > 0U) {",
+        "        taskENTER_CRITICAL();",
+        "        deleted = uxDeletedTasksWaitingCleanUp;",
+        "        taskEXIT_CRITICAL();",
+        "    }",
+        "    (void)deleted;",
+        "}",
+        "",
+        "static void prvIdleTask(void *pvParameters)",
+        "{",
+        "    (void)pvParameters;",
+        "    for (;;) {",
+        "        prvCheckTasksWaitingTermination();",
+        "        if (listCURRENT_LIST_LENGTH(&pxReadyTasksLists[tskIDLE_PRIORITY]) > 1U) {",
+        "            taskYIELD();",
+        "        }",
+        "        portYIELD();",
+        "    }",
+        "}"
+    ].join("\n");
+
     var FILES = {
         "main.c": { label: "main.c", language: "C", path: "Core/Src/main.c", content: MAIN_C, modified: true },
+        "pid.c": { label: "pid.c", language: "C", path: "Core/Src/pid.c", content: PID_C, modified: false },
+        "tasks.c": {
+            label: "tasks.c",
+            language: "C",
+            path: "Middlewares/Third_Party/FreeRTOS/tasks.c",
+            content: TASKS_C,
+            modified: false
+        },
         "FreeRTOSConfig.h": {
             label: "FreeRTOSConfig.h",
             language: "C",
@@ -390,11 +461,7 @@
         name: "EmberProbe (J-Link)",
         frame: "ControlTask()",
         file: "main.c",
-        breakpoints: [
-            { file: "main.c", line: 103, enabled: true },
-            { file: "freertos.c", line: 212, enabled: true },
-            { file: "pid.c", line: 58, enabled: false }
-        ],
+        breakpoints: [],
         callStack: [
             { name: "ControlTask", detail: "main.c:103", active: true },
             { name: "vTaskDelayUntil", detail: "tasks.c:1682" },
@@ -552,26 +619,6 @@
         ]
     };
 
-    var TERMINAL_LINES = [
-        { cls: "dim", text: "Open On-Chip Debugger 0.12.0 (2024-11-24-10:12)" },
-        { cls: "dim", text: "Licensed under GNU GPL v2" },
-        { cls: "info", text: "Info : Listening on port 6666 for tcl connections" },
-        { cls: "info", text: "Info : Listening on port 4444 for telnet connections" },
-        { cls: "info", text: "Info : J-Link V11 compiled Nov 24 2024 10:12:05" },
-        { cls: "info", text: "Info : Hardware version: 11.00" },
-        { cls: "info", text: "Info : VTarget = 3.300 V" },
-        { cls: "info", text: "Info : clock speed 4000 kHz" },
-        { cls: "info", text: "Info : SWD DPIDR 0x2ba01477" },
-        { cls: "info", text: "Info : [stm32f4x.cpu] Cortex-M4 r0p1 processor detected" },
-        { cls: "info", text: "Info : [stm32f4x.cpu] target has 6 breakpoints, 4 watchpoints" },
-        { cls: "info", text: "Info : starting gdb server for stm32f4x.cpu on 3333" },
-        { cls: "info", text: "Info : Listening on port 3333 for gdb connections" },
-        { cls: "info", text: "Info : accepting 'gdb' connection on tcp/3333" },
-        { cls: "warn", text: "Warn : rtos detection failed: symbol 'uxTopUsedPriority' not found" },
-        { cls: "ok", text: "Info : halted: PC 0x08001a3c, SP 0x2001ffb0" },
-        { cls: "ok", text: "Info : breakpoint hit at 0x08001a3c (main.c:103)" }
-    ];
-
     var OUTPUT_LINES = [
         { cls: "title", text: "EmberProbe 芯片诊断 — 2026/10/5 14:32:08" },
         { cls: "", text: "目标: stm32f4x.cpu" },
@@ -602,11 +649,6 @@
             message: "隐式转换可能丢失精度: double -> float",
             source: "clangd"
         }
-    ];
-
-    var DEBUG_CONSOLE_LINES = [
-        { cls: "prompt", text: "> EmberProbe DAP 会话已启动 (J-Link · SWD 4000 kHz)" },
-        { cls: "", text: "已加载符号: EmberProbeDemo.elf (28 个全局变量, 6 个 FreeRTOS 任务)" }
     ];
 
     // The English window: every Chinese string an English recording or tour shows.
@@ -655,9 +697,6 @@
         Object.keys(FILES).forEach(function (name) {
             FILES[name].content = translate(FILES[name].content);
         });
-        DEBUG_CONSOLE_LINES.forEach(function (line) {
-            line.text = translate(line.text);
-        });
     }
 
     function translateDocument(root) {
@@ -672,6 +711,12 @@
         { id: "mcu-vscode.debug", title: "启动调试", category: "EmberProbe", action: "debug", key: "F5" },
         { id: "mcu-vscode.download", title: "下载程序", category: "EmberProbe", action: "download" },
         { id: "mcu-vscode.openLiveWatch", title: "实时变量查看", category: "EmberProbe", action: "livewatch" },
+        {
+            id: "workbench.action.openWorkspaceSettingsFile",
+            title: "RTT 工作区设置 (JSON)",
+            category: "EmberProbe",
+            action: "rttSettings"
+        },
         {
             id: "mcu-vscode.checkOpenOcd",
             title: "检查 OpenOCD 环境",
@@ -735,10 +780,8 @@
         SEARCH_RESULTS: SEARCH_RESULTS,
         SCM_CHANGES: SCM_CHANGES,
         DEBUG: DEBUG,
-        TERMINAL_LINES: TERMINAL_LINES,
         OUTPUT_LINES: OUTPUT_LINES,
         PROBLEMS: PROBLEMS,
-        DEBUG_CONSOLE_LINES: DEBUG_CONSOLE_LINES,
         COMMANDS: COMMANDS
     };
 });

@@ -14,6 +14,9 @@ const { getRttPanelContent } = require("../src/rttPanelView");
 const { STRINGS } = require("../src/i18n");
 const liveWatchView = require("../src/liveWatchView");
 const mockCsv = require("../mockup/mock-csv");
+const mockRtt = require("../mockup/mock-rtt");
+const mockMcp = require("../mockup/mock-mcp");
+const configuration = require("../mockup/mock/configuration");
 const sidebarData = require("../mockup/mock/sidebar-data");
 const liveData = require("../mockup/mock/livewatch-data");
 const { createMockServer } = require("../mockup/serve");
@@ -42,6 +45,8 @@ function hostEnvironment() {
     }
     const context = vm.createContext({
         window: root,
+        TextEncoder,
+        TextDecoder,
         Date: class extends Date {
             static now() {
                 return now;
@@ -73,15 +78,24 @@ function hostEnvironment() {
             body: { appendChild() {} }
         }
     });
-    for (const file of ["text.js", "sidebar-host.js", "livewatch-host.js", "rtt-panel-host.js"])
+    vm.runInContext(mockRtt.browserSource(), context, { filename: "rtt-formatter.js" });
+    vm.runInContext(mockMcp.browserSource(), context, { filename: "mcp-catalog.js" });
+    for (const file of [
+        "text.js",
+        "configuration.js",
+        "sampling.js",
+        "archive.js",
+        "rtt-settings.js",
+        "sidebar-host.js",
+        "livewatch-host.js",
+        "rtt-panel-host.js"
+    ])
         vm.runInContext(fs.readFileSync(path.join(mockup, "mock", file), "utf8"), context, { filename: file });
     function frame(onSend) {
         const messages = [];
         return {
             messages,
             contentWindow: {
-                // The real page provides collectLeaves; composite curves are not charted by these host checks.
-                collectLeaves: () => [],
                 postMessage(message) {
                     const copy = JSON.parse(JSON.stringify(message));
                     messages.push(copy);
@@ -216,6 +230,9 @@ function testHostsAndRenderer() {
     const liveHost = env.root.EmberProbeLiveWatchHost.create(live, { simulator, getSidebarWatch: host.getWatchList });
     try {
         env.deliver(sidebar, { type: "initCheck" });
+        assert.equal(latest(sidebar, "chipInfoStatus").state, "idle");
+        assert.equal(latest(sidebar, "chipInfo"), undefined);
+        assert.equal(view.document.querySelector("#chipBody .chip-hero"), null);
         const memory = latest(sidebar, "memoryAnalysis").result;
         for (let i = 0; i < 5; i++) {
             env.advance(1);
@@ -375,6 +392,213 @@ function pump(env, frame, view, from) {
     const start = from.at;
     from.at = view.messages.length;
     for (const message of view.messages.slice(start)) env.deliver(frame, message);
+}
+
+function testCompositeImportAndMembers() {
+    const env = hostEnvironment();
+    const chartView = render(liveWatchView.getLiveWatchContent({ panelId: 1 }, "zh"));
+    const sidebarView = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
+    const chart = env.frame((message) => chartView.send(message));
+    const sidebar = env.frame((message) => sidebarView.send(message));
+    chart.contentWindow.EmberProbeRuntime = chartView.window.EmberProbeRuntime;
+    const sideAt = { at: 0 };
+    const chartAt = { at: 0 };
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, {
+        notify: (event) => {
+            if (event.action === "sampling") chartHost.setSampling(event.phase);
+        }
+    });
+    const chartHost = env.root.EmberProbeLiveWatchHost.create(chart, {
+        getSidebarWatch: host.getWatchList,
+        requestSampling: (running) => (running ? host.startSampling() : host.stopSampling())
+    });
+    try {
+        env.deliver(sidebar, { type: "initCheck" });
+        env.deliver(chart, { type: "ready" });
+        pump(env, sidebar, sidebarView, sideAt);
+        pump(env, chart, chartView, chartAt);
+        chartView.document.getElementById("importSidebar").click();
+        pump(env, chart, chartView, chartAt);
+        assert.ok(latest(chart, "watchList").items.some((item) => item.name === "g_imu"));
+        chartView.document.getElementById("run").click();
+        pump(env, chart, chartView, chartAt);
+        env.advance(500);
+        assert.equal(latest(chart, "liveStatus").mode, "standalone-sampling");
+        assert.ok(latest(chart, "chartValues").samples.some((item) => item.name === "g_motor_rpm"));
+        assert.ok(latest(chart, "chartHistoryStatus").variables.includes("g_imu.accel[0]"));
+
+        const document = sidebarView.document;
+        const afterImport = sidebar.messages.length;
+        const search = document.getElementById("varSearch");
+        document.querySelector("#liveValues .composite .watch-remove").click();
+        search.value = "accel";
+        search.dispatchEvent(new sidebarView.window.Event("input", { bubbles: true }));
+        document.querySelector('.av-watch[data-selection-name="g_imu.accel[0]"]').click();
+        pump(env, sidebar, sidebarView, sideAt);
+        env.advance(50);
+        assert.ok(latest(sidebar, "liveSample").samples.some((sample) => sample.name === "g_imu.accel[0]"));
+        assert.ok(!sidebar.messages.slice(afterImport).some((message) => message.type === "liveCompositeSample"));
+        sidebarView.assertHealthy();
+        chartView.assertHealthy();
+    } finally {
+        chartHost.destroy();
+        host.destroy();
+        sidebarView.close();
+        chartView.close();
+    }
+}
+
+function testConfigurationAndSvdCancellation() {
+    const env = hostEnvironment();
+    const sidebar = env.frame();
+    let pick;
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, {
+        quickPick: (items, _settings, done) => {
+            pick = { items, done };
+        }
+    });
+    const execute = (cmd) => env.deliver(sidebar, { type: "executeCommand", cmd: "mcu-vscode." + cmd });
+    try {
+        execute("selectElf");
+        assert.equal(pick.items.length, 2);
+        pick.done(pick.items[1]);
+        assert.match(latest(sidebar, "memoryAnalysis").result.elf.path, /Release/);
+        execute("selectDebugger");
+        pick.done(undefined);
+        assert.equal(latest(sidebar, "commandCancelled").cmd, "mcu-vscode.selectDebugger");
+        execute("selectMcuCore");
+        pick.done(pick.items[1]);
+        assert.equal(latest(sidebar, "mockConfiguration").rows["mcu-vscode.selectMcuCore"].value, "stm32h7x.cfg");
+        execute("selectIoc");
+        pick.done(pick.items[1]);
+        assert.equal(latest(sidebar, "mockConfiguration").firmware.generator, "cubemx2");
+        env.deliver(sidebar, { type: "memorySelectSource" });
+        pick.done(pick.items[1]);
+        assert.match(latest(sidebar, "memoryAnalysis").result.source.linkerScript, /\.ld$/);
+        execute("downloadOfficialSvd");
+        env.advance(650);
+        assert.equal(latest(sidebar, "svdStatus").state, "downloading");
+        env.deliver(sidebar, { type: "cancelSvdDownload" });
+        env.advance(5000);
+        assert.equal(latest(sidebar, "svdStatus").key, "svd.cancelled");
+        assert.equal(latest(sidebar, "commandCancelled").cmd, "mcu-vscode.downloadOfficialSvd");
+        execute("downloadOfficialSvd");
+        env.advance(2500);
+        assert.equal(latest(sidebar, "svdStatus").state, "configured");
+    } finally {
+        host.destroy();
+    }
+}
+
+function testRttRawModeAndLog() {
+    const env = hostEnvironment();
+    const sidebar = env.frame();
+    const view = render(getRttPanelContent("zh"));
+    const panel = env.frame((message) => view.send(message));
+    const files = [];
+    const simulator = sidebarData.createSimulator();
+    const terminal = env.root.EmberProbeRttPanelHost.create(panel, {
+        simulator,
+        saveLog: (name, parts) => files.push([name, Buffer.concat(parts.map((part) => Buffer.from(part)))])
+    });
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, {
+        simulator,
+        notify: (event) => {
+            if (event.action === "rtt") terminal.sync(event);
+        }
+    });
+    const send = (cmd) => env.deliver(sidebar, { type: "executeCommand", cmd: "mcu-vscode." + cmd });
+    try {
+        const { parse } = env.root.EmberProbeMockRttSettings;
+        const settings = parse(
+            JSON.stringify({
+                "emberprobe.rtt.channels": [0, { index: 1, down: 0, format: "hex" }],
+                "emberprobe.rtt.input.mode": "raw",
+                "emberprobe.rtt.input.lineEnding": "crlf",
+                "emberprobe.rtt.logFile.raw": true,
+                "emberprobe.rtt.logFile.maxBytes": 64
+            })
+        );
+        assert.ok(settings);
+        assert.equal(parse('{"emberprobe.rtt.channels":[0,{"index":0}]}'), null);
+        host.applyRttSettings(settings);
+        send("rttSaveLog");
+        send("startRtt");
+        env.advance(500);
+        env.deliver(panel, { type: "ready" });
+        const snapshot = latest(panel, "rttPanelSnapshot");
+        assert.equal(snapshot.inputMode, "raw");
+        assert.match(snapshot.channels[1].text, /74 72 61 63 65/);
+        assert.equal(snapshot.channels[1].hasInput, true, "up 1 may use down 0");
+        view.document.querySelector('#tabs [data-channel="1"]').click();
+        view.document
+            .getElementById("output")
+            .dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "v", bubbles: true, cancelable: true }));
+        const keystroke = view.messages.findLast((message) => message.type === "rttSendRaw");
+        assert.equal(keystroke.channel, 1);
+        env.deliver(panel, keystroke);
+        env.deliver(panel, { type: "rttSendRaw", channel: 1, data: "ersion\r" });
+        env.advance(40);
+        assert.match(latest(panel, "rttOutput").text, /gcc 13\.3\.1/);
+        env.deliver(panel, { type: "rttSendRaw", channel: 1, data: "a".repeat(64) });
+        assert.equal(latest(panel, "rttInputProblem").channel, 1);
+        send("rttSaveLog");
+        assert.ok(files.some(([name, contents]) => name.endsWith(".bin.1") && contents.length === 64));
+        assert.match(files.find(([name]) => name.endsWith("-ch1.bin"))[1].toString(), /trace: stream/);
+        host.startDebug("attach");
+        assert.equal(latest(sidebar, "rttStatus").state, "pending-host");
+        env.advance(2200);
+        host.setTargetState("halted", { notify: false });
+        env.advance(500);
+        assert.equal(latest(sidebar, "rttStatus").state, "running");
+        view.assertHealthy();
+    } finally {
+        terminal.destroy();
+        host.destroy();
+        view.close();
+    }
+}
+
+function testMcpConnectivityScenarios() {
+    for (const outcome of [undefined, "initialize", "tools", "timeout"]) {
+        const env = hostEnvironment();
+        const side = env.frame();
+        const host = env.root.EmberProbeSidebarHost.create(side, { mcpOutcome: outcome });
+        try {
+            env.deliver(side, { type: "checkMcpConnection" });
+            assert.equal(latest(side, "mcpConnection"), undefined);
+            env.advance(outcome === "timeout" ? 10000 : 350);
+            const result = latest(side, "mcpConnection");
+            assert.equal(result.state, outcome ?? "connected");
+            if (!outcome) assert.equal(result.toolCount, require("../src/mcp/tools").TOOLS.length);
+        } finally {
+            host.destroy();
+        }
+    }
+}
+
+function testDebugCoreSelection() {
+    const env = hostEnvironment();
+    const sidebar = env.frame();
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, { debugCores: 2 });
+    try {
+        host.startDebug("attach");
+        env.advance(2200);
+        host.setTargetState("halted", { notify: false });
+        const primary = latest(sidebar, "rtosDebugStatus");
+        assert.equal(primary.sessions.length, 2);
+        const core = primary.sessions[1];
+        env.deliver(sidebar, { type: "debugSelectSession", sessionId: core.id });
+        const selected = latest(sidebar, "rtosDebugStatus");
+        assert.equal(selected.sessionId, core.id);
+        assert.ok(selected.stopEpoch > primary.stopEpoch);
+        env.deliver(sidebar, { type: "rtosRefresh" });
+        assert.equal(latest(sidebar, "rtosSnapshot").sessionId, core.id);
+        env.deliver(sidebar, { type: "executeCommand", cmd: "mcu-vscode.startRtt" });
+        assert.equal(latest(sidebar, "notice").notice.key, "rtt.err.multicore");
+    } finally {
+        host.destroy();
+    }
 }
 
 function testRttWithRenderers() {
@@ -681,8 +905,8 @@ async function testDataBreakpointsWithRenderer() {
         host.setTargetState("running", { notify: false });
         env.advance(700);
         const hit = events.findLast((event) => event.action === "dataBreakpointHit");
-        assert.equal(hit.name, "g_motor_rpm");
-        assert.equal(hit.accessType, "write");
+        assert.equal(hit.name, "g_bus_voltage", "a false condition skips the first watchpoint");
+        assert.equal(hit.accessType, "readWrite");
         host.setTargetState("halted", { notify: false, line: 97 });
         env.deliver(sidebar, {
             type: "saveSidebarWatch",
@@ -756,14 +980,14 @@ function testTypeShowcase() {
 function testArchive() {
     const env = hostEnvironment();
     const frame = env.frame();
-    const host = env.root.EmberProbeLiveWatchHost.create(frame, { archiveLimit: 3 });
+    const host = env.root.EmberProbeLiveWatchHost.create(frame, { archiveMaxBytes: 520 });
     try {
         env.deliver(frame, { type: "samplingArchiveInfo" });
         assert.equal(latest(frame, "samplingArchiveInfo").rows, 0);
         env.deliver(frame, { type: "exportCsv", names: ["g_motor_rpm"] });
         assert.equal(latest(frame, "exportCsvResult").ok, false);
         assert.equal(env.downloads.length, 0, "no empty download is offered");
-        env.deliver(frame, { type: "start", items: liveData.watchList(), frequencyHz: 10 });
+        env.deliver(frame, { type: "start", items: [sidebarData.watchItem("g_motor_rpm")], frequencyHz: 10 });
         const first = env.time();
         env.advance(200);
         env.deliver(frame, {
@@ -784,13 +1008,15 @@ function testArchive() {
         const info = latest(frame, "samplingArchiveInfo");
         assert.equal(info.rows, 3, "archive memory is bounded");
         assert.equal(info.limitReached, true);
-        assert.equal(info.firstTimestampMs, first + 200);
-        env.deliver(frame, { type: "exportCsv", names: ["g_motor_rpm"], fromMs: first, toMs: first + 100 });
+        assert.equal(info.firstTimestampMs, first);
+        assert.equal(host.isRunning(), false, "acquisition stops at the byte limit");
+        env.deliver(frame, { type: "exportCsv", names: ["g_motor_rpm"], fromMs: first + 300, toMs: first + 400 });
         assert.equal(latest(frame, "exportCsvResult").ok, false, "an empty time range does not report success");
         env.deliver(frame, { type: "stop" });
         env.advance(200);
         env.deliver(frame, { type: "samplingArchiveInfo" });
-        assert.equal(latest(frame, "samplingArchiveInfo").lastTimestampMs, first + 400);
+        assert.equal(latest(frame, "samplingArchiveInfo").lastTimestampMs, first + 200);
+        env.deliver(frame, { type: "clearSamplingHistory", historyRevision: 1 });
         env.deliver(frame, { type: "start", items: [], frequencyHz: 10 });
         env.advance(100);
         assert.deepStrictEqual(latest(frame, "chartValues").samples, [], "an empty list never restarts old series");
@@ -830,6 +1056,44 @@ function testReadableArchiveHeaders() {
     }
 }
 
+function testIndependentChartHistory() {
+    const env = hostEnvironment();
+    const archive = env.root.EmberProbeMockArchive.create();
+    const history = new env.root.EmberProbeMockHistory.ChartHistoryStore();
+    const a = env.frame();
+    const b = env.frame();
+    const first = env.root.EmberProbeLiveWatchHost.create(a, { scope: "a", archive, history });
+    const second = env.root.EmberProbeLiveWatchHost.create(b, { scope: "b", archive, history });
+    const start = (frame, name) =>
+        env.deliver(frame, { type: "start", items: [sidebarData.watchItem(name)], frequencyHz: 20 });
+    const status = (frame) => {
+        env.deliver(frame, { type: "samplingArchiveInfo" });
+        return latest(frame, "samplingArchiveInfo");
+    };
+    try {
+        start(a, "g_motor_rpm");
+        start(b, "g_sensor_temp");
+        env.advance(100);
+        const original = status(a);
+        assert.deepStrictEqual(original.variables, ["g_motor_rpm"]);
+        assert.deepStrictEqual(status(b).variables, ["g_sensor_temp"]);
+        env.deliver(b, { type: "chartFreeze", historyRevision: 0, requestId: 1 });
+        const snapshot = latest(b, "chartFreezeResult").snapshotId;
+        first.debugSessionChanged("test-core");
+        assert.equal(status(a).rows, 0);
+        env.advance(50);
+        assert.equal(status(a).rows, 1);
+        env.deliver(a, { type: "clearSamplingHistory", historyRevision: 2 });
+        assert.equal(status(a).rows, 0);
+        assert.ok(history.status("b", snapshot).variables.includes("g_sensor_temp"));
+        first.debugSessionChanged();
+        assert.deepStrictEqual(status(a), original);
+    } finally {
+        first.destroy();
+        second.destroy();
+    }
+}
+
 function sidebarWithSampling() {
     const env = hostEnvironment();
     const frame = env.frame();
@@ -856,7 +1120,7 @@ function testSamplingFollowsDebugSession() {
         assert.equal(latest(frame, "liveStatus").key, "live.debugWaiting");
         assert.equal(latest(frame, "liveStatus").canRead, false);
         const started = sampleCount();
-        env.advance(2199);
+        env.advance(1399);
         assert.equal(sampleCount(), started, "no sample is read while debug starts");
         env.advance(1);
         assert.equal(latest(frame, "commandSuccess").cmd, "mcu-vscode.attachDebug");
@@ -923,13 +1187,13 @@ function testDownloadRun() {
         assert.equal(latest(frame, "liveStatus").mode, "stopped", "sampling gives up the probe");
         env.deliver(frame, { type: "executeCommand", cmd: "mcu-vscode.download" });
         assert.equal(flash().at(-1).notice.key, "msg.downloadBusy");
-        env.advance(1559);
-        assert.equal(flash().at(-1).notice.key, "run.flash");
-        env.advance(1);
+        env.advance(580);
+        assert.equal(flash().at(-1).notice.key, "run.flashClock");
+        env.advance(380);
         assert.equal(flash().at(-1).notice.message, "开始写入固件");
-        env.advance(6200);
-        assert.equal(flash().at(-1).notice.params.bytes, 917504);
-        env.advance(1340);
+        env.advance(1500);
+        assert.equal(flash().at(-1).notice.key, "run.verifyStart");
+        env.advance(740);
         const done = flash().at(-1).notice;
         assert.deepEqual([done.level, done.key], ["success", "msg.downloadSuccess"]);
         assert.ok(flash().every((message) => message.notice.level !== "error"));
@@ -937,7 +1201,17 @@ function testDownloadRun() {
         const log = notices.filter((event) => event.action === "flashLog").flatMap((event) => event.lines);
         assert.equal(log[0].text, "EmberProbe 固件下载");
         assert.ok(log.some((line) => line.text === "→ 目标电压 3.30 V"));
+        assert.ok(log.some((line) => line.text === "→ 烧录时钟 15000 kHz"));
         assert.ok(log.some((line) => line.text === "✓ 固件校验通过"));
+        const allFlashText = [
+            ...log.map((line) => line.text),
+            ...flash().map((message) => message.notice.message || "")
+        ].join("\n");
+        assert.doesNotMatch(
+            allFlashText,
+            /耗时|已写入|已校验|KiB\/s|正在启动 OpenOCD|EP_FLASH_STAGE=|interface\/|target\//,
+            "flash terminal prints real openocdRunner output without fake timing or config prefixes"
+        );
         assert.equal(latest(frame, "liveStatus").mode, "standalone-pending", "sampling comes back afterwards");
         env.advance(400);
         assert.equal(latest(frame, "liveStatus").mode, "standalone-sampling");
@@ -998,29 +1272,31 @@ function testDebugLatency() {
 
 function testDebugBusyBridge() {
     const view = render(
-        '<body><div class="primary-actions"><button data-command="debug"></button><button data-command="flash" disabled></button></div></body>'
+        '<body><i id="statusDot"></i><div id="flashStatus"><span id="statusText"></span></div><div class="primary-actions"><button data-command="debug"></button><button data-command="flash" disabled></button></div></body>'
     );
     try {
         view.window.eval(fs.readFileSync(path.join(mockup, "mock/prelude.js"), "utf8"));
         const [debug, flash] = view.document.querySelectorAll("button");
-        function send(source, busy) {
+        const statusText = view.document.getElementById("statusText");
+        const flashStatus = view.document.getElementById("flashStatus");
+        function send(source, busy, text) {
             view.window.dispatchEvent(
                 new view.window.MessageEvent("message", {
                     source,
-                    data: { type: "mockDebugPending", busy }
+                    data: { type: "mockDebugPending", busy, text }
                 })
             );
         }
-        send({}, true);
-        assert.equal(debug.disabled, false, "foreign frames cannot lock buttons");
-        send(view.window.parent, true);
-        send(view.window.parent, true);
-        assert.equal(debug.disabled, true);
-        assert.equal(debug.getAttribute("aria-busy"), "true");
-        send(view.window.parent, false);
+        send({}, true, "ignored");
+        assert.equal(statusText.textContent, "", "foreign frames cannot update status");
+        send(view.window.parent, true, "正在执行");
+        assert.equal(flashStatus.dataset.state, "busy");
+        assert.equal(statusText.textContent, "正在执行");
+        assert.equal(debug.disabled, false, "primary buttons remain clickable during launch");
+        assert.equal(flash.disabled, true, "pre-disabled actions remain disabled");
+        send(view.window.parent, false, "");
         assert.equal(debug.disabled, false);
-        assert.equal(flash.disabled, true, "completion preserves an already disabled action");
-        assert.equal(debug.hasAttribute("aria-busy"), false);
+        assert.equal(flash.disabled, true);
         view.assertHealthy();
     } finally {
         view.close();
@@ -1030,6 +1306,8 @@ function testDebugBusyBridge() {
 function shellHtml() {
     const assets = {
         "csv.js": mockCsv.browserSource(),
+        "rtt-formatter.js": mockRtt.browserSource(),
+        "mcp-catalog.js": mockMcp.browserSource(),
         "i18n.js": "window.EmberProbeMockStrings = " + JSON.stringify(STRINGS) + ";"
     };
     return fs
@@ -1074,10 +1352,16 @@ async function testShell() {
     try {
         assert.ok(doc.querySelector('[data-view="explorer"] .codicon-files'));
         assert.ok(doc.querySelector('[data-view="debug"] .codicon-debug-alt'));
+        assert.ok(doc.querySelector("#commandCenter .codicon-search"));
+        assert.equal(doc.getElementById("sidebar-resizer").parentElement.id, "workbench-body");
+        assert.equal(doc.getElementById("panel-resizer").parentElement.id, "main-column");
         assert.ok(doc.querySelector("#problemStatus .codicon-error"));
+        assert.ok(doc.querySelector(".status-left #debugSessionStatus"));
         assert.ok(doc.querySelector("#debug-toolbar .codicon-debug-step-over"));
         assert.ok(doc.querySelector('[data-tab="livewatch"].active'));
-        assert.ok(doc.getElementById("panel").classList.contains("collapsed"));
+        assert.equal(doc.getElementById("panel").classList.contains("collapsed"), false);
+        assert.equal(doc.getElementById("workbench").classList.contains("nosidebar"), false);
+        assert.equal(doc.getElementById("workbench").classList.contains("nopanel"), false);
         assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
         assert.equal(doc.getElementById("navigateBack").disabled, true);
         const initialFrame = doc.getElementById("livewatchFrame").contentWindow;
@@ -1087,57 +1371,100 @@ async function testShell() {
         assert.equal(doc.getElementById("livewatchFrame").contentWindow, initialFrame);
         doc.getElementById("navigateForward").click();
         assert.ok(doc.querySelector('[data-tab="main.c"].active'));
+        doc.getElementById("toggleSidebar").click();
+        assert.equal(doc.getElementById("workbench").classList.contains("nosidebar"), true);
+        assert.ok(doc.querySelector("#toggleSidebar .codicon-layout-sidebar-left-off"));
+        doc.getElementById("toggleSidebar").click();
+        assert.equal(doc.getElementById("workbench").classList.contains("nosidebar"), false);
+        assert.ok(doc.querySelector("#toggleSidebar .codicon-layout-sidebar-left"));
+        doc.getElementById("togglePanel").click();
+        assert.equal(doc.getElementById("workbench").classList.contains("nopanel"), true);
+        assert.ok(doc.querySelector("#togglePanel .codicon-layout-panel-off"));
+        doc.getElementById("togglePanel").click();
+        assert.equal(doc.getElementById("workbench").classList.contains("nopanel"), false);
+        assert.ok(doc.querySelector("#togglePanel .codicon-layout-panel"));
+        assert.ok(doc.querySelector("#toggleSecondarySidebar .codicon-layout-sidebar-right-off"));
         doc.getElementById("toggleSecondarySidebar").click();
         assert.equal(doc.getElementById("auxiliarybar").hidden, false);
+        assert.ok(doc.querySelector("#toggleSecondarySidebar .codicon-layout-sidebar-right"));
         doc.getElementById("toggleSecondarySidebar").click();
         assert.equal(doc.getElementById("auxiliarybar").hidden, true);
+        assert.ok(doc.querySelector("#toggleSecondarySidebar .codicon-layout-sidebar-right-off"));
         const frames = [doc.getElementById("sidebarFrame"), doc.getElementById("livewatchFrame")];
         const windows = frames.map((frame) => frame.contentWindow);
         const themeMessages = [[], []];
         frames.forEach((frame, index) => {
             frame.contentWindow.postMessage = (message) => themeMessages[index].push(message);
         });
-        doc.getElementById("manageButton").click();
-        assert.equal(doc.getElementById("theme-menu").hidden, false);
-        doc.getElementById("themeLight").click();
         assert.equal(doc.documentElement.dataset.mockTheme, "light");
         assert.ok(doc.body.classList.contains("vscode-light"));
-        assert.equal(doc.getElementById("theme-menu").hidden, true);
-        for (let i = 0; i < frames.length; i++) {
-            assert.equal(frames[i].contentWindow, windows[i], "theme changes preserve both hosts and frames");
-            assert.equal(themeMessages[i].at(-1).theme, "light");
-        }
+        doc.getElementById("manageButton").click();
+        assert.equal(doc.getElementById("theme-menu").hidden, false);
         doc.getElementById("themeDark").click();
         assert.equal(doc.documentElement.dataset.mockTheme, "dark");
         assert.ok(doc.body.classList.contains("vscode-dark"));
         assert.equal(doc.getElementById("themeDark").getAttribute("aria-checked"), "true");
+        assert.equal(doc.getElementById("theme-menu").hidden, true);
+        for (let i = 0; i < frames.length; i++) {
+            assert.equal(frames[i].contentWindow, windows[i], "theme changes preserve both hosts and frames");
+            assert.equal(themeMessages[i].at(-1).theme, "dark");
+        }
+        doc.getElementById("themeLight").click();
+        assert.equal(doc.documentElement.dataset.mockTheme, "light");
+        assert.ok(doc.body.classList.contains("vscode-light"));
         doc.getElementById("debugStartButton").click();
         assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
         assert.equal(doc.getElementById("debugStartButton").disabled, true);
-        await clock.advance(2300);
+        await clock.advance(2600);
         assert.equal(doc.querySelector(".code-line.active-line").textContent.trim(), "HAL_Init();");
         assert.ok(doc.getElementById("debugSessionName").textContent.includes("EmberProbe"));
         doc.getElementById("dbgContinue").click();
-        await clock.advance(450);
-        assert.equal(doc.querySelector(".code-line.active-line").dataset.line, "103", "continue hits the breakpoint");
-        assert.equal(doc.getElementById("debugStartButton").disabled, false);
-        const activeGlyph = doc.querySelector(".gutter-line.active .glyph-margin");
-        assert.ok(activeGlyph.querySelector(".codicon-debug-stackframe"));
-        assert.ok(activeGlyph.querySelector(".breakpoint.codicon-debug-stackframe-dot"));
-        doc.querySelector('.gutter-line[data-line="103"]').click();
-        doc.getElementById("dbgContinue").click();
+        await clock.advance(500);
+        assert.equal(
+            doc.querySelector(".code-line.active-line"),
+            null,
+            "continue runs freely without preset breakpoints"
+        );
         assert.ok(doc.getElementById("dbgContinue").querySelector(".codicon-debug-pause"));
         assert.equal(doc.getElementById("dbgStepOver").disabled, true);
         assert.equal(doc.querySelector(".current-arrow"), null);
         doc.getElementById("dbgContinue").click();
+        assert.equal(doc.getElementById("dbgContinue").disabled, true, "pause shows in-flight disable");
+        await clock.advance(300);
+        assert.equal(doc.getElementById("dbgContinue").disabled, false);
         assert.equal(doc.getElementById("dbgStepOver").disabled, false);
-        doc.querySelector('.gutter-line[data-line="103"]').click();
-        const initialLine = Number(doc.querySelector(".code-line.active-line").dataset.line);
-        doc.getElementById("dbgStepOver").click();
-        const second = Number(doc.querySelector(".code-line.active-line").dataset.line);
-        assert.ok(second > initialLine, "stepping advances despite host state notification");
+        assert.equal(doc.querySelector(".tab.active").dataset.tab, "tasks.c");
+        assert.match(doc.querySelector(".code-line.active-line").textContent, /prvCheckTasksWaitingTermination/);
         doc.getElementById("dbgStepInto").click();
-        assert.ok(Number(doc.querySelector(".code-line.active-line").dataset.line) > second);
+        assert.equal(doc.querySelector(".code-line.active-line"), null, "step clears active highlight while running");
+        assert.equal(doc.getElementById("dbgStepOver").disabled, true);
+        await clock.advance(260);
+        assert.match(doc.querySelector(".code-line.active-line").textContent, /BaseType_t deleted/);
+        assert.match(doc.getElementById("debugCallStack").textContent, /prvCheckTasksWaitingTermination\(\)/);
+        doc.getElementById("dbgStepOut").click();
+        assert.equal(doc.getElementById("dbgStepOut").disabled, true);
+        await clock.advance(260);
+        assert.match(doc.querySelector(".code-line.active-line").textContent, /if \(listCURRENT_LIST_LENGTH/);
+        doc.querySelector('[data-tab="main.c"]').click();
+        doc.querySelector('.gutter-line[data-line="103"]').click();
+        doc.getElementById("dbgContinue").click();
+        await clock.advance(450);
+        assert.equal(doc.querySelector(".code-line.active-line").dataset.line, "103", "continue hits user breakpoint");
+        assert.equal(doc.getElementById("debugStartButton").disabled, false);
+        const activeGlyph = doc.querySelector(".gutter-line.active .glyph-margin");
+        assert.ok(activeGlyph.querySelector(".codicon-debug-stackframe"));
+        assert.ok(activeGlyph.querySelector(".breakpoint.codicon-debug-stackframe-dot"));
+        doc.getElementById("dbgStepInto").click();
+        await clock.advance(260);
+        assert.equal(doc.querySelector(".tab.active").dataset.tab, "pid.c", "step into crosses into pid.c");
+        assert.match(doc.querySelector(".code-line.active-line").textContent, /float error = setpoint - measured/);
+        doc.getElementById("dbgStepOut").click();
+        await clock.advance(260);
+        assert.equal(doc.querySelector(".tab.active").dataset.tab, "main.c", "step out returns to ControlTask");
+        assert.ok(Number(doc.querySelector(".code-line.active-line").dataset.line) > 103);
+        doc.getElementById("dbgRestart").click();
+        await clock.advance(350);
+        assert.equal(doc.querySelector(".code-line.active-line").textContent.trim(), "HAL_Init();");
         doc.querySelector('[data-tab="FreeRTOSConfig.h"]').click();
         assert.ok(doc.getElementById("code").textContent.includes("configUSE_PREEMPTION"));
         assert.ok(!doc.getElementById("code").textContent.includes("pid_update"));
@@ -1163,8 +1490,23 @@ async function testShell() {
             assert.equal(frame.contentWindow, contentWindow, "language changes keep the frame alive");
             assert.equal(frame.getAttribute("src"), "about:blank");
         }
+        hostMessage("sidebarFrame", { type: "executeCommand", cmd: "mcu-vscode.openLiveWatch" });
+        assert.ok(doc.querySelector('[data-tab="livewatch-2"].active'));
+        assert.ok(doc.querySelector('[data-pane="livewatch-2"].active #livewatchFrame-2'));
+        doc.querySelector('[data-close="livewatch-2"]').click();
+        assert.ok(doc.getElementById("livewatchFrame"), "closing a chart preserves the original frame");
         while (doc.querySelector("[data-close]")) doc.querySelector("[data-close]").click();
         assert.equal(doc.querySelector(".editor-pane.active"), null, "closing all tabs leaves an empty editor");
+        assert.equal(
+            doc.getElementById("debug-toolbar").classList.contains("hidden"),
+            false,
+            "closing all tabs keeps the debug toolbar visible while debugging"
+        );
+        doc.getElementById("dbgStop").click();
+        assert.equal(doc.getElementById("dbgStop").disabled, true, "stop waits briefly for teardown");
+        assert.equal(doc.getElementById("debug-toolbar").classList.contains("hidden"), false);
+        await clock.advance(400);
+        assert.equal(doc.getElementById("debug-toolbar").classList.contains("hidden"), true);
         doc.getElementById("debugStartButton").click();
         doc.getElementById("debugStartButton").click();
         assert.equal(doc.querySelector(".editor-pane.active"), null, "waiting leaves the current editor unchanged");
@@ -1172,11 +1514,205 @@ async function testShell() {
         await clock.advance(2300);
         assert.equal(doc.querySelector(".editor-pane.active"), null, "cancellation preserves the current editor");
         doc.getElementById("debugStartButton").click();
-        await clock.advance(2300);
+        await clock.advance(2600);
         assert.ok(doc.querySelector('[data-tab="main.c"].active'));
         view.assertHealthy();
     } finally {
         view.close();
+    }
+}
+
+async function testDefaultFlashAndDebug() {
+    const clock = new FakeClock();
+    const workbench = render(
+        shellHtml(),
+        {},
+        {
+            url: "https://example.test/",
+            beforeParse(window) {
+                window.setTimeout = (fn, ms, ...args) => clock.schedule(() => fn(...args), ms || 0);
+                window.clearTimeout = clock.cancel;
+            }
+        }
+    );
+    const sidebar = render(getModernWebviewContent(configuration.defaults, "zh"));
+    const doc = workbench.document;
+    const sideFrame = doc.getElementById("sidebarFrame").contentWindow;
+    const chartFrame = doc.getElementById("livewatchFrame").contentWindow;
+    const sideMessages = [];
+    const chartMessages = [];
+    sideFrame.postMessage = (message) => {
+        sideMessages.push(message);
+        sidebar.send(message);
+    };
+    chartFrame.postMessage = (message) => chartMessages.push(message);
+    const pumpSidebar = (() => {
+        let index = 0;
+        return () => {
+            for (const message of sidebar.messages.slice(index))
+                workbench.window.dispatchEvent(
+                    new workbench.window.MessageEvent("message", {
+                        source: sideFrame,
+                        data: { __emberprobeMock: true, message }
+                    })
+                );
+            index = sidebar.messages.length;
+        };
+    })();
+    const click = (command) => {
+        sidebar.document.querySelector(`[data-command="mcu-vscode.${command}"]`).click();
+        pumpSidebar();
+    };
+    const activePane = () => doc.querySelector(".panel-pane.active").dataset.panelPane;
+    const currentLine = () => doc.querySelector("#code .active-line");
+    const assertStoppedAt = (file, line, text) => {
+        assert.equal(doc.querySelector(".tab.active").dataset.tab, file);
+        assert.equal(currentLine()?.dataset.line, String(line));
+        assert.match(currentLine().textContent, text);
+    };
+    try {
+        pumpSidebar();
+        await clock.advance(600);
+        assert.equal(doc.documentElement.dataset.mockTheme, "light");
+        assert.ok(doc.querySelector(".status-left #debugSessionStatus.hidden"));
+        assert.match(doc.getElementById("commandCenter").textContent, /EmberProbeDemo/);
+        assert.match(
+            sidebar.document.querySelector('[data-command="mcu-vscode.selectElf"] small').textContent,
+            /EmberProbeDemo\.elf/
+        );
+        assert.equal(activePane(), "terminal");
+        assert.equal(doc.getElementById("panel").classList.contains("collapsed"), false);
+        assert.ok(doc.getElementById("terminalSessions").hidden);
+        assert.match(doc.getElementById("terminalPrompt").textContent, /EmberProbeDemo/);
+        assert.deepEqual(
+            chartMessages.findLast((message) => message.type === "watchList").items.map((item) => item.name),
+            liveData.watchList().map((item) => item.name)
+        );
+
+        sidebar.document.getElementById("mcuConfigSection").open = true;
+        click("selectDebugger");
+        [...doc.querySelectorAll("#quickInputList .quick-item")]
+            .find((item) => item.textContent.includes("stlink.cfg"))
+            .click();
+        sidebar.document.getElementById("mcuConfigSection").open = false;
+        click("download");
+        assert.equal(sideMessages.findLast((message) => message.type === "commandError").cmd, "mcu-vscode.download");
+        assert.match(sidebar.document.getElementById("noticeFlash").textContent, /固件下载失败.+未检测到调试器/s);
+        assert.equal(sidebar.document.getElementById("mcuConfigSection").open, true);
+        assert.equal(sidebar.document.getElementById("probeConfig").open, true);
+        assert.ok(doc.getElementById("terminalSessions").hidden);
+        [...sidebar.document.querySelectorAll("#connectedProbeList [data-device-id]")]
+            .find((item) => item.textContent.includes("CMSIS-DAP"))
+            .click();
+        pumpSidebar();
+        assert.match(sidebar.document.getElementById("mcuConfigSummary").textContent, /STM32F4x · CMSIS-DAP/);
+        assert.match(sidebar.document.getElementById("noticeFlash").textContent, /固件下载失败/);
+
+        click("download");
+        assert.ok(doc.getElementById("terminalSessions").hidden);
+        assert.equal(
+            [...sidebar.document.querySelectorAll(".primary-actions button")].every((button) => !button.disabled),
+            true,
+            "primary actions stay enabled while flashing"
+        );
+        await clock.advance(580);
+        assert.equal(sideMessages.findLast((message) => message.type === "notice").notice.key, "run.flashClock");
+        assert.equal(doc.querySelector('[data-terminal-session="flash"]').getAttribute("aria-pressed"), "true");
+        assert.match(doc.getElementById("terminalBody").textContent, /CMSIS-DAPv2[\s\S]*202008431041543838597586/);
+        assert.equal(doc.querySelector(".tab.active").dataset.tab, "livewatch");
+        await clock.advance(3200 - 580);
+        const flashText = doc.getElementById("terminalBody").textContent;
+        assert.match(
+            flashText,
+            /EmberProbeDemo\.elf[\s\S]*烧录时钟 10000 kHz[\s\S]*固件校验通过[\s\S]*正在复位目标芯片[\s\S]*固件下载并校验成功[\s\S]*STM32F40x[\s\S]*目标 stm32f4x\.cfg · 探针配置 cmsis-dap\.cfg/
+        );
+        assert.doesNotMatch(
+            flashText,
+            /耗时|已写入|已校验|KiB\/s|正在启动 OpenOCD|EP_FLASH_STAGE=|interface\/|target\//
+        );
+        doc.querySelector('[data-terminal-session="shell"]').click();
+        assert.equal(doc.getElementById("terminalPrompt").hidden, false);
+        doc.querySelector('[data-terminal-session="flash"]').click();
+        assert.equal(doc.getElementById("terminalBody").textContent, flashText);
+
+        click("debug");
+        assert.ok(sidebar.document.getElementById("noticeFlash").hidden);
+        assert.equal(
+            [...sidebar.document.querySelectorAll(".primary-actions button")].every((button) => !button.disabled),
+            true,
+            "primary actions stay enabled while debug launches"
+        );
+        await clock.advance(2199);
+        assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
+        assert.equal(doc.querySelector(".tab.active").dataset.tab, "livewatch");
+        await clock.advance(1);
+        assert.equal(activePane(), "debug-console");
+        assert.ok(doc.querySelector('#sidebar-views [data-view="emberprobe"].active'));
+        assert.equal(doc.querySelector(".status-left #debugSessionStatus").classList.contains("hidden"), false);
+        assert.equal(doc.body.classList.contains("debugging"), true);
+        assert.doesNotMatch(doc.getElementById("debugConsoleBody").textContent, /EmberProbe · 复位调试/);
+        assert.match(doc.getElementById("debugConsoleBody").textContent, /halted due to debug-request/);
+        assert.match(
+            doc.getElementById("debugConsoleBody").textContent,
+            /Note: automatically using hardware breakpoints for read-only addresses\./
+        );
+        assert.equal(currentLine(), null);
+        assert.equal(doc.getElementById("dbgStepOver").disabled, true);
+        await clock.advance(320);
+        assertStoppedAt("main.c", 156, /HAL_Init/);
+        assert.match(
+            doc.getElementById("debugConsoleBody").textContent,
+            /Temporary breakpoint 1, main \(\).*main\.c:156/
+        );
+        assert.equal(doc.getElementById("terminalBody").textContent, flashText, "debug logs use a separate panel");
+
+        doc.getElementById("dbgContinue").click();
+        await clock.advance(1200);
+        assert.equal(currentLine(), null, "continuing runs freely without preset breakpoints");
+        assert.equal(doc.getElementById("dbgStepOver").disabled, true);
+        doc.getElementById("dbgContinue").click();
+        assert.equal(doc.getElementById("dbgContinue").disabled, true);
+        await clock.advance(300);
+        assertStoppedAt("tasks.c", 24, /prvCheckTasksWaitingTermination/);
+        assert.match(doc.getElementById("debugCallStack").textContent, /prvIdleTask\(\).*tasks\.c:24/);
+        assert.match(doc.getElementById("debugConsoleBody").textContent, /SIGINT[\s\S]*tasks\.c:24/);
+        doc.getElementById("dbgStepInto").click();
+        assert.equal(currentLine(), null);
+        await clock.advance(260);
+        assertStoppedAt("tasks.c", 11, /BaseType_t deleted/);
+        doc.getElementById("dbgStepOut").click();
+        assert.equal(currentLine(), null);
+        await clock.advance(260);
+        assertStoppedAt("tasks.c", 25, /if \(listCURRENT_LIST_LENGTH/);
+        doc.getElementById("dbgRestart").click();
+        assert.equal(currentLine(), null);
+        await clock.advance(350);
+        assertStoppedAt("main.c", 156, /HAL_Init/);
+        doc.getElementById("dbgStop").click();
+        assert.equal(doc.getElementById("dbgStop").disabled, true);
+        await clock.advance(400);
+        assert.equal(currentLine(), null);
+        assert.equal(activePane(), "debug-console");
+
+        click("attachDebug");
+        await clock.advance(1520);
+        assertStoppedAt("tasks.c", 24, /prvCheckTasksWaitingTermination/);
+        assert.ok(doc.querySelector("#dbgStop .codicon-debug-disconnect"));
+        assert.doesNotMatch(doc.getElementById("debugConsoleBody").textContent, /Temporary breakpoint/);
+        doc.getElementById("dbgContinue").click();
+        doc.getElementById("dbgContinue").click();
+        await clock.advance(300);
+        assertStoppedAt("tasks.c", 24, /prvCheckTasksWaitingTermination/);
+        doc.getElementById("dbgStop").click();
+        await clock.advance(400);
+        assert.equal(currentLine(), null);
+        assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
+        assert.ok(doc.querySelector(".status-left #debugSessionStatus.hidden"));
+        workbench.assertHealthy();
+        sidebar.assertHealthy();
+    } finally {
+        workbench.close();
+        sidebar.close();
     }
 }
 
@@ -1187,6 +1723,8 @@ async function testShellRttAndDataBreakpoints() {
         {},
         {
             beforeParse(window) {
+                window.TextEncoder = TextEncoder;
+                window.TextDecoder = TextDecoder;
                 window.setTimeout = (fn, ms, ...args) => clock.schedule(() => fn(...args), ms || 0);
                 window.clearTimeout = clock.cancel;
                 window.setInterval = (fn, ms) => {
@@ -1240,9 +1778,9 @@ async function testShellRttAndDataBreakpoints() {
         fromSidebar({ type: "executeCommand", cmd: "mcu-vscode.stopRtt" });
         assert.equal(doc.getElementById("rttPanelTab").hidden, false, "the tab stays once shown");
 
-        // A sidebar data breakpoint is listed in the Breakpoints view; its checkbox toggles it.
+        // Sidebar and native breakpoints are managed independently.
         doc.getElementById("debugStartButton").click();
-        await clock.advance(2300);
+        await clock.advance(2600);
         const status = last("sidebarDataBreakpoints");
         assert.equal(status.paused, true);
         const request = (body) =>
@@ -1261,22 +1799,26 @@ async function testShellRttAndDataBreakpoints() {
             dataId: last("sidebarDataBreakpoints").info.dataId,
             accessType: "write"
         });
-        const row = doc.querySelector("#debugBreakpoints .data-breakpoint-row");
+        assert.equal(doc.querySelector("#debugBreakpoints .data-breakpoint-row"), null);
+        doc.querySelector('#debugVariables [data-var-path="g_motor_rpm"]').dispatchEvent(
+            new view.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+        );
+        doc.querySelector("#quickInputList .quick-item").click();
+        const row = doc.querySelector('#debugBreakpoints [data-breakpoint-group="native"]');
         assert.ok(row.textContent.includes("g_motor_rpm"));
         assert.ok(row.textContent.includes(STRINGS.zh["sb.dataWrite"]));
         assert.ok(row.querySelector(".codicon-debug-breakpoint-data"));
         row.click();
         assert.ok(doc.querySelector("#debugBreakpoints .data-breakpoint-row.disabled"));
-        assert.equal(last("sidebarDataBreakpoints").entries[0].enabled, false);
-        doc.querySelector("#debugBreakpoints .data-breakpoint-row").click();
+        assert.equal(last("sidebarDataBreakpoints").entries[0].enabled, true);
 
         // The condition editor is VS Code's input box, validated as the extension does.
         request({ action: "condition", id: last("sidebarDataBreakpoints").entries[0].id });
         assert.equal(doc.getElementById("quickInputText").placeholder, STRINGS.zh["sb.dataConditionPrompt"]);
-        doc.getElementById("quickInputText").value = "g_motor_rpm > 2500";
+        doc.getElementById("quickInputText").value = "g_motor_rpm > 0";
         doc.getElementById("quickInputOk").click();
-        assert.equal(last("sidebarDataBreakpoints").entries[0].condition, "g_motor_rpm > 2500");
-        assert.ok(doc.querySelector("#debugBreakpoints .data-breakpoint-row").textContent.includes("> 2500"));
+        assert.equal(last("sidebarDataBreakpoints").entries[0].condition, "g_motor_rpm > 0");
+        assert.ok(!doc.querySelector("#debugBreakpoints .data-breakpoint-row").textContent.includes("> 0"));
 
         // Continuing runs into it: the debug console says so and the target stops.
         for (const line of [...doc.querySelectorAll(".gutter-line .breakpoint")]) line.closest(".gutter-line").click();
@@ -1285,6 +1827,7 @@ async function testShellRttAndDataBreakpoints() {
         assert.ok(doc.getElementById("debugConsoleBody").textContent.includes("数据断点命中: g_motor_rpm"));
         assert.ok(doc.getElementById("dbgContinue").querySelector(".codicon-debug-continue"));
         doc.getElementById("dbgStop").click();
+        await clock.advance(400);
         assert.equal(doc.querySelector("#debugBreakpoints .data-breakpoint-row"), null, "the session's rows go");
         view.assertHealthy();
     } finally {
@@ -1403,9 +1946,10 @@ async function testServer() {
 (async () => {
     scenario("website language and theme parameters are optional and validated", () => {
         for (const [query, lang, theme] of [
-            ["", "zh-CN", "dark"],
+            ["", "zh-CN", "light"],
             ["?lang=en&theme=light", "en", "light"],
-            ["?lang=invalid&theme=invalid", "zh-CN", "dark"]
+            ["?lang=invalid&theme=invalid", "zh-CN", "light"],
+            ["?theme=dark", "zh-CN", "dark"]
         ]) {
             const view = render(shellHtml(), {}, { url: "https://example.test/" + query });
             try {
@@ -1425,18 +1969,28 @@ async function testServer() {
     testSimulatorAndRegisters();
     testMockUnlimitedPreset();
     testHostsAndRenderer();
+    testCompositeImportAndMembers();
+    testConfigurationAndSvdCancellation();
+    testMcpConnectivityScenarios();
+    testDebugCoreSelection();
     await testWatchOriginatedWrites();
     testTypeShowcase();
     testArchive();
     testReadableArchiveHeaders();
+    testIndependentChartHistory();
     testSamplingFollowsDebugSession();
     testResetStopsBeforeFirmwareRuns();
     testDownloadRun();
     testDebugLatency();
     testDebugBusyBridge();
     testRttWithRenderers();
+    testRttRawModeAndLog();
     await testDataBreakpointsWithRenderer();
     await testShell();
+    await scenario(
+        "the default demo uses the selected probe and separates flashing, reset debug and attach lifecycles",
+        testDefaultFlashAndDebug
+    );
     await testShellRttAndDataBreakpoints();
     testThemeBridge();
     await testFrozenChartTheme();

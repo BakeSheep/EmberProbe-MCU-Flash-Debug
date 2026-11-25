@@ -7,24 +7,41 @@
     "use strict";
 
     var persisted = {};
-    var seeded = false;
-    var pendingButtons = [];
+
+    function updateConfiguration({ rows, firmware, notSelected }) {
+        for (const [command, item] of Object.entries(rows)) {
+            const node = document.querySelector(`[data-command="${command}"] .row-copy > small`);
+            if (!node) continue;
+            node.textContent = item.value || notSelected;
+            node.title = item.title;
+            if (item.value) delete node.dataset.i18n;
+            else node.dataset.i18n = "common.notSelected";
+        }
+        const card = document.querySelector(".cubemx-config-row");
+        if (!card) return;
+        const label = card.querySelector(".cubemx-firmware-label");
+        label.dataset.i18n = label.dataset.i18nTitle = firmware.labelKey;
+        label.textContent = label.title = firmware.label;
+        const pack = card.querySelector(".cubemx-package");
+        if (pack) {
+            pack.hidden = firmware.hidden === true;
+            pack.title = [firmware.vendor, firmware.name].filter(Boolean).join("::");
+            pack.querySelector(".cubemx-package-name").textContent = firmware.name;
+            pack.querySelector(".cubemx-current-version").textContent = firmware.versions.join(", ");
+        }
+    }
 
     window.addEventListener("message", function (event) {
-        if (event.source !== window.parent || !event.data || event.data.type !== "mockDebugPending") return;
+        if (event.source !== window.parent || !event.data) return;
+        if (event.data.type === "mockConfiguration") return updateConfiguration(event.data);
+        if (event.data.type !== "mockDebugPending") return;
         if (event.data.busy) {
-            if (pendingButtons.length) return;
-            document.querySelectorAll(".primary-actions [data-command]").forEach(function (button) {
-                pendingButtons.push({ button: button, disabled: button.disabled });
-                button.disabled = true;
-                button.setAttribute("aria-busy", "true");
-            });
-        } else {
-            pendingButtons.forEach(function (item) {
-                item.button.disabled = item.disabled;
-                item.button.removeAttribute("aria-busy");
-            });
-            pendingButtons = [];
+            const status = document.getElementById("statusText");
+            const flashStatus = document.getElementById("flashStatus");
+            const statusDot = document.getElementById("statusDot");
+            if (status && event.data.text) status.textContent = event.data.text;
+            if (flashStatus) flashStatus.dataset.state = "busy";
+            if (statusDot) statusDot.className = "status-dot";
         }
     });
 
@@ -51,11 +68,6 @@
                 }
             },
             getState: function getState() {
-                if (!seeded) {
-                    if (readMeta("data-mock-page") === "sidebar") persisted.rtosExpanded = true;
-                    if (readMeta("data-mock-page") === "livewatch") persisted.sideWidth = 280;
-                    seeded = true;
-                }
                 return persisted;
             },
             setState: function setState(next) {

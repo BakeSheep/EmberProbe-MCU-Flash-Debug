@@ -3,9 +3,10 @@
     "use strict";
 
     var key = "emberprobe.mock.theme";
-    var theme = "dark";
+    var theme = "light";
     try {
-        if (root.localStorage.getItem(key) === "light") theme = "light";
+        var saved = root.localStorage.getItem(key);
+        if (saved === "light" || saved === "dark") theme = saved;
     } catch (error) {
         // file:// and privacy settings can disable persistent storage.
     }

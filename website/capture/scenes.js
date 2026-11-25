@@ -38,7 +38,7 @@ async function scrollTo(session, id) {
     await session.page.clock.runFor(100);
 }
 
-// The debugger start opens VS Code's Run and Debug view; the recordings stay on the EmberProbe panel.
+// Ensure the extension view is visible when a tutorial step returns to its sidebar.
 async function backToEmberProbe(session) {
     await session.page.evaluate(() => {
         const items = [...document.querySelectorAll(".activity-item[data-view]")];
@@ -221,7 +221,6 @@ const scenes = {
             await openSections(session, ["flashDebugSection"]);
             await showFile(session, "main.c");
             await session.page.evaluate((line) => {
-                document.querySelector(`#gutter .gutter-line[data-line="${line}"]`).click();
                 document.querySelector(`#gutter .gutter-line[data-line="${line}"]`).scrollIntoView({ block: "center" });
             }, BREAKPOINT_LINE);
             await session.page.clock.runFor(100);
@@ -343,12 +342,6 @@ const scenes = {
                 document.getElementById("run").click();
                 document.getElementById("norm").click();
             });
-            // Without the default breakpoint the target keeps running after Continue.
-            await showFile(session, "main.c");
-            await session.page.evaluate((line) => {
-                document.querySelector(`#gutter .gutter-line[data-line="${line}"]`).click();
-            }, BREAKPOINT_LINE);
-            await session.page.evaluate(() => document.querySelectorAll(".tab")[2].click());
             await pump(session, 11000);
         },
         operations: [
@@ -373,8 +366,13 @@ const scenes = {
                 document.getElementById("run").click();
                 document.getElementById("norm").click();
             });
+            await showFile(session, "main.c");
+            await session.page.evaluate((line) => {
+                document.querySelector(`#gutter .gutter-line[data-line="${line}"]`).click();
+            }, BREAKPOINT_LINE);
+            await session.page.evaluate(() => document.querySelectorAll(".tab")[2].click());
             await pump(session, 11000);
-            // Attached and stopped where the target was, with the default breakpoint ahead.
+            // Attached and stopped where the target was, with the breakpoint on main.c:103 ahead.
             await session.sb.evaluate((selector) => document.querySelector(selector).click(), command("attachDebug"));
             await pump(session, 2400);
             await backToEmberProbe(session);
@@ -458,8 +456,12 @@ const scenes = {
         cursor: [420, 380],
         steps: [0],
         async prepare(session, { openSections }) {
+            await showFile(session, "main.c");
+            await session.page.evaluate((line) => {
+                document.querySelector(`#gutter .gutter-line[data-line="${line}"]`).click();
+            }, BREAKPOINT_LINE);
             await session.sb.evaluate((target) => document.querySelector(target).click(), command("debug"));
-            await session.page.clock.runFor(2300);
+            await session.page.clock.runFor(2600);
             await backToEmberProbe(session);
             await session.page.evaluate(() => document.getElementById("dbgContinue").click());
             await session.page.clock.runFor(600);

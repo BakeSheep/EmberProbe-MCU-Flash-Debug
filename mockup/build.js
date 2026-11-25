@@ -19,7 +19,9 @@ const liveWatchView = require("../src/liveWatchView");
 const rttPanelView = require("../src/rttPanelView");
 const { STRINGS } = require("../src/i18n");
 const mockCsv = require("./mock-csv");
-const { versionLabel } = require("../src/buildInfo");
+const mockRtt = require("./mock-rtt");
+const mockMcp = require("./mock-mcp");
+const configuration = require("./mock/configuration");
 
 const root = __dirname;
 const dist = path.join(root, "dist");
@@ -50,22 +52,11 @@ const combinedThemeCss =
     modernThemeCss(":root[data-mock-theme=light]", lightColors);
 
 const SIDEBAR_STATE = {
-    versionLabel: versionLabel(pkg.version, path.join(root, "..", "src")),
-    elf: "EmberProbeDemo.elf",
-    debugger: "jlink.cfg",
-    mcu: "stm32f4x.cfg",
-    cubemxPath: "C:\\ST\\STM32CubeMX\\STM32CubeMX.exe",
-    iocPath: "EmberProbeDemo.ioc",
-    cubemxStatus: "CubeMX 已就绪",
-    cubemxFirmware: {
-        family: "F4",
-        requiredVersion: "1.28.0",
-        versions: ["1.28.0"],
-        state: "installed",
-        installed: true,
-        repository: "C:\\Users\\dev\\STM32Cube\\Repository"
-    },
-    cubemxFirmwareError: ""
+    versionLabel: `v${pkg.version}`,
+    ...Object.fromEntries(
+        Object.entries(configuration.defaults).map(([field, value]) => [field, configuration.filename(value)])
+    ),
+    cubemxFirmware: { packs: [configuration.firmware(configuration.defaults.iocPath)] }
 };
 
 function inject(html, page, lang) {
@@ -84,12 +75,7 @@ function inject(html, page, lang) {
 function buildSidebar(lang) {
     const html = modernView
         .getModernWebviewContent(SIDEBAR_STATE, lang)
-        .replace(/(<details id="(?:mcuConfigSection|chipInfoSection)"[^>]*?) open/g, "$1")
-        .replace(
-            '<details id="variableBrowser" class="variable-browser" open>',
-            '<details id="variableBrowser" class="variable-browser">'
-        )
-        .replace('<details id="rtosSection">', '<details id="rtosSection" open>');
+        .replace(/(<details[^>]*id="(?:memoryAnalysisSection|liveValuesSection|variableBrowser)"[^>]*?) open/g, "$1");
     return inject(html, "sidebar", lang);
 }
 
@@ -125,6 +111,8 @@ function main() {
         .replace("module.exports =", "root.EmberProbeMockHistory =");
     fs.writeFileSync(path.join(dist, "chart-history.js"), "(function(root) {\n" + historySource + "\n})(window);\n");
     fs.writeFileSync(path.join(dist, "csv.js"), mockCsv.browserSource(), "utf8");
+    fs.writeFileSync(path.join(dist, "rtt-formatter.js"), mockRtt.browserSource(), "utf8");
+    fs.writeFileSync(path.join(dist, "mcp-catalog.js"), mockMcp.browserSource(), "utf8");
     // The extension's own strings, so the mock hosts' pickers and messages read as the extension's.
     fs.writeFileSync(
         path.join(dist, "i18n.js"),
@@ -139,6 +127,10 @@ function main() {
         "prelude.js",
         "theme.js",
         "text.js",
+        "configuration.js",
+        "sampling.js",
+        "archive.js",
+        "rtt-settings.js",
         "sidebar-data.js",
         "sidebar-host.js",
         "livewatch-data.js",

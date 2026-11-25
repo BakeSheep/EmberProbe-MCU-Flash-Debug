@@ -7,6 +7,7 @@
     "use strict";
 
     var data = root.EmberProbeLiveWatchData;
+    var sampling = root.EmberProbeMockSampling;
 
     function createLiveWatchHost(iframe, options) {
         options = options || {};
@@ -15,33 +16,51 @@
         var symbols = root.EmberProbeSidebarData.SYMBOLS;
         var timer = null;
         var running = false;
-        var frequencyHz = 30;
-        var unlimitedEnabled = false;
-        var adaptiveSamplingSpeed = true;
-        var manualSamplingSpeedKhz = 2000;
+        var settings = options.settings || sampling.createSettings();
+        var meter = sampling.meter();
+        var archiveMeter = sampling.meter();
+        var observed = meter.record(0, 0);
+        var nextTick = 0;
         var adaptiveEffectiveKhz = null;
-        var watchItems = data.watchList();
+        var watchItems = options.watchItems || data.watchList();
         var styles = Object.assign({}, data.seriesStyles);
         var stopped = false;
         var initialized = false;
-        var archive = [];
-        var archiveLimit = Math.min(20000, Math.max(1, options.archiveLimit || 20000));
-        var archiveTruncated = false;
+        var archive = options.archive || root.EmberProbeMockArchive.create(options.archiveMaxBytes);
+        var panelScope = options.scope || "panel-1";
+        var scope = panelScope;
+        var lastCsv = null;
         var expandedOnly = true;
+        var expansions = {};
         var curveVisibility = {};
-        var history = new root.EmberProbeMockHistory.ChartHistoryStore();
+        var history = options.history || new root.EmberProbeMockHistory.ChartHistoryStore();
         var historyRevision = 0,
-            historySignature = "",
+            configuredWatchItems,
             lastValues = 0,
             lastStatus = 0;
-        function configureHistory() {
-            var signature = JSON.stringify(watchItems);
-            if (signature !== historySignature) {
-                var items = new Map();
+        var runtimeSeries = new Map();
+        function configureHistory(samples = []) {
+            const runtime = iframe.contentWindow?.EmberProbeRuntime;
+            let changed = configuredWatchItems !== watchItems;
+            const composites = watchItems.filter((item) => item.isComposite);
+            const ownSeries = (name) =>
+                composites.some((item) => name.startsWith(item.name + ".") || name.startsWith(item.name + "["));
+            if (changed) {
+                for (const name of runtimeSeries.keys()) if (!ownSeries(name)) runtimeSeries.delete(name);
+            }
+            for (const { name, address, type } of samples) {
+                if (!type || !ownSeries(name)) continue;
+                const old = runtimeSeries.get(name);
+                if (old?.type === type && old.address === address) continue;
+                runtimeSeries.set(name, { name, address, type });
+                changed = true;
+            }
+            if (changed) {
+                var items = new Map(runtimeSeries);
                 watchItems.forEach(function (item) {
-                    if (!item.isComposite || !item.compositeLayout) return;
-                    iframe.contentWindow
-                        .collectLeaves(item.compositeLayout, item.name, Number(item.address))
+                    if (!runtime || !item.isComposite || !item.compositeLayout) return;
+                    runtime
+                        .displayLayoutLeaves(item, item.compositeLayout, item.name, Number(item.address))
                         .forEach(function (leaf) {
                             items.set(leaf.path, { name: leaf.path, address: leaf.address, type: leaf.type });
                         });
@@ -49,8 +68,8 @@
                 watchItems.forEach(function (item) {
                     if (!item.isComposite) items.set(item.name, item);
                 });
-                history.configure("mock", Array.from(items.values()));
-                historySignature = signature;
+                history.configure(scope, Array.from(items.values()));
+                configuredWatchItems = watchItems;
             }
         }
 
@@ -148,67 +167,66 @@
             return runtime ? runtime.variableDisplayName(item, symbols) : item.displayName || name;
         }
         function archiveInfo(openExport) {
-            var names = Array.from(
-                new Set(
-                    archive.flatMap(function (row) {
-                        return row.samples.map(function (sample) {
-                            return sample.name;
-                        });
-                    })
-                )
-            );
-            var status = {
-                rows: archive.length,
-                bytes: JSON.stringify(archive).length,
-                variables: names,
-                displayNames: Object.fromEntries(
-                    names.map(function (name) {
-                        return [name, displayName(name)];
-                    })
-                ),
-                firstTimestampMs: archive.length ? archive[0].t : null,
-                lastTimestampMs: archive.length ? archive[archive.length - 1].t : null,
-                limitReached: archiveTruncated
+            const status = archive.status(scope);
+            return {
+                type: "samplingArchiveInfo",
+                openExport: !!openExport,
+                ...status,
+                displayNames: Object.fromEntries(status.variables.map((name) => [name, displayName(name)]))
             };
-            return Object.assign({ type: "samplingArchiveInfo", openExport: !!openExport }, status);
         }
 
-        // Without options.requestSampling this panel runs on its own (the frame tests); in the shell the sidebar
-        // host owns the one sampling session and setSampling follows it.
+        // The sidebar owns the connection in the shell; isolated frames can run on their own.
         var phase = "stopped";
-
+        function readItems() {
+            return watchItems.filter(
+                (item) =>
+                    !expandedOnly ||
+                    !item.runtimeLayout ||
+                    !Array.isArray(expansions[item.name]) ||
+                    expansions[item.name].includes("")
+            );
+        }
+        function readPlan() {
+            return (
+                options.readPlan?.(phase) ||
+                sampling.plan(settings, sampling.workload(readItems()), new Map(), phase === "sampling")
+            );
+        }
+        function rateStatus(plan) {
+            return {
+                frequencyHz: settings.frequencyHz,
+                effectiveIntervalMs: plan.graphMs,
+                p95DurationMs: plan.graphCost,
+                adapterSpeedKhz: plan.khz,
+                unlimitedActive: plan.unlimited,
+                ...(settings.unlimited && phase === "debug-sampling" ? { unlimitedSuppressedReason: "debug" } : {}),
+                ...(settings.adaptive && phase === "sampling"
+                    ? { adaptiveSpeed: { state: "tuned", effectiveKhz: plan.khz } }
+                    : {})
+            };
+        }
         function samplingSpeedState() {
-            var adaptiveActiveKhz = adaptiveSamplingSpeed ? adaptiveEffectiveKhz : null;
-            var configuredKhz = adaptiveSamplingSpeed ? 0 : manualSamplingSpeedKhz;
+            var adaptiveActiveKhz = settings.adaptive ? adaptiveEffectiveKhz : null;
+            var configuredKhz = settings.adaptive ? 0 : settings.manualKhz;
             return {
                 type: "samplingSpeedConfig",
-                adaptive: adaptiveSamplingSpeed,
+                adaptive: settings.adaptive,
                 samplingAdapterSpeedKhz: configuredKhz,
                 adapterSpeedKhz: 0,
-                effectiveKhz: running ? (adaptiveSamplingSpeed ? adaptiveEffectiveKhz : configuredKhz) : null,
+                effectiveKhz: running ? (settings.adaptive ? adaptiveEffectiveKhz : configuredKhz) : null,
                 adaptiveEffectiveKhz: adaptiveActiveKhz,
-                manualSpeedKhz: manualSamplingSpeedKhz,
+                manualSpeedKhz: settings.manualKhz,
                 locked: running
             };
         }
 
         function sendPhaseStatus() {
             var status = root.EmberProbeSidebarData.samplingStatus(phase);
-            var active = root.EmberProbeSidebarData.samplingActive(phase);
             if (status.running) {
-                if (adaptiveSamplingSpeed && !adaptiveEffectiveKhz) adaptiveEffectiveKhz = 12000;
-                var hz = active ? frequencyHz : 0;
-                status.actualHz = hz;
-                status.bytesPerSecond = hz * 24;
-                status.frequencyHz = frequencyHz;
-                status.effectiveIntervalMs = Math.round(1000 / frequencyHz);
-                status.p95DurationMs = Math.round((1000 / frequencyHz) * 0.85);
-                status.missedDeadlines = 0;
-                status.adapterSpeedKhz = adaptiveSamplingSpeed ? adaptiveEffectiveKhz : manualSamplingSpeedKhz;
-                if (adaptiveSamplingSpeed && phase === "sampling")
-                    status.adaptiveSpeed = { state: "tuned", effectiveKhz: adaptiveEffectiveKhz };
-                // A debug session samples at the last finite frequency, never unlimited.
-                if (unlimitedEnabled && phase === "debug-sampling") status.unlimitedSuppressedReason = "debug";
+                const plan = readPlan();
+                if (settings.adaptive && phase === "sampling") adaptiveEffectiveKhz = plan.khz;
+                Object.assign(status, observed, rateStatus(plan));
             }
             send(status);
             send(samplingSpeedState());
@@ -219,17 +237,30 @@
             running = root.EmberProbeSidebarData.samplingStatus(next).running;
             if (timer) clearTimeout(timer);
             timer = null;
+            meter.reset();
+            archiveMeter.reset();
+            observed = meter.record(0, 0);
+            nextTick = Date.now();
             sendPhaseStatus();
             if (root.EmberProbeSidebarData.samplingActive(next)) streamSamples();
             else if (next === "debug-ready") sendSnapshot();
         }
 
-        // A debug session reads into its own history, so the chart starts over (src/mainViewProvider.js).
-        function debugSessionChanged() {
-            historyRevision += 1;
-            history.clear("mock");
+        function debugSessionChanged(debugId) {
+            const nextScope = debugId ? panelScope + ":" + debugId : panelScope;
+            if (scope === nextScope) return;
+            history.resume(scope);
+            scope = nextScope;
+            configuredWatchItems = undefined;
+            lastValues = lastStatus = 0;
+            configureHistory();
+            historyRevision++;
             send({ type: "debugSessionChanged" });
-            send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+            send({ type: "chartHistoryReady", historyRevision: historyRevision });
+            postHistoryStatus();
+        }
+        function postHistoryStatus() {
+            send({ type: "chartHistoryStatus", ...history.status(scope), historyRevision: historyRevision });
         }
 
         function sendSnapshot() {
@@ -240,31 +271,22 @@
             if (!running) return;
             var t = Date.now();
             simulator.tick();
-            publishSamples(t);
-            var interval = Math.max(5, Math.round(1000 / frequencyHz));
-            timer = setTimeout(streamSamples, interval);
+            if (!publishSamples(t)) return;
+            const { graphMs } = readPlan();
+            nextTick = Math.max(nextTick + graphMs, t + 1);
+            timer = setTimeout(streamSamples, Math.max(1, nextTick - Date.now()));
         }
 
         function publishSamples(t) {
-            var names = watchItems.map(function (item) {
+            var names = readItems().map(function (item) {
                 return item.name;
             });
             var samples = simulator.scalarSamples(names, t);
-            configureHistory();
-            if (t - lastStatus >= 80) {
-                send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
-                lastStatus = t;
-            }
-            if (t - lastValues >= 50) {
-                send({ type: "chartValues", samples: samples, t: t });
-                lastValues = t;
-            }
-            var composite = names
-                .map(function (name) {
-                    return simulator.compositeSample(name, t);
-                })
+            var composite = readItems()
+                .map((item) =>
+                    sampling.compositeSample(simulator, item, t, expandedOnly ? expansions[item.name] : undefined)
+                )
                 .filter(Boolean);
-            if (composite.length) send({ type: "liveCompositeSample", samples: composite, t: t });
             var archivedSamples = samples.slice();
             function flatten(node, name) {
                 if (
@@ -273,7 +295,14 @@
                         return sample.name === name;
                     })
                 )
-                    archivedSamples.push({ name: name, value: node.value, valueText: node.valueText, t: t });
+                    archivedSamples.push({
+                        name: name,
+                        value: node.value,
+                        valueText: node.valueText,
+                        t: t,
+                        type: node.type,
+                        address: node.address
+                    });
                 (node.members || []).forEach(function (member) {
                     flatten(member, name + "." + member.name);
                 });
@@ -284,17 +313,41 @@
             composite.forEach(function (sample) {
                 flatten(sample.tree, sample.name);
             });
-            history.append("mock", archivedSamples, t);
-            if (archivedSamples.length) archive.push({ t: t, samples: archivedSamples });
-            if (archive.length > archiveLimit) {
-                archive.splice(0, archive.length - archiveLimit);
-                archiveTruncated = true;
+            configureHistory(archivedSamples);
+            const bytes = archive.append(scope, t, archivedSamples);
+            if (bytes === false) {
+                stopSampling();
+                reportFullArchive();
+                return false;
             }
+            history.append(scope, archivedSamples, t);
+            observed = meter.record(
+                t,
+                archivedSamples.reduce((size, sample) => size + (Number(sample.type?.slice(1)) || 32) / 8, 0)
+            );
+            const budget = archive.budget(archiveMeter.record(t, bytes).bytesPerSecond);
+            if (t - lastStatus >= 80) {
+                postHistoryStatus();
+                lastStatus = t;
+            }
+            if (t - lastValues >= 50 || phase === "debug-ready") {
+                const plan = readPlan();
+                if (settings.adaptive && phase === "sampling") adaptiveEffectiveKhz = plan.khz;
+                send({ type: "chartValues", samples, t, ...observed, ...rateStatus(plan), archive: budget });
+                if (composite.length) send({ type: "liveCompositeSample", samples: composite, t, ...observed });
+                lastValues = t;
+            }
+            return true;
         }
 
+        function reportFullArchive() {
+            send({ type: "liveError", message: options.archiveFullMessage?.() || "Sampling archive is full" });
+        }
         function startSampling(items, hz) {
             if (Array.isArray(items)) watchItems = items;
-            if (Number.isFinite(Number(hz)) && Number(hz) > 0) frequencyHz = Number(hz);
+            settings.frequencyHz = sampling.frequency(hz, settings.frequencyHz);
+            updateSettings();
+            if (archive.limited()) return reportFullArchive();
             if (options.requestSampling) options.requestSampling(true);
             else setSampling("sampling");
         }
@@ -304,46 +357,96 @@
             else setSampling("stopped");
         }
 
+        function settingsChanged() {
+            send({ type: "liveFrequency", frequencyHz: settings.frequencyHz, intervalMs: 1000 / settings.frequencyHz });
+            send({ type: "liveUnlimited", enabled: settings.unlimited });
+            sendPhaseStatus();
+            if (timer) {
+                clearTimeout(timer);
+                const { graphMs } = readPlan();
+                nextTick = Date.now() + graphMs;
+                timer = setTimeout(streamSamples, graphMs);
+            }
+        }
+        function updateSettings() {
+            if (options.settingsChanged) options.settingsChanged();
+            else settingsChanged();
+        }
+
         function triggerDownload(csv, fileName) {
             try {
-                var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-                var url = URL.createObjectURL(blob);
-                var anchor = document.createElement("a");
+                const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+                const url = URL.createObjectURL(blob);
+                const anchor = document.createElement("a");
                 anchor.href = url;
-                anchor.download = fileName || "emberprobe-live-watch.csv";
+                anchor.download = fileName;
                 document.body.appendChild(anchor);
                 anchor.click();
                 anchor.remove();
-                setTimeout(function () {
-                    URL.revokeObjectURL(url);
-                }, 4000);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
                 return true;
-            } catch (error) {
+            } catch {
                 return false;
             }
         }
 
         function copyText(text) {
-            try {
-                if (root.navigator && root.navigator.clipboard) root.navigator.clipboard.writeText(String(text || ""));
-            } catch (error) {
-                /* clipboard is optional */
-            }
+            root.navigator?.clipboard?.writeText(String(text || ""))?.catch(() => {});
         }
 
+        function exportCsv(message) {
+            const exportScope = scope;
+            const revision = historyRevision;
+            const requested = String(message.fileName || "emberprobe-sampling.csv")
+                .split(/[\\/]/)
+                .at(-1);
+            const save = (name) => {
+                if (!name) return send({ type: "exportCsvResult", ok: false, cancelled: true });
+                if (exportScope !== scope || revision !== historyRevision)
+                    return send({ type: "exportCsvResult", ok: false, message: "History changed before export" });
+                const fileName = name.toLowerCase().endsWith(".csv") ? name : name + ".csv";
+                const available = archive.status(scope).variables;
+                const names = (Array.isArray(message.names) ? [...new Set(message.names)] : available).filter((key) =>
+                    available.includes(key)
+                );
+                send({ type: "exportCsvProgress", percent: 0 });
+                const series = new Map(names.map((key) => [key, []]));
+                for (const row of archive.rows(scope)) {
+                    if (row.t < message.fromMs || row.t > message.toMs) continue;
+                    for (const sample of row.samples)
+                        series.get(sample.name)?.push({ t: row.t, v: sample.value, valueText: sample.valueText });
+                }
+                const buffers = Array.from(series.values());
+                const csv = root.EmberProbeMockCsv.buildCsv(names.map(displayName), buffers, {
+                    from: message.fromMs,
+                    to: message.toMs
+                });
+                const rows = root.EmberProbeMockCsv.csvDataRowCount(csv);
+                const ok = rows > 0 && triggerDownload(csv, fileName);
+                if (ok) lastCsv = { fileName, csv };
+                else send({ type: "liveError", key: "lw.noDataToExport" });
+                send({
+                    type: "exportCsvResult",
+                    ok,
+                    file: ok ? fileName : undefined,
+                    seriesCount: names.length,
+                    rowCount: rows
+                });
+            };
+            if (options.selectCsvFile) options.selectCsvFile(requested, save);
+            else save(requested);
+        }
         function sendReady() {
             sendBackground();
             configureHistory();
             send({ type: "chartHistoryReady", historyRevision: historyRevision });
-            send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+            send({ type: "chartHistoryStatus", ...history.status(scope), historyRevision: historyRevision });
             send({ type: "curveVisibility", hidden: curveVisibility });
             send({ type: "pointerSampling", expandedOnly: expandedOnly });
             send({ type: "seriesStyles", styles: styles });
             send({ type: "watchList", items: watchItems, resetValues: true });
             sendVariableList();
-            send({ type: "liveFrequency", frequencyHz: frequencyHz, intervalMs: Math.round(1000 / frequencyHz) });
-            send({ type: "liveUnlimited", enabled: unlimitedEnabled });
-            sendPhaseStatus();
+            settingsChanged();
             send(archiveInfo(false));
         }
 
@@ -358,15 +461,15 @@
                         var result;
                         if (message.type === "chartViewport")
                             result = history.viewport(
-                                "mock",
+                                scope,
                                 message.names,
                                 message.range,
                                 message.width,
                                 message.snapshotId
                             );
-                        else if (message.type === "chartFreeze") result = history.freeze("mock");
+                        else if (message.type === "chartFreeze") result = history.freeze(scope);
                         else {
-                            history.resume("mock");
+                            history.resume(scope);
                             result = {};
                         }
                         send({
@@ -424,31 +527,24 @@
                     stopSampling();
                     break;
                 case "setFrequency":
-                    if (Number.isFinite(Number(message.frequencyHz)) && Number(message.frequencyHz) > 0) {
-                        frequencyHz = Number(message.frequencyHz);
-                        send({
-                            type: "liveFrequency",
-                            frequencyHz: frequencyHz,
-                            intervalMs: Math.round(1000 / frequencyHz)
-                        });
-                    }
+                    settings.frequencyHz = sampling.frequency(message.frequencyHz, settings.frequencyHz);
+                    updateSettings();
                     break;
                 case "setUnlimitedSampling":
-                    // Preview only: keep the simulator's bounded timer while mirroring the selected mode.
-                    if (typeof message.enabled === "boolean") unlimitedEnabled = message.enabled;
-                    send({ type: "liveUnlimited", enabled: unlimitedEnabled });
+                    if (typeof message.enabled === "boolean") settings.unlimited = message.enabled;
+                    updateSettings();
                     break;
                 case "setSamplingSpeed":
                     if (!running && typeof message.adaptive === "boolean") {
-                        adaptiveSamplingSpeed = message.adaptive;
-                        if (!adaptiveSamplingSpeed && Number.isInteger(message.speedKhz)) {
-                            manualSamplingSpeedKhz = Math.min(
+                        settings.adaptive = message.adaptive;
+                        if (!settings.adaptive && Number.isInteger(message.speedKhz)) {
+                            settings.manualKhz = Math.min(
                                 20000,
                                 Math.max(1000, Math.round(message.speedKhz / 1000) * 1000)
                             );
                         }
                     }
-                    send(samplingSpeedState());
+                    updateSettings();
                     break;
                 case "importVariables":
                     sendVariableList();
@@ -472,6 +568,7 @@
                 }
                 case "saveWatch":
                     watchItems = message.items || watchItems;
+                    if (phase === "debug-ready") sendSnapshot();
                     break;
                 case "setPointerExpandedOnly":
                     expandedOnly = message.enabled === true;
@@ -482,7 +579,8 @@
                         curveVisibility = message.hidden;
                     break;
                 case "saveRuntimeExpansions":
-                    // The mock keeps runtime expansions in the page's saved UI state.
+                    expansions = message.expansions || {};
+                    if (phase === "debug-ready") sendSnapshot();
                     break;
                 case "setSeriesStyle":
                     if (message.name && message.style) {
@@ -519,45 +617,18 @@
                     send(Object.assign(archiveInfo(message.openExport), { historyRevision: message.historyRevision }));
                     break;
                 case "clearSamplingHistory":
-                    archive = [];
-                    archiveTruncated = false;
+                    archive.clear(scope);
                     historyRevision = message.historyRevision;
-                    history.clear("mock");
+                    history.clear(scope);
                     send({ type: "samplingHistoryCleared", historyRevision: message.historyRevision });
+                    postHistoryStatus();
                     break;
-                case "exportCsv": {
-                    var available = archiveInfo(false).variables;
-                    var names = Array.from(new Set(Array.isArray(message.names) ? message.names : [])).filter(
-                        function (name) {
-                            return available.indexOf(name) >= 0;
-                        }
-                    );
-                    var buffers = names.map(function (name) {
-                        return archive.flatMap(function (row) {
-                            return row.samples
-                                .filter(function (sample) {
-                                    return sample.name === name;
-                                })
-                                .map(function (sample) {
-                                    return { t: row.t, v: sample.value };
-                                });
-                        });
-                    });
-                    var csv = root.EmberProbeMockCsv.buildCsv(names.map(displayName), buffers, {
-                        from: message.fromMs,
-                        to: message.toMs
-                    });
-                    var rows = root.EmberProbeMockCsv.csvDataRowCount(csv);
-                    var ok = rows > 0 && triggerDownload(csv, message.fileName);
-                    if (!ok) send({ type: "liveError", key: "lw.noDataToExport" });
-                    send({
-                        type: "exportCsvResult",
-                        ok: ok,
-                        seriesCount: names.length || watchItems.length,
-                        rowCount: rows
-                    });
+                case "exportCsv":
+                    exportCsv(message);
                     break;
-                }
+                case "revealCsvExport":
+                    if (lastCsv) notify({ action: "csvReveal", ...lastCsv });
+                    break;
                 case "copyText":
                     copyText(message.text);
                     break;
@@ -583,6 +654,9 @@
         return {
             setSampling: setSampling,
             debugSessionChanged: debugSessionChanged,
+            settingsChanged,
+            readItems,
+            watchItems: () => watchItems,
             importBackgroundPng: requestBackgroundImport,
             removeBackground() {
                 ++backgroundRequest;
@@ -602,6 +676,7 @@
             destroy: function () {
                 stopped = true;
                 if (timer) clearTimeout(timer);
+                history.remove(scope);
                 root.removeEventListener("message", onMessage);
                 root.removeEventListener("storage", backgroundStorage);
                 root.removeEventListener("emberprobe-background", sendBackground);

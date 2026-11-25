@@ -15,7 +15,16 @@
             "mock.rtt.cmdStatus": "打印电机与总线状态",
             "mock.rtt.cmdRpm": "设置目标转速",
             "mock.rtt.cmdVersion": "打印固件版本",
-            "mock.dataHit": "数据断点命中"
+            "mock.dataHit": "数据断点命中",
+            "mock.archiveFull": "采样归档已满。清除一个波形窗口的历史后可重新采样。",
+            "mock.csvFileName": "请输入有效的文件名。",
+            "mock.rttSettings": "RTT 工作区设置（JSON）",
+            "mock.rttSettingsInvalid": "请检查 RTT 通道、输入和日志设置。",
+            "mock.saveRttLog": "保存 RTT 日志",
+            "mock.editBreakpoint": "编辑条件",
+            "mock.removeBreakpoint": "移除数据断点",
+            "mock.stopDebug": "停止 (Shift+F5)",
+            "mock.detach": "断开连接 (Shift+F5)"
         },
         en: {
             "mock.rtt.built": "built",
@@ -24,7 +33,16 @@
             "mock.rtt.cmdStatus": "print motor and bus state",
             "mock.rtt.cmdRpm": "set the target speed",
             "mock.rtt.cmdVersion": "print the firmware version",
-            "mock.dataHit": "Data breakpoint hit"
+            "mock.dataHit": "Data breakpoint hit",
+            "mock.archiveFull": "The sampling archive is full. Clear a waveform window's history to sample again.",
+            "mock.csvFileName": "Enter a valid file name.",
+            "mock.rttSettings": "RTT Workspace Settings (JSON)",
+            "mock.rttSettingsInvalid": "Check the RTT channel, input, and log settings.",
+            "mock.saveRttLog": "Save RTT Log",
+            "mock.editBreakpoint": "Edit Condition",
+            "mock.removeBreakpoint": "Remove Data Breakpoint",
+            "mock.stopDebug": "Stop (Shift+F5)",
+            "mock.detach": "Disconnect (Shift+F5)"
         }
     };
 

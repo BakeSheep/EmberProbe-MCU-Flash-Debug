@@ -1194,6 +1194,10 @@
                         ? Object.assign({ name: name, valueText: null, t: t }, display[name])
                         : { name: name, value: overrides.has(name) ? overrides.get(name) : values[name], t: t };
                     var symbol = symbolFor(name);
+                    if (sample.value === undefined && !symbol) {
+                        var member = memberSample(name, t);
+                        if (member) sample = { ...member, name: name, t: t };
+                    }
                     if (writeContext !== null && symbol && !symbol.isComposite) {
                         sample.writeContext = writeContext;
                         sample.address = symbol.isReference ? symbolFor("g_target_rpm").address : symbol.address;
@@ -1251,7 +1255,30 @@
             result.tree = applyOverrides(result.tree, result.name);
             return result;
         }
+        function memberSample(name, t) {
+            // A selected branch or leaf must work even when its parent has no watch card.
+            var parts = name.match(/^[^.\[]+|\.[^.\[]+|\[\d+\]/g) || [];
+            for (var split = parts.length - 1; split > 0; split--) {
+                var root = fixtureTree(parts.slice(0, split).join(""), t);
+                if (!root) continue;
+                var node = root.tree;
+                for (var part of parts.slice(split)) {
+                    node =
+                        part[0] === "["
+                            ? node?.elements?.find((entry) => entry.index === Number(part.slice(1, -1)))
+                            : node?.members?.find((entry) => entry.name === part.slice(1));
+                }
+                if (node) return node;
+            }
+            return null;
+        }
         function compositeSample(name, t) {
+            var root = fixtureTree(name, t);
+            if (root) return root;
+            var tree = memberSample(name, t);
+            return tree?.members || tree?.elements ? { name: name, t: t, tree: tree } : null;
+        }
+        function fixtureTree(name, t) {
             if (name === "g_imu") {
                 return treeResult({
                     name: name,
@@ -1532,7 +1559,7 @@
 
     /* ------------------------------------------------------------------ probes */
 
-    // Two J-Links (one still on the SEGGER USB driver) and a CMSIS-DAP without a USB serial.
+    // Two J-Links (one still on the SEGGER USB driver) and a CMSIS-DAP probe with its USB serial.
     var PROBES = [
         {
             id: "USB\\VID_1366&PID_0101\\000801012345",
@@ -1553,10 +1580,10 @@
             chip: "STM32H7x · Cortex-M7 · UID …32363235"
         },
         {
-            id: "USB\\VID_C251&PID_F001\\6&2A41C0F&0&2",
+            id: "USB\\VID_C251&PID_F001\\202008431041543838597586",
             family: "cmsis-dap",
             name: "CMSIS-DAP",
-            serial: "",
+            serial: "202008431041543838597586",
             defaultConfig: "cmsis-dap.cfg",
             driver: ""
         }

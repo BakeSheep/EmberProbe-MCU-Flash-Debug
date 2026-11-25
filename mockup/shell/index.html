@@ -42,24 +42,27 @@
                         class="command-center"
                         title="搜索或运行命令 (Ctrl+Shift+P)"
                     >
+                        <span class="codicon codicon-search search-icon" aria-hidden="true"></span>
                         <span>EmberProbeDemo</span>
                     </button>
                 </div>
                 <div class="titlebar-right">
-                    <button type="button" class="title-action" id="toggleSidebar" title="切换主侧边栏 (Ctrl+B)">
+                    <button
+                        type="button"
+                        class="title-action"
+                        id="toggleSidebar"
+                        title="切换主侧边栏 (Ctrl+B)"
+                        aria-expanded="true"
+                    >
                         <span class="codicon codicon-layout-sidebar-left" aria-hidden="true"></span>
                     </button>
                     <button
                         type="button"
                         class="title-action"
-                        id="customizeLayout"
-                        title="自定义布局"
-                        aria-haspopup="menu"
-                        aria-expanded="false"
+                        id="togglePanel"
+                        title="切换面板 (Ctrl+J)"
+                        aria-expanded="true"
                     >
-                        <span class="codicon codicon-layout" aria-hidden="true"></span>
-                    </button>
-                    <button type="button" class="title-action" id="togglePanel" title="切换面板 (Ctrl+J)">
                         <span class="codicon codicon-layout-panel" aria-hidden="true"></span>
                     </button>
                     <button
@@ -70,7 +73,17 @@
                         aria-controls="auxiliarybar"
                         aria-expanded="false"
                     >
-                        <span class="codicon codicon-layout-sidebar-right" aria-hidden="true"></span>
+                        <span class="codicon codicon-layout-sidebar-right-off" aria-hidden="true"></span>
+                    </button>
+                    <button
+                        type="button"
+                        class="title-action"
+                        id="customizeLayout"
+                        title="自定义布局"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <span class="codicon codicon-layout" aria-hidden="true"></span>
                     </button>
                     <div class="window-controls">
                         <button type="button" class="wc" title="最小化">
@@ -384,8 +397,8 @@
                             </div>
                         </section>
                     </div>
-                    <div id="sidebar-resizer" title="拖动调整宽度"></div>
                 </aside>
+                <div id="sidebar-resizer" title="拖动调整宽度"></div>
 
                 <main id="main-column">
                     <div id="editor-area">
@@ -418,8 +431,8 @@
                         </div>
                     </div>
 
-                    <div id="panel" class="collapsed">
-                        <div id="panel-resizer"></div>
+                    <div id="panel-resizer"></div>
+                    <div id="panel">
                         <div id="panel-header">
                             <div class="panel-tabs">
                                 <button type="button" data-panel="problems">
@@ -471,11 +484,22 @@
                                 </div>
                             </div>
                             <div class="panel-pane active" data-panel-pane="terminal">
-                                <pre id="terminalBody" class="terminal-body"></pre>
-                                <div class="terminal-input-line">
-                                    <span class="prompt">➜</span
-                                    ><span class="cmd">openocd -f interface/jlink.cfg -f target/stm32f4x.cfg</span
-                                    ><span class="terminal-cursor"></span>
+                                <div class="terminal-session-layout">
+                                    <div id="terminalSessionOutput">
+                                        <pre id="terminalBody" class="terminal-body"></pre>
+                                        <div id="terminalPrompt" class="terminal-input-line">
+                                            <span class="prompt">PS</span><span class="cmd"></span
+                                            ><span class="terminal-cursor"></span>
+                                        </div>
+                                    </div>
+                                    <div id="terminalSessions" class="terminal-session-list" hidden>
+                                        <button type="button" data-terminal-session="shell">
+                                            <span class="codicon codicon-terminal"></span> pwsh
+                                        </button>
+                                        <button type="button" data-terminal-session="flash">
+                                            <span class="codicon codicon-terminal"></span> EmberProbe OpenOCD
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                             <div class="panel-pane plugin-frame-wrap rtt-pane" data-panel-pane="rtt">
@@ -533,12 +557,12 @@
                         <span class="codicon codicon-error" aria-hidden="true"></span> 0
                         <span class="codicon codicon-warning" aria-hidden="true"></span> 2
                     </button>
-                </div>
-                <div class="status-right">
                     <button type="button" class="status-item hidden" id="debugSessionStatus" title="调试会话">
                         <span class="codicon codicon-debug-alt" aria-hidden="true"></span>
                         <span id="debugSessionName"></span>
                     </button>
+                </div>
+                <div class="status-right">
                     <button type="button" class="status-item" id="cursorStatus">Ln 103, Col 12</button>
                     <button type="button" class="status-item">空格: 4</button>
                     <button type="button" class="status-item">UTF-8</button>
@@ -601,6 +625,12 @@
         <script src="text.js"></script>
         <script src="chart-history.js"></script>
         <script src="sidebar-data.js"></script>
+        <script src="configuration.js"></script>
+        <script src="sampling.js"></script>
+        <script src="archive.js"></script>
+        <script src="rtt-settings.js"></script>
+        <script src="rtt-formatter.js"></script>
+        <script src="mcp-catalog.js"></script>
         <script src="livewatch-data.js"></script>
         <script src="sidebar-host.js"></script>
         <script src="livewatch-host.js"></script>

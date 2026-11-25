@@ -41,6 +41,12 @@ async function openWindow(browser, url, scene, windowSize, lang) {
     page.on("pageerror", (error) => failures.push(error.message));
     await page.goto(`${url}?lang=${lang}&theme=light${scene.query || ""}`);
     await page.clock.runFor(3000);
+    if (!scene.keepPanel) {
+        await page.evaluate(() => {
+            const panel = document.getElementById("panel");
+            if (panel && !panel.classList.contains("collapsed")) document.getElementById("panelClose")?.click();
+        });
+    }
     await page.addStyleTag({ content: "#toasts{display:none!important}" });
     await page.evaluate(
         (value) => document.documentElement.style.setProperty("--sidebar-width", `${value}px`),

@@ -28,7 +28,7 @@
         await env.sleep(200);
     }
 
-    // The mock opens VS Code's Run and Debug view when a debug session starts, as VS Code does.
+    // The walkthrough restores the extension view before using the sidebar again.
     function showEmberProbe(env) {
         const items = [...env.shell.querySelectorAll(".activity-item[data-view]")];
         items.find((item) => /ember|mcu/i.test(item.dataset.view)).click();
@@ -45,11 +45,6 @@
     // Variables of different ranges stay readable on one axis only when normalized.
     function normalize(env) {
         env.chart.getElementById("norm").click();
-    }
-
-    async function removeBreakpoint(env) {
-        await showTab(env, "main.c");
-        env.shell.querySelector(gutterLine).click();
     }
 
     const chapters = [
@@ -131,7 +126,7 @@
             title: { zh: "断点调试", en: "Debug" },
             async setup(env) {
                 openSections(env, ["flashDebugSection"]);
-                await removeBreakpoint(env);
+                await showTab(env, "main.c");
                 env.shell.querySelector(gutterLine).scrollIntoView({ block: "center" });
             },
             steps: [
@@ -150,7 +145,7 @@
                 },
                 {
                     frame: "shell",
-                    target: "#dbgContinue",
+                    target: "#dbgContinue:has(.codicon-debug-continue)",
                     done: "click",
                     zh: ["继续运行", "目标运行到刚才设置的断点。"],
                     en: ["Continue", "The target runs to the breakpoint."]
@@ -159,17 +154,20 @@
                     frame: "shell",
                     target: "#dbgStepOver",
                     done: "click",
-                    zh: ["单步跳过", "执行当前行，左侧“运行和调试”视图同步更新变量和调用栈。"],
+                    zh: ["单步跳过", "执行当前行，编辑器标出新的暂停位置。可在“运行和调试”视图查看变量和调用栈。"],
                     en: [
                         "Step over",
-                        "Runs the current line. The Run and Debug view updates its variables and call stack."
+                        "Runs the current line and highlights the next stop. Open Run and Debug to inspect variables and the call stack."
                     ]
                 },
                 {
                     frame: "shell",
                     target: "#dbgStop",
                     done: "click",
-                    after: showEmberProbe,
+                    after: async (env) => {
+                        await env.until((e) => !debugging(e));
+                        showEmberProbe(env);
+                    },
                     zh: ["停止调试", "结束调试会话。"],
                     en: ["Stop", "Ends the debug session."]
                 },
@@ -308,8 +306,6 @@
                 openSections(env, ["flashDebugSection", "liveValuesSection"]);
                 setChartWindow(env, "10");
                 normalize(env);
-                // Without the default breakpoint the target keeps running after Continue.
-                await removeBreakpoint(env);
                 await showTab(env, "livewatch");
             },
             steps: [
@@ -328,7 +324,7 @@
                 },
                 {
                     frame: "shell",
-                    target: "#dbgContinue",
+                    target: "#dbgContinue:has(.codicon-debug-continue)",
                     done: "click",
                     after: (env) => showTab(env, "livewatch"),
                     zh: ["继续运行", "目标运行后，采样按设定频率恢复。"],
@@ -338,6 +334,7 @@
                     frame: "shell",
                     target: "#dbgContinue",
                     done: "click",
+                    after: (env) => env.until((e) => !e.shell.getElementById("dbgStepOver").disabled),
                     zh: ["暂停目标", "曲线恢复后，点击同一个按钮暂停。"],
                     en: ["Pause the target", "After the curves resume, click the same button to pause."]
                 },
@@ -385,6 +382,8 @@
             id: "rtos",
             title: { zh: "FreeRTOS 任务", en: "FreeRTOS tasks" },
             async setup(env) {
+                await showTab(env, "main.c");
+                env.shell.querySelector(gutterLine).click();
                 env.sidebar.querySelector(command("debug")).click();
                 await env.until(debugging);
                 await env.sleep(300);

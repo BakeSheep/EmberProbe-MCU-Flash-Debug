@@ -29,6 +29,12 @@
         var writeContext = 1;
         var liveTimer = null;
         var phaseTimer = null;
+        var svdTimers = [];
+        var flashTimers = [];
+        var expansions = {};
+        var readMeter = root.EmberProbeMockSampling.meter();
+        var measured = readMeter.record(0, 0);
+        var lastSampleStatus = 0;
         var watchItems = data.sidebarWatchList();
         var watchNames = watchItems.map(function (item) {
             return item.name;
@@ -41,6 +47,8 @@
         // src/services/rttTerminalService.js: the channels to read, the terminals made so far, the chosen log file.
         var rtt = {
             state: "stopped",
+            intent: false,
+            yieldedFor: null,
             selected: [0],
             listed: false,
             terminals: 0,
@@ -50,6 +58,7 @@
             ticker: null,
             received: {}
         };
+        var rttSettings = { ...root.EmberProbeMockRttSettings.defaults };
         var tr = (root.EmberProbeMockText && root.EmberProbeMockText.create(isEnglish)) || String;
         var quickPick =
             options.quickPick ||
@@ -62,7 +71,10 @@
                 done(undefined);
             };
         // Sidebar data breakpoints (src/services/sidebarDataBreakpoints.js and src/debug/dataBreakpointGroups.js).
-        var dataBreakpoints = { session: 0, entries: [], nextId: 1, issued: {}, nextDataId: 1 };
+        var dataBreakpoints = { session: 0, entries: [], native: [], nextId: 1, issued: {}, nextDataId: 1 };
+        var debugCore = 0;
+        var debugCores = options.debugCores === 2 ? 2 : 1;
+        var coreBreakpoints = new Map();
         var initialized = false;
         var agentFullAccess = false;
         var agentAccessEnabled = true;
@@ -83,21 +95,53 @@
             manual: ["copy"],
             builtin: []
         };
+        var mcpBusyClient = "";
+        var mcpCheckTimer = null;
         var debugTimer = null;
         // "none" outside a debug session; the chip card's own state only matters there.
         var debugState = "none";
         var debugStarting = false;
         var chipState = "running";
+        var chipRead = false;
         var flashRunning = false;
         var skillsInstalled = true;
         var stopEpoch = 1;
+        var targetFile = "main.c";
         var targetLine = 103;
-        var lastMemory = data.memoryAnalysis();
+        var configuration = root.EmberProbeMockConfiguration.create({
+            data,
+            quickPick,
+            send,
+            tr,
+            onChange(field) {
+                if (field === "elf") {
+                    sendVariableList();
+                    send(configuration.readMemory());
+                }
+                if (field === "debugger") {
+                    selectedProbe = probes.find((probe) => probe.defaultConfig === configuration.values.debugger)?.id;
+                    probeAutomatic = true;
+                    publishProbes();
+                }
+            }
+        });
         // The connected probe the mock workspace uses and the J-Link USB drivers switched in this page.
-        var selectedProbe = data.PROBES[0].id;
+        var probes = data.PROBES;
+        var selectedProbe = probes[0].id;
         // Auto forgets the saved device; the mock then uses the first probe as the automatic choice.
         var probeAutomatic = false;
         var probeDrivers = {};
+
+        function publishProbes() {
+            const devices = data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead);
+            devices.debugger = configuration.values.debugger;
+            if (!selectedProbe) {
+                devices.state = "none";
+                devices.deviceId = devices.probeSerial = devices.autoTarget = "";
+                for (const device of devices.devices) device.selected = device.matchesDebugger = false;
+            }
+            send(devices);
+        }
 
         function send(message) {
             if (stopped || !iframe.contentWindow) return;
@@ -122,9 +166,10 @@
         }
 
         function sendInitialState() {
+            configuration.publish();
             send({ type: "agentAccess", enabled: agentAccessEnabled });
             send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
-            send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
+            publishProbes();
             send({
                 type: "skillStatus",
                 state: "installed",
@@ -134,10 +179,9 @@
             sendVariableList();
             send({ type: "sidebarWatchList", items: watchItems, resetValues: true });
             send({ type: "sidebarWriteList", items: writeItems });
-            send(lastMemory);
+            send(configuration.readMemory());
             send({ type: "svdStatus", state: "configured", path: data.SVD_PATH, key: "svd.configured" });
-            send({ type: "chipInfo", info: currentChipInfo() });
-            send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+            sendChipState();
             sendDebugStatus();
             send(sidebarStatus(samplingPhase));
             if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
@@ -147,13 +191,43 @@
         }
 
         function setDebugPending(busy) {
-            send({ type: "mockDebugPending", busy: busy });
+            send({ type: "mockDebugPending", busy: busy, text: busy ? tr("sb.executing") : "" });
             notify({ action: "debugPending", busy: busy });
+        }
+
+        function requireProbe(cmd, titleKey) {
+            const probe = probes.find((device) => device.id === selectedProbe);
+            const driver = probe && (probeDrivers[probe.id] || probe.driver);
+            if (probe && driver !== "repair") return true;
+            send({
+                type: "notice",
+                area: "flash",
+                id: cmd,
+                notice: {
+                    level: "error",
+                    titleKey,
+                    key: probe ? "probe.driverUnsupported" : "probe.noneConnected"
+                }
+            });
+            send({ type: "revealConnectedProbes" });
+            send({ type: "commandError", cmd });
+            return false;
         }
 
         // kind "reset" is the debug command (reset, then run to main); "attach" halts the target where it is.
         function startDebug(kind) {
-            if (stopped || debugTimer !== null || flashRunning) return;
+            if (stopped || debugTimer !== null) return;
+            var cmd = kind === "attach" ? "mcu-vscode.attachDebug" : "mcu-vscode.debug";
+            if (flashRunning) {
+                send({
+                    type: "notice",
+                    area: "flash",
+                    id: cmd,
+                    notice: { level: "warning", key: "msg.downloadBusy" }
+                });
+                send({ type: "commandError", cmd: cmd });
+                return;
+            }
             if (debugState !== "none") {
                 send({
                     type: "notice",
@@ -161,23 +235,33 @@
                     id: "mcu-vscode.debug",
                     notice: { level: "warning", key: "msg.debugBusy" }
                 });
+                send({ type: "commandError", cmd: cmd });
                 return;
             }
-            var cmd = kind === "attach" ? "mcu-vscode.attachDebug" : "mcu-vscode.debug";
+            if (!requireProbe(cmd, kind === "attach" ? "notice.attachFailed" : "notice.debugFailed")) return;
+            send({ type: "noticeClear", area: "flash", id: "mcu-vscode.download" });
+            send({ type: "noticeClear", area: "flash", id: "mcu-vscode.debug" });
+            send({ type: "noticeClear", area: "flash", id: "mcu-vscode.attachDebug" });
             debugStarting = true;
+            yieldRtt("debug");
             if (samplingIntent) setPhase("debug-waiting");
-            debugTimer = setTimeout(function () {
-                debugTimer = null;
-                debugStarting = false;
-                if (stopped) return;
-                setDebugPending(false);
-                if (kind !== "attach") simulator.reset();
-                writeContext += 1;
-                dataBreakpoints.session += 1;
-                notify({ action: "debugSessionChanged" });
-                send({ type: "commandSuccess", cmd: cmd });
-                notify({ action: "debugStart", kind: kind === "attach" ? "attach" : "reset" });
-            }, 2200);
+            debugTimer = setTimeout(
+                function () {
+                    debugTimer = null;
+                    debugStarting = false;
+                    if (stopped) return;
+                    setDebugPending(false);
+                    if (kind !== "attach") simulator.reset();
+                    writeContext += 1;
+                    dataBreakpoints.session += 1;
+                    debugCore = 0;
+                    coreBreakpoints.clear();
+                    notify({ action: "debugSessionChanged", id: debugScope() });
+                    send({ type: "commandSuccess", cmd: cmd });
+                    notify({ action: "debugStart", kind: kind === "attach" ? "attach" : "reset", cores: debugCores });
+                },
+                kind === "attach" ? 1400 : 2200
+            );
             setDebugPending(true);
         }
 
@@ -187,22 +271,23 @@
             debugTimer = null;
             debugStarting = false;
             setDebugPending(false);
+            send({ type: "initSuccess" });
+            updateRttHost();
             if (samplingIntent) setPhase("sampling");
             return true;
         }
 
         function clearSamplingTimers() {
-            if (liveTimer) clearInterval(liveTimer);
+            if (liveTimer) clearTimeout(liveTimer);
             if (phaseTimer) clearTimeout(phaseTimer);
             liveTimer = phaseTimer = null;
         }
 
         function sidebarStatus(phase) {
             var status = data.samplingStatus(phase);
-            // The sidebar reads at a fixed 20 Hz, whatever the waveform panel's frequency is.
             if (status.running) {
                 status.frequencyHz = 20;
-                status.actualHz = data.samplingActive(phase) ? 20 : 0;
+                Object.assign(status, measured);
             }
             status.writeContext = writeContext;
             return status;
@@ -210,17 +295,27 @@
 
         function setPhase(phase) {
             clearSamplingTimers();
+            readMeter.reset();
+            measured = readMeter.record(0, 0);
+            lastSampleStatus = Date.now();
             samplingPhase = phase;
             send(sidebarStatus(phase));
             notify({ action: "sampling", phase: phase });
             sendDebugStatus();
-            if (data.samplingActive(phase)) {
-                sendSamples();
-                liveTimer = setInterval(function () {
-                    simulator.tick();
-                    sendSamples();
-                }, 50);
-            }
+            if (data.samplingActive(phase)) streamSidebar();
+            if (phase === "sampling" || phase === "debug-sampling") updateRttHost(true);
+        }
+
+        function streamSidebar() {
+            simulator.tick();
+            sendSamples();
+            liveTimer = setTimeout(streamSidebar, options.sidebarInterval?.(samplingPhase) || 50);
+        }
+
+        function readItems() {
+            return watchItems.filter(
+                (item) => !Array.isArray(expansions[item.name]) || expansions[item.name].includes("")
+            );
         }
 
         // Each stop gets one DAP snapshot: memory is frozen until the next step or continue.
@@ -267,13 +362,15 @@
 
         function sendSamples() {
             var t = Date.now();
-            var names = Array.from(new Set(watchNames.concat(writeNames)));
+            var openNames = readItems().map((item) => item.name);
+            var names = Array.from(new Set(openNames.concat(writeNames)));
+            var samples = simulator.scalarSamples(names, t, { writeContext: writeContext });
             send({
                 type: "liveSample",
-                samples: simulator.scalarSamples(names, t, { writeContext: writeContext }),
+                samples,
                 t: t
             });
-            var composite = watchNames
+            var composite = openNames
                 .map(function (name) {
                     return simulator.compositeSample(name, t);
                 })
@@ -282,6 +379,11 @@
                 sample.writeContext = writeContext;
             });
             if (composite.length) send({ type: "liveCompositeSample", samples: composite, t: t });
+            measured = readMeter.record(t, samples.length * 4 + composite.length * 16);
+            if (data.samplingActive(samplingPhase) && t - lastSampleStatus >= 1000) {
+                lastSampleStatus = t;
+                send(sidebarStatus(samplingPhase));
+            }
         }
 
         function currentChipInfo() {
@@ -291,12 +393,25 @@
                 info.haltReason =
                     debugState === "none"
                         ? "debug-request"
-                        : say("断点命中", "Breakpoint hit") + " · main.c:" + targetLine;
+                        : say("断点命中", "Breakpoint hit") + " · " + targetFile + ":" + targetLine;
                 info.pc = "0x08001a3c";
                 info.sp = "0x2001ffb0";
                 info.lr = "0x080012b7";
             }
             return info;
+        }
+
+        function sendChipState() {
+            if (chipRead) send({ type: "chipInfo", info: currentChipInfo() });
+            send(
+                chipRead
+                    ? { type: "chipInfoStatus", state: "ready", key: "chip.done" }
+                    : {
+                          type: "chipInfoStatus",
+                          state: "idle",
+                          key: "chip.notRead"
+                      }
+            );
         }
 
         // src/services/peripheralAccessService.js: no debug session needs a connected sampling session.
@@ -313,8 +428,43 @@
             };
         }
 
+        function debugScope() {
+            return dataBreakpoints.session + "-" + debugCore;
+        }
+
+        function coreId(core) {
+            return "mock-debug-session-" + (core + 1);
+        }
+
+        function rtosStatus() {
+            const status = data.rtosDebugStatus(debugState, stopEpoch);
+            if (debugCores === 1 || debugState === "none") return status;
+            return {
+                ...status,
+                sessionId: coreId(debugCore),
+                sessions: [0, 1].map((core) => ({
+                    id: coreId(core),
+                    name: "EmberProbe (Cortex-M" + (core === 0 ? 7 : 4) + ")",
+                    serverGroup: "STM32H7",
+                    targetProcessor: core
+                }))
+            };
+        }
+
+        function selectCore(index) {
+            if (debugState === "none" || index === debugCore || index < 0 || index >= debugCores) return;
+            const { entries, native, issued } = dataBreakpoints;
+            coreBreakpoints.set(debugCore, { entries, native, issued });
+            debugCore = index;
+            Object.assign(dataBreakpoints, coreBreakpoints.get(index) || { entries: [], native: [], issued: {} });
+            stopEpoch++;
+            notify({ action: "debugSessionChanged", id: debugScope() });
+            notify({ action: "debugCoreSelected", core: index });
+            dataBreakpointsChanged(false);
+        }
+
         function sendDebugStatus() {
-            send(data.rtosDebugStatus(debugState, stopEpoch));
+            send(rtosStatus());
             send(
                 Object.assign(
                     { type: "peripheralDebugStatus", state: debugState, epoch: stopEpoch },
@@ -331,12 +481,14 @@
             chipState = next;
             if (previousState !== next || next === "halted" || settings.ended) writeContext += 1;
             if (next === "halted") stopEpoch += 1;
+            if (typeof settings.file === "string" && settings.file) targetFile = settings.file;
+            else if (Number.isInteger(settings.line)) targetFile = "main.c";
             if (Number.isInteger(settings.line)) targetLine = settings.line;
             debugState = settings.ended ? "none" : next === "halted" ? "paused" : "running";
-            if (next === "running") simulator.boot();
+            if (settings.ended) yieldRtt("debug");
+            if (next === "running" && !settings.starting) simulator.boot();
             if (settings.step) simulator.tick();
-            send({ type: "chipInfo", info: currentChipInfo() });
-            send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+            sendChipState();
             if (settings.ended) notify({ action: "debugSessionChanged" });
             if (samplingIntent) {
                 if (settings.ended) {
@@ -345,7 +497,8 @@
                         phaseTimer = null;
                         setPhase("sampling");
                     }, 600);
-                } else if (next === "running") resumeRuntimeSampling();
+                } else if (settings.starting) setPhase("debug-waiting");
+                else if (next === "running") resumeRuntimeSampling();
                 else readSnapshot();
             } else {
                 if (settings.ended) setPhase("stopped");
@@ -353,6 +506,7 @@
             }
             // A halted target prints nothing over RTT; the panel follows.
             if (rtt.state === "running") postRttStatus();
+            updateRttHost(!settings.ended && previousState !== next && debugState !== "none");
             dataBreakpointsChanged(settings.ended);
             if (settings.notify !== false) notify({ action: "targetState", state: next });
         }
@@ -361,94 +515,123 @@
             send({ type: "notice", area: "flash", id: "mcu-vscode.download", notice: notice });
         }
 
-        // The real run: each step is what src/openocdRunner.js makes of an OpenOCD line, in the terminal and,
-        // replaced in place, in the sidebar's notice (src/services/flashCommand.js). Only the wait inside
-        // the write and the verify takes time.
+        function queueFlash(delay, callback) {
+            flashTimers.push(setTimeout(callback, delay));
+        }
+
+        function finishFlash(cmd, resume, lines) {
+            flashRunning = false;
+            flashTimers = [];
+            chipState = "running";
+            simulator.reset();
+            simulator.boot();
+            sendChipState();
+            setDebugPending(false);
+            notify({ action: "flashLog", lines });
+            flashNotice({ level: "success", key: "msg.downloadSuccess" });
+            send({ type: "commandSuccess", cmd });
+            if (resume) startSampling();
+            else updateRttHost();
+        }
+
+        // The real run: each step matches what src/openocdRunner.js prints to the terminal and
+        // forwards to the sidebar notice (src/services/flashCommand.js).
         function simulateDownload(cmd) {
-            if (flashRunning) return flashNotice({ level: "warning", key: "msg.downloadBusy" });
-            if (debugStarting || debugState !== "none")
-                return flashNotice({ level: "warning", key: "msg.debugBusyForDownload" });
+            if (flashRunning) {
+                flashNotice({ level: "warning", key: "msg.downloadBusy" });
+                send({ type: "commandError", cmd });
+                return;
+            }
+            if (debugStarting || debugState !== "none") {
+                flashNotice({ level: "warning", key: "msg.debugBusyForDownload" });
+                send({ type: "commandError", cmd });
+                return;
+            }
+            if (!requireProbe(cmd, "notice.downloadFailed")) return;
+            send({ type: "noticeClear", area: "flash", id: cmd });
+            send({ type: "noticeClear", area: "flash", id: "mcu-vscode.debug" });
+            send({ type: "noticeClear", area: "flash", id: "mcu-vscode.attachDebug" });
             var resume = samplingIntent;
             if (resume) stopSampling();
             flashRunning = true;
+            yieldRtt("download");
             setDebugPending(true);
-            var elf = data.ELF_PATH.replace(/\\/g, "/");
-            notify({
-                action: "flashLog",
-                start: true,
-                lines: [
-                    { cls: "info", text: say("EmberProbe 固件下载", "EmberProbe firmware download") },
-                    { cls: "", text: say("固件 ", "Firmware ") + elf },
-                    {
-                        cls: "",
-                        text: say(
-                            "探针 interface/jlink.cfg · 目标 target/stm32f4x.cfg",
-                            "Probe interface/jlink.cfg · Target target/stm32f4x.cfg"
-                        )
-                    },
-                    { cls: "", text: "" }
-                ]
+            var elf = configuration.values.elf.replace(/\\/g, "/");
+            const { debugger: probe, mcu: target } = configuration.values;
+            const cmsisDap = probe === "cmsis-dap.cfg";
+            const probeDescription = cmsisDap
+                ? "Using CMSIS-DAPv2 interface with VID:PID=0x1209:0xda42, serial=202008431041543838597586"
+                : "J-Link V11 compiled Nov 24 2024 10:12:05";
+            const baseClock = cmsisDap ? "1800 kHz" : "4000 kHz";
+            const flashClock = cmsisDap ? "10000 kHz" : "15000 kHz";
+            const cmsisLines = cmsisDap
+                ? [
+                      "CMSIS-DAP: SWD supported",
+                      "CMSIS-DAP: Atomic commands supported",
+                      "CMSIS-DAP: Test domain timer supported",
+                      "CMSIS-DAP: FW Version = 2.1.0",
+                      "CMSIS-DAP: Serial# = 202008431041543838597586",
+                      "CMSIS-DAP: Interface Initialised (SWD)",
+                      "CMSIS-DAP: Interface ready"
+                  ]
+                : [];
+            flashNotice({ level: "info", busy: true, key: "run.starting" });
+            queueFlash(180, () => {
+                notify({
+                    action: "flashLog",
+                    start: true,
+                    lines: [
+                        { cls: "info", text: say("EmberProbe 固件下载", "EmberProbe firmware download") },
+                        { cls: "", text: say("固件 ", "Firmware ") + elf },
+                        { cls: "", text: say("探针 ", "Probe ") + probe + say(" · 目标 ", " · Target ") + target },
+                        { cls: "", text: "" },
+                        { cls: "", text: "→ " + probeDescription },
+                        ...cmsisLines.map((line) => ({ cls: "", text: "→ " + line }))
+                    ]
+                });
             });
-            var wrote = { bytes: 917504, seconds: 6.201542, speed: "144.480 KiB/s" };
-            var verified = { bytes: 917504, seconds: 0.912345, speed: "982.085 KiB/s" };
             var steps = [
-                { at: 0, key: "run.starting", message: say("正在启动 OpenOCD", "Starting OpenOCD") },
-                { at: 240, message: "Open On-Chip Debugger 0.12.0 (2024-11-24-10:12)" },
-                { at: 400, message: "J-Link V11 compiled Nov 24 2024 10:12:05" },
+                ...(cmsisDap
+                    ? []
+                    : [
+                          {
+                              at: 300,
+                              key: "run.voltage",
+                              params: { volts: "3.30" },
+                              message: say("目标电压 3.30 V", "Target voltage 3.30 V")
+                          }
+                      ]),
                 {
-                    at: 520,
-                    key: "run.voltage",
-                    params: { volts: "3.30" },
-                    message: say("目标电压 3.30 V", "Target voltage 3.30 V")
-                },
-                {
-                    at: 640,
+                    at: 420,
                     key: "run.adapterClock",
-                    params: { clock: "4000 kHz" },
-                    message: say("适配器时钟 4000 kHz", "Adapter clock 4000 kHz")
-                },
-                { at: 820, message: "EP_FLASH_STAGE=init" },
-                { at: 960, message: "EP_FLASH_STAGE=reset_init" },
-                { at: 1100, message: "target halted due to debug-request, current mode: Thread" },
-                {
-                    at: 1240,
-                    key: "run.deviceId",
-                    params: { id: "0x10076413" },
-                    message: say("器件 ID 0x10076413", "Device ID 0x10076413")
+                    params: { clock: baseClock },
+                    message: say("适配器时钟 " + baseClock, "Adapter clock " + baseClock)
                 },
                 {
-                    at: 1380,
+                    at: 580,
+                    key: "run.flashClock",
+                    params: { clock: flashClock },
+                    message: say("烧录时钟 " + flashClock, "Flash clock " + flashClock)
+                },
+                {
+                    at: 720,
+                    key: "run.chip",
+                    params: { chip: "STM32F40x" },
+                    message: say("识别芯片 STM32F40x", "Detected chip STM32F40x")
+                },
+                {
+                    at: 820,
                     key: "run.flash",
                     params: { size: "1024 kbytes" },
                     message: say("Flash 容量 1024 kbytes", "Flash size 1024 kbytes")
                 },
-                { at: 1560, key: "run.programStart", message: say("开始写入固件", "Writing firmware") },
-                {
-                    at: 7760,
-                    done: true,
-                    key: "run.wrote",
-                    params: wrote,
-                    message: say(
-                        "已写入 917504 bytes（6.201542s，144.480 KiB/s）",
-                        "Wrote 917504 bytes (6.201542s, 144.480 KiB/s)"
-                    )
-                },
-                { at: 7820, key: "run.verifyStart", message: say("开始校验固件", "Verifying firmware") },
-                {
-                    at: 8730,
-                    done: true,
-                    key: "run.verified",
-                    params: verified,
-                    message: say(
-                        "已校验 917504 bytes（0.912345s，982.085 KiB/s）",
-                        "Verified 917504 bytes (0.912345s, 982.085 KiB/s)"
-                    )
-                },
-                { at: 8760, done: true, key: "run.verifyOk", message: say("固件校验通过", "Firmware verified") },
-                { at: 8860, key: "run.resetTarget", message: say("正在复位目标芯片", "Resetting target") }
+                { at: 960, key: "run.programStart", message: say("开始写入固件", "Writing firmware") },
+                { at: 2460, key: "run.verifyStart", message: say("开始校验固件", "Verifying firmware") },
+                { at: 2820, done: true, key: "run.verifyOk", message: say("固件校验通过", "Firmware verified") },
+                { at: 2940, key: "run.resetTarget", message: say("正在复位目标芯片", "Resetting target") }
             ];
             steps.forEach(function (step) {
-                setTimeout(function () {
+                queueFlash(step.at, function () {
                     flashNotice({
                         level: "info",
                         busy: true,
@@ -460,54 +643,35 @@
                         action: "flashLog",
                         lines: [{ cls: step.done ? "ok" : "", text: (step.done ? "✓ " : "→ ") + step.message }]
                     });
-                }, step.at);
-            });
-            setTimeout(function () {
-                flashRunning = false;
-                setDebugPending(false);
-                notify({
-                    action: "flashLog",
-                    lines: [
-                        { cls: "", text: "" },
-                        { cls: "ok", text: say("✓ 固件下载并校验成功", "✓ Firmware downloaded and verified") },
-                        { cls: "", text: say("  固件 ", "  Firmware ") + elf.split("/").pop() },
-                        { cls: "", text: say("  芯片 0x10076413", "  Chip 0x10076413") },
-                        { cls: "", text: say("  Flash 容量 1024 kbytes", "  Flash size 1024 kbytes") },
-                        { cls: "", text: say("  探针 ", "  Probe ") + "J-Link V11 compiled Nov 24 2024 10:12:05" },
-                        { cls: "", text: say("  时钟 4000 kHz", "  Clock 4000 kHz") },
-                        {
-                            cls: "",
-                            text: say(
-                                "  写入 917504 bytes，耗时 6.201542s（144.480 KiB/s）",
-                                "  Wrote 917504 bytes in 6.201542s (144.480 KiB/s)"
-                            )
-                        },
-                        {
-                            cls: "",
-                            text: say(
-                                "  校验 917504 bytes，耗时 0.912345s（982.085 KiB/s）",
-                                "  Verified 917504 bytes in 0.912345s (982.085 KiB/s)"
-                            )
-                        },
-                        {
-                            cls: "",
-                            text: say(
-                                "  目标 target/stm32f4x.cfg · 探针配置 interface/jlink.cfg",
-                                "  Target target/stm32f4x.cfg · Probe script interface/jlink.cfg"
-                            )
-                        }
-                    ]
                 });
-                flashNotice({ level: "success", key: "msg.downloadSuccess" });
-                send({ type: "commandSuccess", cmd: cmd });
-                if (resume) startSampling();
-            }, 9100);
+            });
+            queueFlash(3200, function () {
+                finishFlash(cmd, resume, [
+                    { cls: "", text: "" },
+                    { cls: "ok", text: say("✓ 固件下载并校验成功", "✓ Firmware downloaded and verified") },
+                    { cls: "", text: say("  固件 ", "  Firmware ") + elf.split("/").pop() },
+                    { cls: "", text: say("  芯片 STM32F40x", "  Chip STM32F40x") },
+                    { cls: "", text: say("  Flash 容量 1024 kbytes", "  Flash size 1024 kbytes") },
+                    { cls: "", text: say("  探针 ", "  Probe ") + probeDescription },
+                    { cls: "", text: say("  时钟 ", "  Clock ") + baseClock },
+                    { cls: "", text: say("  烧录时钟 ", "  Flash clock ") + flashClock },
+                    {
+                        cls: "",
+                        text: say("  目标 ", "  Target ") + target + say(" · 探针配置 ", " · Probe script ") + probe
+                    }
+                ]);
+            });
         }
 
         function simulateSvdDownload(cmd) {
+            if (svdTimers.length) return;
             var percents = [8, 26, 51, 77, 94];
+            function schedule(fn, delay) {
+                svdTimers.push(setTimeout(fn, delay));
+            }
+            send({ type: "svdStatus", state: "downloading", key: "svd.downloading", percent: 0 });
             percents.forEach(function (percent, index) {
-                setTimeout(
+                schedule(
                     function () {
                         send({
                             type: "svdStatus",
@@ -520,14 +684,15 @@
                     300 + index * 320
                 );
             });
-            setTimeout(
+            schedule(
                 function () {
                     send({ type: "svdStatus", state: "validating", key: "svd.validating", path: data.SVD_PATH });
                 },
                 300 + percents.length * 320
             );
-            setTimeout(
+            schedule(
                 function () {
+                    svdTimers = [];
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
                     send({ type: "commandSuccess", cmd: cmd });
                     send({
@@ -538,6 +703,14 @@
                 },
                 300 + (percents.length + 1) * 320
             );
+        }
+
+        function cancelSvdDownload() {
+            if (!svdTimers.length) return;
+            svdTimers.forEach(clearTimeout);
+            svdTimers = [];
+            send({ type: "svdStatus", state: "idle", key: "svd.cancelled" });
+            send({ type: "commandCancelled", cmd: "mcu-vscode.downloadOfficialSvd" });
         }
 
         // The switch installs or removes the workspace's skills, whichever it does not have.
@@ -555,13 +728,57 @@
         }
 
         function sendMcpClients() {
-            var clients = Object.keys(mcpClientStates).map(function (client) {
-                var state = mcpClientStates[client];
+            var clients = root.EmberProbeMockMcp.clients.map(function (client) {
+                var state = client === "json" ? "manual" : mcpClientStates[client] || "notInstalled";
                 return { client: client, state: state, actions: MCP_ACTIONS[state], files: [] };
             });
             clients.unshift({ client: "copilot", state: "builtin", actions: MCP_ACTIONS.builtin, files: [] });
-            clients.push({ client: "json", state: "manual", actions: MCP_ACTIONS.manual, files: [] });
-            send({ type: "mcpClients", clients: clients, busy: "" });
+            send({ type: "mcpClients", clients: clients, busy: mcpBusyClient });
+        }
+
+        function checkMcpConnection() {
+            if (mcpCheckTimer !== null) return;
+            const { serverName, tools } = root.EmberProbeMockMcp;
+            const outcome = options.mcpOutcome;
+            const request = (method) => {
+                if (method === "initialize")
+                    return outcome === "initialize" ? null : { serverInfo: { name: serverName } };
+                if (method === "tools/list") return { tools: outcome === "tools" ? [] : tools };
+            };
+            mcpCheckTimer = setTimeout(
+                () => {
+                    mcpCheckTimer = null;
+                    if (outcome === "timeout") return send({ type: "mcpConnection", state: "timeout" });
+                    const init = request("initialize");
+                    if (init?.serverInfo.name !== serverName)
+                        return send({ type: "mcpConnection", state: "initialize" });
+                    const count = request("tools/list").tools.length;
+                    send({
+                        type: "mcpConnection",
+                        state: count ? "connected" : "tools",
+                        ...(count ? { toolCount: count } : {})
+                    });
+                },
+                outcome === "timeout" ? 10000 : 350
+            );
+        }
+
+        function changeMcpClient(client, action) {
+            if (mcpBusyClient) return;
+            if (client === "json" && action === "copy") {
+                copyText(root.EmberProbeMockMcp.snippet);
+                sendMcpClients();
+                return;
+            }
+            const actions = MCP_ACTIONS[mcpClientStates[client] || "notInstalled"];
+            if (!root.EmberProbeMockMcp.clients.includes(client) || !actions?.includes(action)) return sendMcpClients();
+            mcpBusyClient = client;
+            sendMcpClients();
+            setTimeout(() => {
+                mcpClientStates[client] = action === "uninstall" ? "notInstalled" : "installed";
+                mcpBusyClient = "";
+                sendMcpClients();
+            }, 350);
         }
 
         function handleCommand(message) {
@@ -570,12 +787,10 @@
                     sendMcpClients();
                     break;
                 case "checkMcpConnection":
-                    send({ type: "mcpConnection", state: "connected", toolCount: 50 });
+                    checkMcpConnection();
                     break;
                 case "mcpClientAction":
-                    if (message.client !== "json")
-                        mcpClientStates[message.client] = message.action === "uninstall" ? "notInstalled" : "installed";
-                    sendMcpClients();
+                    changeMcpClient(message.client, message.action);
                     break;
                 case "getAgentPermissions":
                     send({
@@ -633,8 +848,8 @@
                     if (chipBusy()) break;
                     send({ type: "chipInfoStatus", state: "reading", key: "chip.reading" });
                     setTimeout(function () {
-                        send({ type: "chipInfo", info: currentChipInfo() });
-                        send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+                        chipRead = true;
+                        sendChipState();
                     }, 700);
                     break;
                 case "chipControl":
@@ -646,14 +861,11 @@
                         send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
                     }, 500);
                     break;
-                case "memoryRefresh": {
-                    lastMemory = data.memoryAnalysis();
-                    lastMemory.requestId = Date.now();
-                    send(lastMemory);
+                case "memoryRefresh":
+                    send(configuration.readMemory());
                     break;
-                }
                 case "memorySelectSource":
-                    send({ type: "commandSuccess", cmd: "memorySelectSource" });
+                    configuration.selectMemory();
                     break;
                 case "peripheralCatalogRequest":
                     send({
@@ -712,17 +924,28 @@
                     break;
                 }
                 case "rtosRefresh":
-                    if (debugState === "paused") send(data.rtosSnapshot(stopEpoch));
-                    else
+                    if (debugState === "paused") {
+                        const result = data.rtosSnapshot(stopEpoch);
                         send(
-                            Object.assign(data.rtosDebugStatus(debugState, stopEpoch), {
+                            debugCore === 0
+                                ? result
+                                : {
+                                      ...result,
+                                      sessionId: coreId(debugCore),
+                                      tasks: result.tasks.slice(0, 2)
+                                  }
+                        );
+                    } else
+                        send(
+                            Object.assign(rtosStatus(), {
                                 type: "rtosError",
                                 message: "暂停调试器后才能刷新 RTOS 任务"
                             })
                         );
                     break;
                 case "debugSelectSession":
-                    send(data.rtosDebugStatus(debugState, stopEpoch));
+                    selectCore([coreId(0), coreId(1)].indexOf(message.sessionId));
+                    sendDebugStatus();
                     break;
                 case "resolveCompositeLayout": {
                     send(
@@ -736,6 +959,10 @@
                 case "refreshVariables":
                     sendVariableList();
                     break;
+                case "saveRuntimeExpansions":
+                    expansions = message.expansions || {};
+                    if (samplingPhase === "debug-ready") sendSamples();
+                    break;
                 case "saveSidebarWatch": {
                     var previousWatch = watchNames;
                     watchItems = message.items || [];
@@ -743,7 +970,7 @@
                         return item.name;
                     });
                     pruneDataBreakpoints(previousWatch, watchNames);
-                    if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
+                    if (samplingPhase === "debug-ready") sendSamples();
                     break;
                 }
                 case "saveSidebarWrite":
@@ -751,7 +978,7 @@
                     writeNames = writeItems.map(function (item) {
                         return item.name;
                     });
-                    if (data.samplingStatus(samplingPhase).snapshotReady) sendSamples();
+                    if (samplingPhase === "debug-ready") sendSamples();
                     break;
                 case "cancelSidebarWrite":
                     // Writes are immediate in the mock, so there is no queued value left to cancel.
@@ -774,25 +1001,32 @@
                     setTimeout(function () {
                         probeDrivers[message.deviceId] = message.driver === "winusb" ? "ready" : "repair";
                         send({ type: "probeDriverSwitch", busy: false });
-                        send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
+                        publishProbes();
                         send({ type: "commandSuccess", cmd: "selectProbeDriver" });
                     }, 900);
                     break;
-                case "selectConnectedProbe":
-                    selectedProbe = message.deviceId || data.PROBES[0].id;
+                case "selectConnectedProbe": {
+                    const selected = message.deviceId
+                        ? probes.find((probe) => probe.id === message.deviceId)
+                        : probes.find((probe) => probe.defaultConfig === configuration.values.debugger);
+                    if (message.deviceId && !selected) break;
+                    selectedProbe = selected?.id;
                     probeAutomatic = !message.deviceId;
-                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
+                    if (selected) configuration.values.debugger = selected.defaultConfig;
+                    configuration.publish();
+                    publishProbes();
                     send({ type: "commandSuccess", cmd: "selectConnectedProbe" });
                     break;
+                }
                 case "refreshConnectedProbes":
                     probesRead = true;
-                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
+                    publishProbes();
                     break;
                 case "acceptTargetChip":
-                    send(data.connectedProbes(selectedProbe, probeDrivers, probeAutomatic, probesRead));
+                    publishProbes();
                     break;
                 case "cancelSvdDownload":
-                    send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
+                    cancelSvdDownload();
                     break;
                 default:
                     break;
@@ -826,6 +1060,17 @@
         function rttUp() {
             return RTT_FIRMWARE.filter(function (channel) {
                 return rtt.selected.indexOf(channel.index) >= 0;
+            }).map((channel) => {
+                const setting = rttSettings.channels.find((entry) => entry.index === channel.index);
+                const downChannel = setting?.down ?? channel.index;
+                return {
+                    ...channel,
+                    mode: setting?.mode ?? channel.mode,
+                    format: setting?.format ?? "text",
+                    encoding: setting?.encoding ?? rttSettings.encoding,
+                    downChannel,
+                    down: RTT_FIRMWARE.find((item) => item.index === downChannel)?.down || 0
+                };
             });
         }
 
@@ -833,12 +1078,14 @@
             var running = rtt.state === "running";
             var up = running
                 ? rttUp().map(function (channel) {
-                      return { index: channel.index, name: channel.name, mode: channel.mode, size: channel.size };
+                      const { index, name, mode, size, format, encoding, downChannel } = channel;
+                      return { index, name, mode, size, format, encoding, downChannel };
                   })
                 : [];
             send({
                 type: "rttStatus",
                 state: rtt.state,
+                yieldedFor: rtt.yieldedFor,
                 channels: running
                     ? {
                           up: up,
@@ -892,12 +1139,10 @@
                 action: "rtt",
                 state: rtt.state,
                 timestamps: rtt.timestamps,
+                settings: rttSettings,
+                logFile: rtt.logFile,
                 targetRunning: chipState !== "halted",
-                channels: running
-                    ? rttUp().map(function (channel) {
-                          return { index: channel.index, name: channel.name, down: channel.down };
-                      })
-                    : []
+                channels: running ? rttUp() : []
             });
         }
 
@@ -912,10 +1157,21 @@
         }
 
         // The control block is found after a short search; the panel tab appears and comes forward without focus.
-        function startRtt() {
-            if (rtt.state !== "stopped") return;
+        function startRtt(reveal = true) {
+            if (debugState !== "none" && debugCores > 1) {
+                if (rtt.state !== "stopped") stopRtt();
+                rttNotice("rtt", { level: "error", key: "rtt.err.multicore" });
+                return;
+            }
+            rtt.intent = true;
+            if (rtt.state === "running" || rtt.state === "starting") return;
+            if (flashRunning || debugStarting || samplingPhase === "restoring") {
+                yieldRtt(flashRunning ? "download" : "debug");
+                return;
+            }
             rttClearNotices();
             rtt.state = "starting";
+            rtt.yieldedFor = null;
             postRttStatus();
             rtt.timer = setTimeout(function () {
                 rtt.timer = null;
@@ -924,18 +1180,56 @@
                 rtt.listed = true;
                 rtt.terminals = Math.max(rtt.terminals, rttUp().length);
                 postRttStatus();
-                notify({ action: "rttReveal", focus: false });
+                if (reveal) notify({ action: "rttReveal", focus: false });
                 if (!rtt.ticker) rtt.ticker = setInterval(rttTick, 1000);
             }, 500);
         }
 
-        function stopRtt() {
+        function setRttInactive(state) {
             if (rtt.timer) clearTimeout(rtt.timer);
             if (rtt.ticker) clearInterval(rtt.ticker);
             rtt.timer = rtt.ticker = null;
-            if (rtt.state === "stopped") return;
-            rtt.state = "stopped";
+            if (rtt.state === state) return;
+            rtt.state = state;
             postRttStatus();
+        }
+
+        function stopRtt() {
+            rtt.intent = false;
+            rtt.yieldedFor = null;
+            setRttInactive("stopped");
+        }
+
+        function yieldRtt(command) {
+            if (!rtt.intent) return;
+            rtt.yieldedFor = command;
+            setRttInactive("pending-host");
+        }
+
+        function updateRttHost(auto = false) {
+            if (rtt.intent && rtt.state === "pending-host") startRtt(false);
+            else if (
+                auto &&
+                rtt.state === "stopped" &&
+                rttSettings.autoStart &&
+                !rttSettings.channels.some((channel) => channel.mode)
+            )
+                startRtt(false);
+        }
+
+        function applyRttSettings(next) {
+            const restart =
+                rtt.state === "running" &&
+                ["channels", "encoding", "virtualTerminals"].some(
+                    (key) => JSON.stringify(next[key]) !== JSON.stringify(rttSettings[key])
+                );
+            if (next["logFile.raw"] !== rttSettings["logFile.raw"]) rtt.logFile = "";
+            rttSettings = next;
+            rtt.selected = next.channels.map((entry) => entry.index ?? entry).sort((a, b) => a - b);
+            if (restart) {
+                stopRtt();
+                startRtt(false);
+            } else postRttStatus();
         }
 
         function fileStamp(ms) {
@@ -1013,6 +1307,10 @@
                 });
                 if (order.join(",") === rtt.selected.join(",")) return;
                 rtt.selected = order;
+                rttSettings = {
+                    ...rttSettings,
+                    channels: order.map((index) => rttSettings.channels.find((entry) => entry.index === index) ?? index)
+                };
                 postRttStatus();
                 if (rtt.state !== "stopped") {
                     stopRtt();
@@ -1056,9 +1354,24 @@
         }
 
         // While saving, the button stops; otherwise the save dialog's suggested file (rtt-<time>.log) is taken.
-        function toggleRttLog() {
-            rtt.logFile = rtt.logFile ? "" : RTT_LOG_DIR + "/rtt-" + fileStamp(Date.now()) + ".log";
-            postRttStatus();
+        function toggleRttLog(cmd) {
+            if (rtt.logFile) {
+                rtt.logFile = "";
+                postRttStatus();
+                send({ type: "commandSuccess", cmd });
+                return;
+            }
+            const extension = rttSettings["logFile.raw"] ? ".bin" : ".log";
+            const suggested = "rtt-" + fileStamp(Date.now()) + extension;
+            const select = (name) => {
+                if (name) {
+                    rtt.logFile = RTT_LOG_DIR + "/" + name;
+                    postRttStatus();
+                }
+                send({ type: name ? "commandSuccess" : "commandCancelled", cmd });
+            };
+            if (options.selectLogFile) options.selectLogFile(suggested, select);
+            else select(suggested);
         }
 
         function showRttTerminals() {
@@ -1084,7 +1397,7 @@
         function dataStatus() {
             var inSession = debugState !== "none" && dataBreakpoints.session > 0;
             return {
-                sessionId: inSession ? "mock-debug-" + dataBreakpoints.session : null,
+                sessionId: inSession ? "mock-debug-" + debugScope() : null,
                 paused: debugState === "paused",
                 epoch: stopEpoch,
                 available: inSession && !debugStarting
@@ -1095,24 +1408,28 @@
             return JSON.stringify([stopEpoch, data.VERSION]);
         }
 
-        function dataSnapshot() {
+        function verifiedBreakpoints() {
             var enabled = 0;
-            return {
-                generation: dataGeneration(),
-                entries: dataBreakpoints.entries.map(function (entry) {
+            return dataBreakpoints.entries
+                .concat(dataBreakpoints.native)
+                .sort((a, b) => a.order - b.order)
+                .map(function (entry) {
                     var fits = entry.enabled && ++enabled <= DWT_COMPARATORS;
                     return Object.assign({}, entry, {
                         verified: fits,
                         message: entry.enabled && !fits ? tr("debug.dataBreakpointHardware") : ""
                     });
-                })
-            };
+                });
+        }
+
+        function dataSnapshot() {
+            return { generation: dataGeneration(), entries: verifiedBreakpoints().filter((entry) => !entry.native) };
         }
 
         function postDataBreakpoints(body) {
             send(Object.assign({ type: "sidebarDataBreakpoints" }, body || {}, dataStatus()));
             // VS Code's Breakpoints view lists them too (the debug sidebar in the shell).
-            notify({ action: "dataBreakpoints", entries: dataSnapshot().entries });
+            notify({ action: "dataBreakpoints", entries: verifiedBreakpoints() });
         }
 
         function dataError(requestId, key) {
@@ -1125,7 +1442,9 @@
             dataHitTimer = null;
             if (ended) {
                 dataBreakpoints.entries = [];
+                dataBreakpoints.native = [];
                 dataBreakpoints.issued = {};
+                coreBreakpoints.clear();
             }
             postDataBreakpoints({ invalidated: true });
             if (debugState === "running") scheduleDataHit();
@@ -1196,7 +1515,7 @@
                 description: tr("debug.dataBreakpointStorage", { name: name, address: address, bytes: storage.width }),
                 // Mirrors the adapter: one address takes a single armed access type.
                 accessTypes: ["write", "read", "readWrite"].filter(function (type) {
-                    return !dataBreakpoints.entries.some(function (entry) {
+                    return !dataBreakpoints.entries.concat(dataBreakpoints.native).some(function (entry) {
                         return entry.enabled && entry.dataId === issued.dataId && entry.accessType !== type;
                     });
                 }),
@@ -1209,21 +1528,83 @@
 
         // The first enabled, armed watchpoint whose storage the running firmware touches stops the target.
         function scheduleDataHit() {
-            var armed = dataSnapshot().entries.filter(function (entry) {
+            var armed = verifiedBreakpoints().filter(function (entry) {
                 return entry.verified && !(entry.accessType === "write" && entry.constant);
             });
             if (!armed.length) return;
-            var hit = armed[0];
+            const before = new Map(
+                simulator
+                    .scalarSamples(
+                        armed.map((entry) => entry.name),
+                        Date.now()
+                    )
+                    .map((sample) => [sample.name, sample.value])
+            );
             dataHitTimer = setTimeout(function () {
                 dataHitTimer = null;
                 if (stopped || debugState !== "running") return;
+                simulator.tick();
+                const hit = armed.find((entry) => conditionMatches(entry.condition));
+                if (!hit) return scheduleDataHit();
+                const next = simulator.scalarSamples([hit.name], Date.now())[0]?.value;
                 notify({
                     action: "dataBreakpointHit",
                     name: hit.name,
                     accessType: hit.accessType,
-                    condition: hit.condition
+                    oldValue: before.get(hit.name),
+                    newValue: next
                 });
             }, 700);
+        }
+
+        const conditionPattern = /^([\w.\[\]]+)\s*(>=|<=|==|!=|>|<)\s*(-?(?:\d+\.?\d*|\.\d+))$/;
+        function conditionMatches(condition) {
+            if (!condition) return true;
+            const match = conditionPattern.exec(condition.trim());
+            if (!match) return false;
+            const [, name, operator, expected] = match;
+            const actual = simulator.scalarSamples([name], Date.now())[0]?.value;
+            if (!Number.isFinite(actual)) return false;
+            const target = Number(expected);
+            return {
+                ">": actual > target,
+                "<": actual < target,
+                ">=": actual >= target,
+                "<=": actual <= target,
+                "==": actual === target,
+                "!=": actual !== target
+            }[operator];
+        }
+
+        function nativeBreakpoint(name, operation, value, identity = stopEpoch) {
+            if (debugState !== "paused" || identity !== stopEpoch) return false;
+            const entries = dataBreakpoints.native;
+            if (operation === "add") {
+                const info = dataInfo(name);
+                if (!info.dataId || !info.accessTypes.includes(value)) return false;
+                if (!entries.some((entry) => entry.dataId === info.dataId && entry.accessType === value)) {
+                    const order = dataBreakpoints.nextId++;
+                    entries.push({
+                        id: "native:" + order,
+                        order,
+                        native: true,
+                        name,
+                        accessType: value,
+                        dataId: info.dataId,
+                        description: info.description,
+                        constant: info.constant,
+                        enabled: true,
+                        condition: ""
+                    });
+                }
+            } else {
+                const entry = entries.find((entry) => entry.id === name);
+                if (!entry) return false;
+                if (operation === "remove") entries.splice(entries.indexOf(entry), 1);
+                else if (operation === "condition") entry.condition = value;
+            }
+            postDataBreakpoints(dataSnapshot());
+            return true;
         }
 
         // Removing a watch row removes the watchpoints set on it and its members, without pausing the target.
@@ -1276,9 +1657,11 @@
                 var duplicate = dataBreakpoints.entries.some(function (entry) {
                     return entry.dataId === resolved.dataId && entry.accessType === message.accessType;
                 });
-                if (!duplicate)
+                if (!duplicate) {
+                    const order = dataBreakpoints.nextId++;
                     dataBreakpoints.entries.push({
-                        id: String(dataBreakpoints.nextId++),
+                        id: String(order),
+                        order,
                         name: message.name,
                         dataId: resolved.dataId,
                         accessType: message.accessType,
@@ -1287,6 +1670,7 @@
                         constant: resolved.constant,
                         description: resolved.description
                     });
+                }
                 return reply();
             }
             var entry = dataBreakpoints.entries.find(function (item) {
@@ -1332,7 +1716,6 @@
             if (cmd === "mcu-vscode.startRtt") startRtt();
             else if (cmd === "mcu-vscode.stopRtt") stopRtt();
             else if (cmd === "mcu-vscode.showRttTerminals") showRttTerminals();
-            else if (cmd === "mcu-vscode.rttSaveLog") toggleRttLog();
             else if (cmd === "mcu-vscode.rttToggleTimestamps") {
                 rtt.timestamps = !rtt.timestamps;
                 postRttStatus();
@@ -1341,6 +1724,12 @@
 
         function handleExecute(cmd) {
             switch (cmd) {
+                case "mcu-vscode.selectElf":
+                case "mcu-vscode.selectDebugger":
+                case "mcu-vscode.selectMcuCore":
+                case "mcu-vscode.selectIoc":
+                    configuration.select(cmd);
+                    break;
                 case "mcu-vscode.enableAgentAccess":
                 case "mcu-vscode.disableAgentAccess":
                     agentAccessEnabled = cmd === "mcu-vscode.enableAgentAccess";
@@ -1363,10 +1752,12 @@
                 case "mcu-vscode.startRtt":
                 case "mcu-vscode.stopRtt":
                 case "mcu-vscode.showRttTerminals":
-                case "mcu-vscode.rttSaveLog":
                 case "mcu-vscode.rttToggleTimestamps":
                     handleRtt(cmd);
                     send({ type: "commandSuccess", cmd: cmd });
+                    break;
+                case "mcu-vscode.rttSaveLog":
+                    toggleRttLog(cmd);
                     break;
                 case "mcu-vscode.rttSelectChannels":
                     selectRttChannels(cmd);
@@ -1387,7 +1778,7 @@
                     });
                     break;
                 case "mcu-vscode.refreshCubeMxFirmware":
-                    // src/mainViewProvider.js re-renders the card; the mock's firmware state is already installed.
+                    configuration.publish();
                     send({ type: "commandSuccess", cmd: cmd });
                     break;
                 case "mcu-vscode.autoDetect":
@@ -1411,8 +1802,17 @@
                     send({ type: "commandSuccess", cmd: cmd });
                     break;
                 default:
-                    send({ type: "commandSuccess", cmd: cmd });
-                    notify({ action: "toast", text: "已执行命令 " + cmd });
+                    send({
+                        type: "notice",
+                        area: "global",
+                        id: cmd,
+                        notice: {
+                            level: "error",
+                            key: "msg.commandNotRegistered",
+                            params: { cmd }
+                        }
+                    });
+                    send({ type: "commandError", cmd: cmd });
                     break;
             }
         }
@@ -1463,7 +1863,7 @@
             stopSampling: stopSampling,
             // The Breakpoints view's checkbox toggles a sidebar watchpoint like the menu does.
             setDataBreakpointEnabled: function (id, enabled) {
-                var entry = dataBreakpoints.entries.find(function (item) {
+                var entry = dataBreakpoints.entries.concat(dataBreakpoints.native).find(function (item) {
                     return item.id === id;
                 });
                 if (!entry || debugState === "none") return;
@@ -1475,9 +1875,18 @@
                     scheduleDataHit();
                 }
             },
+            nativeBreakpoint,
+            nativeBreakpointInfo(name) {
+                if (debugState !== "paused") return null;
+                return { ...dataInfo(name), epoch: stopEpoch };
+            },
+            breakpointEpoch: () => stopEpoch,
             getWatchList: function () {
                 return watchItems.slice();
             },
+            readItems: () => readItems().concat(writeItems),
+            applyRttSettings,
+            selectCore,
             isLiveRunning: function () {
                 return samplingIntent;
             },
@@ -1486,6 +1895,9 @@
             },
             destroy: function () {
                 cancelDebugStart();
+                flashTimers.forEach(clearTimeout);
+                if (mcpCheckTimer !== null) clearTimeout(mcpCheckTimer);
+                svdTimers.forEach(clearTimeout);
                 if (rtt.timer) clearTimeout(rtt.timer);
                 if (rtt.ticker) clearInterval(rtt.ticker);
                 stopped = true;
