@@ -88,13 +88,14 @@ function gdbVariablePath(expression) {
 }
 
 function kindOf(type) {
-    if (/\*\s*(?:const)?\s*$/.test(type)) return null;
-    const parsed = templateType(type);
+    const objectType = String(type).replace(/\s*&&?\s*$/, "");
+    if (/\*\s*(?:const)?\s*$/.test(objectType)) return null;
+    const parsed = templateType(objectType);
     if (/std::(?:__debug|__\d+)::/.test(parsed.name)) return null;
     const match = parsed.name.match(
         /^std::(?:__cxx11::)?(basic_string|vector|array|pair|tuple|map|multimap|set|multiset|unordered_map|unordered_multimap|unordered_set|unordered_multiset|list|forward_list|deque|unique_ptr|shared_ptr|weak_ptr|optional|variant)$/
     );
-    return match ? { kind: match[1], args: parsed.args, type: safeType(type) } : null;
+    return match ? { kind: match[1], args: parsed.args, type: safeType(objectType) } : null;
 }
 
 function outerType(type) {

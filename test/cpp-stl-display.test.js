@@ -36,6 +36,10 @@ function vector(mi, name = "numbers", length = 250, type = "std::vector<int, std
     assert.throws(() => templateType("std::vector<int"), /Incomplete/);
     assert.strictEqual(kindOf("std::__debug::vector<int>"), null);
     assert.strictEqual(kindOf("std::vector<int>*"), null);
+    assert.strictEqual(kindOf("std::vector<int> *&"), null);
+    assert.strictEqual(kindOf("std::vector<int> * const &"), null);
+    assert.strictEqual(kindOf("const std::list<int> &").type, "const std::list<int>");
+    assert.strictEqual(kindOf("std::map<int, int> &&").type, "std::map<int, int>");
     assert(constValue("int const"));
     assert(constValue("const std::vector<int> &"));
     assert(!constValue("std::vector<const int*>"));
@@ -316,6 +320,16 @@ function vector(mi, name = "numbers", length = 250, type = "std::vector<int, std
         }),
         /read only/
     );
+    map.mi.item("orderedRef", "const std::map<int, int> &", "{...}", [header, size]);
+    const orderedRef = await map.evaluate("orderedRef");
+    assert.match(orderedRef.result, /map length 2/);
+    const refEntries = await map.expand(orderedRef, { start: 1, count: 1 });
+    const refPair = await map.expand(refEntries[0]);
+    assert.deepStrictEqual(
+        refPair.map((item) => item.value),
+        ["2", "22"]
+    );
+    assert(refPair[1].presentationHint.attributes.includes("readOnly"));
     const badView = {
         kind: "unordered_map",
         linkOffsets: { _M_nxt: 0n },

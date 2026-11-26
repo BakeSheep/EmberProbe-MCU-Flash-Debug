@@ -61,6 +61,8 @@ class StlMi extends EventEmitter {
             if (name === "sizeof(void*)") return { value: String(this.width) };
             if (/^sizeof/.test(name)) return { value: name.includes("char") ? "1" : "4" };
             if (name.includes("*)0)->")) {
+                if (/&\s*'?\s*\*\s*\)\s*0\)\s*->/.test(name))
+                    throw new Error("cannot declare pointer to reference in offset expression");
                 const field = name.split("*)0)->")[1];
                 return {
                     value: String(

@@ -141,6 +141,40 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         delete adapter.config.prettyPrintingMode;
         await adapter.selectFrame(contextFrames[0].id);
 
+        const rawAddress = (await evaluate("rawValue")).memoryReference;
+        const locals = await expand(contextScopes[0]);
+        const localReference = locals.find((item) => item.name === "localReference");
+        assert.strictEqual(localReference.value, "7");
+        assert.strictEqual(localReference.memoryReference, rawAddress);
+        assert(localReference.presentationHint.attributes.includes("readOnly"));
+        for (const mode of ["builtin", "raw"]) {
+            adapter.config.prettyPrintingMode = mode;
+            for (const [expression, suffix] of [
+                ["globalReference", /[^&]&$/],
+                ["globalRvalueReference", /&&$/],
+                ["globalConstReference", /[^&]&$/]
+            ]) {
+                const args = { frameId: contextFrames[0].id, expression, context: "hover" };
+                for (let i = 0; i < 2; i++) {
+                    const item = await adapter.handle("evaluate", args);
+                    assert.strictEqual(item.result, "7");
+                    assert.strictEqual(item.memoryReference, rawAddress);
+                    assert.match(item.type, suffix);
+                }
+            }
+        }
+        delete adapter.config.prettyPrintingMode;
+        const linkedReference = await evaluate("linkedReference");
+        assert.match(linkedReference.type, /&$/);
+        assert.deepStrictEqual(await leaves(linkedReference), ["1", "2", "3"]);
+        const mapReference = await evaluate("mapReference");
+        assert.match(mapReference.type, /&$/);
+        assert.match(mapReference.result, /map length 2/);
+        const mapEntries = await expand(mapReference);
+        assert(mapEntries.length > 0);
+        const mapEntryFields = await expand(mapEntries[0]);
+        assert((await expand(mapEntryFields[1]))[0].presentationHint.attributes.includes("readOnly"));
+
         const classes = await classMembers(await evaluate("classObject"));
         const repeated = classes.filter((item) => item.name === "repeated");
         assert.deepStrictEqual(repeated.map((item) => item.value).sort(), ["11", "21", "31"]);

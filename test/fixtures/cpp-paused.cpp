@@ -48,6 +48,11 @@ std::set<int> emptySet;
 std::unordered_set<int> emptyHashSet;
 const std::shared_ptr<int> constOwner = std::make_shared<int>(41);
 int rawValue = 7;
+int &globalReference = rawValue;
+int &&globalRvalueReference = static_cast<int &&>(rawValue);
+const int &globalConstReference = rawValue;
+std::list<int> &linkedReference = linkedValues;
+const std::map<int, std::vector<int>> &mapReference = ordered;
 int* const rawPointer = &rawValue;
 struct RawOwner { int* pointer; };
 const RawOwner rawOwner = {&rawValue};
@@ -75,9 +80,10 @@ int reviewCounter = 100;
 namespace app { int reviewTotal = 12; }
 namespace { int reviewHidden = 13; }
 struct ReviewPair { int x; };
-extern "C" __attribute__((noinline)) void checkpoint(ReviewPair p = {22}, int reviewCounter = 7) {
+extern "C" __attribute__((noinline)) void checkpoint(ReviewPair p = {22}, int reviewCounter = 7,
+                                                      const int &localReference = rawValue) {
     asm volatile("" ::: "memory");
-    (void)(app::reviewTotal + reviewHidden);
+    (void)(app::reviewTotal + reviewHidden + localReference);
 }
 
 int main() {
