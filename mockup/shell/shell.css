@@ -1245,7 +1245,7 @@ button {
 #breadcrumbs {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 0;
     height: 22px;
     flex: 0 0 22px;
     padding: 0 12px;

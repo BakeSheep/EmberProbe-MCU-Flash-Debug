@@ -111,7 +111,7 @@
                             <span class="codicon codicon-files" aria-hidden="true"></span>
                         </button>
                         <button type="button" class="activity-item" data-view="search" title="搜索 (Ctrl+Shift+F)">
-                            <span class="codicon codicon-search" aria-hidden="true"></span>
+                            <span class="codicon codicon-search-large" aria-hidden="true"></span>
                         </button>
                         <button type="button" class="activity-item" data-view="scm" title="源代码管理 (Ctrl+Shift+G)">
                             <span class="codicon codicon-source-control" aria-hidden="true"></span>
@@ -320,9 +320,9 @@
                                     <span class="section-actions"
                                         ><button type="button" title="添加">
                                             <span class="codicon codicon-add" aria-hidden="true"></span></button
-                                        ><button type="button" title="禁用断点">
+                                        ><button type="button" title="切换激活断点">
                                             <span
-                                                class="codicon codicon-circle-slash"
+                                                class="codicon codicon-activate-breakpoints"
                                                 aria-hidden="true"
                                             ></span></button
                                     ></span>
@@ -341,8 +341,11 @@
                             </header>
                             <div class="view-body">
                                 <div class="search-box">
-                                    <input value="emberprobe" spellcheck="false" /><button type="button">
-                                        <span class="codicon codicon-close" aria-hidden="true"></span>
+                                    <input value="emberprobe" spellcheck="false" /><button
+                                        type="button"
+                                        title="清除扩展搜索结果"
+                                    >
+                                        <span class="codicon codicon-clear-all" aria-hidden="true"></span>
                                     </button>
                                 </div>
                                 <div class="section-header">
@@ -455,7 +458,7 @@
                                     <span class="codicon codicon-split-horizontal" aria-hidden="true"></span>
                                 </button>
                                 <button type="button" title="最大化面板">
-                                    <span class="codicon codicon-chevron-up" aria-hidden="true"></span>
+                                    <span class="codicon codicon-screen-full" aria-hidden="true"></span>
                                 </button>
                                 <button type="button" id="panelClose" title="关闭面板">
                                     <span class="codicon codicon-close" aria-hidden="true"></span>
@@ -558,7 +561,7 @@
                         <span class="codicon codicon-warning" aria-hidden="true"></span> 2
                     </button>
                     <button type="button" class="status-item hidden" id="debugSessionStatus" title="调试会话">
-                        <span class="codicon codicon-debug-alt" aria-hidden="true"></span>
+                        <span class="codicon codicon-debug-alt-small" aria-hidden="true"></span>
                         <span id="debugSessionName"></span>
                     </button>
                 </div>

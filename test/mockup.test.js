@@ -1351,12 +1351,17 @@ async function testShell() {
     }
     try {
         assert.ok(doc.querySelector('[data-view="explorer"] .codicon-files'));
+        assert.ok(doc.querySelector('[data-view="search"] .codicon-search-large'));
         assert.ok(doc.querySelector('[data-view="debug"] .codicon-debug-alt'));
+        assert.ok(doc.querySelector('[data-view="debug"] .codicon-activate-breakpoints'));
+        assert.ok(doc.querySelector('[data-view="extensions"] .codicon-clear-all'));
+        assert.ok(doc.querySelector(".panel-actions .codicon-screen-full"));
+        assert.ok(doc.querySelector(".tab .tab-close .codicon-close-small"));
         assert.ok(doc.querySelector("#commandCenter .codicon-search"));
         assert.equal(doc.getElementById("sidebar-resizer").parentElement.id, "workbench-body");
         assert.equal(doc.getElementById("panel-resizer").parentElement.id, "main-column");
         assert.ok(doc.querySelector("#problemStatus .codicon-error"));
-        assert.ok(doc.querySelector(".status-left #debugSessionStatus"));
+        assert.ok(doc.querySelector(".status-left #debugSessionStatus .codicon-debug-alt-small"));
         assert.ok(doc.querySelector("#debug-toolbar .codicon-debug-step-over"));
         assert.ok(doc.querySelector('[data-tab="livewatch"].active'));
         assert.equal(doc.getElementById("panel").classList.contains("collapsed"), false);
@@ -1468,7 +1473,11 @@ async function testShell() {
         doc.querySelector('[data-tab="FreeRTOSConfig.h"]').click();
         assert.ok(doc.getElementById("code").textContent.includes("configUSE_PREEMPTION"));
         assert.ok(!doc.getElementById("code").textContent.includes("pid_update"));
-        assert.ok(doc.getElementById("breadcrumbs").textContent.includes("Core›Inc›FreeRTOSConfig.h"));
+        assert.deepEqual(
+            Array.from(doc.getElementById("breadcrumbs").querySelectorAll(".crumb"), (node) => node.textContent),
+            ["EmberProbeDemo", "Core", "Inc", "FreeRTOSConfig.h"]
+        );
+        assert.equal(doc.getElementById("breadcrumbs").querySelectorAll(".codicon-chevron-right").length, 3);
         assert.equal(doc.querySelector(".code-line.active-line"), null);
         doc.querySelector('.gutter-line[data-line="4"]').click();
         assert.ok(doc.querySelector('.gutter-line[data-line="4"] .breakpoint'));

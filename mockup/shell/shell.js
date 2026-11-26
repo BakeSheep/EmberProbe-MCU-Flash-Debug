@@ -369,7 +369,7 @@
             .map(function (crumb) {
                 return '<span class="crumb">' + esc(crumb) + "</span>";
             })
-            .join("<span>›</span>");
+            .join(icon("chevron-right"));
         updateCursorStatus();
         if (file === state.debugFile && state.debugLine && state.debugActive && state.debugPaused) {
             var active = $("code").querySelector('.code-line[data-line="' + state.debugLine + '"]');
@@ -408,7 +408,7 @@
                 '<span class="tab-close" data-close="' +
                 esc(id) +
                 '">' +
-                icon("close") +
+                icon("close-small") +
                 "</span></div>";
         });
         $("tabList").innerHTML = html;
