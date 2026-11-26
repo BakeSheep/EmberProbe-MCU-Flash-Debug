@@ -8,6 +8,8 @@ function connectionDetails(options) {
         rtos: options.rtos || "",
         probeSerial: options.probeSerial || "",
         adapterSpeedKhz: options.adapterSpeedKhz || 0,
+        ...(options.adapterBackend ? { adapterBackend: options.adapterBackend } : {}),
+        ...(options.cmsisDapQuirk && options.cmsisDapQuirk !== "auto" ? { cmsisDapQuirk: options.cmsisDapQuirk } : {}),
         ...(options.inventory ? { inventory: options.inventory } : {})
     };
 }
@@ -34,15 +36,21 @@ function isProbeCommunicationFailure(text) {
 function diagnoseProbeCommunication(text, make) {
     // HID writes send probe commands, including CMD_INFO before target access; they are not Flash writes.
     if (isProbeCommunicationFailure(text)) {
+        const actions = [
+            "先停止 EmberProbe 调试、采样及其他使用该探针的工具，确认相关 OpenOCD 进程已退出。",
+            "确认退出后仍失败，可重新插拔探针 USB，再手动重试；系统仍能枚举设备不代表通信正常。",
+            "保留原始日志、OpenOCD/HIDAPI 版本及探针固件信息，以区分后端与固件问题。"
+        ];
+        if (/cmsis[-_]dap (?:command|transfer count) mismatch\b/i.test(String(text || ""))) {
+            actions.push(
+                "若出现 CMSIS-DAP command/transfer count mismatch，可在设置中将 emberprobe.cmsisDapQuirk 设为 enable，并尝试将 emberprobe.adapterSpeedKhz 设为 1000 或 4000。"
+            );
+        }
         return make(
             "PROBE_COMMUNICATION_FAILED",
             "probe_connection",
             "OpenOCD 与调试探针通信失败；占用、USB/HID 后端或探针固件异常均有可能。",
-            [
-                "先停止 EmberProbe 调试、采样及其他使用该探针的工具，确认相关 OpenOCD 进程已退出。",
-                "确认退出后仍失败，可重新插拔探针 USB，再手动重试；系统仍能枚举设备不代表通信正常。",
-                "保留原始日志、OpenOCD/HIDAPI 版本及探针固件信息，以区分后端与固件问题。"
-            ],
+            actions,
             false
         );
     }

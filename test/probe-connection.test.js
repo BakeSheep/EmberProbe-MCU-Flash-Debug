@@ -8,7 +8,8 @@ const path = require("path");
 const {
     resolveProbeConnection,
     normalizeProbeSerial,
-    normalizeAdapterSpeed
+    normalizeAdapterSpeed,
+    normalizeCmsisDapQuirk
 } = require("../skills/_emberprobe/probe-connection");
 const {
     parseWindowsInventory,
@@ -793,6 +794,80 @@ async function main() {
         const args = buildOpenOcdConfigArgs(launch, "auto", hid);
         assert.strictEqual(args[args.indexOf(launch.probePath) + 2], "cmsis-dap backend hid");
         assert(!buildOpenOcdConfigArgs(launch, "auto", {}).includes("cmsis-dap backend hid"));
+    });
+
+    await scenario("CMSIS-DAP quirk validation, OpenOCD config args, and session staleness", async () => {
+        const { ProbeConnectionService } = require("../src/services/probeConnectionService");
+        assert.strictEqual(normalizeCmsisDapQuirk(), "auto");
+        assert.strictEqual(normalizeCmsisDapQuirk(""), "auto");
+        assert.strictEqual(normalizeCmsisDapQuirk("enable"), "enable");
+        assert.strictEqual(normalizeCmsisDapQuirk("disable"), "disable");
+        assert.throws(() => normalizeCmsisDapQuirk("bad"), { code: "CMSIS_DAP_QUIRK_INVALID" });
+
+        assert.strictEqual(
+            resolveProbeConnection({ probe: "cmsis-dap.cfg", target: "stm32h7x.cfg", cmsisDapQuirk: "enable" })
+                .cmsisDapQuirk,
+            "enable"
+        );
+        assert.strictEqual(
+            resolveProbeConnection({ probe: "cmsis-dap.cfg", target: "stm32h7x.cfg", cmsisDapQuirk: "auto" })
+                .cmsisDapQuirk,
+            undefined
+        );
+        assert.strictEqual(
+            resolveProbeConnection({ probe: "jlink.cfg", target: "stm32h7x.cfg", cmsisDapQuirk: "enable" })
+                .cmsisDapQuirk,
+            undefined
+        );
+
+        const cmsisLaunch = {
+            probePath: "/s/interface/cmsis-dap.cfg",
+            targetPath: "/s/target/stm32h7x.cfg",
+            scriptsRoot: "/s"
+        };
+        const quirkArgs = buildOpenOcdConfigArgs(cmsisLaunch, "auto", {
+            adapterBackend: "hid",
+            cmsisDapQuirk: "enable"
+        });
+        assert.strictEqual(quirkArgs[quirkArgs.indexOf(cmsisLaunch.probePath) + 2], "cmsis-dap backend hid");
+        assert.strictEqual(quirkArgs[quirkArgs.indexOf(cmsisLaunch.probePath) + 4], "cmsis-dap quirk enable");
+        assert(
+            buildOpenOcdConfigArgs(cmsisLaunch, "auto", { cmsisDapQuirk: "disable" }).includes(
+                "cmsis-dap quirk disable"
+            )
+        );
+        assert(!buildOpenOcdConfigArgs(cmsisLaunch, "auto", { cmsisDapQuirk: "auto" }).join(" ").includes("quirk"));
+        assert(
+            !buildOpenOcdConfigArgs({ ...cmsisLaunch, probePath: "/s/interface/jlink.cfg" }, "auto", {
+                cmsisDapQuirk: "enable"
+            })
+                .join(" ")
+                .includes("quirk")
+        );
+
+        let configured = {
+            probe: "cmsis-dap.cfg",
+            target: "stm32h7x.cfg",
+            transport: "auto",
+            probeSerial: "",
+            adapterSpeedKhz: 0,
+            openocdPath: "openocd",
+            cmsisDapQuirk: "auto"
+        };
+        const service = new ProbeConnectionService({ getConfig: () => configured });
+        const identity = service._effectiveSettingsIdentity(configured);
+        const cmsisSession = { options: { probe: "cmsis-dap.cfg", settingsIdentity: identity, cmsisDapQuirk: "auto" } };
+        assert.strictEqual(service.settingsChanged(cmsisSession), false);
+        configured = { ...configured, cmsisDapQuirk: "enable" };
+        assert.strictEqual(service.settingsChanged(cmsisSession), true);
+
+        configured = { ...configured, probe: "jlink.cfg", cmsisDapQuirk: "auto" };
+        const jlinkIdentity = service._effectiveSettingsIdentity(configured);
+        const jlinkSession = {
+            options: { probe: "jlink.cfg", settingsIdentity: jlinkIdentity, cmsisDapQuirk: "auto" }
+        };
+        configured = { ...configured, cmsisDapQuirk: "enable" };
+        assert.strictEqual(service.settingsChanged(jlinkSession), false);
     });
 
     console.log("Probe inventory, identity and preflight tests passed");

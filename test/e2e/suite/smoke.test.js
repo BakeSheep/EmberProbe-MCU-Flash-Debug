@@ -73,7 +73,7 @@ async function run() {
     const settings = extension.packageJSON.contributes.configuration.flatMap((group) =>
         Object.entries(group.properties)
     );
-    assert.strictEqual(settings.length, 35);
+    assert.strictEqual(settings.length, 36);
     for (const [key, setting] of settings)
         assert.deepStrictEqual(
             vscode.workspace.getConfiguration().inspect(key)?.defaultValue,
@@ -91,6 +91,7 @@ async function run() {
         "mcp.toolsets"
     ])
         assert.strictEqual(config.inspect(key)?.defaultValue, undefined, `${key} must no longer be registered`);
+    assert.strictEqual(config.get("cmsisDapQuirk"), "auto");
     assert.strictEqual(config.get("prettyPrintingMode"), "builtin");
     assert.deepStrictEqual(config.get("rtt.channels"), [0]);
     assert.strictEqual(config.get("rtt.timestamps"), false);

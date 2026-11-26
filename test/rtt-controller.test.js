@@ -1812,6 +1812,69 @@ function makeController(host, options = {}) {
         assert.strictEqual(controller.state, "stop-failed");
         assert.strictEqual(host._probeCoordinator.isActive("rtt"), true);
     });
+
+    await scenario("RTT waits for pending debug launch before attaching to the debug OpenOCD server", async () => {
+        const host = fakeHost();
+        const managed = fakeHostSession();
+        managed.session.ready = true;
+        host.debugLaunch.managedServer = managed.session;
+        host.debugLaunch.starting = true;
+        host.debugLaunch.lifecycle = { pending: false };
+        const socket = idleSocket();
+        const { controller } = makeController(host, {
+            net: { connect: () => socket },
+            rttSettings: () => ({ controlBlockAddress: "0x24000000", channels: [0] }),
+            autoStart: () => true
+        });
+        assert.deepStrictEqual(controller._selectHost(), { blocked: "debug-starting" });
+        host.debugLaunch.starting = false;
+        host.debugLaunch.lifecycle.pending = true;
+        assert.deepStrictEqual(controller._selectHost(), { blocked: "debug-starting" });
+        controller.onSessionsChanged();
+        await flushQueue(controller);
+        assert.strictEqual(managed.calls.length, 0);
+        await assert.rejects(controller.start(), { code: "PROBE_BUSY" });
+        assert.strictEqual(managed.calls.length, 0);
+
+        host.debugLaunch.lifecycle.pending = false;
+        controller.onSessionsChanged();
+        await flushQueue(controller);
+        assert.strictEqual(
+            managed.calls.some((call) => call.operation === "start"),
+            true
+        );
+        await controller.stop();
+    });
+
+    await scenario(
+        "RTT _fail retains structured probe diagnostics while stripping sampling disconnect i18nKey",
+        async () => {
+            const host = fakeHost();
+            const { controller } = makeController(host);
+            const err = Object.assign(new Error("OpenOCD comm failed"), {
+                code: "PROBE_COMMUNICATION_FAILED",
+                category: "probe_connection",
+                stage: "openocd_start",
+                likelyCause: "CMSIS-DAP command mismatch on HID",
+                suggestedActions: ["Enable cmsisDapQuirk"],
+                details: { openocdTail: ["Error: CMSIS-DAP command mismatch. Expected 0x6 received 0x5"] },
+                i18nKey: "live.probeDisconnected",
+                i18nParams: { reason: "disconnect" }
+            });
+            await controller._fail(err);
+            const statusError = controller.status().error;
+            assert.strictEqual(statusError.code, "PROBE_COMMUNICATION_FAILED");
+            assert.strictEqual(statusError.category, "probe_connection");
+            assert.strictEqual(statusError.stage, "openocd_start");
+            assert.strictEqual(statusError.likelyCause, "CMSIS-DAP command mismatch on HID");
+            assert.deepStrictEqual(statusError.suggestedActions, ["Enable cmsisDapQuirk"]);
+            assert.deepStrictEqual(statusError.details, {
+                openocdTail: ["Error: CMSIS-DAP command mismatch. Expected 0x6 received 0x5"]
+            });
+            assert.strictEqual(statusError.i18nKey, undefined);
+            assert.strictEqual(statusError.i18nParams, undefined);
+        }
+    );
     console.log("RTT controller tests passed");
 })().catch((error) => {
     console.error(error);

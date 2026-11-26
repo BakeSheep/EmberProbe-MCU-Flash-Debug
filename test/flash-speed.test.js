@@ -7,8 +7,11 @@ const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const {
     FLASH_SPEED_KHZ,
+    CMSIS_DAP_HID_FLASH_SPEED_KHZ,
     flashSpeedKhz,
     buildFlashProgramCommand,
+    buildDownloadBoostCommand,
+    DOWNLOAD_CLOCK_RESTORE,
     flashClockTracker,
     flashPhaseFromLine,
     isTentativeFlashPhase
@@ -19,6 +22,15 @@ function speedPolicy() {
     assert.strictEqual(flashSpeedKhz({ probe: "stlink.cfg" }), FLASH_SPEED_KHZ.stlink);
     assert.strictEqual(flashSpeedKhz({ probe: "jlink.cfg" }), FLASH_SPEED_KHZ.jlink);
     assert.strictEqual(flashSpeedKhz({ probe: "cmsis-dap.cfg" }), FLASH_SPEED_KHZ["cmsis-dap"]);
+    assert.strictEqual(CMSIS_DAP_HID_FLASH_SPEED_KHZ, 4000);
+    assert.strictEqual(flashSpeedKhz({ probe: "cmsis-dap.cfg", adapterBackend: "hid" }), CMSIS_DAP_HID_FLASH_SPEED_KHZ);
+    assert.strictEqual(
+        flashSpeedKhz({ probe: "custom-dap.cfg", profile: { family: "cmsis-dap", backend: "hid" } }),
+        CMSIS_DAP_HID_FLASH_SPEED_KHZ
+    );
+    assert.strictEqual(flashSpeedKhz({ probe: "cmsis-dap.cfg", adapterBackend: "hid", adapterSpeedKhz: 1800 }), 1800);
+    assert(buildDownloadBoostCommand(4000).includes("EP_FLASH_STAGE=program_boost"));
+    assert(DOWNLOAD_CLOCK_RESTORE.includes("EP_FLASH_STAGE=program"));
     assert.strictEqual(flashSpeedKhz({ probe: "custom.cfg", profile: { family: "stlink" } }), 24000);
     // An explicit setting is the programming clock; unknown adapters keep the script clock.
     assert.strictEqual(flashSpeedKhz({ probe: "stlink.cfg", adapterSpeedKhz: 1800 }), 1800);

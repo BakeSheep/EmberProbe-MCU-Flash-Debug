@@ -121,4 +121,55 @@ assert.strictEqual(i18n.matchVscodeLang("en"), "en", "English locale should map 
 assert.strictEqual(i18n.matchVscodeLang("ja"), "en", "non-Chinese locales should fall back to en");
 assert.strictEqual(i18n.matchVscodeLang(undefined), "en", "missing locale should fall back to en");
 
+scenario("Debug session tolerates recoverable mismatches during tentative download boost", () => {
+    const { ManagedOpenOcdSession } = require("../src/liveWatch");
+    const events = [];
+    const makeSession = () =>
+        new ManagedOpenOcdSession(
+            {
+                executable: "openocd",
+                probe: "cmsis-dap.cfg",
+                target: "stm32h7x.cfg",
+                port: 6666,
+                gdbPort: 3333,
+                mode: "debug"
+            },
+            { onDisconnect: (err) => events.push(err) }
+        );
+
+    const session = makeSession();
+    const targetCheck = { line: () => false };
+    session._handleServerLog("EP_FLASH_STAGE=program_boost", targetCheck);
+    assert.strictEqual(session._tentativeDownloadBoost, true);
+    for (const line of [
+        "Error: CMSIS-DAP command mismatch. Expected 0x6 received 0x5",
+        "Error: CMSIS-DAP transfer count mismatch: expected 22, got 0",
+        "Error: Target communication error"
+    ]) {
+        session._handleServerLog(line, targetCheck);
+        assert.strictEqual(session.stopped, false, line);
+        assert.strictEqual(session.connectionFailed, false, line);
+        assert.strictEqual(events.length, 0, line);
+        assert(session.server.logTail.includes(line), line);
+    }
+
+    session._handleServerLog("EP_FLASH_STAGE=program", targetCheck);
+    assert.strictEqual(session._tentativeDownloadBoost, false);
+    session._handleServerLog("Error: CMSIS-DAP command mismatch. Expected 0x6 received 0x5", targetCheck);
+    assert.strictEqual(session.connectionFailed, true);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].code, "PROBE_COMMUNICATION_FAILED");
+
+    events.length = 0;
+    const usbFailureSession = makeSession();
+    usbFailureSession._handleServerLog("EP_FLASH_STAGE=program_boost", targetCheck);
+    usbFailureSession._handleServerLog(
+        "Error: error writing data: hid_write/WaitForSingleObject: (0x000003E5)",
+        targetCheck
+    );
+    assert.strictEqual(usbFailureSession.connectionFailed, true);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].code, "PROBE_COMMUNICATION_FAILED");
+});
+
 console.log("Webview & live session tests passed");

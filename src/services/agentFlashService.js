@@ -200,6 +200,7 @@ class AgentFlashService {
                 probeSerial: connection.probeSerial,
                 adapterSerial: connection.adapterSerial,
                 adapterBackend: connection.adapterBackend,
+                cmsisDapQuirk: connection.cmsisDapQuirk,
                 targetCheck: connection.targetCheck,
                 selectionIdentity: connection.selectionIdentity,
                 profile: connection.profile,

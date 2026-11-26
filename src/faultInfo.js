@@ -237,6 +237,7 @@ async function readFaultInfo(options) {
         probeSerial: options.probeSerial,
         adapterSerial: options.adapterSerial,
         adapterBackend: options.adapterBackend,
+        cmsisDapQuirk: options.cmsisDapQuirk,
         targetCheck: options.targetCheck,
         adapterSpeedKhz: options.adapterSpeedKhz,
         inventory: options.inventory,

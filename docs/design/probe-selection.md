@@ -112,13 +112,13 @@ J-Link 不走这个后端，因此 J-Link 读取成功与此故障可以同时�
 
 这类探针的 Agent 内存写入仅提供 `once`，每次操作都须确认；既有 24 小时许可不能跳过确认。Flash 和外设写入沿用原有逐次确认。界面中的写入、下载、调试启动点击仍各自代表一次显式操作，不新增第二次审批弹窗。
 
-写入确认绑定 ELF 与连接身份；工作区持久授权同样绑定连接，旧的仅绑定 ELF 的授权失效。外部 DAP 写入绑定调试会话与工作区。会话运行中更改连接设置后，旧会话禁止继续写入，须停止并重新启动；读取仍使用原连接。
+写入确认绑定 ELF 与连接身份；工作区持久授权同样绑定连接，旧的仅绑定 ELF 的授权失效。外部 DAP 写入绑定调试会话与工作区。会话运行中更改连接设置（含对 CMSIS-DAP 探针修改 `emberprobe.cmsisDapQuirk`）后，旧会话通过 `ProbeConnectionService.settingsChanged` 标为过期并禁止继续写入，须停止并重新启动；读取仍使用原连接。
 
 ## Agent 与命令行
 
 - `config.get` 返回 `selectedProbe`。`probe.list` 只读取系统 USB 元数据，并用 `selected: true` 标记当前所选设备。
 - Agent 按用户指定的设备，通过 `probe.select` 提交 `probe.list` 返回的准确设备 ID。MCP 入口为 `probe_select`，命令行入口为 `mcu-config --select-probe`。两者复用侧栏选择服务，重新核对设备是否连接、是否可区分及当前连接是否可编辑，再写入工作区记录。选择异族设备时，沿用侧栏更换默认接口脚本的规则。
-- `config.set` 可更新 `adapterSpeedKhz`。烧录、校验脚本的显式序列号、速度和协议参数按单次操作解析。预检记录参数来源与错误，其职责限于检查连接配置。
+- `config.set` 可更新 `adapterSpeedKhz`。`emberprobe.cmsisDapQuirk`（`auto` / `enable` / `disable`）在 VS Code 设置与 `config.get` 快照中配置和读取，仅对 `cmsis-dap` 家族在探针/后端参数之后注入 `-c "cmsis-dap quirk enable|disable"`（`auto` 保留脚本默认，非 CMSIS-DAP 探针忽略），并传播到烧录、芯片信息、Fault 与托管/独立会话。烧录、校验脚本的显式序列号、速度和协议参数按单次操作解析。预检记录参数来源与错误，其职责限于检查连接配置。
 
 ## 探针通信失败与退出确认
 
@@ -131,6 +131,7 @@ OpenOCD 的 `error writing data`、HID 读写失败、CMSIS-DAP 命令失败和 
 `PROBE_COMMUNICATION_FAILED`（`probe_connection`）。明确的 busy、access、no-device 和原生崩溃仍优先；
 通信错误优先于随后出现的 init、timeout、Flash 错误，保留操作阶段与有界原始日志。
 通用 `failed to write` / `error writing` 仅在同一行明确包含 Flash 时归为 Flash 写入失败。
+连接诊断详情同时携带实际选择的 `adapterBackend` 与非 `auto` 的 `cmsisDapQuirk`；若日志包含 `CMSIS-DAP command/transfer count mismatch`，建议列表额外提示启用 `emberprobe.cmsisDapQuirk` 与显式设置 `emberprobe.adapterSpeedKhz`（如 `1000` 或 `4000`）。
 恢复需要先清理会话、确认进程退出或重新连接探针，不自动重试，也不自动复位 USB、切换驱动或解除写保护。
 
 同一 provider 的 `ProbeCoordinator` 互斥芯片读取、下载、采样、Agent 临时读取、目标扫描和调试；

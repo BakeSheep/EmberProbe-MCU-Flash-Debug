@@ -5,9 +5,21 @@ const { normalizeAdapterSpeed, probeFamily } = require("./probe-connection");
 // probe's own ceiling (ST-Link V2 4 MHz, V3 24 MHz; J-Link reports its model maximum; CMSIS-DAP firmware
 // uses its fastest divider), so these are upper requests rather than promises.
 const FLASH_SPEED_KHZ = Object.freeze({ stlink: 24000, jlink: 15000, "cmsis-dap": 10000 });
+const CMSIS_DAP_HID_FLASH_SPEED_KHZ = 4000;
+
+function isCmsisDapHid(connection = {}) {
+    return (
+        probeFamily(connection) === "cmsis-dap" &&
+        (connection.adapterBackend === "hid" || connection.profile?.backend === "hid")
+    );
+}
 
 function flashSpeedKhz(connection = {}) {
-    return normalizeAdapterSpeed(connection.adapterSpeedKhz) || FLASH_SPEED_KHZ[probeFamily(connection)] || 0;
+    return (
+        normalizeAdapterSpeed(connection.adapterSpeedKhz) ||
+        (isCmsisDapHid(connection) ? CMSIS_DAP_HID_FLASH_SPEED_KHZ : FLASH_SPEED_KHZ[probeFamily(connection)]) ||
+        0
+    );
 }
 
 // Raise the SWD clock after reset-init has set up the target clocks. Only Cortex-M over SWD: its DP is
@@ -101,11 +113,17 @@ function buildFlashProgramCommand(fileWord, speedKhz = 0, ranges = undefined) {
 // DOWNLOAD_CLOCK_RESTORE and is printed, with BOOST_PROC's EP_FLASH_SPEED, for the adapter to read.
 function buildDownloadBoostCommand(speedKhz) {
     const khz = normalizeAdapterSpeed(speedKhz);
-    return BOOST_PROC + `set ::_ep_download_base [_ep_flash_boost ${khz}]; echo EP_DOWNLOAD_BASE=$::_ep_download_base`;
+    return (
+        BOOST_PROC +
+        `set ::_ep_download_base [_ep_flash_boost ${khz}]; ` +
+        "if {$::_ep_download_base} { echo EP_FLASH_STAGE=program_boost }; " +
+        "echo EP_DOWNLOAD_BASE=$::_ep_download_base"
+    );
 }
 
 const DOWNLOAD_CLOCK_RESTORE =
-    "if {[info exists ::_ep_download_base] && $::_ep_download_base} { adapter speed $::_ep_download_base }; " +
+    "if {[info exists ::_ep_download_base] && $::_ep_download_base} { " +
+    "adapter speed $::_ep_download_base; echo EP_FLASH_STAGE=program }; " +
     "set ::_ep_download_base 0";
 
 const FLASH_STAGE =
@@ -140,6 +158,7 @@ function isTentativeFlashPhase(phase) {
 
 module.exports = {
     FLASH_SPEED_KHZ,
+    CMSIS_DAP_HID_FLASH_SPEED_KHZ,
     flashSpeedKhz,
     buildFlashProgramCommand,
     requiresFlashBounds,

@@ -25,6 +25,12 @@ const gdbPath = (file) => file.replace(/\\/g, "/");
 // compare-sections result lines; a localized GDB prints other text, which falls back to downloading.
 const SECTION_MATCHED = /^Section \S+, range 0x[\da-f]+ -- 0x[\da-f]+: matched\.\s*$/;
 
+function isRemoteDisconnectedError(error) {
+    return /remote connection closed|target disconnected|not connected to a remote target|"monitor" command not supported by this target|when your target is ['"`]exec['"`]/i.test(
+        String(error?.message || error || "")
+    );
+}
+
 function address(value, signed = false) {
     if (
         (typeof value !== "number" && typeof value !== "string") ||
@@ -194,7 +200,7 @@ class DebugImages {
                 mi.command(`-interpreter-exec console ${quote("compare-sections")}`, 60000)
             );
         } catch (error) {
-            if (mi.closed) throw error;
+            if (mi.closed || isRemoteDisconnectedError(error)) throw error;
             return "unknown";
         }
         if (/MIS-MATCHED|does not match|do not match/.test(output)) return "mismatched";
@@ -222,9 +228,11 @@ class DebugImages {
     }
     async restoreDownloadClock() {
         try {
-            await this.session.mi.command(`-interpreter-exec console ${quote(`monitor ${DOWNLOAD_CLOCK_RESTORE}`)}`);
+            await this.session.captureConsole(() =>
+                this.session.mi.command(`-interpreter-exec console ${quote(`monitor ${DOWNLOAD_CLOCK_RESTORE}`)}`)
+            );
         } catch (error) {
-            if (this.session.mi.closed) throw error;
+            if (this.session.mi.closed || isRemoteDisconnectedError(error)) throw error;
         }
     }
     async checkedDownload(executableStamp) {
@@ -305,19 +313,34 @@ class DebugImages {
         if (images === undefined) {
             const clockKhz = await this.raiseDownloadClock();
             let speedFallback = false;
+            let clockRestored = false;
+            let remoteDisconnected = false;
             try {
                 await mi.command("-target-download", 60000);
                 // A write at the raised clock is checked once by CRC, as the sidebar's verify_image does.
                 if (clockKhz && (await this.compareSections()) !== "matched")
                     throw new Error("Firmware written at the raised clock does not match the image");
             } catch (error) {
+                if (isRemoteDisconnectedError(error)) {
+                    remoteDisconnected = true;
+                    throw error;
+                }
                 if (!clockKhz || mi.closed) throw error;
                 speedFallback = true;
-                await this.restoreDownloadClock();
+                try {
+                    await this.restoreDownloadClock();
+                    clockRestored = true;
+                } catch (restoreError) {
+                    if (isRemoteDisconnectedError(restoreError)) {
+                        remoteDisconnected = true;
+                        throw error;
+                    }
+                    throw restoreError;
+                }
                 await mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
                 await mi.command("-target-download", 60000);
             } finally {
-                if (clockKhz && !mi.closed) await this.restoreDownloadClock();
+                if (clockKhz && !clockRestored && !remoteDisconnected && !mi.closed) await this.restoreDownloadClock();
             }
             return {
                 firmware: "programmed",

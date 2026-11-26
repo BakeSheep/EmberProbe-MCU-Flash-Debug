@@ -326,5 +326,29 @@ for (const initialLang of ["en", "zh"]) {
     assert.strictEqual(commandArea("mcu-vscode.selectElf"), "config");
     assert.strictEqual(commandArea("mcu-vscode.manageAgentSkills"), "global");
 }
+{
+    const hiddenPopups = [];
+    const hiddenService = new NoticeService({
+        vscode: {
+            window: {
+                showErrorMessage: (text) => hiddenPopups.push(["error", text]),
+                showWarningMessage: (text) => hiddenPopups.push(["warning", text]),
+                showInformationMessage: (text) => hiddenPopups.push(["info", text])
+            }
+        },
+        t: (key, params) => i18n.t("en", key, params),
+        view: () => ({ visible: false, webview: { postMessage: () => {} } })
+    });
+    hiddenService.notify("flash", "mcu-vscode.debug", {
+        level: "error",
+        titleKey: "notice.debugFailed",
+        error: Object.assign(new Error("generic"), {
+            code: "PROBE_COMMUNICATION_FAILED",
+            likelyCause: "Readable cause",
+            i18nKey: "live.serviceExited"
+        })
+    });
+    assert.deepStrictEqual(hiddenPopups, [["error", `${i18n.t("en", "notice.debugFailed")}: Readable cause`]]);
+}
 
 console.log("Notice component passed");

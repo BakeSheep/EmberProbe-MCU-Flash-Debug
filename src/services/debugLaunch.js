@@ -360,7 +360,7 @@ class DebugLaunch {
                             void this.handleSharedServerExit(error).catch((failure) =>
                                 this.host._postLive({ type: "liveError", ...toUiError(failure) })
                             );
-                        if (this.lifecycle.pending) this.reportStartupFailure(error.message);
+                        if (this.lifecycle.pending) this.reportStartupFailure(error);
                         this.host._postConsumerStatuses(
                             {
                                 mode: "debug-server-exited",
@@ -382,7 +382,6 @@ class DebugLaunch {
             try {
                 const info = await server.start();
                 phase?.("server");
-                this.host._rtt?.onSessionsChanged();
                 return info;
             } catch (error) {
                 lastError = error;
@@ -562,8 +561,13 @@ class DebugLaunch {
     clearStartupWatchdog(outcome) {
         this.lifecycle.clear(outcome);
     }
+    _notifyRttIfStartupReady(wasPending) {
+        if (wasPending && !this.lifecycle?.pending && this.managedServer?.ready) this.host._rtt?.onSessionsChanged();
+    }
     markStartupReady(session) {
+        const wasPending = !!this.lifecycle?.pending;
         this.lifecycle?.markInitialized(session, this.matchesManagedSession(session));
+        this._notifyRttIfStartupReady(wasPending);
     }
     findManagedSession(session) {
         const managedId = this.managedSessionId;
@@ -627,15 +631,30 @@ class DebugLaunch {
             this.host._postProbeOperationStatus();
         }
     }
-    reportStartupFailure(message) {
+    reportStartupFailure(failure) {
         if (this.startupErrorReported) return;
         this.startupErrorReported = true;
         const cmd = this._startupCmd || "mcu-vscode.debug";
-        this.host._notices.notify("flash", cmd, {
-            level: "error",
-            titleKey: COMMAND_FAILURE_TITLES[cmd],
-            message: message || this.host._t("msg.debugStartFailed")
-        });
+        if (failure && typeof failure === "object") {
+            let error = failure;
+            if (failure.i18nKey === "live.probeDisconnected") {
+                const serialized = serializeError(failure);
+                delete serialized.i18nKey;
+                delete serialized.i18nParams;
+                error = Object.assign(new Error(serialized.message), serialized);
+            }
+            this.host._notices.notify("flash", cmd, {
+                level: "error",
+                titleKey: COMMAND_FAILURE_TITLES[cmd],
+                error
+            });
+        } else {
+            this.host._notices.notify("flash", cmd, {
+                level: "error",
+                titleKey: COMMAND_FAILURE_TITLES[cmd],
+                message: failure || this.host._t("msg.debugStartFailed")
+            });
+        }
         this.clearStartupWatchdog({ kind: "failed" });
     }
     async recoverStartupTimeout() {
@@ -894,7 +913,9 @@ class DebugLaunch {
                 if (session.configuration?.servertype === "external") this.clearStartupWatchdog({ kind: "failed" });
                 else this.reportStartupFailure(errorMsg);
             } else {
+                const wasPending = !!this.lifecycle?.pending;
                 this.lifecycle?.markLaunchResponse(session, matches, true);
+                this._notifyRttIfStartupReady(wasPending);
                 if (!this.terminatedSessionIds.has(session.id) && session.configuration?.servertype !== "external") {
                     void this.host._probeConnectionService.recordSuccess(this.managedServer?.options);
                 }

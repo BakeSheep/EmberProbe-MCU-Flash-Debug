@@ -303,6 +303,17 @@
             "description": "覆盖 OpenOCD 传输协议。auto 下 J-Link 对已知 Cortex-M 目标使用 SWD，其他目标使用接口脚本默认协议；不自动切换重试。 / Override the OpenOCD transport. With auto, J-Link uses SWD for known Cortex-M targets and the interface script default for other targets; no automatic transport retry.",
             "order": 3
           },
+          "emberprobe.cmsisDapQuirk": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "enable",
+              "disable"
+            ],
+            "default": "auto",
+            "description": "仅用于 CMSIS-DAP 探针的 OpenOCD 兼容模式（cmsis-dap quirk）。auto 保持脚本默认行为；enable 关闭多包流水线，可缓解部分 HID 探针（如正点原子 ATK-HS-V3）出现 CMSIS-DAP command mismatch，但会略微降低传输吞吐；disable 显式关闭兼容模式。 / OpenOCD compatibility workaround (cmsis-dap quirk) for CMSIS-DAP probes only. auto keeps the script default; enable disables multi-packet pipelining to mitigate CMSIS-DAP command mismatch on some HID probes (e.g. ATK-HS-V3) with lower throughput; disable turns it off explicitly.",
+            "order": 4
+          },
           "emberprobe.rtos": {
             "type": "string",
             "enum": [
@@ -324,7 +335,7 @@
             ],
             "default": "",
             "description": "调试时的 OpenOCD RTOS 感知，名称区分大小写；留空关闭。启用后调用栈显示 RTOS 任务，栈帧、变量和单步绑定对应任务。修改后需停止并重新启动调试；会话内重启不重新配置。launch.json 的 rtos 优先。 / OpenOCD RTOS awareness for debugging; names are case-sensitive and empty disables it. The call stack shows RTOS tasks with task-bound frames, variables and stepping. Stop and start debugging to apply changes; session restart reuses the server. launch.json rtos takes precedence.",
-            "order": 4
+            "order": 5
           },
           "emberprobe.prettyPrintingMode": {
             "type": "string",
@@ -335,7 +346,7 @@
             ],
             "default": "builtin",
             "description": "暂停时的 C++ 变量显示：builtin 使用内置解析，无需 Python；gdb 仅加载 prettyPrinterFiles 明确指定的脚本；raw 显示原始字段。 / Paused C++ variable display: builtin uses internal parsing without Python; gdb loads only scripts explicitly listed in prettyPrinterFiles; raw shows physical fields.",
-            "order": 5
+            "order": 6
           },
           "emberprobe.prettyPrinterFiles": {
             "type": "array",
@@ -345,7 +356,7 @@
             "maxItems": 32,
             "default": [],
             "description": "gdb 显示模式加载的 Python 打印脚本，最多 32 个。相对路径基于调试工作目录解析；脚本在 GDB 内执行。 / Python printer scripts loaded in gdb display mode, up to 32 files. Relative paths resolve against the debug working directory; scripts execute inside GDB.",
-            "order": 6
+            "order": 7
           }
         }
       },

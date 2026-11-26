@@ -51,6 +51,12 @@ function normalizeAdapterSpeed(value = 0) {
     return number;
 }
 
+function normalizeCmsisDapQuirk(value = "auto") {
+    if (value === undefined || value === null || value === "") return "auto";
+    if (["auto", "enable", "disable"].includes(value)) return value;
+    throw connectionError("CMSIS_DAP_QUIRK_INVALID", 'CMSIS-DAP quirk mode must be "auto", "enable", or "disable"');
+}
+
 function isJlink(config) {
     return config.adapterFamily === "jlink" || /(?:^|\/)jlink\.cfg$/i.test(config.probe || config.debugger || "");
 }
@@ -122,7 +128,8 @@ function serialMatches(device, serial) {
 
 function resolveProbeConnection(config, inventory = { devices: [], available: false }) {
     const profile = config.profile;
-    /** @type {ReturnType<typeof connectionIdentity> & {deviceId: string, selection: any, adapterSerial?: string, adapterBackend?: string, selectionIdentity?: any}} */
+    const cmsisDapQuirk = normalizeCmsisDapQuirk(config.cmsisDapQuirk);
+    /** @type {ReturnType<typeof connectionIdentity> & {deviceId: string, selection: any, adapterSerial?: string, adapterBackend?: string, cmsisDapQuirk?: string, selectionIdentity?: any}} */
     const result = {
         ...connectionIdentity(config),
         deviceId: "",
@@ -151,6 +158,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             ...result,
             probeSerial: serial,
             adapterSerial: serial,
+            ...(profile.family === "cmsis-dap" && cmsisDapQuirk !== "auto" ? { cmsisDapQuirk } : {}),
             selectionIdentity: {
                 kind: profile.kind,
                 profile: profile.fingerprint,
@@ -281,6 +289,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
     // A Windows device with an HID interface and no WinUSB/libusb one can only be opened through HID.
     if (family === "cmsis-dap" && profile?.backend === "auto" && windowsHidOnly(selected))
         result.adapterBackend = "hid";
+    if (family === "cmsis-dap" && cmsisDapQuirk !== "auto") result.cmsisDapQuirk = cmsisDapQuirk;
     // Without a serial filter OpenOCD may open a probe the partial inventory skipped, so the visible
     // attachment cannot authorize writes.
     result.selectionIdentity = {
@@ -314,6 +323,7 @@ module.exports = {
     connectionError,
     normalizeProbeSerial,
     normalizeAdapterSpeed,
+    normalizeCmsisDapQuirk,
     isJlink,
     probeFamily,
     connectionIdentity,

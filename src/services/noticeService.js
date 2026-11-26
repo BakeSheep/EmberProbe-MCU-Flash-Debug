@@ -57,7 +57,9 @@ class NoticeService {
     }
     _text(notice) {
         const error = notice.error;
-        const reason = error ? (error.key ? this.t(error.key, error.params) : error.message) : "";
+        const reason = error
+            ? error.diagnostic?.likelyCause || (error.key ? this.t(error.key, error.params) : error.message)
+            : "";
         const text = notice.key ? this.t(notice.key, notice.params) : notice.message || reason;
         const title = notice.titleKey ? this.t(notice.titleKey) : "";
         return title ? `${title}: ${text}` : text;

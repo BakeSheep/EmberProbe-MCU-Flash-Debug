@@ -423,6 +423,172 @@ const { ChipInfoService } = require("../src/services/chipInfoService");
         debugCommands.findIndex((command) => command.includes("-work-area-backup 1")) < debugCommands.indexOf("init"),
         "a debug session's configuration stays before init"
     );
+
+    await scenario(
+        "cmsisDapQuirk propagates to spawned OpenOCD arguments across all entrypoints for cmsis-dap only",
+        async () => {
+            const fs = require("fs");
+            const os = require("os");
+            const path = require("path");
+            const { EventEmitter } = require("events");
+            const { loadModule } = require("./helpers/load-module");
+            const scripts = require("../src/openocdScripts");
+
+            const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ep-quirk-"));
+            const elf = path.join(temp, "app.elf");
+            fs.writeFileSync(elf, "elf");
+            try {
+                const calls = [];
+                const fakeScripts = {
+                    ...scripts,
+                    resolveOpenOcdLaunch: (executable, probe, target) => ({
+                        executable: executable || "openocd",
+                        probePath: `/scripts/interface/${probe}`,
+                        targetPath: `/scripts/target/${target}`,
+                        scriptsRoot: "/scripts",
+                        cwd: temp
+                    }),
+                    openOcdEnvironment: () => ({ ...process.env })
+                };
+                const fakeChildProcess = {
+                    ...require("child_process"),
+                    spawn: (exe, args) => {
+                        calls.push({ exe, args });
+                        const child = new EventEmitter();
+                        child.stdout = new EventEmitter();
+                        child.stderr = new EventEmitter();
+                        child.stdin = { write() {}, end() {} };
+                        child.kill = () => {};
+                        queueMicrotask(() => {
+                            child.emit("error", new Error("spawn-captured"));
+                            child.emit("close", 1);
+                        });
+                        return child;
+                    }
+                };
+                const execMod = loadModule("src/services/openocdExec.js", {
+                    child_process: fakeChildProcess,
+                    "../openocdScripts": fakeScripts
+                });
+                const runnerMod = loadModule("src/openocdRunner.js", {
+                    child_process: fakeChildProcess,
+                    "./openocdScripts": fakeScripts
+                });
+                const chipMod = loadModule("src/chipInfo.js", {
+                    "./openocdRunner": runnerMod,
+                    "./services/openocdExec": execMod
+                });
+                const faultMod = loadModule("src/faultInfo.js", {
+                    "./openocdRunner": runnerMod,
+                    "./services/openocdExec": execMod,
+                    "./chipInfo": chipMod
+                });
+                const procMod = loadModule("src/openocdProcess.js", {
+                    child_process: fakeChildProcess,
+                    "./openocdScripts": fakeScripts
+                });
+                const liveMod = loadModule("src/liveWatch.js", {
+                    "./openocdProcess": procMod
+                });
+                const debugCtrlMod = loadModule("src/services/debugServerController.js", {
+                    "../liveWatch": liveMod,
+                    "../openocdScripts": fakeScripts
+                });
+
+                const fakeVscode = {
+                    EventEmitter: class {
+                        constructor() {
+                            this.event = () => ({ dispose() {} });
+                        }
+                        fire() {}
+                        dispose() {}
+                    },
+                    window: {
+                        createTerminal: () => ({ show() {}, dispose() {} }),
+                        onDidCloseTerminal: () => ({ dispose() {} })
+                    }
+                };
+
+                const runAll = async (probe, cmsisDapQuirk) => {
+                    const start = calls.length;
+                    await assert.rejects(
+                        runnerMod.runOpenOcd(
+                            fakeVscode,
+                            {
+                                executable: "openocd",
+                                probe,
+                                target: "stm32h7x.cfg",
+                                elf,
+                                cmsisDapQuirk
+                            },
+                            () => {}
+                        ),
+                        /spawn-captured/
+                    );
+                    await assert.rejects(
+                        chipMod.readChipInfo(fakeVscode, {
+                            executable: "openocd",
+                            probe,
+                            target: "stm32h7x.cfg",
+                            cmsisDapQuirk
+                        }),
+                        /spawn-captured/
+                    );
+                    await assert.rejects(
+                        faultMod.readFaultInfo({
+                            executable: "openocd",
+                            probe,
+                            target: "stm32h7x.cfg",
+                            cmsisDapQuirk
+                        }),
+                        /spawn-captured/
+                    );
+                    await assert.rejects(
+                        new liveMod.ManagedOpenOcdSession({
+                            executable: "openocd",
+                            probe,
+                            target: "stm32h7x.cfg",
+                            port: 34000,
+                            mode: "standalone",
+                            cmsisDapQuirk
+                        }).start(),
+                        /spawn-captured/
+                    );
+                    await assert.rejects(
+                        new debugCtrlMod.OpenOcdDebugController(
+                            {
+                                executable: "openocd",
+                                probe,
+                                target: "stm32h7x.cfg",
+                                port: 34001,
+                                gdbPort: 34002,
+                                cmsisDapQuirk
+                            },
+                            {}
+                        ).start(),
+                        /spawn-captured/
+                    );
+                    return calls.slice(start).map((entry) => entry.args);
+                };
+
+                const cmsisSets = await runAll("cmsis-dap.cfg", "enable");
+                assert.strictEqual(cmsisSets.length, 5);
+                for (const args of cmsisSets) {
+                    const idx = args.indexOf("cmsis-dap quirk enable");
+                    assert(idx > 0 && args[idx - 1] === "-c", JSON.stringify(args));
+                }
+
+                const jlinkSets = await runAll("jlink.cfg", "enable");
+                assert.strictEqual(jlinkSets.length, 5);
+                for (const args of jlinkSets) {
+                    assert(!args.join(" ").includes("cmsis-dap quirk"), JSON.stringify(args));
+                }
+            } finally {
+                fs.rmSync(temp, { recursive: true, force: true });
+            }
+        }
+    );
+
     console.log("OpenOCD entrypoint transport and diagnostic tests passed");
 })().catch((error) => {
     console.error(error);

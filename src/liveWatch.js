@@ -25,7 +25,14 @@ const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics
 const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = require("./services/runtimeObjectReader");
 const { MultiRatePlan, SIDEBAR_INTERVAL_MS } = require("./services/multiRatePlan");
 const { targetCheckMonitor } = require("./chip/targetIdentity");
-const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog, isTransportProbeFailure } = require("./openocdProcess");
+const {
+    OpenOcdProcess,
+    managedServerLaunch,
+    isFatalProbeLog,
+    isTransportProbeFailure,
+    isTentativeBoostRecoverableLog
+} = require("./openocdProcess");
+const { flashPhaseFromLine, isTentativeFlashPhase } = require("../skills/_emberprobe/openocd-flash");
 const {
     MemoryWriter,
     validateManagedWritePlan,
@@ -149,6 +156,7 @@ class ManagedOpenOcdSession {
         this._samplingThroughput = new SamplingThroughput();
         this._speedTuner = new SamplingSpeedTuner({ options: this.options, mode: this.mode, clock: this.clock });
         this._timerResolutionHeld = false;
+        this._tentativeDownloadBoost = false;
     }
 
     get unlimitedActive() {
@@ -784,8 +792,13 @@ class ManagedOpenOcdSession {
         // OpenOCD's own error output after a failed check repeats it; the close handler reports it once.
         if (targetCheck.mismatched) return;
         this.server.record(clean);
+        if (this.mode === "debug" && /^\s*EP_FLASH_STAGE=/.test(clean)) {
+            this._tentativeDownloadBoost = isTentativeFlashPhase(flashPhaseFromLine(clean, ""));
+            return;
+        }
         this._speedTuner.observeLog(clean);
         if (!isTransportProbeFailure(clean) && this._speedTuner.handleTentativeLog(clean)) return;
+        if (this._tentativeDownloadBoost && isTentativeBoostRecoverableLog(clean)) return;
         // End the session on a confirmed probe transport failure before issuing another read.
         if (isFatalProbeLog(clean)) {
             if (!this.stopped && !this.connectionFailed) {
@@ -973,6 +986,7 @@ class ManagedOpenOcdSession {
             }
         });
         this.connectionFailed = true;
+        this._tentativeDownloadBoost = false;
         this.targetEpoch++;
         this.connectionError = err;
         this._rejectExclusiveWaiters(err);
@@ -1572,6 +1586,7 @@ class ManagedOpenOcdSession {
         this.samplingEnabled = false;
         this._samplingRequested = false;
         this.connectionFailed = true;
+        this._tentativeDownloadBoost = false;
         this._clearSamplingTimer();
         this._releaseTimerResolution();
         this._resetHostHold();

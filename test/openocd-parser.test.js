@@ -266,4 +266,35 @@ scenario("Tcl scope errors retain their first exception before the programming s
     );
 });
 
+scenario("CMSIS-DAP mismatch diagnostics surface quirk and clock tips plus connection metadata", () => {
+    const { connectionDetails, diagnoseOpenOcdFailure } = require("../skills/_emberprobe/openocd-diagnostics");
+    for (const line of [
+        "Error: CMSIS-DAP command mismatch. Expected 0x6 received 0x5",
+        "Error: CMSIS-DAP transfer count mismatch: expected 22, got 0"
+    ]) {
+        const result = diagnoseOpenOcdFailure([line], {
+            probe: "cmsis-dap.cfg",
+            target: "stm32h7x.cfg",
+            adapterBackend: "hid",
+            cmsisDapQuirk: "enable"
+        });
+        assert.strictEqual(result.code, "PROBE_COMMUNICATION_FAILED");
+        assert(
+            result.suggestedActions.some(
+                (action) => action.includes("emberprobe.cmsisDapQuirk") && action.includes("emberprobe.adapterSpeedKhz")
+            ),
+            line
+        );
+        assert.strictEqual(result.details.adapterBackend, "hid");
+        assert.strictEqual(result.details.cmsisDapQuirk, "enable");
+    }
+    const plainHid = diagnoseOpenOcdFailure(["Error: hid_write failed"], {
+        probe: "cmsis-dap.cfg",
+        cmsisDapQuirk: "auto"
+    });
+    assert(!plainHid.suggestedActions.some((action) => action.includes("emberprobe.cmsisDapQuirk")));
+    const autoDetails = connectionDetails({ probe: "cmsis-dap.cfg", cmsisDapQuirk: "auto" });
+    assert(!("cmsisDapQuirk" in autoDetails));
+});
+
 console.log("OpenOCD parser tests passed");

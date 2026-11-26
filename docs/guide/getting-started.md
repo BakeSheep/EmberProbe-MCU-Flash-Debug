@@ -181,7 +181,9 @@ Windows 上使用 SEGGER 驱动的 J-Link 不能读取、采样、调试或下�
 
 **Linux 上 CMSIS-DAP 崩溃（`buffer overflow detected`）**：部分系统 OpenOCD 0.12.0 有此缺陷。EmberProbe 在 Linux x64 内置了修复后的 OpenOCD，把 `emberprobe.openocdPath` 保持默认即可。不要通过删除序列号绕过，那样会失去探针选择。
 
-**Windows 上 CMSIS-DAP 偶发通信失败**：`hid_write/WaitForSingleObject`（例如 `0x000003E5`）或 `CMSIS-DAP command CMD_INFO failed` 表示探针通信失败。诊断为 `PROBE_COMMUNICATION_FAILED`；即使只读取芯片信息，也可能遇到，不能据此判断 Flash 写保护。系统能枚举探针也不代表通信正常。
+**Windows 上 CMSIS-DAP 偶发通信失败**：`hid_write/WaitForSingleObject`（例如 `0x000003E5`）、`CMSIS-DAP command CMD_INFO failed` 或 `CMSIS-DAP command mismatch` / `transfer count mismatch` 表示探针通信失败，诊断为 `PROBE_COMMUNICATION_FAILED`；即使只读取芯片信息或搜索 RTT，也可能遇到，不能据此判断 Flash 写保护。系统能枚举探针也不代表通信正常。
+
+若日志出现 `CMSIS-DAP command mismatch` 或 `transfer count mismatch`（常见于部分纯 HID 探针，例如正点原子 ATK-HS-V3-CMSIS-DAP 在多包流水线或较高 SWD 时钟下），可在设置中将 `emberprobe.cmsisDapQuirk` 设为 `enable`，并尝试将 `emberprobe.adapterSpeedKhz` 显式设为较低时钟（例如 `1000` 或 `4000`），修改后重新连接会话。
 
 先停止 EmberProbe 的调试、采样和其他占用探针的工具，确认相关 OpenOCD 进程退出；仍失败时可重新插拔探针 USB，再手动重试。若报告退出未确认，先完成停止清理。插件的占用保护限于当前扩展实例，其他 VS Code 窗口和工具仍可能竞争同一探针。排查时记录触发前的最后一个操作、完整诊断、OpenOCD 路径及版本、探针固件，并分别记录停止会话、关闭 VS Code 和重新插拔是否恢复；只有重新插拔恢复不能确定是插件、USB/HID 后端还是固件原因。
 

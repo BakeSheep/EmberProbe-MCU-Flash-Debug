@@ -590,6 +590,82 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
         const invalid = session({});
         await assert.rejects(invalid.adapter.handle("launch", { ...defaults, loadFiles: [bin] }), /explicit address/);
         assert(!invalid.mi.started, "validation precedes starting GDB");
+
+        {
+            const { DebugImages } = require("../src/services/debugImages");
+            const { DOWNLOAD_CLOCK_RESTORE } = require("../skills/_emberprobe/openocd-flash");
+            const makeDownloadSession = (handler) => {
+                const sent = [];
+                let inCapture = false;
+                const mi = {
+                    closed: false,
+                    command: async (cmd) => {
+                        sent.push({ cmd, captured: inCapture });
+                        if (cmd.includes("_ep_flash_boost")) return "EP_DOWNLOAD_BASE=1000\nEP_FLASH_SPEED=4000\n";
+                        if (cmd.includes("compare-sections") && !handler.handlesCompare)
+                            return "Section .text, range 0x08000000 -- 0x08001000: matched.\n";
+                        return (await handler(cmd, mi)) ?? "";
+                    }
+                };
+                const images = new DebugImages({
+                    config: { __emberprobeDownloadSpeedKhz: 15000 },
+                    mi,
+                    captureConsole: async (fn) => {
+                        inCapture = true;
+                        try {
+                            return await fn();
+                        } finally {
+                            inCapture = false;
+                        }
+                    }
+                });
+                return { images, mi, sent };
+            };
+
+            const disconnected = makeDownloadSession(async (cmd) => {
+                if (cmd.startsWith("-target-download")) throw new Error("Remote connection closed");
+            });
+            await assert.rejects(disconnected.images.downloadPrepared(), /Remote connection closed/);
+            assert(!disconnected.sent.some((entry) => entry.cmd.includes(DOWNLOAD_CLOCK_RESTORE)));
+            assert(!disconnected.sent.some((entry) => entry.cmd.includes("monitor reset halt")));
+
+            const unsupportedMonitor = makeDownloadSession(async (cmd) => {
+                if (cmd.startsWith("-target-download")) throw new Error("download failed");
+                if (cmd.includes(DOWNLOAD_CLOCK_RESTORE))
+                    throw new Error('"monitor" command not supported by this target.');
+            });
+            await assert.rejects(unsupportedMonitor.images.downloadPrepared(), /download failed/);
+            const restores = unsupportedMonitor.sent.filter((entry) => entry.cmd.includes(DOWNLOAD_CLOCK_RESTORE));
+            assert.strictEqual(restores.length, 1);
+            assert.strictEqual(restores[0].captured, true);
+            assert(!unsupportedMonitor.sent.some((entry) => entry.cmd.includes("monitor reset halt")));
+
+            const compareHandler = async (cmd) => {
+                if (cmd.includes("compare-sections")) throw new Error("Remote connection closed");
+            };
+            compareHandler.handlesCompare = true;
+            const compareDisconnected = makeDownloadSession(compareHandler);
+            await assert.rejects(compareDisconnected.images.downloadPrepared(), /Remote connection closed/);
+            assert.strictEqual(
+                compareDisconnected.sent.filter((entry) => entry.cmd.startsWith("-target-download")).length,
+                1
+            );
+            assert(!compareDisconnected.sent.some((entry) => entry.cmd.includes(DOWNLOAD_CLOCK_RESTORE)));
+            assert(!compareDisconnected.sent.some((entry) => entry.cmd.includes("monitor reset halt")));
+
+            let downloadAttempt = 0;
+            const boostedFallback = makeDownloadSession(async (cmd) => {
+                if (cmd.startsWith("-target-download") && ++downloadAttempt === 1) throw new Error("download failed");
+            });
+            const fallbackResult = await boostedFallback.images.downloadPrepared();
+            assert.strictEqual(fallbackResult.speedFallback, true);
+            assert.strictEqual(
+                boostedFallback.sent.filter((entry) => entry.cmd.includes(DOWNLOAD_CLOCK_RESTORE)).length,
+                1
+            );
+            assert(boostedFallback.sent.some((entry) => entry.cmd.includes("monitor reset halt")));
+        }
+
         console.log("Debug image validation, symbol/download lifecycle, attach protection and phased hooks passed");
     } finally {
         fs.rmSync(root, { recursive: true, force: true });

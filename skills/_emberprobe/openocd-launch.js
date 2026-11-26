@@ -2,7 +2,12 @@
 
 const fs = require("fs");
 const path = require("path");
-const { normalizeProbeSerial, normalizeAdapterSpeed, probeFamily } = require("./probe-connection");
+const {
+    normalizeProbeSerial,
+    normalizeAdapterSpeed,
+    normalizeCmsisDapQuirk,
+    probeFamily
+} = require("./probe-connection");
 const { leavesDirectory } = require("./file-identity");
 
 function normalizeTransport(value = "auto") {
@@ -119,8 +124,11 @@ function buildOpenOcdTargetArgs(config, ports) {
 
 function buildOpenOcdConfigArgs(launch, transport = "auto", connection = {}) {
     normalizeTransport(transport);
-    const serial = normalizeProbeSerial(connection.adapterSerial ?? connection.probeSerial, probeFamily(connection));
+    const family =
+        probeFamily(connection) || probeFamily({ probe: String(launch?.probePath || "").replace(/\\/g, "/") });
+    const serial = normalizeProbeSerial(connection.adapterSerial ?? connection.probeSerial, family);
     const speed = normalizeAdapterSpeed(connection.adapterSpeedKhz);
+    const cmsisDapQuirk = normalizeCmsisDapQuirk(connection.cmsisDapQuirk);
     return [
         "-s",
         launch.scriptsRoot,
@@ -128,6 +136,7 @@ function buildOpenOcdConfigArgs(launch, transport = "auto", connection = {}) {
         launch.probePath,
         // Set by the probe preflight only for a CMSIS-DAP that the interface script leaves on its automatic backend.
         ...(connection.adapterBackend === "hid" ? ["-c", "cmsis-dap backend hid"] : []),
+        ...(family === "cmsis-dap" && cmsisDapQuirk !== "auto" ? ["-c", `cmsis-dap quirk ${cmsisDapQuirk}`] : []),
         ...(serial ? ["-c", `adapter serial ${serial.includes(" ") ? JSON.stringify(serial) : serial}`] : []),
         ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
         "-f",

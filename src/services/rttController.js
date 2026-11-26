@@ -18,6 +18,7 @@ const { RttBuffer } = require("../rttBuffer");
 const { MAX_SERVER_COMMANDS } = require("../rttControl");
 const { findFreePort } = require("../liveWatch");
 const { CACHE_KEYS } = require("../cacheKeys");
+const { serializeError } = require("./errorEnvelope");
 
 // The firmware may need several rounds after reset before the control block and its channels appear.
 const START_FIRST_DELAY_MS = 200;
@@ -57,6 +58,16 @@ const STALL_POLLING_FACTOR = 4; // A slow polling interval needs a longer quiet 
 const rttError = (code, message, details) =>
     Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
 const probeBusy = (message) => Object.assign(new Error(message), { code: "PROBE_BUSY", retryable: true });
+
+// Preserve structured diagnostics for the UI while stripping live-sampling-only i18n keys.
+function formatRttError(error) {
+    const formatted = serializeError(error);
+    if (formatted.i18nKey === "live.probeDisconnected") {
+        delete formatted.i18nKey;
+        delete formatted.i18nParams;
+    }
+    return formatted;
+}
 
 class RttController {
     // host: the provider. options: { vscode, ManagedOpenOcdSession, clock, net, findFreePort, rttSettings, autoStart,
@@ -381,7 +392,8 @@ class RttController {
         const managed = this.host.debugLaunch?.managedServer;
         if (managed && !managed.stopped) {
             if (managed.capabilities?.runtimeRead === false) return { blocked: "multicore" };
-            if (!managed.ready) return { blocked: "debug-starting" };
+            if (!managed.ready || this.host.debugLaunch?.starting || this.host.debugLaunch?.lifecycle?.pending)
+                return { blocked: "debug-starting" };
             return { session: managed, source: "debug-server" };
         }
         if (this.host._sampling?.running && this.host._sampling.session)
@@ -394,7 +406,7 @@ class RttController {
             await this._startOwnSession();
         } catch (error) {
             if (this.state === "stop-failed") return;
-            this.error = { code: error.code, message: error.message };
+            this.error = formatRttError(error);
             // Another operation took the probe between events; the intent survives and its release tries again.
             if (error?.retryable) this._postStatus();
             else await this._stopInternal("resume-failed");
@@ -1016,7 +1028,7 @@ class RttController {
     }
 
     async _fail(error) {
-        this.error = { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) };
+        this.error = formatRttError(error);
         return this._stopInternal("start-failed");
     }
 

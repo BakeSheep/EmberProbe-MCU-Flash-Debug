@@ -17,7 +17,7 @@ EmberProbe 用 OpenOCD 内建的 `rtt` 命令读取 SEGGER RTT，J-Link 和 CMSI
 
 ## 不变量
 
-1. **一个探针只有一个 OpenOCD。** RTT 挂在当前持有探针的会话上：调试托管 server 优先，其次实时观察，都没有时以 `rtt` 操作取得租约，起一个自有会话。
+1. **一个探针只有一个 OpenOCD。** RTT 挂在当前持有探针的会话上：调试托管 server 优先，其次实时观察，都没有时以 `rtt` 操作取得租约，起一个自有会话。调试尚在启动或下载收敛前（`debugLaunch.starting` 或 `debugLaunch.lifecycle.pending` 为真），即使托管 server 已报告就绪，RTT 也先保持 `debug-starting` 等待，直到 `initialized` 与 `launch`/`attach` 响应共同收敛后再附着，避免与调试下载阶段并发触发 32 KiB 扫描或与 Flash work-area 竞争。
 2. **自有会话不对外共享。** Agent 读取、Agent 烧录预检和芯片信息会让它先退出，结束后恢复。后台目标扫描不抢占，遇到 `rtt` 租约时按探针繁忙处理。烧录前 RTT 断开，烧录后重新解析 ELF 地址。
 3. **Tcl 连接只承载控制命令。** `tclTransport` 是单套接字 FIFO，超时会中止整条连接。托管调试的 `sendChecked` 在无回显自测通过后直接返回响应，否则使用私有结果文件，避免向 GDB 广播控制响应。RTT 数据走 `rtt server` 的 TCP 端口，由扩展主机直连 `127.0.0.1`，不经过采样 Worker。自测与回退见[采样链路设计](sampling-pipeline.md#tcl-响应与合并读取)。
 4. **`rttControl` 需要四处配合。** 会话方法、`SamplingSession` 代理、Worker 白名单和 `OpenOcdDebugController` 透传，与 `peripheralTransaction` 相同。
@@ -71,6 +71,8 @@ OpenOCD 的 RTT 轮询只要读失败一次（例如轮询正好落在目标复�
 通道模式写入期间若宿主锁忙，写入尚未发生，按 100 ms 间隔重试直到模式期限。其他失败仍不重试，因为结果可能未知。
 
 每次挂载都用新的 generation 创建缓冲，所以旧游标不会指向新数据，而是返回 `reset: true`，并从最早保留的数据开始。
+
+控制器向 UI 报告的失败状态（`_fail`、`_resumeOwnSession`）通过 `serializeError` 保留完整结构化诊断（`code`、`category`、`stage`、`likelyCause`、`suggestedActions`、`details`），仅剥离实时采样专用的 `live.probeDisconnected`；面向 Agent 的 `rtt.status` 仍经 `publicError` 过滤内部细节。
 
 ## 呈现
 

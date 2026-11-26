@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("assert");
-const { loadProvider } = require("./helpers/load-provider");
+const { loadProvider, createProvider } = require("./helpers/load-provider");
+const { scenario } = require("./helpers/scenario");
 const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("../src/services/debugLifecycle");
 const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
@@ -698,6 +699,89 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._debugBridge.dispose();
             lc.clear();
         }
+        await scenario("RTT waits for both initialized and launch convergence before attaching", async () => {
+            const { provider, dispose } = createProvider({ vscode: { window: { showErrorMessage: () => {} } } });
+            try {
+                let rttCalls = 0;
+                provider._rttController = { onSessionsChanged: () => rttCalls++, stop: async () => {} };
+                provider._probeConnectionService.recordSuccess = async () => {};
+                provider.debugLaunch.managedServer = { ready: true, options: {} };
+                provider.debugLaunch.managedToken = "tok-1";
+
+                const sess1 = { id: "s1", type: "emberprobe", configuration: { __emberprobeManagedToken: "tok-1" } };
+                provider.debugLaunch.lifecycle.session = sess1;
+                provider.debugLaunch.armStartupWatchdog();
+                provider.debugLaunch.handleAdapterMessage(sess1, {
+                    type: "response",
+                    command: "launch",
+                    success: true
+                });
+                assert.strictEqual(provider.debugLaunch.lifecycle.pending, true);
+                assert.strictEqual(rttCalls, 0);
+                provider.debugLaunch.handleAdapterMessage(sess1, { type: "event", event: "initialized" });
+                assert.strictEqual(provider.debugLaunch.lifecycle.pending, false);
+                assert.strictEqual(rttCalls, 1);
+
+                const sess2 = { id: "s2", type: "emberprobe", configuration: { __emberprobeManagedToken: "tok-1" } };
+                provider.debugLaunch.lifecycle.session = sess2;
+                provider.debugLaunch.armStartupWatchdog();
+                provider.debugLaunch.handleAdapterMessage(sess2, { type: "event", event: "initialized" });
+                assert.strictEqual(provider.debugLaunch.lifecycle.pending, true);
+                assert.strictEqual(rttCalls, 1);
+                provider.debugLaunch.handleAdapterMessage(sess2, {
+                    type: "response",
+                    command: "launch",
+                    success: true
+                });
+                assert.strictEqual(provider.debugLaunch.lifecycle.pending, false);
+                assert.strictEqual(rttCalls, 2);
+            } finally {
+                await dispose();
+            }
+        });
+        await scenario(
+            "Structured debug startup failure preserves probe diagnostics and strips live.probeDisconnected",
+            async () => {
+                const { provider, dispose } = createProvider({ vscode: { window: { showErrorMessage: () => {} } } });
+                try {
+                    const posted = [];
+                    provider._webviewView = { visible: true, webview: { postMessage: (msg) => posted.push(msg) } };
+                    const sess = { id: "s3", type: "emberprobe", configuration: { __emberprobeManagedToken: "tok-3" } };
+                    provider.debugLaunch.managedToken = "tok-3";
+                    provider.debugLaunch.lifecycle.session = sess;
+                    provider.debugLaunch.armStartupWatchdog();
+                    provider.debugLaunch.startupErrorReported = false;
+                    const err = Object.assign(new Error("OpenOCD comm failed"), {
+                        code: "PROBE_COMMUNICATION_FAILED",
+                        category: "probe_connection",
+                        stage: "openocd_start",
+                        likelyCause: "HID command mismatch",
+                        suggestedActions: ["Enable cmsisDapQuirk"],
+                        details: { openocdTail: ["Error: CMSIS-DAP command mismatch"] },
+                        i18nKey: "live.probeDisconnected",
+                        i18nParams: { reason: "disconnect" }
+                    });
+                    provider.debugLaunch.reportStartupFailure(err);
+                    const notice = posted.findLast((m) => m.type === "notice")?.notice;
+                    assert.strictEqual(notice.error.diagnostic.code, "PROBE_COMMUNICATION_FAILED");
+                    assert.deepStrictEqual(notice.error.diagnostic.suggestedActions, ["Enable cmsisDapQuirk"]);
+                    assert.deepStrictEqual(notice.error.diagnostic.details.openocdTail, [
+                        "Error: CMSIS-DAP command mismatch"
+                    ]);
+                    assert.strictEqual(notice.error.key, undefined);
+                    assert.strictEqual(provider.debugLaunch.lifecycle.pending, false);
+
+                    provider.debugLaunch.startupErrorReported = false;
+                    provider.debugLaunch.lifecycle.session = sess;
+                    provider.debugLaunch.armStartupWatchdog();
+                    provider.debugLaunch.reportStartupFailure("plain text");
+                    const textNotice = posted.findLast((m) => m.type === "notice")?.notice;
+                    assert.strictEqual(textNotice.message, "plain text");
+                } finally {
+                    await dispose();
+                }
+            }
+        );
         console.log("Debug lifecycle behavior tests passed");
     }
 })().catch((error) => {

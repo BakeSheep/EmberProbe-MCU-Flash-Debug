@@ -18,7 +18,8 @@ target 脚本的速度偏保守（例如 STM32F1 为 1 MHz，STM32H7 在 reset-i
 | --- | --- | --- |
 | ST-Link（`hla`、`st-link`） | 24000 kHz | V2/V2-1 钳制为 4 MHz，V3 为 24 MHz |
 | J-Link | 15000 kHz | 驱动按型号上限降低 |
-| CMSIS-DAP | 10000 kHz | 固件取其最快可用分频 |
+| CMSIS-DAP（HID） | 4000 kHz | 保守上限，避免纯 HID 探针流水线包失配 |
+| CMSIS-DAP（其他） | 10000 kHz | 固件取其最快可用分频 |
 | 其他 | — | 脚本时钟 |
 
 非零的 `emberprobe.adapterSpeedKhz` 替代表中数值。仅在 Cortex-M 且使用 SWD（`swd`、`hla_swd`、`dapdirect_swd`）时提速，并且新时钟下读取的 CPUID 必须与原时钟一致。提速后写入或 OpenOCD 最终 `verify_image` 失败时，恢复原时钟、重新 `reset init` 并重写、重新校验一次，只报告第二次的错误；高速写入成功时仍只校验一次。JTAG、RISC-V 等目标保持脚本时钟。
@@ -27,7 +28,9 @@ target 脚本的速度偏保守（例如 STM32F1 为 1 MHz，STM32H7 在 reset-i
 
 ## 调试启动下载
 
-托管 `launch` 经 GDB 下载。第一次 `monitor reset halt` 后，默认可执行文件总是通过 `-target-download` 下载，随后再次复位再启动；固件相同也会重新下载。满足上文的提速条件（Cortex-M 且使用 SWD、CPUID 读回一致）时，通过 OpenOCD（`monitor`）提高 SWD 时钟，下载后用 GDB `compare-sections` 校验一次写入的各段，并在第二次复位前恢复脚本时钟。这是使用服务器 CRC（`qCRC`）的写后校验，不再进行下载前比较。提速下载失败、校验不一致或无法识别校验输出时，恢复脚本时钟、执行 `monitor reset halt` 并重新下载一次。OpenOCD 拒绝提速时沿用脚本时钟。显式 `loadFiles` 按顺序下载；`loadFiles: []` 仍按明确配置跳过下载，attach 从不写入。
+托管 `launch` 经 GDB 下载。第一次 `monitor reset halt` 后，默认可执行文件总是通过 `-target-download` 下载，随后再次复位再启动；固件相同也会重新下载。满足上文的提速条件（Cortex-M 且使用 SWD、CPUID 读回一致）时，通过 OpenOCD（`monitor`）提高 SWD 时钟，输出 `EP_FLASH_STAGE=program_boost` 并在 `compare-sections` 校验后或回退时输出 `EP_FLASH_STAGE=program` 恢复脚本时钟。在 `program_boost` 试探提速阶段，调试托管会话对 `CMSIS-DAP command/transfer count mismatch` 与 `target communication error` 暂不立即中止 OpenOCD，以便 `DebugImages` 降速重试；而硬 USB/HID 传输失败（如 `hid_write`、`ReadFile`、`LIBUSB_ERROR_*`）仍立即判定探针通信失败。若 `-target-download`、`compare-sections` 或 `restoreDownloadClock` 遇到远端断开（如 `Remote connection closed`、`target disconnected`、`"monitor" command not supported by this target.` 等），`DebugImages` 立即中止下载流程并上抛错误，不再尝试执行 `restoreDownloadClock` 或回退 `monitor reset halt`。OpenOCD 拒绝提速时沿用脚本时钟。显式 `loadFiles` 按顺序下载；`loadFiles: []` 仍按明确配置跳过下载，attach 从不写入。
+
+调试启动收敛前（`DebugLaunch.lifecycle.pending`）若托管 OpenOCD 断开，启动失败通知保留完整结构化诊断 `error`（同时剥离仅用于采样的 `live.probeDisconnected`）；`NoticeService` 生成弹窗摘要时优先展示 `diagnostic.likelyCause`。
 
 ## GDB 预热
 

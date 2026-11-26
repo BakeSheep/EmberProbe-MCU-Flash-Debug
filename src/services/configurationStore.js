@@ -65,6 +65,7 @@ class ConfigurationStore {
             rtos: cfg.get("rtos", ""),
             probeSerial: "",
             adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
+            cmsisDapQuirk: cfg.get("cmsisDapQuirk", "auto"),
             samplingAdapterSpeedKhz: cfg.get("samplingAdapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),

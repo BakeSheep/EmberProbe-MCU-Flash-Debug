@@ -59,7 +59,7 @@ function activate(context) {
                 key => event.affectsConfiguration("emberprobe." + key)
             )) provider.debugLaunch.scheduleGdbWarmup();
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.debugLaunch.externalSettingsChanged().catch(console.error);
-            const connectionChanged = ["openocdPath", "transport", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
+            const connectionChanged = ["openocdPath", "transport", "adapterSpeedKhz", "cmsisDapQuirk"].some(key => event.affectsConfiguration("emberprobe." + key));
             const samplingSpeedChanged = event.affectsConfiguration("emberprobe.samplingAdapterSpeedKhz");
             if (connectionChanged || samplingSpeedChanged) provider.connectionConfigurationChanged(samplingSpeedChanged, !connectionChanged);
             if (event.affectsConfiguration("emberprobe.sampleFrequencyHz")) provider.samplingFrequencyConfigurationChanged();

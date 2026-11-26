@@ -24,15 +24,15 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
     );
     assert.deepStrictEqual(
         groups.map((group) => Object.keys(group.properties).length),
-        [7, 6, 4, 15, 3]
+        [7, 7, 4, 15, 3]
     );
     for (const key of ["openocdPath", "gdbPath", "objdumpPath", "cubemxPath", "cubemx2Path"])
         assert.ok(groups[0].properties[`emberprobe.${key}`], `${key} belongs with tools and paths`);
-    for (const key of ["transport", "rtos", "prettyPrintingMode", "prettyPrinterFiles"])
+    for (const key of ["transport", "cmsisDapQuirk", "rtos", "prettyPrintingMode", "prettyPrinterFiles"])
         assert.ok(groups[1].properties[`emberprobe.${key}`], `${key} belongs with connection and debugging`);
     const entries = groups.flatMap((group) => Object.entries(group.properties));
     const keys = entries.map(([key]) => key);
-    assert.strictEqual(keys.length, 35);
+    assert.strictEqual(keys.length, 36);
     assert.strictEqual(new Set(keys).size, keys.length);
     for (const key of [
         "probeSerial",
@@ -245,6 +245,9 @@ scenario("Expose grouped bilingual settings without removed configuration keys",
             context.workspaceState.update = original;
             await Promise.all([store.update({ sampleFrequencyHz: 40 }), store.update({ sampleFrequencyHz: 20 })]);
             assert.strictEqual(settings.get("sampleFrequencyHz"), 20);
+            assert.strictEqual(store.snapshot().cmsisDapQuirk, "auto");
+            settings.set("cmsisDapQuirk", "enable");
+            assert.strictEqual(store.snapshot().cmsisDapQuirk, "enable");
             await assert.rejects(store.update(null), (error) => error.code === "INVALID_CONFIG_VALUE");
         } finally {
             fixture.context.workspaceState.update = original;

@@ -20,6 +20,12 @@ function isTransportProbeFailure(line) {
     return isProbeCommunicationFailure(line) || /WriteFile|ReadFile|LIBUSB_ERROR_NO_DEVICE/i.test(String(line || ""));
 }
 
+// During a tentative debug download clock boost, a probe mismatch or target comm error can recover via slow fallback;
+// hard USB/HID transport errors still abort immediately.
+function isTentativeBoostRecoverableLog(line) {
+    return /cmsis[-_]dap (?:command|transfer count) mismatch\b|target communication error/i.test(String(line || ""));
+}
+
 // A failed probe transport ends sampling even when the device is still enumerated.
 function isFatalProbeLog(line) {
     return isTransportProbeFailure(line) || /target communication error/i.test(String(line || ""));
@@ -182,4 +188,11 @@ class OpenOcdProcess {
     }
 }
 
-module.exports = { OpenOcdProcess, managedServerLaunch, isFatalProbeLog, isTransportProbeFailure, waitForChildExit };
+module.exports = {
+    OpenOcdProcess,
+    managedServerLaunch,
+    isFatalProbeLog,
+    isTransportProbeFailure,
+    isTentativeBoostRecoverableLog,
+    waitForChildExit
+};

@@ -6,6 +6,7 @@ const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
 const {
     normalizeProbeSerial,
     normalizeAdapterSpeed,
+    normalizeCmsisDapQuirk,
     connectionIdentity,
     connectionError,
     trustedSerial,
@@ -126,6 +127,7 @@ class ProbeConnectionService {
             probeSerial: connection.probeSerial,
             adapterSerial: connection.adapterSerial,
             adapterBackend: connection.adapterBackend,
+            cmsisDapQuirk: connection.cmsisDapQuirk,
             adapterSpeedKhz: connection.adapterSpeedKhz,
             inventory: connection.inventory,
             cwd: request.cwd,
@@ -295,7 +297,12 @@ class ProbeConnectionService {
         return (
             (!!previous && JSON.stringify(previous) !== JSON.stringify(this._effectiveSettingsIdentity(configured))) ||
             (session.options?.samplingAdapterSpeedKhz !== undefined &&
-                session.options.samplingAdapterSpeedKhz !== normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz))
+                session.options.samplingAdapterSpeedKhz !==
+                    normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz)) ||
+            (!!previous &&
+                probeFamily(session.options || {}) === "cmsis-dap" &&
+                normalizeCmsisDapQuirk(session.options?.cmsisDapQuirk) !==
+                    normalizeCmsisDapQuirk(configured.cmsisDapQuirk))
         );
     }
 
@@ -314,6 +321,7 @@ class ProbeConnectionService {
         this.beforePrepare();
         const configured = this.getConfig();
         const samplingSpeed = options.sampling ? normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz) : undefined;
+        const cmsisDapQuirk = normalizeCmsisDapQuirk(configured.cmsisDapQuirk);
         const selection = this.getSuccessfulConnection();
         const expectedSettings = JSON.stringify(this._effectiveSettingsIdentity(configured, selection));
         let request = { ...configured, ...options, successfulConnection: selection };
@@ -332,7 +340,8 @@ class ProbeConnectionService {
                 if (
                     JSON.stringify(current) !== expectedSettings ||
                     (samplingSpeed !== undefined &&
-                        samplingSpeed !== normalizeAdapterSpeed(this.getConfig().samplingAdapterSpeedKhz))
+                        samplingSpeed !== normalizeAdapterSpeed(this.getConfig().samplingAdapterSpeedKhz)) ||
+                    cmsisDapQuirk !== normalizeCmsisDapQuirk(this.getConfig().cmsisDapQuirk)
                 )
                     throw connectionError(
                         "PROBE_CONFIGURATION_CHANGED",
